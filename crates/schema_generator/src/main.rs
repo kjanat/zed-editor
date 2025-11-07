@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use schemars::schema_for;
+use schemars::{schema_for, JsonSchema};
 use settings::{KeymapFile, UserSettingsContent};
 use task::{DebugTaskFile, TaskTemplates};
 use theme::{IconThemeFamilyContent, ThemeFamilyContent};
@@ -22,36 +22,24 @@ pub enum SchemaType {
     Keymap,
 }
 
+fn print_schema<T: JsonSchema>() -> Result<()> {
+    let schema = schema_for!(T);
+    println!("{}", serde_json::to_string_pretty(&schema)?);
+    Ok(())
+}
+
 fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
 
     match args.schema_type {
-        SchemaType::Theme => {
-            let schema = schema_for!(ThemeFamilyContent);
-            println!("{}", serde_json::to_string_pretty(&schema)?);
-        }
-        SchemaType::IconTheme => {
-            let schema = schema_for!(IconThemeFamilyContent);
-            println!("{}", serde_json::to_string_pretty(&schema)?);
-        }
-        SchemaType::Settings => {
-            let schema = schema_for!(UserSettingsContent);
-            println!("{}", serde_json::to_string_pretty(&schema)?);
-        }
-        SchemaType::Tasks => {
-            let schema = schema_for!(TaskTemplates);
-            println!("{}", serde_json::to_string_pretty(&schema)?);
-        }
-        SchemaType::Debug => {
-            let schema = schema_for!(DebugTaskFile);
-            println!("{}", serde_json::to_string_pretty(&schema)?);
-        }
-        SchemaType::Keymap => {
-            let schema = schema_for!(KeymapFile);
-            println!("{}", serde_json::to_string_pretty(&schema)?);
-        }
+        SchemaType::Theme => print_schema::<ThemeFamilyContent>()?,
+        SchemaType::IconTheme => print_schema::<IconThemeFamilyContent>()?,
+        SchemaType::Settings => print_schema::<UserSettingsContent>()?,
+        SchemaType::Tasks => print_schema::<TaskTemplates>()?,
+        SchemaType::Debug => print_schema::<DebugTaskFile>()?,
+        SchemaType::Keymap => print_schema::<KeymapFile>()?,
     }
 
     Ok(())
