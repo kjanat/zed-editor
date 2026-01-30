@@ -271,6 +271,7 @@ pub struct GrammarManifestEntry {
 #[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LanguageServerManifestEntry {
     /// Deprecated in favor of `languages`.
+    #[deprecated]
     #[serde(default)]
     language: Option<LanguageName>,
     /// The list of languages this language server should work with.
@@ -291,6 +292,7 @@ impl LanguageServerManifestEntry {
     ///
     /// We can replace this with just field access for the `languages` field once
     /// we have removed `language`.
+    #[allow(deprecated)]
     pub fn languages(&self) -> impl IntoIterator<Item = LanguageName> + '_ {
         let language = if self.languages.is_empty() {
             self.language.clone()

@@ -218,6 +218,7 @@
               "type": "null"
             }
           ],
+          "deprecated": true,
           "default": null
         },
         "languages": {
