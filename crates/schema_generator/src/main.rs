@@ -1,5 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use extension::ExtensionManifest;
+use language::LanguageConfig;
 use schemars::schema_for;
 use settings::ProjectSettingsContent;
 use theme::{IconThemeFamilyContent, ThemeFamilyContent};
@@ -16,6 +18,8 @@ pub enum SchemaType {
     Theme,
     IconTheme,
     Project,
+    Extension,
+    LanguageConfig,
 }
 
 fn main() -> Result<()> {
@@ -34,6 +38,14 @@ fn main() -> Result<()> {
         }
         SchemaType::Project => {
             let schema = schema_for!(ProjectSettingsContent);
+            println!("{}", serde_json::to_string_pretty(&schema)?);
+        }
+        SchemaType::Extension => {
+            let schema = schema_for!(ExtensionManifest);
+            println!("{}", serde_json::to_string_pretty(&schema)?);
+        }
+        SchemaType::LanguageConfig => {
+            let schema = schema_for!(LanguageConfig);
             println!("{}", serde_json::to_string_pretty(&schema)?);
         }
     }

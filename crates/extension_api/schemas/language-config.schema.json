@@ -1,0 +1,650 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LanguageConfig",
+  "type": "object",
+  "properties": {
+    "name": {
+      "description": "Human-readable name of the language.",
+      "$ref": "#/$defs/LanguageName"
+    },
+    "code_fence_block_name": {
+      "description": "The name of this language for a Markdown code fence block",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "grammar": {
+      "description": "The name of the grammar in a WASM bundle (experimental).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "path_suffixes": {
+      "description": "Given a list of `LanguageConfig`'s, the language of a file can be determined based on the path extension matching any of the `path_suffixes`.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "first_line_pattern": {
+      "description": "A regex pattern that determines whether the language should be assigned to a file or not.",
+      "type": "string",
+      "default": null
+    },
+    "brackets": {
+      "description": "List of bracket types in a language.",
+      "$ref": "#/$defs/BracketPairConfig"
+    },
+    "auto_indent_using_last_non_empty_line": {
+      "description": "If set to true, auto indentation uses last non empty line to determine\nthe indentation level for a new line.",
+      "type": "boolean",
+      "default": true
+    },
+    "auto_indent_on_paste": {
+      "description": "Whether indentation of pasted content should be adjusted based on the context.",
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "default": null
+    },
+    "increase_indent_pattern": {
+      "description": "A regex that is used to determine whether the indentation level should be\nincreased in the following line.",
+      "type": "string"
+    },
+    "decrease_indent_pattern": {
+      "description": "A regex that is used to determine whether the indentation level should be\ndecreased in the following line.",
+      "type": "string"
+    },
+    "decrease_indent_patterns": {
+      "description": "A list of rules for decreasing indentation. Each rule pairs a regex with a set of valid\n\"block-starting\" tokens. When a line matches a pattern, its indentation is aligned with\nthe most recent line that began with a corresponding token. This enables context-aware\noutdenting, like aligning an `else` with its `if`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DecreaseIndentConfig"
+      }
+    },
+    "autoclose_before": {
+      "description": "A list of characters that trigger the automatic insertion of a closing\nbracket when they immediately precede the point where an opening\nbracket is inserted.",
+      "type": "string",
+      "default": ""
+    },
+    "collapsed_placeholder": {
+      "description": "A placeholder used internally by Semantic Index.",
+      "type": "string",
+      "default": ""
+    },
+    "line_comments": {
+      "description": "A line comment string that is inserted in e.g. `toggle comments` action.\nA language can have multiple flavours of line comments. All of the provided line comments are\nused for comment continuations on the next line, but only the first one is used for Editor::ToggleComments.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "block_comment": {
+      "description": "Delimiters and configuration for recognizing and formatting block comments.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlockCommentConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "documentation_comment": {
+      "description": "Delimiters and configuration for recognizing and formatting documentation comments.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlockCommentConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "unordered_list": {
+      "description": "List markers that are inserted unchanged on newline (e.g., `- `, `* `, `+ `).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "ordered_list": {
+      "description": "Configuration for ordered lists with auto-incrementing numbers on newline (e.g., `1. ` becomes `2. `).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OrderedListConfig"
+      }
+    },
+    "task_list": {
+      "description": "Configuration for task lists where multiple markers map to a single continuation prefix (e.g., `- [x] ` continues as `- [ ] `).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskListConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rewrap_prefixes": {
+      "description": "A list of additional regex patterns that should be treated as prefixes\nfor creating boundaries during rewrapping, ensuring content from one\nprefixed section doesn't merge with another (e.g., markdown list items).\nBy default, Zed treats as paragraph and comment prefixes as boundaries.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope_opt_in_language_servers": {
+      "description": "A list of language servers that are allowed to run on subranges of a given language.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LanguageServerName"
+      },
+      "default": []
+    },
+    "overrides": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/LanguageConfigOverride"
+      }
+    },
+    "word_characters": {
+      "description": "A list of characters that Zed should treat as word characters for the\npurpose of features that operate on word boundaries, like 'move to next word end'\nor a whole-word search in buffer search.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1
+      },
+      "default": []
+    },
+    "hard_tabs": {
+      "description": "Whether to indent lines using tab characters, as opposed to multiple\nspaces.",
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "default": null
+    },
+    "tab_size": {
+      "description": "How many columns a tab should occupy.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 1,
+      "maximum": 128,
+      "default": null
+    },
+    "soft_wrap": {
+      "description": "How to soft-wrap long lines of text.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SoftWrap"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "wrap_characters": {
+      "description": "When set, selections can be wrapped using prefix/suffix pairs on both sides.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WrapCharactersConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prettier_parser_name": {
+      "description": "The name of a Prettier parser that will be used for this language when no file path is available.\nIf there's a parser name in the language settings, that will be used instead.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "hidden": {
+      "description": "If true, this language is only for syntax highlighting via an injection into other\nlanguages, but should not appear to the user as a distinct language.",
+      "type": "boolean",
+      "default": false
+    },
+    "jsx_tag_auto_close": {
+      "description": "If configured, this language contains JSX style tags, and should support auto-closing of those tags.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsxTagAutoCloseConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "completion_query_characters": {
+      "description": "A list of characters that Zed should treat as word characters for completion queries.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1
+      },
+      "default": []
+    },
+    "linked_edit_characters": {
+      "description": "A list of characters that Zed should treat as word characters for linked edit operations.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1
+      },
+      "default": []
+    },
+    "debuggers": {
+      "description": "A list of preferred debuggers for this language.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "ignored_import_segments": {
+      "description": "A list of import namespace segments that aren't expected to appear in file paths. For\nexample, \"super\" and \"crate\" in Rust.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "import_path_strip_regex": {
+      "description": "Regular expression that matches substrings to omit from import paths, to make the paths more\nsimilar to how they are specified when imported. For example, \"/mod\\.rs$\" or \"/__init__\\.py$\".",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "$defs": {
+    "LanguageName": {
+      "type": "string"
+    },
+    "BracketPairConfig": {
+      "description": "Configuration of handling bracket pairs for a given language.\n\nThis struct includes settings for defining which pairs of characters are considered brackets and\nalso specifies any language-specific scopes where these pairs should be ignored for bracket matching purposes.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BracketPairContent"
+      }
+    },
+    "BracketPairContent": {
+      "description": "Describes a single bracket pair and how an editor should react to e.g. inserting\nan opening bracket or to a newline character insertion in between `start` and `end` characters.",
+      "type": "object",
+      "properties": {
+        "start": {
+          "description": "Starting substring for a bracket.",
+          "type": "string"
+        },
+        "end": {
+          "description": "Ending substring for a bracket.",
+          "type": "string"
+        },
+        "close": {
+          "description": "True if `end` should be automatically inserted right after `start` characters.",
+          "type": "boolean"
+        },
+        "surround": {
+          "description": "True if selected text should be surrounded by `start` and `end` characters.",
+          "type": "boolean",
+          "default": true
+        },
+        "newline": {
+          "description": "True if an extra newline should be inserted while the cursor is in the middle\nof that bracket pair.",
+          "type": "boolean"
+        },
+        "not_in": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "close",
+        "newline"
+      ]
+    },
+    "DecreaseIndentConfig": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "valid_after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "BlockCommentConfig": {
+      "description": "The configuration for block comments for this language.\n\nCan be specified as either:\n- An object: `{ start = \"/*\", end = \"*/\", prefix = \" * \", tab_size = 1 }`\n- An array (legacy): `[\"/*\", \"*/\"]` (prefix defaults to \"\", tab_size to 0)",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "start": {
+              "description": "A start tag of block comment.",
+              "type": "string"
+            },
+            "end": {
+              "description": "An end tag of block comment.",
+              "type": "string"
+            },
+            "prefix": {
+              "description": "A character to add as a prefix when a new line is added to a block comment.",
+              "type": "string"
+            },
+            "tab_size": {
+              "description": "An indent to add for prefix and end line upon new line.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 128
+            }
+          },
+          "required": [
+            "start",
+            "end",
+            "prefix",
+            "tab_size"
+          ]
+        },
+        {
+          "description": "Legacy format: [start, end]. Prefix defaults to empty string, tab_size to 0.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "OrderedListConfig": {
+      "description": "Configuration for continuing ordered lists with auto-incrementing numbers.",
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "A regex pattern with a capture group for the number portion (e.g., `(\\\\d+)\\\\. `).",
+          "type": "string"
+        },
+        "format": {
+          "description": "A format string where `{1}` is replaced with the incremented number (e.g., `{1}. `).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern",
+        "format"
+      ]
+    },
+    "TaskListConfig": {
+      "description": "Configuration for continuing task lists on newline.",
+      "type": "object",
+      "properties": {
+        "prefixes": {
+          "description": "The list markers to match (e.g., `- [ ] `, `- [x] `).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "continuation": {
+          "description": "The marker to insert when continuing the list on a new line (e.g., `- [ ] `).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prefixes",
+        "continuation"
+      ]
+    },
+    "LanguageServerName": {
+      "description": "A name of a language server.",
+      "type": "string"
+    },
+    "LanguageConfigOverride": {
+      "type": "object",
+      "properties": {
+        "line_comments": {
+          "$ref": "#/$defs/Override",
+          "default": {
+            "remove": false
+          }
+        },
+        "block_comment": {
+          "$ref": "#/$defs/Override2"
+        },
+        "word_characters": {
+          "$ref": "#/$defs/Override3",
+          "default": {
+            "remove": false
+          }
+        },
+        "completion_query_characters": {
+          "$ref": "#/$defs/Override3",
+          "default": {
+            "remove": false
+          }
+        },
+        "linked_edit_characters": {
+          "$ref": "#/$defs/Override3",
+          "default": {
+            "remove": false
+          }
+        },
+        "opt_into_language_servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LanguageServerName"
+          },
+          "default": []
+        },
+        "prefer_label_for_snippet": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "Override": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "remove": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "remove"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "Override2": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "remove": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "remove"
+          ]
+        },
+        {
+          "$ref": "#/$defs/BlockCommentConfig"
+        }
+      ]
+    },
+    "Override3": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "remove": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "remove"
+          ]
+        },
+        {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1
+          }
+        }
+      ]
+    },
+    "SoftWrap": {
+      "description": "Controls the soft-wrapping behavior in the editor.",
+      "oneOf": [
+        {
+          "description": "Prefer a single line generally, unless an overly long line is encountered.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Deprecated: use None instead. Left to avoid breaking existing users' configs.\nPrefer a single line generally, unless an overly long line is encountered.",
+          "type": "string",
+          "const": "prefer_line"
+        },
+        {
+          "description": "Soft wrap lines that exceed the editor width.",
+          "type": "string",
+          "const": "editor_width"
+        },
+        {
+          "description": "Soft wrap lines at the preferred line length.",
+          "type": "string",
+          "const": "preferred_line_length"
+        },
+        {
+          "description": "Soft wrap line at the preferred line length or the editor width (whichever is smaller).",
+          "type": "string",
+          "const": "bounded"
+        }
+      ]
+    },
+    "WrapCharactersConfig": {
+      "type": "object",
+      "properties": {
+        "start_prefix": {
+          "description": "Opening token split into a prefix and suffix. The first caret goes\nafter the prefix (i.e., between prefix and suffix).",
+          "type": "string"
+        },
+        "start_suffix": {
+          "type": "string"
+        },
+        "end_prefix": {
+          "description": "Closing token split into a prefix and suffix. The second caret goes\nafter the prefix (i.e., between prefix and suffix).",
+          "type": "string"
+        },
+        "end_suffix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_prefix",
+        "start_suffix",
+        "end_prefix",
+        "end_suffix"
+      ]
+    },
+    "JsxTagAutoCloseConfig": {
+      "description": "The configuration for JSX tag auto-closing.",
+      "type": "object",
+      "properties": {
+        "open_tag_node_name": {
+          "description": "The name of the node for a opening tag",
+          "type": "string"
+        },
+        "close_tag_node_name": {
+          "description": "The name of the node for an closing tag",
+          "type": "string"
+        },
+        "jsx_element_node_name": {
+          "description": "The name of the node for a complete element with children for open and close tags",
+          "type": "string"
+        },
+        "tag_name_node_name": {
+          "description": "The name of the node found within both opening and closing\ntags that describes the tag name",
+          "type": "string"
+        },
+        "tag_name_node_name_alternates": {
+          "description": "Alternate Node names for tag names.\nSpecifically needed as TSX represents the name in `<Foo.Bar>`\nas `member_expression` rather than `identifier` as usual",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "erroneous_close_tag_node_name": {
+          "description": "Some grammars are smart enough to detect a closing tag\nthat is not valid i.e. doesn't match it's corresponding\nopening tag or does not have a corresponding opening tag\nThis should be set to the name of the node for invalid\nclosing tags if the grammar contains such a node, otherwise\ndetecting already closed tags will not work properly",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "erroneous_close_tag_name_node_name": {
+          "description": "See above for erroneous_close_tag_node_name for details\nThis should be set if the node used for the tag name\nwithin erroneous closing tags is different from the\nnormal tag name node name",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "open_tag_node_name",
+        "close_tag_node_name",
+        "jsx_element_node_name",
+        "tag_name_node_name"
+      ]
+    }
+  }
+}

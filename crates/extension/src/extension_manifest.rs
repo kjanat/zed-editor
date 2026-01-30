@@ -3,6 +3,7 @@ use collections::{BTreeMap, HashMap};
 use fs::Fs;
 use language::LanguageName;
 use lsp::LanguageServerName;
+use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -36,7 +37,9 @@ pub struct OldExtensionManifest {
 }
 
 /// The schema version of the [`ExtensionManifest`].
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Serialize, Deserialize, JsonSchema,
+)]
 pub struct SchemaVersion(pub i32);
 
 impl fmt::Display for SchemaVersion {
@@ -55,7 +58,7 @@ impl SchemaVersion {
 
 // TODO: We should change this to just always be a Vec<PathBuf> once we bump the
 // extension.toml schema version to 2
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ExtensionSnippets {
     Single(PathBuf),
@@ -77,7 +80,7 @@ impl From<&str> for ExtensionSnippets {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExtensionManifest {
     pub id: Arc<str>,
     pub name: String,
@@ -160,13 +163,13 @@ pub fn build_debug_adapter_schema_path(
     })
 }
 
-#[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LibManifestEntry {
     pub kind: Option<ExtensionLibraryKind>,
     pub version: Option<Version>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct AgentServerManifestEntry {
     /// Display name for the agent (shown in menus).
     pub name: String,
@@ -206,7 +209,7 @@ pub struct AgentServerManifestEntry {
     pub targets: HashMap<String, TargetConfig>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct TargetConfig {
     /// URL to download the archive from (e.g., "https://github.com/owner/repo/releases/download/v1.0.0/myagent-darwin-arm64.zip")
     pub archive: String,
@@ -251,12 +254,12 @@ impl TargetConfig {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub enum ExtensionLibraryKind {
     Rust,
 }
 
-#[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GrammarManifestEntry {
     pub repository: String,
     #[serde(alias = "commit")]
@@ -265,7 +268,7 @@ pub struct GrammarManifestEntry {
     pub path: Option<String>,
 }
 
-#[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LanguageServerManifestEntry {
     /// Deprecated in favor of `languages`.
     #[serde(default)]
@@ -276,6 +279,7 @@ pub struct LanguageServerManifestEntry {
     #[serde(default)]
     pub language_ids: HashMap<LanguageName, String>,
     #[serde(default)]
+    #[schemars(with = "Option<Vec<String>>")]
     pub code_action_kinds: Option<Vec<lsp::CodeActionKind>>,
 }
 
@@ -297,25 +301,25 @@ impl LanguageServerManifestEntry {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ContextServerManifestEntry {}
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SlashCommandManifestEntry {
     pub description: String,
     pub requires_argument: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DebugAdapterManifestEntry {
     pub schema_path: Option<PathBuf>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DebugLocatorManifestEntry {}
 
 /// Manifest entry for a language model provider.
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LanguageModelProviderManifestEntry {
     /// Display name for the provider.
     pub name: String,

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+cargo run -q -p schema_generator -- extension > crates/extension_api/schemas/extension.schema.json
+echo "Generated crates/extension_api/schemas/extension.schema.json"
+
+cargo run -q -p schema_generator -- language_config > crates/extension_api/schemas/language-config.schema.json
+echo "Generated crates/extension_api/schemas/language-config.schema.json"

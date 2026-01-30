@@ -6,10 +6,11 @@ pub use download_file_capability::*;
 pub use npm_install_package_capability::*;
 pub use process_exec_capability::*;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A capability for an extension.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExtensionCapability {
     #[serde(rename = "process:exec")]

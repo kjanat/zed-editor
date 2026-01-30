@@ -1,8 +1,10 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(inline)]
 pub struct DownloadFileCapability {
     pub host: String,
     pub path: Vec<String>,

@@ -803,7 +803,7 @@ pub struct LanguageConfig {
     pub name: LanguageName,
     /// The name of this language for a Markdown code fence block
     pub code_fence_block_name: Option<Arc<str>>,
-    // The name of the grammar in a WASM bundle (experimental).
+    /// The name of the grammar in a WASM bundle (experimental).
     pub grammar: Option<Arc<str>>,
     /// The criteria for matching this language to a given file.
     #[serde(flatten)]
@@ -815,7 +815,7 @@ pub struct LanguageConfig {
     /// the indentation level for a new line.
     #[serde(default = "auto_indent_using_last_non_empty_line_default")]
     pub auto_indent_using_last_non_empty_line: bool,
-    // Whether indentation of pasted content should be adjusted based on the context.
+    /// Whether indentation of pasted content should be adjusted based on the context.
     #[serde(default)]
     pub auto_indent_on_paste: Option<bool>,
     /// A regex that is used to determine whether the indentation level should be
@@ -1000,7 +1000,12 @@ pub struct JsxTagAutoCloseConfig {
 }
 
 /// The configuration for block comments for this language.
+///
+/// Can be specified as either:
+/// - An object: `{ start = "/*", end = "*/", prefix = " * ", tab_size = 1 }`
+/// - An array (legacy): `["/*", "*/"]` (prefix defaults to "", tab_size to 0)
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
+#[schemars(schema_with = "block_comment_json_schema")]
 pub struct BlockCommentConfig {
     /// A start tag of block comment.
     pub start: Arc<str>,
@@ -1009,7 +1014,6 @@ pub struct BlockCommentConfig {
     /// A character to add as a prefix when a new line is added to a block comment.
     pub prefix: Arc<str>,
     /// A indent to add for prefix and end line upon new line.
-    #[schemars(range(min = 1, max = 128))]
     pub tab_size: u32,
 }
 
@@ -1173,6 +1177,45 @@ fn deserialize_regex<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Regex>, D
 fn regex_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     json_schema!({
         "type": "string"
+    })
+}
+
+fn block_comment_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    json_schema!({
+        "description": "Block comment configuration. Can be an object with all fields, or a legacy array [start, end].",
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "A start tag of block comment."
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "An end tag of block comment."
+                    },
+                    "prefix": {
+                        "type": "string",
+                        "description": "A character to add as a prefix when a new line is added to a block comment."
+                    },
+                    "tab_size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 128,
+                        "description": "An indent to add for prefix and end line upon new line."
+                    }
+                },
+                "required": ["start", "end", "prefix", "tab_size"]
+            },
+            {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Legacy format: [start, end]. Prefix defaults to empty string, tab_size to 0."
+            }
+        ]
     })
 }
 
