@@ -1,3 +1,5 @@
+#:schema ../../../../crates/extension_api/schemas/language-config.schema.json
+
 name = "HTML"
 grammar = "html"
 path_suffixes = ["html", "htm", "shtml"]
@@ -14,6 +16,7 @@ brackets = [
 ]
 completion_query_characters = ["-"]
 prettier_parser_name = "html"
+first_line_pattern = "(?i)^<!DOCTYPE html>"
 
 [overrides.default]
 linked_edit_characters = ["-"]

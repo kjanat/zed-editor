@@ -1,3 +1,4 @@
+#:schema ../../crates/extension_api/schemas/extension.schema.json
 id = "slash-commands-example"
 name = "Slash Commands Example"
 description = "An example extension showcasing slash commands."

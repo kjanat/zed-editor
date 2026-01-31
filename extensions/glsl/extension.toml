@@ -1,3 +1,4 @@
+#:schema ../../crates/extension_api/schemas/extension.schema.json
 id = "glsl"
 name = "GLSL"
 description = "GLSL support."

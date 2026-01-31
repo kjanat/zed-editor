@@ -797,59 +797,94 @@ pub struct CodeLabelBuilder {
     filter_range: Range<usize>,
 }
 
+/// # Language Configuration
+/// Configuration options for a programming language in Zed.
 #[derive(Clone, Deserialize, JsonSchema, Debug)]
 pub struct LanguageConfig {
-    /// Human-readable name of the language.
+    /// Human-readable name of the language displayed in the UI (e.g., status bar, language picker).
+    ///
+    /// Examples: `"TypeScript"`, `"Python"`, `"Rust"`
     pub name: LanguageName,
     /// The name of this language for a Markdown code fence block
+    // TODO: Consider letting users pass multiple languages
+    // TODO: Explain where this is used, make it clear to the extension author why they'd might want to set this setting. 
     pub code_fence_block_name: Option<Arc<str>>,
     /// The name of the grammar in a WASM bundle (experimental).
+    // TODO: Examples, why is it experimental
     pub grammar: Option<Arc<str>>,
+    // TODO: Elaborate
     /// The criteria for matching this language to a given file.
     #[serde(flatten)]
     pub matcher: LanguageMatcher,
     /// List of bracket types in a language.
+    ///
+    /// Common examples:
+    /// - curly braces: `{ start = "{", end = "}", close = true, newline = true }`
+    /// - strings: `{ start = "\"", end = "\"", close = true, newline = false, not_in = ["string"] }`
+    /// - block comments: `{ start = "/*", end = " */", close = true, newline = false, not_in = ["string", "comment"] }`
+    // TODO: Add doc example with sample configuration that has multiple of these.
     #[serde(default)]
     pub brackets: BracketPairConfig,
+    // TODO: Shorten/simplify
     /// If set to true, auto indentation uses last non empty line to determine
     /// the indentation level for a new line.
     #[serde(default = "auto_indent_using_last_non_empty_line_default")]
     pub auto_indent_using_last_non_empty_line: bool,
+    // TODO: Consider explaining how this works internally
     /// Whether indentation of pasted content should be adjusted based on the context.
     #[serde(default)]
     pub auto_indent_on_paste: Option<bool>,
     /// A regex that is used to determine whether the indentation level should be
     /// increased in the following line.
+    ///
+    /// Example:
+    /// - `^.*\{\s*$` increases after `{` line-end.
+    /// - `^[^#].*:\s*(#.*)?$` increases after `:` line-end, ignoring lines starting with `#`.
     #[serde(default, deserialize_with = "deserialize_regex")]
     #[schemars(schema_with = "regex_json_schema")]
     pub increase_indent_pattern: Option<Regex>,
-    /// A regex that is used to determine whether the indentation level should be
-    /// decreased in the following line.
+    /// A regex that is used to determine whether the indentation level should be decreased in the following line.
+    ///
+    /// Example: `^\s*\}` to decrease indent for lines starting with `}`.
     #[serde(default, deserialize_with = "deserialize_regex")]
     #[schemars(schema_with = "regex_json_schema")]
     pub decrease_indent_pattern: Option<Regex>,
+    // TODO: Rewrite
     /// A list of rules for decreasing indentation. Each rule pairs a regex with a set of valid
     /// "block-starting" tokens. When a line matches a pattern, its indentation is aligned with
     /// the most recent line that began with a corresponding token. This enables context-aware
     /// outdenting, like aligning an `else` with its `if`.
     #[serde(default)]
     pub decrease_indent_patterns: Vec<DecreaseIndentConfig>,
-    /// A list of characters that trigger the automatic insertion of a closing
-    /// bracket when they immediately precede the point where an opening
-    /// bracket is inserted.
+    // TODO: Example(s), when is this used/recommended
+    /// Characters that allow auto-inserting a closing bracket when they immediately precede the cursor.
     #[serde(default)]
+    #[schemars(example = &";:.,=}])>")]
     pub autoclose_before: String,
+    // TODO: Elaborate
     /// A placeholder used internally by Semantic Index.
     #[serde(default)]
     pub collapsed_placeholder: String,
-    /// A line comment string that is inserted in e.g. `toggle comments` action.
-    /// A language can have multiple flavours of line comments. All of the provided line comments are
-    /// used for comment continuations on the next line, but only the first one is used for Editor::ToggleComments.
+    /// Line comment prefix inserted e.g. by `toggle comments` action.
+    ///
+    /// Multiple prefixes can be specified; all are recognized for comment continuation,
+    /// but only the first is used for `Editor::ToggleComments`.
     #[serde(default)]
+    // TODO: Inline
+    #[schemars(example = &"// ")]
+    #[schemars(example = &"# ")]
+    #[schemars(example = &"/// ")]
+    #[schemars(example = &"//! ")]
     pub line_comments: Vec<Arc<str>>,
-    /// Delimiters and configuration for recognizing and formatting block comments.
+    /// Block comment delimiters and formatting. See [`BlockCommentConfig`].
+    ///
+    /// Examples:
+    /// - C-style: `{ start = "/*", end = "*/", prefix = " * ", tab_size = 1 }`
+    /// - HTML/XML: `{ start = "<!--", end = "-->", prefix = "", tab_size = 0 }`
+    /// - Python: `{ start = "\"\"\"", end = "\"\"\"", prefix = "", tab_size = 0 }`
     #[serde(default)]
     pub block_comment: Option<BlockCommentConfig>,
+    // TODO: Elaborate
     /// Delimiters and configuration for recognizing and formatting documentation comments.
     #[serde(default, alias = "documentation")]
     pub documentation_comment: Option<BlockCommentConfig>,
@@ -862,6 +897,7 @@ pub struct LanguageConfig {
     /// Configuration for task lists where multiple markers map to a single continuation prefix (e.g., `- [x] ` continues as `- [ ] `).
     #[serde(default)]
     pub task_list: Option<TaskListConfig>,
+    // TODO
     /// A list of additional regex patterns that should be treated as prefixes
     /// for creating boundaries during rewrapping, ensuring content from one
     /// prefixed section doesn't merge with another (e.g., markdown list items).
@@ -869,14 +905,20 @@ pub struct LanguageConfig {
     #[serde(default, deserialize_with = "deserialize_regex_vec")]
     #[schemars(schema_with = "regex_vec_json_schema")]
     pub rewrap_prefixes: Vec<Regex>,
-    /// A list of language servers that are allowed to run on subranges of a given language.
+    /// Language servers that are allowed to run on subranges of a given language.
+    ///
+    /// Example: `["tailwindcss-language-server"]` to enable Tailwind CSS completions in template strings.
     #[serde(default)]
+    #[schemars(with = "Vec<LanguageServerName>")]
     pub scope_opt_in_language_servers: Vec<LanguageServerName>,
+    // TODO: add comment here
     #[serde(default)]
     pub overrides: HashMap<String, LanguageConfigOverride>,
     /// A list of characters that Zed should treat as word characters for the
     /// purpose of features that operate on word boundaries, like 'move to next word end'
     /// or a whole-word search in buffer search.
+    ///
+    /// Example: `["#", "$"]` for JavaScript/TypeScript to treat `$variable` and `#private` as single words.
     #[serde(default)]
     pub word_characters: HashSet<char>,
     /// Whether to indent lines using tab characters, as opposed to multiple
@@ -890,35 +932,75 @@ pub struct LanguageConfig {
     /// How to soft-wrap long lines of text.
     #[serde(default)]
     pub soft_wrap: Option<SoftWrap>,
+    // TODO: Add examples
     /// When set, selections can be wrapped using prefix/suffix pairs on both sides.
     #[serde(default)]
     pub wrap_characters: Option<WrapCharactersConfig>,
+    /// Prettier parser name for this language.
+    ///
     /// The name of a Prettier parser that will be used for this language when no file path is available.
     /// If there's a parser name in the language settings, that will be used instead.
+    ///
+    /// See [prettier.io] for the list of built-in parsers.
+    ///
+    /// Examples: `"typescript"`, `"markdown"`, `"json"`, `"jsonc"`.
+    ///
+    /// [prettier.io]: https://prettier.io/docs/options#parser
     #[serde(default)]
     pub prettier_parser_name: Option<String>,
+    // TODO: Rewrite
     /// If true, this language is only for syntax highlighting via an injection into other
     /// languages, but should not appear to the user as a distinct language.
     #[serde(default)]
     pub hidden: bool,
+    // TODO: Rewrite
     /// If configured, this language contains JSX style tags, and should support auto-closing of those tags.
     #[serde(default)]
     pub jsx_tag_auto_close: Option<JsxTagAutoCloseConfig>,
-    /// A list of characters that Zed should treat as word characters for completion queries.
+    /// Characters treated as word constituents when building completion queries.
+    ///
+    /// By default, only alphanumerics and `_` are considered "word" characters for completions.\
+    /// Characters in this set are additionally treated as part of the word when extracting
+    /// the query from the buffer and filtering completion results.
+    ///
+    /// This differs from [`word_characters`], which affects navigation and text selection.\
+    /// Use `completion_query_characters` when completions contain characters that are
+    /// normally punctuation.
+    ///
+    /// Can be set in [`overrides`] for specific syntax scopes (e.g., `["strings"]`).
+    ///
+    /// Examples:
+    /// - `["-", "@"]` — CSS: Tailwind classes (`bg-blue-500`), at-rules (`@media`)
+    /// - `["-", "."]` — JS strings: Tailwind classes, import paths (`./foo`)
+    ///
+    /// [`word_characters`]: Self::word_characters
+    /// [`overrides`]: Self::overrides
     #[serde(default)]
     pub completion_query_characters: HashSet<char>,
+    // TODO: Make easier to read.
     /// A list of characters that Zed should treat as word characters for linked edit operations.
     #[serde(default)]
     pub linked_edit_characters: HashSet<char>,
     /// A list of preferred debuggers for this language.
+    ///
+    /// Examples:
+    /// - `["JavaScript"]` for TypeScript,
+    /// - `["CodeLLDB", "GDB"]` for Rust,
+    /// - `["Debugpy"]` for Python.
     #[serde(default)]
     pub debuggers: IndexSet<SharedString>,
-    /// A list of import namespace segments that aren't expected to appear in file paths. For
-    /// example, "super" and "crate" in Rust.
+    /// A list of import namespace segments that aren't expected to appear in file paths.
+    ///
+    /// Example: `["crate", "super"]` for Rust.
     #[serde(default)]
     pub ignored_import_segments: HashSet<Arc<str>>,
     /// Regular expression that matches substrings to omit from import paths, to make the paths more
-    /// similar to how they are specified when imported. For example, "/mod\.rs$" or "/__init__\.py$".
+    /// similar to how they are specified when imported.
+    ///
+    /// Examples:
+    /// - `/mod\.rs$` for Rust,
+    /// - `/__init__\.py$` for Python,
+    /// - `(?:/index)?\.[jt]s$` for TypeScript.
     #[serde(default, deserialize_with = "deserialize_regex")]
     #[schemars(schema_with = "regex_json_schema")]
     pub import_path_strip_regex: Option<Regex>,
@@ -953,10 +1035,35 @@ pub struct TaskListConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
 pub struct LanguageMatcher {
-    /// Given a list of `LanguageConfig`'s, the language of a file can be determined based on the path extension matching any of the `path_suffixes`.
+    /// Path suffixes used to match files to this language.
+    ///
+    /// When multiple `LanguageConfig`s are registered, Zed uses these to determine
+    /// which language applies. Matches against the filename, not directory paths.
+    ///
+    /// Supported patterns:
+    /// - Simple extensions: `"rs"`, `"py"` — matches `*.rs`, `*.py`
+    /// - Compound extensions: `"d.ts"`, `"spec.js"` — matches `*.d.ts`, `*.spec.js`
+    /// - Exact filenames: `"Makefile"`, `"Dockerfile"`, `package.json`, `".zshrc"`
+    ///
+    /// When multiple languages match, the longer filename match wins.
+    ///
+    /// For directory patterns like `.vscode/*.json`, use `file_types` in settings.
+    // NOTE: Would be nice if this were configurable.
     #[serde(default)]
     pub path_suffixes: Vec<String>,
-    /// A regex pattern that determines whether the language should be assigned to a file or not.
+    /// A regex pattern matched against the first line of a file to detect the language.
+    /// Useful for files with shebangs or other identifying first lines.
+    ///
+    /// Uses Rust's [`regex`] crate syntax.\
+    /// Matching is case-sensitive by default; prefix with `(?i)` for case-insensitive.
+    ///
+    /// Examples:
+    // TODO: Add `bun` to nodejs example
+    /// - Shebang: `^#!.*\b(python|uv\b)` (Python/uv), `^#!.*\bnode\b` (JavaScript)
+    /// - Doctype: `(?i)^<!DOCTYPE html>` (HTML)
+    /// - Modeline: `^.*-\*-.*ruby.*-\*-` (Ruby Emacs modeline)
+    ///
+    /// [`regex`]: https://docs.rs/regex
     #[serde(
         default,
         serialize_with = "serialize_regex",
@@ -999,21 +1106,24 @@ pub struct JsxTagAutoCloseConfig {
     pub erroneous_close_tag_name_node_name: Option<String>,
 }
 
-/// The configuration for block comments for this language.
+/// Block comment configuration.
 ///
 /// Can be specified as either:
-/// - An object: `{ start = "/*", end = "*/", prefix = " * ", tab_size = 1 }`
-/// - An array (legacy): `["/*", "*/"]` (prefix defaults to "", tab_size to 0)
+/// - Object: `{ start = "/*", end = "*/", prefix = " * ", tab_size = 1 }`
+/// - Array (deprecated): `["/*", "*/"]` (prefix defaults to `""`, tab_size to `0`)
+// BUG: Schemars schema seems to nest each of these config settings.
+// TODO: Investigate/fix BUG
+// TODO: Add examples/better doc to individual config items
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
 #[schemars(schema_with = "block_comment_json_schema")]
 pub struct BlockCommentConfig {
-    /// A start tag of block comment.
+    /// Opening delimiter.
     pub start: Arc<str>,
-    /// A end tag of block comment.
+    /// Closing delimiter.
     pub end: Arc<str>,
-    /// A character to add as a prefix when a new line is added to a block comment.
+    /// Prefix for new lines inside block comment.
     pub prefix: Arc<str>,
-    /// A indent to add for prefix and end line upon new line.
+    /// Indentation for prefix and closing delimiter.
     pub tab_size: u32,
 }
 
@@ -1065,6 +1175,7 @@ pub struct LanguageScope {
     override_id: Option<u32>,
 }
 
+// TODO: Add to override schema
 #[derive(Clone, Deserialize, Default, Debug, JsonSchema)]
 pub struct LanguageConfigOverride {
     #[serde(default)]
@@ -1149,6 +1260,7 @@ impl Default for LanguageConfig {
     }
 }
 
+// TODO: Add comment to the suffixes
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct WrapCharactersConfig {
     /// Opening token split into a prefix and suffix. The first caret goes
@@ -1291,7 +1403,13 @@ impl BracketPairConfig {
 pub struct BracketPairContent {
     #[serde(flatten)]
     pub bracket_pair: BracketPair,
+    /// Tree-sitter scope names where this bracket pair should not auto-close.
+    ///
+    /// Example: `["string", "comment"]` to disable auto-closing inside strings and comments.
     #[serde(default)]
+    // TODO: Inline
+    #[schemars(example = &"string")]
+    #[schemars(example = &"comment")]
     pub not_in: Vec<String>,
 }
 
@@ -1318,16 +1436,29 @@ impl<'de> Deserialize<'de> for BracketPairConfig {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, JsonSchema)]
 pub struct BracketPair {
     /// Starting substring for a bracket.
+    // TODO: Inline
+    #[schemars(example = &"{")]
+    #[schemars(example = &"[")]
+    #[schemars(example = &"(")]
+    #[schemars(example = &"\"")]
+    #[schemars(example = &"/*")]
     pub start: String,
     /// Ending substring for a bracket.
+    // TODO: Inline
+    #[schemars(example = &"}")]
+    #[schemars(example = &"]")]
+    #[schemars(example = &")")]
+    #[schemars(example = &"\"")]
+    #[schemars(example = &" */")]
     pub end: String,
-    /// True if `end` should be automatically inserted right after `start` characters.
+    /// Auto-insert `end` when `start` is typed.
     pub close: bool,
-    /// True if selected text should be surrounded by `start` and `end` characters.
+    /// Wrap selected text with `start` and `end` when `start` is typed.
     #[serde(default = "default_true")]
     pub surround: bool,
     /// True if an extra newline should be inserted while the cursor is in the middle
-    /// of that bracket pair.
+    /// of that bracket pair.\
+    /// Typically true for `{}`, `[]`, `()` and false for quotes.
     pub newline: bool,
 }
 

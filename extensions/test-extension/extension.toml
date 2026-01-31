@@ -1,3 +1,4 @@
+#:schema ../../crates/extension_api/schemas/extension.schema.json
 id = "test-extension"
 name = "Test Extension"
 description = "An extension for use in tests."

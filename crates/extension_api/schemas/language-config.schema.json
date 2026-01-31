@@ -1,10 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "LanguageConfig",
+  "title": "Language Configuration",
+  "description": "Configuration options for a programming language in Zed.",
   "type": "object",
   "properties": {
     "name": {
-      "description": "Human-readable name of the language.",
+      "description": "Human-readable name of the language displayed in the UI (e.g., status bar, language picker).\n\nExamples: `\"TypeScript\"`, `\"Python\"`, `\"Rust\"`",
       "$ref": "#/$defs/LanguageName"
     },
     "code_fence_block_name": {
@@ -22,7 +23,7 @@
       ]
     },
     "path_suffixes": {
-      "description": "Given a list of `LanguageConfig`'s, the language of a file can be determined based on the path extension matching any of the `path_suffixes`.",
+      "description": "Path suffixes used to match files to this language.\n\nWhen multiple `LanguageConfig`s are registered, Zed uses these to determine\nwhich language applies. Matches against the filename, not directory paths.\n\nSupported patterns:\n- Simple extensions: `\"rs\"`, `\"py\"` — matches `*.rs`, `*.py`\n- Compound extensions: `\"d.ts\"`, `\"spec.js\"` — matches `*.d.ts`, `*.spec.js`\n- Exact filenames: `\"Makefile\"`, `\"Dockerfile\"`, `package.json`, `\".zshrc\"`\n\nWhen multiple languages match, the longer filename match wins.\n\nFor directory patterns like `.vscode/*.json`, use `file_types` in settings.",
       "type": "array",
       "items": {
         "type": "string"
@@ -30,12 +31,12 @@
       "default": []
     },
     "first_line_pattern": {
-      "description": "A regex pattern that determines whether the language should be assigned to a file or not.",
+      "description": "A regex pattern matched against the first line of a file to detect the language.\nUseful for files with shebangs or other identifying first lines.\n\nUses Rust's [`regex`] crate syntax.\\\nMatching is case-sensitive by default; prefix with `(?i)` for case-insensitive.\n\nExamples:\n- Shebang: `^#!.*\\b(python|uv\\b)` (Python/uv), `^#!.*\\bnode\\b` (JavaScript)\n- Doctype: `(?i)^<!DOCTYPE html>` (HTML)\n- Modeline: `^.*-\\*-.*ruby.*-\\*-` (Ruby Emacs modeline)\n\n[`regex`]: https://docs.rs/regex",
       "type": "string",
       "default": null
     },
     "brackets": {
-      "description": "List of bracket types in a language.",
+      "description": "List of bracket types in a language.\n\nCommon examples:\n- curly braces: `{ start = \"{\", end = \"}\", close = true, newline = true }`\n- strings: `{ start = \"\\\"\", end = \"\\\"\", close = true, newline = false, not_in = [\"string\"] }`\n- block comments: `{ start = \"/*\", end = \" */\", close = true, newline = false, not_in = [\"string\", \"comment\"] }`",
       "$ref": "#/$defs/BracketPairConfig"
     },
     "auto_indent_using_last_non_empty_line": {
@@ -52,11 +53,11 @@
       "default": null
     },
     "increase_indent_pattern": {
-      "description": "A regex that is used to determine whether the indentation level should be\nincreased in the following line.",
+      "description": "A regex that is used to determine whether the indentation level should be\nincreased in the following line.\n\nExample:\n- `^.*\\{\\s*$` increases after `{` line-end.\n- `^[^#].*:\\s*(#.*)?$` increases after `:` line-end, ignoring lines starting with `#`.",
       "type": "string"
     },
     "decrease_indent_pattern": {
-      "description": "A regex that is used to determine whether the indentation level should be\ndecreased in the following line.",
+      "description": "A regex that is used to determine whether the indentation level should be decreased in the following line.\n\nExample: `^\\s*\\}` to decrease indent for lines starting with `}`.",
       "type": "string"
     },
     "decrease_indent_patterns": {
@@ -67,8 +68,11 @@
       }
     },
     "autoclose_before": {
-      "description": "A list of characters that trigger the automatic insertion of a closing\nbracket when they immediately precede the point where an opening\nbracket is inserted.",
+      "description": "Characters that allow auto-inserting a closing bracket when they immediately precede the cursor.",
       "type": "string",
+      "examples": [
+        ";:.,=}])>"
+      ],
       "default": ""
     },
     "collapsed_placeholder": {
@@ -77,15 +81,21 @@
       "default": ""
     },
     "line_comments": {
-      "description": "A line comment string that is inserted in e.g. `toggle comments` action.\nA language can have multiple flavours of line comments. All of the provided line comments are\nused for comment continuations on the next line, but only the first one is used for Editor::ToggleComments.",
+      "description": "Line comment prefix inserted e.g. by `toggle comments` action.\n\nMultiple prefixes can be specified; all are recognized for comment continuation,\nbut only the first is used for `Editor::ToggleComments`.",
       "type": "array",
       "items": {
         "type": "string"
       },
+      "examples": [
+        "// ",
+        "# ",
+        "/// ",
+        "//! "
+      ],
       "default": []
     },
     "block_comment": {
-      "description": "Delimiters and configuration for recognizing and formatting block comments.",
+      "description": "Block comment delimiters and formatting. See [`BlockCommentConfig`].\n\nExamples:\n- C-style: `{ start = \"/*\", end = \"*/\", prefix = \" * \", tab_size = 1 }`\n- HTML/XML: `{ start = \"<!--\", end = \"-->\", prefix = \"\", tab_size = 0 }`\n- Python: `{ start = \"\\\"\\\"\\\"\", end = \"\\\"\\\"\\\"\", prefix = \"\", tab_size = 0 }`",
       "anyOf": [
         {
           "$ref": "#/$defs/BlockCommentConfig"
@@ -140,7 +150,7 @@
       }
     },
     "scope_opt_in_language_servers": {
-      "description": "A list of language servers that are allowed to run on subranges of a given language.",
+      "description": "Language servers that are allowed to run on subranges of a given language.\n\nExample: `[\"tailwindcss-language-server\"]` to enable Tailwind CSS completions in template strings.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/LanguageServerName"
@@ -154,7 +164,7 @@
       }
     },
     "word_characters": {
-      "description": "A list of characters that Zed should treat as word characters for the\npurpose of features that operate on word boundaries, like 'move to next word end'\nor a whole-word search in buffer search.",
+      "description": "A list of characters that Zed should treat as word characters for the\npurpose of features that operate on word boundaries, like 'move to next word end'\nor a whole-word search in buffer search.\n\nExample: `[\"#\", \"$\"]` for JavaScript/TypeScript to treat `$variable` and `#private` as single words.",
       "type": "array",
       "uniqueItems": true,
       "items": {
@@ -207,7 +217,7 @@
       ]
     },
     "prettier_parser_name": {
-      "description": "The name of a Prettier parser that will be used for this language when no file path is available.\nIf there's a parser name in the language settings, that will be used instead.",
+      "description": "Prettier parser name for this language.\n\nThe name of a Prettier parser that will be used for this language when no file path is available.\nIf there's a parser name in the language settings, that will be used instead.\n\nSee [prettier.io] for the list of built-in parsers.\n\nExamples: `\"typescript\"`, `\"markdown\"`, `\"json\"`, `\"jsonc\"`.\n\n[prettier.io]: https://prettier.io/docs/options#parser",
       "type": [
         "string",
         "null"
@@ -231,7 +241,7 @@
       ]
     },
     "completion_query_characters": {
-      "description": "A list of characters that Zed should treat as word characters for completion queries.",
+      "description": "Characters treated as word constituents when building completion queries.\n\nBy default, only alphanumerics and `_` are considered \"word\" characters for completions.\\\nCharacters in this set are additionally treated as part of the word when extracting\nthe query from the buffer and filtering completion results.\n\nThis differs from [`word_characters`], which affects navigation and text selection.\\\nUse `completion_query_characters` when completions contain characters that are\nnormally punctuation.\n\nCan be set in [`overrides`] for specific syntax scopes (e.g., `[\"strings\"]`).\n\nExamples:\n- `[\"-\", \"@\"]` — CSS: Tailwind classes (`bg-blue-500`), at-rules (`@media`)\n- `[\"-\", \".\"]` — JS strings: Tailwind classes, import paths (`./foo`)\n\n[`word_characters`]: Self::word_characters\n[`overrides`]: Self::overrides",
       "type": "array",
       "uniqueItems": true,
       "items": {
@@ -253,7 +263,7 @@
       "default": []
     },
     "debuggers": {
-      "description": "A list of preferred debuggers for this language.",
+      "description": "A list of preferred debuggers for this language.\n\nExamples:\n- `[\"JavaScript\"]` for TypeScript,\n- `[\"CodeLLDB\", \"GDB\"]` for Rust,\n- `[\"Debugpy\"]` for Python.",
       "type": "array",
       "uniqueItems": true,
       "items": {
@@ -262,7 +272,7 @@
       "default": []
     },
     "ignored_import_segments": {
-      "description": "A list of import namespace segments that aren't expected to appear in file paths. For\nexample, \"super\" and \"crate\" in Rust.",
+      "description": "A list of import namespace segments that aren't expected to appear in file paths.\n\nExample: `[\"crate\", \"super\"]` for Rust.",
       "type": "array",
       "uniqueItems": true,
       "items": {
@@ -271,7 +281,7 @@
       "default": []
     },
     "import_path_strip_regex": {
-      "description": "Regular expression that matches substrings to omit from import paths, to make the paths more\nsimilar to how they are specified when imported. For example, \"/mod\\.rs$\" or \"/__init__\\.py$\".",
+      "description": "Regular expression that matches substrings to omit from import paths, to make the paths more\nsimilar to how they are specified when imported.\n\nExamples:\n- `/mod\\.rs$` for Rust,\n- `/__init__\\.py$` for Python,\n- `(?:/index)?\\.[jt]s$` for TypeScript.",
       "type": "string"
     }
   },
@@ -295,30 +305,49 @@
       "properties": {
         "start": {
           "description": "Starting substring for a bracket.",
-          "type": "string"
+          "type": "string",
+          "examples": [
+            "{",
+            "[",
+            "(",
+            "\"",
+            "/*"
+          ]
         },
         "end": {
           "description": "Ending substring for a bracket.",
-          "type": "string"
+          "type": "string",
+          "examples": [
+            "}",
+            "]",
+            ")",
+            "\"",
+            " */"
+          ]
         },
         "close": {
-          "description": "True if `end` should be automatically inserted right after `start` characters.",
+          "description": "Auto-insert `end` when `start` is typed.",
           "type": "boolean"
         },
         "surround": {
-          "description": "True if selected text should be surrounded by `start` and `end` characters.",
+          "description": "Wrap selected text with `start` and `end` when `start` is typed.",
           "type": "boolean",
           "default": true
         },
         "newline": {
-          "description": "True if an extra newline should be inserted while the cursor is in the middle\nof that bracket pair.",
+          "description": "True if an extra newline should be inserted while the cursor is in the middle\nof that bracket pair.\\\nTypically true for `{}`, `[]`, `()` and false for quotes.",
           "type": "boolean"
         },
         "not_in": {
+          "description": "Tree-sitter scope names where this bracket pair should not auto-close.\n\nExample: `[\"string\", \"comment\"]` to disable auto-closing inside strings and comments.",
           "type": "array",
           "items": {
             "type": "string"
           },
+          "examples": [
+            "string",
+            "comment"
+          ],
           "default": []
         }
       },
@@ -345,7 +374,7 @@
       }
     },
     "BlockCommentConfig": {
-      "description": "The configuration for block comments for this language.\n\nCan be specified as either:\n- An object: `{ start = \"/*\", end = \"*/\", prefix = \" * \", tab_size = 1 }`\n- An array (legacy): `[\"/*\", \"*/\"]` (prefix defaults to \"\", tab_size to 0)",
+      "description": "Block comment configuration.\n\nCan be specified as either:\n- Object: `{ start = \"/*\", end = \"*/\", prefix = \" * \", tab_size = 1 }`\n- Array (deprecated): `[\"/*\", \"*/\"]` (prefix defaults to `\"\"`, tab_size to `0`)",
       "oneOf": [
         {
           "type": "object",
