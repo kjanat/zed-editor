@@ -91,7 +91,7 @@ The `Render` trait is used to render some state into an element tree that is lai
 
 Example:
 
-```
+```rust
 struct TextWithBorder(SharedString);
 
 impl Render for TextWithBorder {
