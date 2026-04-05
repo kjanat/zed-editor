@@ -1118,6 +1118,7 @@ impl EditorElement {
         editor: &mut Editor,
         event: &MouseMoveEvent,
         position_map: &PositionMap,
+        editor_hitbox: &Hitbox,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -1163,6 +1164,14 @@ impl EditorElement {
                 scroll_delta.x = scale_horizontal_mouse_autoscroll_delta(event.position.x - right);
             }
             scroll_delta
+        };
+
+        // Don't autoscroll when the mouse has left the editor's bounds
+        // (e.g. dragged into an adjacent panel), to prevent rapid scrolling.
+        let scroll_delta = if editor_hitbox.bounds.contains(&event.position) {
+            scroll_delta
+        } else {
+            gpui::Point::default()
         };
 
         if !editor.has_pending_selection() {
@@ -7644,6 +7653,7 @@ impl EditorElement {
         window.on_mouse_event({
             let position_map = layout.position_map.clone();
             let editor = self.editor.clone();
+            let editor_hitbox = layout.hitbox.clone();
             let split_side = self.split_side;
 
             move |event: &MouseMoveEvent, phase, window, cx| {
@@ -7655,7 +7665,7 @@ impl EditorElement {
                         if event.pressed_button == Some(MouseButton::Left)
                             || event.pressed_button == Some(MouseButton::Middle)
                         {
-                            Self::mouse_dragged(editor, event, &position_map, window, cx)
+                            Self::mouse_dragged(editor, event, &position_map, &editor_hitbox, window, cx)
                         }
 
                         Self::mouse_moved(editor, event, &position_map, split_side, window, cx)

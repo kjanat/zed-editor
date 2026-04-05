@@ -2573,6 +2573,7 @@ impl Interactivity {
                     scroll_offset.x += delta_x;
                     if *scroll_offset != old_scroll_offset {
                         cx.notify(current_view);
+                        cx.stop_propagation();
                     }
                 }
             });

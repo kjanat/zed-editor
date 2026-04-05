@@ -1157,7 +1157,8 @@ impl Element for List {
                     current_view,
                     window,
                     cx,
-                )
+                );
+                cx.stop_propagation();
             }
         });
     }
