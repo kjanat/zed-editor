@@ -807,7 +807,7 @@ pub struct LanguageConfig {
     pub name: LanguageName,
     /// The name of this language for a Markdown code fence block
     // TODO: Consider letting users pass multiple languages
-    // TODO: Explain where this is used, make it clear to the extension author why they'd might want to set this setting. 
+    // TODO: Explain where this is used, make it clear to the extension author why they'd might want to set this setting.
     pub code_fence_block_name: Option<Arc<str>>,
     /// The name of the grammar in a WASM bundle (experimental).
     // TODO: Examples, why is it experimental
@@ -870,11 +870,7 @@ pub struct LanguageConfig {
     /// Multiple prefixes can be specified; all are recognized for comment continuation,
     /// but only the first is used for `Editor::ToggleComments`.
     #[serde(default)]
-    // TODO: Inline
-    #[schemars(example = &"// ")]
-    #[schemars(example = &"# ")]
-    #[schemars(example = &"/// ")]
-    #[schemars(example = &"//! ")]
+    #[schemars(example = line_comments_example())]
     pub line_comments: Vec<Arc<str>>,
     /// Block comment delimiters and formatting. See [`BlockCommentConfig`].
     ///
@@ -1004,6 +1000,10 @@ pub struct LanguageConfig {
     #[serde(default, deserialize_with = "deserialize_regex")]
     #[schemars(schema_with = "regex_json_schema")]
     pub import_path_strip_regex: Option<Regex>,
+}
+
+fn line_comments_example() -> Vec<&'static str> {
+    vec!["// ", "# "]
 }
 
 #[derive(Clone, Debug, Deserialize, Default, JsonSchema)]
@@ -1175,7 +1175,6 @@ pub struct LanguageScope {
     override_id: Option<u32>,
 }
 
-// TODO: Add to override schema
 #[derive(Clone, Deserialize, Default, Debug, JsonSchema)]
 pub struct LanguageConfigOverride {
     #[serde(default)]
@@ -1407,10 +1406,12 @@ pub struct BracketPairContent {
     ///
     /// Example: `["string", "comment"]` to disable auto-closing inside strings and comments.
     #[serde(default)]
-    // TODO: Inline
-    #[schemars(example = &"string")]
-    #[schemars(example = &"comment")]
+    #[schemars(example = not_in_example())]
     pub not_in: Vec<String>,
+}
+
+fn not_in_example() -> Vec<String> {
+    vec!["string".to_owned(), "comment".to_owned()]
 }
 
 impl<'de> Deserialize<'de> for BracketPairConfig {

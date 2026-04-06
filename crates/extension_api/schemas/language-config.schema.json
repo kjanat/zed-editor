@@ -87,10 +87,10 @@
         "type": "string"
       },
       "examples": [
-        "// ",
-        "# ",
-        "/// ",
-        "//! "
+        [
+          "// ",
+          "# "
+        ]
       ],
       "default": []
     },
@@ -345,8 +345,10 @@
             "type": "string"
           },
           "examples": [
-            "string",
-            "comment"
+            [
+              "string",
+              "comment"
+            ]
           ],
           "default": []
         }

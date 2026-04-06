@@ -1,4 +1,4 @@
-name = "Diff"
-grammar = "diff"
+name          = "Diff"
+grammar       = "diff"
 path_suffixes = ["diff", "patch"]
-brackets = []
+brackets      = []

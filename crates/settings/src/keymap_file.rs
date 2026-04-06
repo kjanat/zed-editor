@@ -44,13 +44,7 @@ pub(crate) static KEY_BINDING_VALIDATORS: LazyLock<BTreeMap<TypeId, Box<dyn KeyB
     });
 
 // Note that the doc comments on these are shown by json-language-server when editing the keymap, so
-// they should be considered user-facing documentation. Documentation is not handled well with
-// schemars-0.8 - when there are newlines, it is rendered as plaintext (see
-// https://github.com/GREsau/schemars/issues/38#issuecomment-2282883519). So for now these docs
-// avoid newlines.
-//
-// TODO: Update to schemars-1.0 once it's released, and add more docs as newlines would be
-// supported. Tracking issue is https://github.com/GREsau/schemars/issues/112.
+// they should be considered user-facing documentation.
 
 /// Keymap configuration consisting of sections. Each section may have a context predicate which
 /// determines whether its bindings are used.

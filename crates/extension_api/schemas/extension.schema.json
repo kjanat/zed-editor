@@ -1,467 +1,467 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ExtensionManifest",
-  "type": "object",
-  "properties": {
-    "id": {
-      "type": "string"
-    },
-    "name": {
-      "type": "string"
-    },
-    "version": {
-      "type": "string"
-    },
-    "schema_version": {
-      "$ref": "#/$defs/SchemaVersion"
-    },
-    "description": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "default": null
-    },
-    "repository": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "default": null
-    },
-    "authors": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "default": []
-    },
-    "lib": {
-      "$ref": "#/$defs/LibManifestEntry",
-      "default": {
-        "kind": null,
-        "version": null
-      }
-    },
-    "themes": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "default": []
-    },
-    "icon_themes": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "default": []
-    },
-    "languages": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "default": []
-    },
-    "grammars": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/GrammarManifestEntry"
-      },
-      "default": {}
-    },
-    "language_servers": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/LanguageServerManifestEntry"
-      },
-      "default": {}
-    },
-    "context_servers": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/ContextServerManifestEntry"
-      },
-      "default": {}
-    },
-    "agent_servers": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/AgentServerManifestEntry"
-      },
-      "default": {}
-    },
-    "slash_commands": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/SlashCommandManifestEntry"
-      },
-      "default": {}
-    },
-    "snippets": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ExtensionSnippets"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "capabilities": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/ExtensionCapability"
-      },
-      "default": []
-    },
-    "debug_adapters": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/DebugAdapterManifestEntry"
-      }
-    },
-    "debug_locators": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/DebugLocatorManifestEntry"
-      }
-    },
-    "language_model_providers": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/LanguageModelProviderManifestEntry"
-      }
-    }
-  },
-  "required": [
-    "id",
-    "name",
-    "version",
-    "schema_version"
-  ],
-  "$defs": {
-    "SchemaVersion": {
-      "description": "The schema version of the [`ExtensionManifest`].",
-      "type": "integer",
-      "format": "int32"
-    },
-    "LibManifestEntry": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ExtensionLibraryKind"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "version": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SemVer"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
-    },
-    "ExtensionLibraryKind": {
-      "type": "string",
-      "enum": [
-        "Rust"
-      ]
-    },
-    "SemVer": {
-      "type": "string",
-      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$"
-    },
-    "GrammarManifestEntry": {
-      "type": "object",
-      "properties": {
-        "repository": {
-          "type": "string"
-        },
-        "rev": {
-          "type": "string"
-        },
-        "path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        }
-      },
-      "required": [
-        "repository",
-        "rev"
-      ]
-    },
-    "LanguageServerManifestEntry": {
-      "type": "object",
-      "properties": {
-        "language": {
-          "description": "Deprecated in favor of `languages`.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LanguageName"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "deprecated": true,
-          "default": null
-        },
-        "languages": {
-          "description": "The list of languages this language server should work with.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/LanguageName"
-          },
-          "default": []
-        },
-        "language_ids": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {}
-        },
-        "code_action_kinds": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "default": null
-        }
-      }
-    },
-    "LanguageName": {
-      "type": "string"
-    },
-    "ContextServerManifestEntry": {
-      "type": "object"
-    },
-    "AgentServerManifestEntry": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "description": "Display name for the agent (shown in menus).",
-          "type": "string"
-        },
-        "env": {
-          "description": "Environment variables to set when launching the agent server.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {}
-        },
-        "icon": {
-          "description": "Optional icon path (relative to extension root, e.g., \"ai.svg\").\nShould be a small SVG icon for display in menus.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "targets": {
-          "description": "Per-target configuration for archive-based installation.\nThe key format is \"{os}-{arch}\" where:\n- os: \"darwin\" (macOS), \"linux\", \"windows\"\n- arch: \"aarch64\" (arm64), \"x86_64\"\n\nExample:\n```toml\n[agent_servers.myagent.targets.darwin-aarch64]\narchive = \"https://example.com/myagent-darwin-arm64.zip\"\ncmd = \"./myagent\"\nargs = [\"--serve\"]\nsha256 = \"abc123...\"  # optional\n```\n\nFor Node.js-based agents, you can use \"node\" as the cmd to automatically\nuse Zed's managed Node.js runtime instead of relying on the user's PATH:\n```toml\n[agent_servers.nodeagent.targets.darwin-aarch64]\narchive = \"https://example.com/nodeagent.zip\"\ncmd = \"node\"\nargs = [\"index.js\", \"--port\", \"3000\"]\n```\n\nNote: All commands are executed with the archive extraction directory as the\nworking directory, so relative paths in args (like \"index.js\") will resolve\nrelative to the extracted archive contents.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/TargetConfig"
-          }
-        }
-      },
-      "required": [
-        "name",
-        "targets"
-      ]
-    },
-    "TargetConfig": {
-      "type": "object",
-      "properties": {
-        "archive": {
-          "description": "URL to download the archive from (e.g., \"https://github.com/owner/repo/releases/download/v1.0.0/myagent-darwin-arm64.zip\")",
-          "type": "string"
-        },
-        "cmd": {
-          "description": "Command to run (e.g., \"./myagent\" or \"./myagent.exe\")",
-          "type": "string"
-        },
-        "args": {
-          "description": "Command-line arguments to pass to the agent server.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": []
-        },
-        "sha256": {
-          "description": "Optional SHA-256 hash of the archive for verification.\nIf not provided and the URL is a GitHub release, we'll attempt to fetch it from GitHub.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "env": {
-          "description": "Environment variables to set when launching the agent server.\nThese target-specific env vars will override any env vars set at the agent level.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {}
-        }
-      },
-      "required": [
-        "archive",
-        "cmd"
-      ]
-    },
-    "SlashCommandManifestEntry": {
-      "type": "object",
-      "properties": {
-        "description": {
-          "type": "string"
-        },
-        "requires_argument": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "description",
-        "requires_argument"
-      ]
-    },
-    "ExtensionSnippets": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      ]
-    },
-    "ExtensionCapability": {
-      "description": "A capability for an extension.",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "command": {
-              "description": "The command to execute.",
-              "type": "string"
-            },
-            "args": {
-              "description": "The arguments to pass to the command. Use `*` for a single wildcard argument.\nIf the last element is `**`, then any trailing arguments are allowed.",
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "process:exec"
-            }
-          },
-          "required": [
-            "kind",
-            "command",
-            "args"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "host": {
-              "type": "string"
-            },
-            "path": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "download_file"
-            }
-          },
-          "required": [
-            "kind",
-            "host",
-            "path"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "package": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "npm:install"
-            }
-          },
-          "required": [
-            "kind",
-            "package"
-          ]
-        }
-      ]
-    },
-    "DebugAdapterManifestEntry": {
-      "type": "object",
-      "properties": {
-        "schema_path": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "DebugLocatorManifestEntry": {
-      "type": "object"
-    },
-    "LanguageModelProviderManifestEntry": {
-      "description": "Manifest entry for a language model provider.",
-      "type": "object",
-      "properties": {
-        "name": {
-          "description": "Display name for the provider.",
-          "type": "string"
-        },
-        "icon": {
-          "description": "Path to an SVG icon file relative to the extension root (e.g., \"icons/provider.svg\").",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        }
-      },
-      "required": [
-        "name"
-      ]
-    }
-  }
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "ExtensionManifest",
+	"type": "object",
+	"properties": {
+		"id": {
+			"type": "string"
+		},
+		"name": {
+			"type": "string"
+		},
+		"version": {
+			"type": "string"
+		},
+		"schema_version": {
+			"$ref": "#/$defs/SchemaVersion"
+		},
+		"description": {
+			"type": [
+				"string",
+				"null"
+			],
+			"default": null
+		},
+		"repository": {
+			"type": [
+				"string",
+				"null"
+			],
+			"default": null
+		},
+		"authors": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			},
+			"default": []
+		},
+		"lib": {
+			"$ref": "#/$defs/LibManifestEntry",
+			"default": {
+				"kind": null,
+				"version": null
+			}
+		},
+		"themes": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			},
+			"default": []
+		},
+		"icon_themes": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			},
+			"default": []
+		},
+		"languages": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			},
+			"default": []
+		},
+		"grammars": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/GrammarManifestEntry"
+			},
+			"default": {}
+		},
+		"language_servers": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/LanguageServerManifestEntry"
+			},
+			"default": {}
+		},
+		"context_servers": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/ContextServerManifestEntry"
+			},
+			"default": {}
+		},
+		"agent_servers": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/AgentServerManifestEntry"
+			},
+			"default": {}
+		},
+		"slash_commands": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/SlashCommandManifestEntry"
+			},
+			"default": {}
+		},
+		"snippets": {
+			"anyOf": [
+				{
+					"$ref": "#/$defs/ExtensionSnippets"
+				},
+				{
+					"type": "null"
+				}
+			],
+			"default": null
+		},
+		"capabilities": {
+			"type": "array",
+			"items": {
+				"$ref": "#/$defs/ExtensionCapability"
+			},
+			"default": []
+		},
+		"debug_adapters": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/DebugAdapterManifestEntry"
+			}
+		},
+		"debug_locators": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/DebugLocatorManifestEntry"
+			}
+		},
+		"language_model_providers": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/LanguageModelProviderManifestEntry"
+			}
+		}
+	},
+	"required": [
+		"id",
+		"name",
+		"version",
+		"schema_version"
+	],
+	"$defs": {
+		"SchemaVersion": {
+			"description": "The schema version of the [`ExtensionManifest`].",
+			"type": "integer",
+			"format": "int32"
+		},
+		"LibManifestEntry": {
+			"type": "object",
+			"properties": {
+				"kind": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ExtensionLibraryKind"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"version": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SemVer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			}
+		},
+		"ExtensionLibraryKind": {
+			"type": "string",
+			"enum": [
+				"Rust"
+			]
+		},
+		"SemVer": {
+			"type": "string",
+			"pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$"
+		},
+		"GrammarManifestEntry": {
+			"type": "object",
+			"properties": {
+				"repository": {
+					"type": "string"
+				},
+				"rev": {
+					"type": "string"
+				},
+				"path": {
+					"type": [
+						"string",
+						"null"
+					],
+					"default": null
+				}
+			},
+			"required": [
+				"repository",
+				"rev"
+			]
+		},
+		"LanguageServerManifestEntry": {
+			"type": "object",
+			"properties": {
+				"language": {
+					"description": "Deprecated in favor of `languages`.",
+					"anyOf": [
+						{
+							"$ref": "#/$defs/LanguageName"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"deprecated": true,
+					"default": null
+				},
+				"languages": {
+					"description": "The list of languages this language server should work with.",
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/LanguageName"
+					},
+					"default": []
+				},
+				"language_ids": {
+					"type": "object",
+					"additionalProperties": {
+						"type": "string"
+					},
+					"default": {}
+				},
+				"code_action_kinds": {
+					"type": [
+						"array",
+						"null"
+					],
+					"items": {
+						"type": "string"
+					},
+					"default": null
+				}
+			}
+		},
+		"LanguageName": {
+			"type": "string"
+		},
+		"ContextServerManifestEntry": {
+			"type": "object"
+		},
+		"AgentServerManifestEntry": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"description": "Display name for the agent (shown in menus).",
+					"type": "string"
+				},
+				"env": {
+					"description": "Environment variables to set when launching the agent server.",
+					"type": "object",
+					"additionalProperties": {
+						"type": "string"
+					},
+					"default": {}
+				},
+				"icon": {
+					"description": "Optional icon path (relative to extension root, e.g., \"ai.svg\").\nShould be a small SVG icon for display in menus.",
+					"type": [
+						"string",
+						"null"
+					],
+					"default": null
+				},
+				"targets": {
+					"description": "Per-target configuration for archive-based installation.\nThe key format is \"{os}-{arch}\" where:\n- os: \"darwin\" (macOS), \"linux\", \"windows\"\n- arch: \"aarch64\" (arm64), \"x86_64\"\n\nExample:\n```toml\n[agent_servers.myagent.targets.darwin-aarch64]\narchive = \"https://example.com/myagent-darwin-arm64.zip\"\ncmd = \"./myagent\"\nargs = [\"--serve\"]\nsha256 = \"abc123...\"  # optional\n```\n\nFor Node.js-based agents, you can use \"node\" as the cmd to automatically\nuse Zed's managed Node.js runtime instead of relying on the user's PATH:\n```toml\n[agent_servers.nodeagent.targets.darwin-aarch64]\narchive = \"https://example.com/nodeagent.zip\"\ncmd = \"node\"\nargs = [\"index.js\", \"--port\", \"3000\"]\n```\n\nNote: All commands are executed with the archive extraction directory as the\nworking directory, so relative paths in args (like \"index.js\") will resolve\nrelative to the extracted archive contents.",
+					"type": "object",
+					"additionalProperties": {
+						"$ref": "#/$defs/TargetConfig"
+					}
+				}
+			},
+			"required": [
+				"name",
+				"targets"
+			]
+		},
+		"TargetConfig": {
+			"type": "object",
+			"properties": {
+				"archive": {
+					"description": "URL to download the archive from (e.g., \"https://github.com/owner/repo/releases/download/v1.0.0/myagent-darwin-arm64.zip\")",
+					"type": "string"
+				},
+				"cmd": {
+					"description": "Command to run (e.g., \"./myagent\" or \"./myagent.exe\")",
+					"type": "string"
+				},
+				"args": {
+					"description": "Command-line arguments to pass to the agent server.",
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": []
+				},
+				"sha256": {
+					"description": "Optional SHA-256 hash of the archive for verification.\nIf not provided and the URL is a GitHub release, we'll attempt to fetch it from GitHub.",
+					"type": [
+						"string",
+						"null"
+					],
+					"default": null
+				},
+				"env": {
+					"description": "Environment variables to set when launching the agent server.\nThese target-specific env vars will override any env vars set at the agent level.",
+					"type": "object",
+					"additionalProperties": {
+						"type": "string"
+					},
+					"default": {}
+				}
+			},
+			"required": [
+				"archive",
+				"cmd"
+			]
+		},
+		"SlashCommandManifestEntry": {
+			"type": "object",
+			"properties": {
+				"description": {
+					"type": "string"
+				},
+				"requires_argument": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"description",
+				"requires_argument"
+			]
+		},
+		"ExtensionSnippets": {
+			"anyOf": [
+				{
+					"type": "string"
+				},
+				{
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			]
+		},
+		"ExtensionCapability": {
+			"description": "A capability for an extension.",
+			"oneOf": [
+				{
+					"type": "object",
+					"properties": {
+						"command": {
+							"description": "The command to execute.",
+							"type": "string"
+						},
+						"args": {
+							"description": "The arguments to pass to the command. Use `*` for a single wildcard argument.\nIf the last element is `**`, then any trailing arguments are allowed.",
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						},
+						"kind": {
+							"type": "string",
+							"const": "process:exec"
+						}
+					},
+					"required": [
+						"kind",
+						"command",
+						"args"
+					]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"host": {
+							"type": "string"
+						},
+						"path": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						},
+						"kind": {
+							"type": "string",
+							"const": "download_file"
+						}
+					},
+					"required": [
+						"kind",
+						"host",
+						"path"
+					]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"package": {
+							"type": "string"
+						},
+						"kind": {
+							"type": "string",
+							"const": "npm:install"
+						}
+					},
+					"required": [
+						"kind",
+						"package"
+					]
+				}
+			]
+		},
+		"DebugAdapterManifestEntry": {
+			"type": "object",
+			"properties": {
+				"schema_path": {
+					"type": [
+						"string",
+						"null"
+					]
+				}
+			}
+		},
+		"DebugLocatorManifestEntry": {
+			"type": "object"
+		},
+		"LanguageModelProviderManifestEntry": {
+			"description": "Manifest entry for a language model provider.",
+			"type": "object",
+			"properties": {
+				"name": {
+					"description": "Display name for the provider.",
+					"type": "string"
+				},
+				"icon": {
+					"description": "Path to an SVG icon file relative to the extension root (e.g., \"icons/provider.svg\").",
+					"type": [
+						"string",
+						"null"
+					],
+					"default": null
+				}
+			},
+			"required": [
+				"name"
+			]
+		}
+	}
 }
