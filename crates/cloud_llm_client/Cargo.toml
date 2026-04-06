@@ -1,27 +1,27 @@
 [package]
-name = "cloud_llm_client"
-version = "0.1.0"
-publish.workspace = true
+name              = "cloud_llm_client"
+version           = "0.1.0"
 edition.workspace = true
-license = "Apache-2.0"
+license           = "Apache-2.0"
+publish.workspace = true
+
+[lib]
+path = "src/cloud_llm_client.rs"
+
+[dependencies]
+anyhow.workspace      = true
+serde                 = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace  = true
+strum                 = { workspace = true, features = ["derive"] }
+uuid                  = { workspace = true, features = ["serde"] }
+zeta_prompt.workspace = true
+
+[dev-dependencies]
+indoc.workspace             = true
+pretty_assertions.workspace = true
 
 [features]
 test-support = []
 
 [lints]
 workspace = true
-
-[lib]
-path = "src/cloud_llm_client.rs"
-
-[dependencies]
-anyhow.workspace = true
-serde = { workspace = true, features = ["derive", "rc"] }
-serde_json.workspace = true
-strum = { workspace = true, features = ["derive"] }
-uuid = { workspace = true, features = ["serde"] }
-zeta_prompt.workspace = true
-
-[dev-dependencies]
-pretty_assertions.workspace = true
-indoc.workspace = true

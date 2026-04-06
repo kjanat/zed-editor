@@ -1,28 +1,28 @@
 [package]
-name = "media"
-version = "0.1.0"
+name              = "media"
+version           = "0.1.0"
 edition.workspace = true
-publish = false
-license = "Apache-2.0"
-description = "Bindings to macos media handling APIs for Zed"
-
-[lints]
-workspace = true
+description       = "Bindings to macos media handling APIs for Zed"
+license           = "Apache-2.0"
+publish           = false
 
 [lib]
-path = "src/media.rs"
 doctest = false
+path    = "src/media.rs"
 
 [dependencies]
 anyhow.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation.workspace = true
-ctor.workspace = true
-foreign-types = "0.5"
-metal.workspace = true
-core-video.workspace = true
-objc.workspace = true
-
 [build-dependencies]
 bindgen = "0.71"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+core-video.workspace      = true
+ctor.workspace            = true
+foreign-types             = "0.5"
+metal.workspace           = true
+objc.workspace            = true
+
+[lints]
+workspace = true

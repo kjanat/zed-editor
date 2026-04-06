@@ -1,20 +1,18 @@
 [package]
-name = "denoise"
-version = "0.1.0"
+name              = "denoise"
+version           = "0.1.0"
 edition.workspace = true
+license           = "GPL-3.0-or-later"
 publish.workspace = true
-license = "GPL-3.0-or-later"
+
+[dependencies]
+candle-core         = { git = "https://github.com/zed-industries/candle", branch = "9.1-patched", version = "0.9.1" }
+candle-onnx         = { git = "https://github.com/zed-industries/candle", branch = "9.1-patched", version = "0.9.1" }
+log.workspace       = true
+realfft             = "3.4.0"
+rodio               = { workspace = true, features = ["wav_output"] }
+rustfft             = { version = "6.2.0", features = ["avx"] }
+thiserror.workspace = true
 
 [lints]
 workspace = true
-
-[dependencies]
-candle-core = { version = "0.9.1", git ="https://github.com/zed-industries/candle", branch = "9.1-patched" }
-candle-onnx = { version = "0.9.1", git ="https://github.com/zed-industries/candle", branch = "9.1-patched" }
-log.workspace = true
-
-rodio = { workspace = true, features = ["wav_output"] }
-
-rustfft = { version = "6.2.0", features = ["avx"] }
-realfft = "3.4.0"
-thiserror.workspace = true

@@ -1,26 +1,26 @@
 [package]
-name = "dev_container"
-version = "0.1.0"
-publish.workspace = true
+name              = "dev_container"
+version           = "0.1.0"
 edition.workspace = true
+publish.workspace = true
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
-http_client.workspace = true
-http.workspace = true
-gpui.workspace = true
-futures.workspace = true
-log.workspace = true
+futures.workspace      = true
+gpui.workspace         = true
+http.workspace         = true
+http_client.workspace  = true
+log.workspace          = true
+menu.workspace         = true
 node_runtime.workspace = true
-menu.workspace = true
-paths.workspace = true
-picker.workspace = true
-settings.workspace = true
-smol.workspace = true
-ui.workspace = true
-util.workspace = true
-workspace.workspace = true
+paths.workspace        = true
+picker.workspace       = true
+serde.workspace        = true
+serde_json.workspace   = true
+settings.workspace     = true
+smol.workspace         = true
+ui.workspace           = true
+util.workspace         = true
+workspace.workspace    = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

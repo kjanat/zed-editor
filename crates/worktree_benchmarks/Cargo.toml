@@ -1,12 +1,12 @@
 [package]
-name = "worktree_benchmarks"
-version = "0.1.0"
-publish.workspace = true
+name              = "worktree_benchmarks"
+version           = "0.1.0"
 edition.workspace = true
+publish.workspace = true
 
 [dependencies]
-fs.workspace = true
-gpui = { workspace = true, features = ["windows-manifest"] }
+fs.workspace       = true
+gpui               = { workspace = true, features = ["windows-manifest"] }
 settings.workspace = true
 worktree.workspace = true
 
