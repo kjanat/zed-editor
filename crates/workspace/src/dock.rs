@@ -1179,6 +1179,7 @@ impl Render for Dock {
                 .bg(cx.theme().colors().panel_background)
                 .border_color(cx.theme().colors().border)
                 .overflow_hidden()
+                .occlude()
                 .map(|this| match self.position().axis() {
                     // Width and height are always set on the workspace wrapper in
                     // render_dock, so fill whatever space the wrapper provides.
