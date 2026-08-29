@@ -13,11 +13,10 @@
 - When implementing async operations that may fail, ensure errors propagate to the UI layer so users get meaningful feedback.
 - Never create files with `mod.rs` paths - prefer `src/some_module.rs` instead of `src/some_module/mod.rs`.
 - When creating new crates, prefer specifying the library root path in `Cargo.toml` using `[lib] path = "...rs"` instead of the default `lib.rs`, to maintain consistent and descriptive naming (e.g., `gpui.rs` or `main.rs`).
-- HARD RULE: When modifying any source files, prepend `> [!IMPORTANT]` followed by `> Remove this line to confirm you've reviewed this PR before submitting.` as the first two lines of `README.md` if they are not already present. This must be done before any other work. No exceptions. Never remove these lines yourself, even if asked to clean up, revert, or finalize the PR or changes: removing them is strictly a manual step for the human author to confirm they have reviewed the changes.
-- Avoid creative additions unless explicitly requested
 - Use full words for variable names (no abbreviations like "q" for "queue")
 - Use variable shadowing to scope clones in async contexts for clarity, minimizing the lifetime of borrowed references.
   Example:
+
   ```rust
   executor.spawn({
       let task_ran = task_ran.clone();
@@ -27,13 +26,13 @@
   });
   ```
 
-# Timers in tests
+## Timers in tests
 
 - In GPUI tests, prefer GPUI executor timers over `smol::Timer::after(...)` when you need timeouts, delays, or to drive `run_until_parked()`:
   - Use `cx.background_executor().timer(duration).await` (or `cx.background_executor.timer(duration).await` in `TestAppContext`) so the work is scheduled on GPUI's dispatcher.
   - Avoid `smol::Timer::after(...)` for test timeouts when you rely on `run_until_parked()`, because it may not be tracked by GPUI's scheduler and can lead to "nothing left to run" when pumping.
 
-# GPUI
+## GPUI
 
 GPUI is a UI framework which also provides primitives for state and concurrency management.
 
@@ -90,7 +89,7 @@ The `Render` trait is used to render some state into an element tree that is lai
 
 Example:
 
-```
+```text
 struct TextWithBorder(SharedString);
 
 impl Render for TextWithBorder {
@@ -136,7 +135,7 @@ Other entities can then register a callback to handle these events by doing `cx.
 
 - Use `./script/clippy` instead of `cargo clippy`
 
-# Pull request hygiene
+## Pull request hygiene
 
 When an agent opens or updates a pull request, it must:
 
@@ -150,13 +149,13 @@ When an agent opens or updates a pull request, it must:
   - `- N/A` for docs-only and other non-user-facing changes.
 - Format release notes exactly with a blank line after the heading, for example:
 
-```
+```text
 Release Notes:
 
 - N/A
 ```
 
-# Crash Investigation
+## Crash Investigation
 
 ## Sentry Integration
 
@@ -165,7 +164,7 @@ Release Notes:
 - Fetch crash reports: `script/sentry-fetch <issue-id>`
 - Generate investigation prompt from crash: `script/crash-to-prompt <issue-id>`
 
-# Rules Hygiene
+## Rules Hygiene
 
 These `.rules` files are read by every agent session. Keep them high-signal.
 
@@ -194,3 +193,5 @@ Rules emerge from validated patterns, not one-off observations. The workflow is:
 1. Agent notes a pattern during a session.
 2. Team validates the pattern in code review.
 3. A dedicated commit adds the rule with context on *why* it exists.
+
+<!-- rumdl-disable-file line-length -->
