@@ -35,9 +35,9 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
           - arch: aarch64
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     env:
@@ -53,14 +53,8 @@ jobs:
           persist-credentials: false
       - name: Install build dependencies
         run: ./script/linux
-      # webrtc-sys needs a C++20 frontend; g++ on this image rejects
-      # PortInterface::Network() with -fpermissive.
       - name: Install clang 18
-        run: |
-          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 18
-          sudo apt-get install -y lld-18
+        run: sudo apt-get install -y clang-18 lld-18
       - name: Put the LLVM 18 tools on PATH
         run: |
           echo /usr/lib/llvm-18/bin >> "${GITHUB_PATH}"
