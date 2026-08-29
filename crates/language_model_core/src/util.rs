@@ -21,6 +21,11 @@ pub fn parse_tool_arguments(arguments: &str) -> Result<serde_json::Value, serde_
 /// so each intermediate parse produces a true prefix of the final string value.
 pub fn fix_streamed_json(partial_json: &str) -> String {
     let json = strip_trailing_incomplete_escape(partial_json);
+    if json.is_empty() {
+        // partial_json_fixer 0.5.5 turns an empty input into `null`, which
+        // parses and so reads as a tool call that has arguments.
+        return String::new();
+    }
     partial_json_fixer::fix_json(json)
 }
 
