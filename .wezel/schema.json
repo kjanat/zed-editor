@@ -3,16 +3,17 @@
   "definitions": {
     "Aggregation": {
       "description": "How to aggregate measurement values into a conclusion scalar.",
+      "type": "string",
       "enum": [
         "sum",
         "mean",
         "median",
         "max",
         "min"
-      ],
-      "type": "string"
+      ]
     },
     "DiffField": {
+      "description": "Either a boolean (uses `<step.name>.patch`) or an explicit patch filename.",
       "anyOf": [
         {
           "type": "boolean"
@@ -20,13 +21,18 @@
         {
           "type": "string"
         }
-      ],
-      "description": "Either a boolean (uses `<step.name>.patch`) or an explicit patch filename."
+      ]
     },
     "EmbeddedSummaryToml": {
       "description": "Summary definition embedded under a step. The summary's `name` and `step` fields are recovered from the map keys (`step.<step>.summary.<name>`).",
+      "type": "object",
+      "required": [
+        "outcome"
+      ],
       "properties": {
         "aggregation": {
+          "description": "How to combine multiple matching values. Omit when the filter is expected to select a single value.",
+          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/Aggregation"
@@ -34,50 +40,49 @@
             {
               "type": "null"
             }
-          ],
-          "default": null,
-          "description": "How to combine multiple matching values. Omit when the filter is expected to select a single value."
+          ]
         },
         "bisect": {
-          "default": true,
           "description": "Trigger bisection when this summary regresses.",
+          "default": true,
           "type": "boolean"
         },
         "filter": {
+          "description": "Tag key=value filters applied before aggregation.",
+          "default": {},
+          "type": "object",
           "additionalProperties": {
             "type": "string"
-          },
-          "default": {},
-          "description": "Tag key=value filters applied before aggregation.",
-          "type": "object"
+          }
         },
         "outcome": {
           "description": "Outcome name (as emitted by the forager) to aggregate over.",
           "type": "string"
         },
         "samples": {
-          "default": 1,
           "description": "Number of forager invocations of the step to take. Lint requires all summaries on the same step to agree. Default 1.",
-          "format": "uint",
+          "default": 1,
+          "type": "integer",
           "minimum": 0.0,
-          "type": "integer"
+          "format": "uint"
         }
-      },
-      "required": [
-        "outcome"
-      ],
-      "type": "object"
+      }
     },
     "Step_cargo": {
-      "additionalProperties": false,
       "description": "Body of a `[step.<tool>.<step_name>]` table. The tool name is recovered from the outer key, not a field; flatten-collected `rest` is forwarded to the forager plugin via `FORAGER_INPUTS` as JSON.",
+      "type": "object",
+      "required": [
+        "build_target",
+        "command"
+      ],
       "properties": {
         "all_targets": {
-          "default": false,
           "description": "Build every target (lib, bins, tests, benches, examples) via `--all-targets`.",
+          "default": false,
           "type": "boolean"
         },
         "apply-diff": {
+          "description": "Apply a patch before running this step. `true` uses `<step name>.patch`; a string overrides the filename.",
           "anyOf": [
             {
               "$ref": "#/definitions/DiffField"
@@ -85,10 +90,10 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Apply a patch before running this step. `true` uses `<step name>.patch`; a string overrides the filename."
+          ]
         },
         "benches": {
+          "description": "Benchmarks to build, as `--benches` (all) or `--bench <name>` per name. Omit to build none.",
           "anyOf": [
             {
               "$ref": "#/definitions/TargetSpecifier"
@@ -96,10 +101,10 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Benchmarks to build, as `--benches` (all) or `--bench <name>` per name. Omit to build none."
+          ]
         },
         "bins": {
+          "description": "Binaries to build, as `--bins` (all) or `--bin <name>` per name. Omit to build none.",
           "anyOf": [
             {
               "$ref": "#/definitions/TargetSpecifier"
@@ -107,32 +112,32 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Binaries to build, as `--bins` (all) or `--bin <name>` per name. Omit to build none."
+          ]
         },
         "build_target": {
+          "description": "Build target — either a list of package names or the literal string \"workspace\".",
           "allOf": [
             {
               "$ref": "#/definitions/PackageSpecifier"
             }
-          ],
-          "description": "Build target — either a list of package names or the literal string \"workspace\"."
+          ]
         },
         "command": {
+          "description": "Cargo subcommand to invoke (`build`, `bench`, or `test`).",
           "allOf": [
             {
               "$ref": "#/definitions/Command"
             }
-          ],
-          "description": "Cargo subcommand to invoke (`build`, `bench`, or `test`)."
+          ]
         },
         "description": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "examples": {
+          "description": "Examples to build, as `--examples` (all) or `--example <name>` per name. Omit to build none.",
           "anyOf": [
             {
               "$ref": "#/definitions/TargetSpecifier"
@@ -140,23 +145,24 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Examples to build, as `--examples` (all) or `--example <name>` per name. Omit to build none."
+          ]
         },
         "lib": {
-          "default": false,
           "description": "Build the library target via `--lib`.",
+          "default": false,
           "type": "boolean"
         },
         "profile": {
-          "default": null,
           "description": "Cargo profile to use, propagated as `--profile <value>`. Omit to use the default profile.",
+          "default": null,
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "summary": {
+          "description": "Summaries emitted by this step, keyed by summary name.",
+          "type": "object",
           "additionalProperties": {
             "allOf": [
               {
@@ -171,11 +177,10 @@
                 }
               }
             ]
-          },
-          "description": "Summaries emitted by this step, keyed by summary name.",
-          "type": "object"
+          }
         },
         "tests": {
+          "description": "Test targets to build, as `--tests` (all) or `--test <name>` per name. Omit to build none.",
           "anyOf": [
             {
               "$ref": "#/definitions/TargetSpecifier"
@@ -183,44 +188,39 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Test targets to build, as `--tests` (all) or `--test <name>` per name. Omit to build none."
+          ]
         }
       },
-      "required": [
-        "build_target",
-        "command"
-      ],
-      "type": "object"
+      "additionalProperties": false
     }
   },
+  "title": "Wezel experiment.toml",
   "description": "Top-level shape of `.wezel/experiments/<name>/experiment.toml`.\n\nSteps live under `[step.<tool>.<step_name>]`. The outer map is keyed by tool name and the inner by step name; bodies are wrapped in `toml::Spanned` so the parser can recover file-line order across reopened tables.",
+  "type": "object",
+  "required": [
+    "step"
+  ],
   "properties": {
     "description": {
       "description": "Human-readable description of what the experiment measures.",
       "type": [
-        "string",
-        "null"
+        "null",
+        "string"
       ]
     },
     "step": {
-      "additionalProperties": false,
       "description": "`[step.<tool>.<step_name>]`. Two-level map; step names must be unique across tools (enforced in [`parse_experiment`]).",
+      "type": "object",
       "properties": {
         "cargo": {
+          "description": "Runs `cargo <command>` and records the build time cargo reports",
+          "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/Step_cargo"
-          },
-          "description": "Runs `cargo <command>` and records the build time cargo reports",
-          "type": "object"
+          }
         }
       },
-      "type": "object"
+      "additionalProperties": false
     }
-  },
-  "required": [
-    "step"
-  ],
-  "title": "Wezel experiment.toml",
-  "type": "object"
+  }
 }

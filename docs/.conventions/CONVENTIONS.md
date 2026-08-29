@@ -1,8 +1,10 @@
 # Zed Documentation Conventions
 
-This document covers structural conventions for Zed documentation: what to document, how to organize it, and when to create new pages.
+This document covers structural conventions for Zed documentation: what to
+document, how to organize it, and when to create new pages.
 
-For voice, tone, and writing style, see the [brand-writer/](./brand-writer/) directory, which contains:
+For voice, tone, and writing style, see the [brand-writer/](./brand-writer/)
+directory, which contains:
 
 - `SKILL.md` — Core voice principles and workflow
 - `rubric.md` — 8-point scoring criteria for quality
@@ -16,16 +18,21 @@ For voice, tone, and writing style, see the [brand-writer/](./brand-writer/) dir
 ### Document
 
 - **New user-facing features** — Anything users interact with directly
-- **New settings or configuration options** — Include the setting key, type, default value, and example
+- **New settings or configuration options** — Include the setting key, type,
+  default value, and example
 - **New keybindings or commands** — Use `{#action ...}` and `{#kb ...}` syntax
-- **All actions** — Completeness matters; document every action, not just non-obvious ones
+- **All actions** — Completeness matters; document every action, not just
+  non-obvious ones
 - **New AI capabilities** — Agent tools, providers, workflows
-- **New providers or integrations** — LLM providers, MCP servers, external agents
+- **New providers or integrations** — LLM providers, MCP servers, external
+  agents
 - **New tools** — Agent tools, MCP tools, built-in tools
-- **New UI panels or views** — Any new panel, sidebar, or view users interact with
+- **New UI panels or views** — Any new panel, sidebar, or view users interact
+  with
 - **Public extension APIs** — For extension developers
 - **Breaking changes** — Even if the fix is simple, document what changed
-- **Version-specific behavior changes** — Include version callouts (e.g., "In Zed v0.224.0 and above...")
+- **Version-specific behavior changes** — Include version callouts (e.g., "In
+  Zed v0.224.0 and above...")
 
 ### Skip
 
@@ -41,7 +48,8 @@ For voice, tone, and writing style, see the [brand-writer/](./brand-writer/) dir
 
 ### Create a new page when:
 
-- Introducing a **major feature** with multiple sub-features (e.g., Git integration, Vim mode)
+- Introducing a **major feature** with multiple sub-features (e.g., Git
+  integration, Vim mode)
 - The topic requires **extensive configuration examples**
 - Users would search for it **by name** (e.g., "Zed terminal", "Zed snippets")
 - It's a **new category** (e.g., a new AI provider type)
@@ -107,7 +115,8 @@ description: One sentence describing what this page covers. Used in search resul
 
 - Use `##` for main sections
 - Use `###` for subsections
-- Avoid `####` unless absolutely necessary — if you need it, consider restructuring
+- Avoid `####` unless absolutely necessary — if you need it, consider
+  restructuring
 
 ### Anchor IDs
 
@@ -123,7 +132,8 @@ Use anchor IDs when:
 
 - The section is a common reference target
 - You need a stable link that won't break if the heading text changes
-- The heading contains special characters that would create ugly auto-generated anchors
+- The heading contains special characters that would create ugly auto-generated
+  anchors
 
 ---
 
@@ -155,16 +165,16 @@ Always use the `[settings]` or `[keymap]` annotation:
 
 ```json [settings]
 {
-  "vim_mode": true
+	"vim_mode": true
 }
 ```
 
 ```json [keymap]
 {
-  "context": "Editor",
-  "bindings": {
-    "ctrl-s": "workspace::Save"
-  }
+	"context": "Editor",
+	"bindings": {
+		"ctrl-s": "workspace::Save"
+	}
 }
 ```
 
@@ -186,7 +196,8 @@ Keep tables scannable — avoid long prose in table cells.
 
 ### Pronouns
 
-Minimize vague pronouns like "it", "this", and "that". Repeat the noun so readers know exactly what you're referring to.
+Minimize vague pronouns like "it", "this", and "that". Repeat the noun so
+readers know exactly what you're referring to.
 
 **Bad:**
 
@@ -194,9 +205,11 @@ Minimize vague pronouns like "it", "this", and "that". Repeat the noun so reader
 
 **Good:**
 
-> The API creates a token after authentication. The token should be stored securely.
+> The API creates a token after authentication. The token should be stored
+> securely.
 
-This improves clarity for both human readers and AI systems parsing the documentation.
+This improves clarity for both human readers and AI systems parsing the
+documentation.
 
 ### Callouts
 
@@ -215,10 +228,12 @@ Use blockquote callouts for tips, notes, and warnings:
 When behavior differs by version, be explicit:
 
 ```markdown
-> **Note:** In Zed v0.224.0 and above, tool approval is controlled by `agent.tool_permissions.default`.
+> **Note:** In Zed v0.224.0 and above, tool approval is controlled by
+> `agent.tool_permissions.default`.
 ```
 
-Include the version number and what changed. This helps users on older versions understand why their behavior differs.
+Include the version number and what changed. This helps users on older versions
+understand why their behavior differs.
 
 ---
 
@@ -234,7 +249,8 @@ Link to other docs using relative paths:
 ### External Links
 
 - Link to `zed.dev` pages when appropriate
-- Link to upstream documentation (e.g., Tree-sitter, language servers) when explaining integrations
+- Link to upstream documentation (e.g., Tree-sitter, language servers) when
+  explaining integrations
 
 ### "See Also" Sections
 
@@ -274,7 +290,8 @@ Language docs in `src/languages/` follow a consistent structure:
 5. Language-specific settings
 6. Known limitations (if any)
 
-Keep language docs focused on Zed-specific configuration, not general language tutorials.
+Keep language docs focused on Zed-specific configuration, not general language
+tutorials.
 
 ---
 
@@ -282,7 +299,8 @@ Keep language docs focused on Zed-specific configuration, not general language t
 
 When documenting settings:
 
-1. **Show the Settings Editor (UI) approach first** — Most settings have UI support
+1. **Show the Settings Editor (UI) approach first** — Most settings have UI
+   support
 2. **Then show JSON** as "or add to your settings file:"
 3. **State the setting key** in code formatting
 4. **Describe what it does** in one sentence
@@ -291,21 +309,29 @@ When documenting settings:
 
 Example:
 
-> Configure inline blame in Settings ({#kb zed::OpenSettings}) by searching for "inline blame", or add to your settings file:
+> Configure inline blame in Settings ({#kb zed::OpenSettings}) by searching for
+> "inline blame", or add to your settings file:
 >
 > ```json [settings]
 > {
->   "git": {
->     "inline_blame": {
->       "enabled": false
->     }
->   }
-> }
 > ```
 
-For JSON-only settings (complex types without UI support), note this and link to instructions:
+    "git": {
+    	"inline_blame": {
+    		"enabled": false
+    	}
+    }
 
-> Add the following to your settings file ([how to edit](./configuring-zed.md#settings-files)):
+> }
+>
+> ```
+> ```
+
+For JSON-only settings (complex types without UI support), note this and link to
+instructions:
+
+> Add the following to your settings file
+> ([how to edit](./configuring-zed.md#settings-files)):
 
 ### Settings File Locations
 
@@ -371,10 +397,12 @@ Before finalizing documentation:
 
 ## Gold Standard Examples
 
-See `../.doc-examples/` for curated examples of well-documented features. Use these as templates when writing new documentation.
+See `../.doc-examples/` for curated examples of well-documented features. Use
+these as templates when writing new documentation.
 
 ---
 
 ## Reference
 
-For automation-specific rules (safety constraints, change classification, output formats), see `docs/AGENTS.md`.
+For automation-specific rules (safety constraints, change classification, output
+formats), see `docs/AGENTS.md`.

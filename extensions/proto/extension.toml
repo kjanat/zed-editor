@@ -1,24 +1,23 @@
-id = "proto"
-name = "Proto"
-description = "Protocol Buffers support."
-version = "0.3.3"
+id             = "proto"
+name           = "Proto"
+description    = "Protocol Buffers support."
+version        = "0.3.3"
 schema_version = 1
-authors = ["Zed Industries <support@zed.dev>"]
-repository = "https://github.com/zed-industries/zed"
+authors        = ["Zed Industries <support@zed.dev>"]
+repository     = "https://github.com/zed-industries/zed"
 
 [grammars.proto]
 repository = "https://github.com/coder3101/tree-sitter-proto"
-commit = "a6caac94b5aa36b322b5b70040d5b67132f109d0"
-
+commit     = "a6caac94b5aa36b322b5b70040d5b67132f109d0"
 
 [language_servers.buf]
-name = "Buf"
+name      = "Buf"
 languages = ["Proto"]
 
 [language_servers.protobuf-language-server]
-name = "Protobuf Language Server"
+name      = "Protobuf Language Server"
 languages = ["Proto"]
 
 [language_servers.protols]
-name = "Protols"
+name      = "Protols"
 languages = ["Proto"]

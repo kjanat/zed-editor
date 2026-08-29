@@ -71,7 +71,6 @@ def test_static_url_path():
 def test_static_url_path():
 ```
 
-
 ```diff
 --- a/tests/test_basic.py
 +++ b/tests/test_basic.py

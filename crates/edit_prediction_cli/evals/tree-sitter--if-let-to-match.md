@@ -111,7 +111,6 @@ revision = "17e3c7a5c56527a179fa6e37ce7ee934493e5047"
          }
 ```
 
-
 ```diff
 --- a/crates/loader/src/loader.rs
 +++ b/crates/loader/src/loader.rs

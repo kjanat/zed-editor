@@ -19,6 +19,7 @@ revision = "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
 ```
 
 // User accepted prediction:
+
 ```diff
 --- a/README
 +++ b/README
@@ -32,7 +33,6 @@ revision = "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
 +        return groups;
 +    }, {});
 +}
- 
 ```
 
 ```diff
@@ -60,7 +60,6 @@ function groupByCat(items) {
         return groups;
     }, {});
 }
-
 ```
 
 ## Expected Patch

@@ -7,24 +7,27 @@ description: "Configure Shell Script language support in Zed, including language
 
 Shell Scripts (bash, zsh, dash, sh) are supported natively by Zed.
 
-- Tree-sitter: [tree-sitter/tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)
+- Tree-sitter:
+  [tree-sitter/tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)
 
 ## Settings
 
-Configure settings in Settings ({#kb zed::OpenSettings}) under Languages > Shell Script, or add to your settings file:
+Configure settings in Settings ({#kb zed::OpenSettings}) under Languages > Shell
+Script, or add to your settings file:
 
 ```json [settings]
-  "languages": {
-    "Shell Script": {
-      "tab_size": 2,
-      "hard_tabs": false
-    }
+"languages": {
+  "Shell Script": {
+    "tab_size": 2,
+    "hard_tabs": false
   }
+}
 ```
 
 ### Formatting
 
-Zed supports auto-formatting Shell Scripts using external tools like [`shfmt`](https://github.com/mvdan/sh).
+Zed supports auto-formatting Shell Scripts using external tools like
+[`shfmt`](https://github.com/mvdan/sh).
 
 1. Install `shfmt`:
 
@@ -44,21 +47,22 @@ which shfmt
 shfmt --version
 ```
 
-3. Configure formatting in Settings ({#kb zed::OpenSettings}) under Languages > Shell Script, or add to your settings file:
+3. Configure formatting in Settings ({#kb zed::OpenSettings}) under Languages >
+   Shell Script, or add to your settings file:
 
 ```json [settings]
-  "languages": {
-    "Shell Script": {
-      "format_on_save": "on",
-      "formatter": {
-        "external": {
-          "command": "shfmt",
-          // Change `--indent 2` to match your preferred tab_size
-          "arguments": ["--filename", "{buffer_path}", "--indent", "2"]
-        }
+"languages": {
+  "Shell Script": {
+    "format_on_save": "on",
+    "formatter": {
+      "external": {
+        "command": "shfmt",
+        // Change `--indent 2` to match your preferred tab_size
+        "arguments": ["--filename", "{buffer_path}", "--indent", "2"]
       }
     }
   }
+}
 ```
 
 ## See also:

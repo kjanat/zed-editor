@@ -5,23 +5,27 @@ description: Zed Agent tool calls can run in an OS-level sandbox to restrict cer
 
 # Sandboxing
 
-You can restrict what operations the [Zed Agent](./zed-agent.md) can run in multiple ways. One way to restrict them is
-[Tool Permissions](./tool-permissions.md), but these are of limited use when the agent wants to do things like run a
-complicated script in a terminal.
+You can restrict what operations the [Zed Agent](./zed-agent.md) can run in
+multiple ways. One way to restrict them is
+[Tool Permissions](./tool-permissions.md), but these are of limited use when the
+agent wants to do things like run a complicated script in a terminal.
 
 Sandboxing instead uses OS features to forcibly restrict which resources a tool
-call has access to. This does _not_ rely on an agent following a particular set
+call has access to. This does *not* rely on an agent following a particular set
 of instructions. If the agent attempts to access a resource that is restricted
-by the sandbox, the OS will block it. See [How much can I trust the
-sandbox?](#trust) for more details.
+by the sandbox, the OS will block it. See
+[How much can I trust the sandbox?](#trust) for more details.
 
 [Tool Permissions](./tool-permissions.md) can be used in addition to sandboxing:
 
-- Tool permissions restrict the agent's ability to run certain tool actions in the first place
+- Tool permissions restrict the agent's ability to run certain tool actions in
+  the first place
 - Once a tool action is actually running, sandboxing restricts what it can do
 
-Sandboxing applies only to Zed Agent. It does not sandbox Zed itself, language servers, extensions, tasks, your normal
-terminal tabs, [External Agents](./external-agents.md), or [Terminal Threads](./terminal-threads.md).
+Sandboxing applies only to Zed Agent. It does not sandbox Zed itself, language
+servers, extensions, tasks, your normal terminal tabs,
+[External Agents](./external-agents.md), or
+[Terminal Threads](./terminal-threads.md).
 
 > **Note**: Under some conditions, sandboxes on Windows are weaker than those on
 > Linux and MacOS, and may not prevent all escape attempts. See
@@ -36,16 +40,17 @@ Zed Agent sandboxing currently applies to the `terminal` and `fetch` tools.
 | `terminal` | Filesystem writes and outbound network access for commands the agent runs; Git metadata is protected. |
 | `fetch`    | Hosts which can be accessed.                                                                          |
 
-Tools are still governed by [Tool Permissions](./tool-permissions.md), [Agent
-Profiles](./agent-profiles.md), and project trust, but they are not currently
-run inside this OS sandbox.
+Tools are still governed by [Tool Permissions](./tool-permissions.md),
+[Agent Profiles](./agent-profiles.md), and project trust, but they are not
+currently run inside this OS sandbox.
 
 ## Requirements {#requirements}
 
 Sandboxing is supported, in some form, on all platforms. In order to sandbox a
 `terminal` tool call, the following is required:
 
-- On Linux, a runnable, non-setuid `bwrap` binary must be on the `$PATH`. See [Installing Bubblewrap](#installing-bubblewrap).
+- On Linux, a runnable, non-setuid `bwrap` binary must be on the `$PATH`. See
+  [Installing Bubblewrap](#installing-bubblewrap).
 - On Windows, WSL must be available.
 
 There are no extra requirements on MacOS.
@@ -107,10 +112,10 @@ unaligned agent may use these side channels to escalate privileges. For example:
   terminal.
 - The agent cannot write to your repository's protected `.git` directory, but it
   can create a submodule under your project whose Git metadata (including config
-  such as `core.fsmonitor`) it fully controls. That metadata may then be executed
-  **outside the sandbox** when you subsequently run Git commands in a regular
-  terminal. Your shell prompt may even execute Git commands every time it
-  renders!
+  such as `core.fsmonitor`) it fully controls. That metadata may then be
+  executed **outside the sandbox** when you subsequently run Git commands in a
+  regular terminal. Your shell prompt may even execute Git commands every time
+  it renders!
 
 There are steps you can take to mitigate these issues. For example:
 
@@ -131,8 +136,9 @@ sandbox.
 
 ## Approval Prompts {#approval-prompts}
 
-When the agent needs access outside the default sandbox, Zed shows a sandbox approval prompt before the tool action runs.
-Depending on what the tool requested, the prompt can ask you to allow:
+When the agent needs access outside the default sandbox, Zed shows a sandbox
+approval prompt before the tool action runs. Depending on what the tool
+requested, the prompt can ask you to allow:
 
 - network access to specific hosts, such as `github.com` or `*.npmjs.org`
 - network access to any host
@@ -146,21 +152,23 @@ You can grant a sandbox request for:
 - the rest of the current thread
 - always
 
-Approvals for the rest of the thread are remembered only for that thread. Approvals granted with “always” are saved in
-`settings.json` under `agent.sandbox_permissions`.
+Approvals for the rest of the thread are remembered only for that thread.
+Approvals granted with “always” are saved in `settings.json` under
+`agent.sandbox_permissions`.
 
 ## Persistent Sandbox Permissions {#persistent-sandbox-permissions}
 
-If you want to pre-approve common sandbox requests, add persistent permissions to your settings file:
+If you want to pre-approve common sandbox requests, add persistent permissions
+to your settings file:
 
 ```json [settings]
 {
-  "agent": {
-    "sandbox_permissions": {
-      "network_hosts": ["github.com", "*.npmjs.org"],
-      "write_paths": ["/Users/you/.cache/my-tool"]
-    }
-  }
+	"agent": {
+		"sandbox_permissions": {
+			"network_hosts": ["github.com", "*.npmjs.org"],
+			"write_paths": ["/Users/you/.cache/my-tool"]
+		}
+	}
 }
 ```
 
@@ -174,19 +182,21 @@ The available options are:
 | `allow_fs_write_all` | Allow sandboxed terminal commands to write anywhere except protected Git metadata without prompting.              |
 | `allow_unsandboxed`  | Turn sandboxing off entirely for Zed Agent terminal commands. The fetch tool will have no restrictions.           |
 
-Prefer narrow grants, such as a specific host or write path, over `allow_all_hosts`, `allow_fs_write_all`, or
-`allow_unsandboxed`.
+Prefer narrow grants, such as a specific host or write path, over
+`allow_all_hosts`, `allow_fs_write_all`, or `allow_unsandboxed`.
 
 ## Git Metadata {#git-metadata}
 
-Git metadata writes are not grantable while a terminal command is sandboxed. This includes writes to `.git` directories,
-linked worktree metadata, refs, the index, hooks, local Git config, and other Git-controlled metadata files. Approving a
-specific writable path or `allow_fs_write_all` does not make Git metadata writable.
+Git metadata writes are not grantable while a terminal command is sandboxed.
+This includes writes to `.git` directories, linked worktree metadata, refs, the
+index, hooks, local Git config, and other Git-controlled metadata files.
+Approving a specific writable path or `allow_fs_write_all` does not make Git
+metadata writable.
 
 ## Platform Support {#platform-support}
 
-Sandboxing uses different operating system mechanisms on each platform. The user-facing prompts are similar, but the
-enforcement details vary.
+Sandboxing uses different operating system mechanisms on each platform. The
+user-facing prompts are similar, but the enforcement details vary.
 
 ### macOS {#macos}
 
@@ -196,44 +206,59 @@ Sandboxed terminal commands:
 
 - can read the filesystem
 - can write inside open project directories, except protected Git metadata
-- can write to a per-thread temporary directory exposed through `$TMPDIR`, `$TMP`, and `$TEMP`
+- can write to a per-thread temporary directory exposed through `$TMPDIR`,
+  `$TMP`, and `$TEMP`
 - can read protected Git metadata
 - cannot write protected Git metadata, even if you approve broader write access
-- cannot write elsewhere unless you approve additional paths or broader write access
+- cannot write elsewhere unless you approve additional paths or broader write
+  access
 - cannot reach the network unless you approve network access
-- can reach only an allowlist of macOS system (Mach) services that developer tooling needs; services that could be abused to escape the sandbox (LaunchServices and launchd, which can launch processes outside it), read the clipboard (the pasteboard), or capture audio are not reachable
+- can reach only an allowlist of macOS system (Mach) services that developer
+  tooling needs; services that could be abused to escape the sandbox
+  (LaunchServices and launchd, which can launch processes outside it), read the
+  clipboard (the pasteboard), or capture audio are not reachable
 
-When network access is approved on macOS, Zed uses an HTTP/HTTPS proxy so access can be limited to approved hosts.
-Tools that do not honor proxy environment variables, such as SSH, FTP, and raw socket clients, may not work even after host-specific network access is approved.
-For networked terminal commands, prefer HTTPS URLs over SSH URLs when possible.
+When network access is approved on macOS, Zed uses an HTTP/HTTPS proxy so access
+can be limited to approved hosts. Tools that do not honor proxy environment
+variables, such as SSH, FTP, and raw socket clients, may not work even after
+host-specific network access is approved. For networked terminal commands,
+prefer HTTPS URLs over SSH URLs when possible.
 
 ### Linux {#linux}
 
 On Linux, Zed uses [Bubblewrap][bubblewrap] (`bwrap`) for sandboxing.
 
-Zed only uses a non-setuid `bwrap` binary. Its sandbox is built entirely on unprivileged user namespaces, so a setuid-root
-`bwrap` provides no extra functionality, and running one would mean executing root-privileged setup with arguments partly
-derived from model-influenced input. If the only `bwrap` found on your `PATH` is setuid-root, Zed refuses to run it;
-install a non-setuid Bubblewrap to enable sandboxing.
+Zed only uses a non-setuid `bwrap` binary. Its sandbox is built entirely on
+unprivileged user namespaces, so a setuid-root `bwrap` provides no extra
+functionality, and running one would mean executing root-privileged setup with
+arguments partly derived from model-influenced input. If the only `bwrap` found
+on your `PATH` is setuid-root, Zed refuses to run it; install a non-setuid
+Bubblewrap to enable sandboxing.
 
 Sandboxed terminal commands:
 
 - can read the filesystem, including protected Git metadata contents
 - can write inside open project directories, except protected Git metadata
-- can write to `/tmp`, which is backed by a fresh temporary filesystem and is cleared between terminal tool calls (when you approve unrestricted filesystem writes, `/tmp` is instead your real host `/tmp` rather than a fresh temporary filesystem)
+- can write to `/tmp`, which is backed by a fresh temporary filesystem and is
+  cleared between terminal tool calls (when you approve unrestricted filesystem
+  writes, `/tmp` is instead your real host `/tmp` rather than a fresh temporary
+  filesystem)
 - cannot write protected Git metadata
-- cannot write elsewhere unless you approve additional paths or broader write access
+- cannot write elsewhere unless you approve additional paths or broader write
+  access
 - cannot reach the network unless you approve network access
 
-When host-specific network access is approved on Linux, Zed uses an HTTP/HTTPS proxy so access can be limited to approved
-hosts. Tools that do not honor proxy environment variables, such as SSH, FTP, and raw socket clients, may not work even
-after host-specific network access is approved.
+When host-specific network access is approved on Linux, Zed uses an HTTP/HTTPS
+proxy so access can be limited to approved hosts. Tools that do not honor proxy
+environment variables, such as SSH, FTP, and raw socket clients, may not work
+even after host-specific network access is approved.
 
-If Bubblewrap is unavailable or cannot create a sandbox in the current environment, Zed may run the command without the OS
-sandbox and show a warning in the tool output.
+If Bubblewrap is unavailable or cannot create a sandbox in the current
+environment, Zed may run the command without the OS sandbox and show a warning
+in the tool output.
 
 > **Warning**: On Linux and WSL, restrictions on filesystem objects are
-> determined at _sandbox creation time_. Among other things, this means that an
+> determined at *sandbox creation time*. Among other things, this means that an
 > agent given access to a non-Git-repo directory `/foo` could create
 > `/foo/.git`. See [How much can I trust the sandbox?](#trust) for more
 > information on the implications of this.
@@ -251,8 +276,8 @@ bwrap --ro-bind / / -- echo "working"
 
 "Non-setuid" here refers to the [setuid bit][setuid bit]. Historically,
 bubblewrap has shipped both a setuid and non-setuid binary. The setuid binary is
-being phased out for security concerns, and so Zed's sandbox _explicitly rejects
-setuid `bwrap` binaries_.
+being phased out for security concerns, and so Zed's sandbox *explicitly rejects
+setuid `bwrap` binaries*.
 
 ##### Ubuntu-specific requirements {#installing-bubblewrap-ubuntu}
 
@@ -262,9 +287,9 @@ Bubblewrap relies on a Linux kernel feature known as "namespaces". Unprivileged
 users on many systems can create namespaces, but historically, this feature has
 been used for a variety of attacks.
 
-In response to this, in Ubuntu 23.10, Canonical [added a security
-measure][ubuntu blog] that restricts unprivileged user namespaces. These
-restrictions are enforced by AppArmor.
+In response to this, in Ubuntu 23.10, Canonical
+[added a security measure][ubuntu blog] that restricts unprivileged user
+namespaces. These restrictions are enforced by AppArmor.
 
 Because of this, you may also need to install an AppArmor profile for bubblewrap
 after you install it. This is a configuration file that gives bubblewrap the
@@ -288,7 +313,8 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 
 ### Windows {#windows}
 
-On Windows, Zed Agent sandboxing is supported only when the agent action runs inside WSL.
+On Windows, Zed Agent sandboxing is supported only when the agent action runs
+inside WSL.
 
 > **Warning**: Due to limitations in WSL's implementation, it is possible that a
 > terminal command may write outside sandbox grants when the user has given
@@ -298,22 +324,29 @@ On Windows, Zed Agent sandboxing is supported only when the agent action runs in
 > security cannot be guaranteed. See [below](#why-ntfs-compromise) for a more
 > technical explanation.
 
-Zed uses the Linux Bubblewrap sandbox inside WSL because WSL provides the Linux process and filesystem primitives that
-Bubblewrap needs. Native Windows processes do not currently have the same sandbox integration in Zed, so a native Windows
-command cannot be confined by Zed Agent's OS sandbox in the same way.
+Zed uses the Linux Bubblewrap sandbox inside WSL because WSL provides the Linux
+process and filesystem primitives that Bubblewrap needs. Native Windows
+processes do not currently have the same sandbox integration in Zed, so a native
+Windows command cannot be confined by Zed Agent's OS sandbox in the same way.
 
-When running inside WSL, the Linux sandboxing behavior applies, including the requirement that `bwrap` not be setuid-root:
+When running inside WSL, the Linux sandboxing behavior applies, including the
+requirement that `bwrap` not be setuid-root:
 
 - filesystem isolation is provided by Bubblewrap
 - protected Git metadata contents remain readable, but writes are blocked
 - `/tmp` is temporary for sandboxed terminal calls
-- network access is all-or-nothing rather than host-specific, so host-specific network requests are rejected and the agent must request unrestricted network access when network access is needed
+- network access is all-or-nothing rather than host-specific, so host-specific
+  network requests are rejected and the agent must request unrestricted network
+  access when network access is needed
 
-If WSL is not installed, or if you choose to run a command without the sandbox, Zed falls back to the standard terminal
-behavior of running in your native shell. It selects the shell using the usual preference order: a bash (scoop's bash or
-Git Bash) when one is installed, otherwise PowerShell, and finally `cmd.exe`. Because the command then runs against native
-Windows paths instead of WSL's Linux filesystem, path conventions change accordingly (for example `C:\...` or `/c/...`
-rather than WSL's `/mnt/c/...`), so a command written for the sandboxed WSL shell may behave differently.
+If WSL is not installed, or if you choose to run a command without the sandbox,
+Zed falls back to the standard terminal behavior of running in your native
+shell. It selects the shell using the usual preference order: a bash (scoop's
+bash or Git Bash) when one is installed, otherwise PowerShell, and finally
+`cmd.exe`. Because the command then runs against native Windows paths instead of
+WSL's Linux filesystem, path conventions change accordingly (for example
+`C:\...` or `/c/...` rather than WSL's `/mnt/c/...`), so a command written for
+the sandboxed WSL shell may behave differently.
 
 #### Why do NTFS objects compromise the sandbox? {#why-ntfs-compromise}
 
@@ -323,14 +356,14 @@ matching:
 - The path that the user was presented when they approved
 - The filesystem object to which access was granted
 
-If a user believes they granted access to `/foo/hello`, but they actually granted
-access to `/bar/world`, then the sandbox has failed.
+If a user believes they granted access to `/foo/hello`, but they actually
+granted access to `/bar/world`, then the sandbox has failed.
 
 On Linux, this "filesystem object" is called an **inode**.
 
 But `/foo/hello` doesn't refer to an inode. Loosely, it refers to a location
-where an inode might exist. It may refer to one inode at one point in time,
-and another inode later.
+where an inode might exist. It may refer to one inode at one point in time, and
+another inode later.
 
 And because of symlinks, it's possible for an agent with write access to `/foo`
 to change `/foo/bar` to point to `/secret`, even if they have no write access to
@@ -363,19 +396,19 @@ could potentially allow writes outside the confines of the sandbox.
 sandbox.**
 
 In practice, the mapping tends to be quite stable. This is because the inode
-that gets generated in the Linux filesystem is derived from the _file reference_
+that gets generated in the Linux filesystem is derived from the *file reference*
 (very loosely, a "Windows inode"), which has similar stability to a Linux inode.
 The standard "rename a subcomponent" attack seems to produce a different inode
 number, and so the in-sandbox check would fail-closed.
 
-But, crucially, _it is not guaranteed_. This is the behaviour we observed in
+But, crucially, *it is not guaranteed*. This is the behaviour we observed in
 testing, but could not find documentation guaranteeing this behaviour in all
 circumstances, for all Windows/WSL versions past and present, regardless of
 configuration options.
 
 Zed's sandbox has been designed with the aim of being totally unbreakable, even
 in the presence of a motivated attacker with full control over the files in your
-project running as a standard user. It does _not_ assume a
+project running as a standard user. It does *not* assume a
 mostly-benevolent-but-sometimes-careless agent.
 
 Given this, we cannot give the same guarantees about sandbox security as we do
@@ -384,16 +417,18 @@ still helps keep you much safer than without it, so it's worth keeping enabled.
 
 ## Choosing What to Approve {#choosing-what-to-approve}
 
-When reviewing a sandbox prompt, prefer the narrowest permission that lets the task proceed:
+When reviewing a sandbox prompt, prefer the narrowest permission that lets the
+task proceed:
 
 - approve a specific host instead of all hosts when the destination is known
 - approve a specific write path instead of unrestricted filesystem writes
-- approve unsandboxed execution only when the command cannot work inside the sandbox
+- approve unsandboxed execution only when the command cannot work inside the
+  sandbox
 - use one-time approvals for unfamiliar commands
 - use thread or always approvals only for access you expect to reuse
 
-If a command fails because the sandbox blocked access, ask the agent why it needs that access before approving a broader
-request.
+If a command fails because the sandbox blocked access, ask the agent why it
+needs that access before approving a broader request.
 
 [bubblewrap]: https://github.com/containers/bubblewrap
 [setuid bit]: https://en.wikipedia.org/wiki/Setuid

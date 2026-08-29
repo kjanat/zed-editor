@@ -28,8 +28,8 @@ This quickly becomes annoying and impedes development speed.
 That is why, by default, when running a development build of Zed an alternative
 credential provider is used to bypass the system keychain.
 
-> **Note:** This is **only** the case for development builds. For all non-development
-> release channels the system keychain is always used.
+> **Note:** This is **only** the case for development builds. For all
+> non-development release channels the system keychain is always used.
 
 If you need to test something out using the real system keychain in a
 development build, run Zed with the following environment variable set:
@@ -40,21 +40,27 @@ ZED_DEVELOPMENT_USE_KEYCHAIN=1
 
 ## Performance Measurements
 
-Zed includes a frame time measurement system that can be used to profile how long it takes to render each frame. This is particularly useful when comparing rendering performance between different versions or when optimizing frame rendering code.
+Zed includes a frame time measurement system that can be used to profile how
+long it takes to render each frame. This is particularly useful when comparing
+rendering performance between different versions or when optimizing frame
+rendering code.
 
 ### Using ZED_MEASUREMENTS
 
-To enable performance measurements, set the `ZED_MEASUREMENTS` environment variable:
+To enable performance measurements, set the `ZED_MEASUREMENTS` environment
+variable:
 
 ```sh
 export ZED_MEASUREMENTS=1
 ```
 
-When enabled, Zed will print frame rendering timing information to stderr, showing how long each frame takes to render.
+When enabled, Zed will print frame rendering timing information to stderr,
+showing how long each frame takes to render.
 
 ### Performance Comparison Workflow
 
-Here's a typical workflow for comparing frame rendering performance between different versions:
+Here's a typical workflow for comparing frame rendering performance between
+different versions:
 
 1. **Enable measurements:**
 
@@ -65,12 +71,14 @@ Here's a typical workflow for comparing frame rendering performance between diff
 2. **Test the first version:**
 
    - Checkout the commit you want to measure
-   - Run Zed in release mode and use it for 5-10 seconds: `cargo run --release &> version-a`
+   - Run Zed in release mode and use it for 5-10 seconds:
+     `cargo run --release &> version-a`
 
 3. **Test the second version:**
 
    - Checkout another commit you want to compare
-   - Run Zed in release mode and use it for 5-10 seconds: `cargo run --release &> version-b`
+   - Run Zed in release mode and use it for 5-10 seconds:
+     `cargo run --release &> version-b`
 
 4. **Generate comparison:**
 
@@ -78,32 +86,43 @@ Here's a typical workflow for comparing frame rendering performance between diff
    script/histogram version-a version-b
    ```
 
-The `script/histogram` tool can accept as many measurement files as you like and will generate a histogram visualization comparing the frame rendering performance data between the provided versions.
+The `script/histogram` tool can accept as many measurement files as you like and
+will generate a histogram visualization comparing the frame rendering
+performance data between the provided versions.
 
 ### Using `util_macros::perf`
 
-For benchmarking unit tests, annotate them with the `#[perf]` attribute from the `util_macros` crate. Then run `cargo
-perf-test -p $CRATE` to benchmark them. See the rustdoc documentation on `crates/util_macros` and `tooling/perf` for
+For benchmarking unit tests, annotate them with the `#[perf]` attribute from the
+`util_macros` crate. Then run `cargo
+perf-test -p $CRATE` to benchmark them. See
+the rustdoc documentation on `crates/util_macros` and `tooling/perf` for
 in-depth examples and explanations.
 
 ## ETW Profiling on Windows
 
-Zed supports performance profiling with Event Tracing for Windows (ETW) to capture detailed performance data, including CPU, GPU, memory, disk, and file I/O activity. Data is saved to an `.etl` file, which can be opened in standard profiling tools for analysis.
+Zed supports performance profiling with Event Tracing for Windows (ETW) to
+capture detailed performance data, including CPU, GPU, memory, disk, and file
+I/O activity. Data is saved to an `.etl` file, which can be opened in standard
+profiling tools for analysis.
 
-ETW recordings may contain personally identifiable or security-sensitive information, such as paths to files and registry keys accessed, as well as process names. Please keep this in mind when sharing traces with others.
+ETW recordings may contain personally identifiable or security-sensitive
+information, such as paths to files and registry keys accessed, as well as
+process names. Please keep this in mind when sharing traces with others.
 
 ### Recording a trace
 
 Open the command palette and run one of the following:
 
 - `zed: record etw trace`: records CPU, GPU, memory, and I/O activity
-- `zed: record etw trace with heap tracing`: includes heap allocation data for the Zed process
+- `zed: record etw trace with heap tracing`: includes heap allocation data for
+  the Zed process
 
 Zed will request administrator permission. Once granted, recording will begin.
 
 ### Saving or canceling
 
-While a trace is recording, open the command palette and run one of the following:
+While a trace is recording, open the command palette and run one of the
+following:
 
 - `zed: save etw trace`: stops recording and saves the trace to disk
 - `zed: cancel etw trace`: stops recording without saving

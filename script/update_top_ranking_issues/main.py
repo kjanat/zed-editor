@@ -113,13 +113,11 @@ def get_section_to_issues(
             reactions = item["reactions"]
             score = reactions["+1"] - reactions["-1"]
             if score > 0:
-                issues.append(
-                    {
-                        "url": item["html_url"],
-                        "score": score,
-                        "created_at": item["created_at"],
-                    }
-                )
+                issues.append({
+                    "url": item["html_url"],
+                    "score": score,
+                    "created_at": item["created_at"],
+                })
 
         if not issues:
             continue

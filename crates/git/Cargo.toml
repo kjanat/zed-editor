@@ -1,53 +1,53 @@
 [package]
-name = "git"
-version = "0.1.0"
+name              = "git"
+version           = "0.1.0"
 edition.workspace = true
+license           = "GPL-3.0-or-later"
 publish.workspace = true
-license = "GPL-3.0-or-later"
-
-[lints]
-workspace = true
 
 [lib]
 path = "src/git.rs"
 
-[features]
-test-support = ["rand", "gpui/test-support"]
-
 [dependencies]
-anyhow.workspace = true
-askpass.workspace = true
-async-trait.workspace = true
-collections.workspace = true
-derive_more.workspace = true
-gpui.workspace = true
-http_client.workspace = true
-itertools.workspace = true
-log.workspace = true
-parking_lot.workspace = true
-regex.workspace = true
-rand = { workspace = true, optional = true }
-rope.workspace = true
-schemars.workspace = true
-serde.workspace = true
-smallvec.workspace = true
+anyhow.workspace        = true
+askpass.workspace       = true
 async-channel.workspace = true
-smol.workspace = true
-sum_tree.workspace = true
-text.workspace = true
-thiserror.workspace = true
-time.workspace = true
-url.workspace = true
-urlencoding.workspace = true
-util.workspace = true
-uuid.workspace = true
-futures.workspace = true
-ztracing.workspace = true
+async-trait.workspace   = true
+collections.workspace   = true
+derive_more.workspace   = true
+futures.workspace       = true
+gpui.workspace          = true
+http_client.workspace   = true
+itertools.workspace     = true
+log.workspace           = true
+parking_lot.workspace   = true
+rand                    = { workspace = true, optional = true }
+regex.workspace         = true
+rope.workspace          = true
+schemars.workspace      = true
+serde.workspace         = true
+smallvec.workspace      = true
+smol.workspace          = true
+sum_tree.workspace      = true
+text.workspace          = true
+thiserror.workspace     = true
+time.workspace          = true
+url.workspace           = true
+urlencoding.workspace   = true
+util.workspace          = true
+uuid.workspace          = true
+ztracing.workspace      = true
 
 [dev-dependencies]
+gpui                        = { workspace = true, features = ["test-support"] }
 pretty_assertions.workspace = true
-serde_json.workspace = true
-text = { workspace = true, features = ["test-support"] }
-gpui = { workspace = true, features = ["test-support"] }
-tempfile.workspace = true
-rand.workspace = true
+rand.workspace              = true
+serde_json.workspace        = true
+tempfile.workspace          = true
+text                        = { workspace = true, features = ["test-support"] }
+
+[features]
+test-support = ["gpui/test-support", "rand"]
+
+[lints]
+workspace = true

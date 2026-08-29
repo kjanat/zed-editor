@@ -84,15 +84,15 @@ revision = "b64eaf598008e2d600a81d846108f72cb37b48e2"
 ## Cursor Position
 
 ```src/vs/platform/windows/test/electron-main/windowsFinder.test.ts
-	function createTestCodeWindow(options: { lastFocusTime: number; openedFolderUri?: URI; openedWorkspace?: IWorkspaceIdentifier }): ICodeWindow {
-		return new class implements ICodeWindow {
-			onWillLoad: Event<ILoadEvent> = Event.None;
-			onDidSignalReady: Event<void> = Event.None;
-			// <[CURSOR_POSITION]
-			onDidClose: Event<void> = Event.None;
-			onDidDestroy: Event<void> = Event.None;
-			whenClosedOrLoaded: Promise<void> = Promise.resolve();
-			id: number = -1;
+function createTestCodeWindow(options: { lastFocusTime: number; openedFolderUri?: URI; openedWorkspace?: IWorkspaceIdentifier }): ICodeWindow {
+	return new class implements ICodeWindow {
+		onWillLoad: Event<ILoadEvent> = Event.None;
+		onDidSignalReady: Event<void> = Event.None;
+		// <[CURSOR_POSITION]
+		onDidClose: Event<void> = Event.None;
+		onDidDestroy: Event<void> = Event.None;
+		whenClosedOrLoaded: Promise<void> = Promise.resolve();
+		id: number = -1;
 ```
 
 ## Expected Patch

@@ -82,13 +82,11 @@ class ResultPatchingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result_path = Path(tmp) / "result.json"
             result_path.write_text(
-                json.dumps(
-                    {
-                        "task_name": "scale-ai/task-1",
-                        "agent_result": {"tokens": 12345},
-                        "verifier_result": {"rewards": {"reward": 0.0}},
-                    }
-                )
+                json.dumps({
+                    "task_name": "scale-ai/task-1",
+                    "agent_result": {"tokens": 12345},
+                    "verifier_result": {"rewards": {"reward": 0.0}},
+                })
             )
             rejudge.patch_result_rewards(result_path, {"reward": 1.0})
             patched = json.loads(result_path.read_text())

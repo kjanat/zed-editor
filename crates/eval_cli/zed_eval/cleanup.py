@@ -58,9 +58,10 @@ def prune_artifacts(
             ready = build_dir / "READY"
             age = _age_days(ready if ready.exists() else build_dir)
             if age > build_retention_days:
-                removed["builds"].append(
-                    {"build_id": build_dir.name, "age_days": round(age, 1)}
-                )
+                removed["builds"].append({
+                    "build_id": build_dir.name,
+                    "age_days": round(age, 1),
+                })
                 if not dry_run:
                     shutil.rmtree(build_dir, ignore_errors=True)
 

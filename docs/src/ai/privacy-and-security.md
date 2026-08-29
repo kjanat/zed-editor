@@ -15,9 +15,8 @@ Zed does not retain your prompts or code context by default. For
 commitments from model providers, and provider agreements require zero data
 retention for inference requests except for
 [provider-designated models with safety retention](#provider-safety-retention),
-such as Anthropic's Covered Models.
-Zed only retains AI data when you explicitly share feedback or opt in to
-training data collection.
+such as Anthropic's Covered Models. Zed only retains AI data when you explicitly
+share feedback or opt in to training data collection.
 
 ## AI Request Paths {#ai-request-paths}
 
@@ -40,8 +39,9 @@ For Zed-hosted models, Zed has commitments from model providers that prohibit
 training on your prompts or code context and require zero data retention for
 inference requests, except for
 [provider-designated models with safety retention](#provider-safety-retention),
-such as Anthropic's Covered Models. The public provider documents linked below describe provider programs or default
-API terms; Zed-hosted model requests are governed by Zed's provider agreements.
+such as Anthropic's Covered Models. The public provider documents linked below
+describe provider programs or default API terms; Zed-hosted model requests are
+governed by Zed's provider agreements.
 
 | Provider  | No training reference                                   | Zero-data-retention reference                                                                                                                                                                      |
 | --------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -53,9 +53,10 @@ API terms; Zed-hosted model requests are governed by Zed's provider agreements.
 
 Some providers require limited data retention for specific models as a condition
 of offering them, on every platform where those models are available. Anthropic
-retains prompts and outputs for models it designates as Covered Models, including
-Claude Fable 5, for at least 30 days for trust and safety purposes. Zed cannot
-opt out of this retention; it applies wherever these models are served. See
+retains prompts and outputs for models it designates as Covered Models,
+including Claude Fable 5, for at least 30 days for trust and safety purposes.
+Zed cannot opt out of this retention; it applies wherever these models are
+served. See
 [Anthropic's data retention practices for Covered Models](https://support.claude.com/en/articles/15425996-data-retention-practices-for-covered-models).
 
 For these models:
@@ -67,8 +68,8 @@ For these models:
   timelines.
 - All other Zed-hosted models keep zero-data-retention handling.
 
-If you don't want provider-side retention, use a model that the provider has
-not designated for safety retention. Switching to
+If you don't want provider-side retention, use a model that the provider has not
+designated for safety retention. Switching to
 [your own API key](./use-api-access.md) or
 [subscription](./use-an-existing-subscription.md) does not avoid this retention
 for covered models, because providers apply it on every platform where those
@@ -81,8 +82,8 @@ Zed may retain AI data only when you explicitly share it or opt in:
 - [Response ratings and feedback](./ai-improvement.md#ai-feedback-with-ratings)
   can send a conversation thread to Zed for review and improvement.
 - [Edit Prediction training data](./ai-improvement.md#edit-predictions) is
-  collected only when you opt in, the project is open source, and the file is not
-  excluded.
+  collected only when you opt in, the project is open source, and the file is
+  not excluded.
 
 See [Feedback and Training Data](./ai-improvement.md) for the full list of what
 can be stored in each opt-in case.

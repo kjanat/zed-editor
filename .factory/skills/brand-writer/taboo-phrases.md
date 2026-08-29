@@ -1,6 +1,7 @@
 # Taboo Phrases
 
-These patterns signal AI-generated or marketing-heavy copy. Eliminate all instances.
+These patterns signal AI-generated or marketing-heavy copy. Eliminate all
+instances.
 
 ---
 

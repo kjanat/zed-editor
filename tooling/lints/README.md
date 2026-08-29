@@ -1,6 +1,7 @@
 # lints
 
-A [dylint](https://github.com/trailofbits/dylint) library that flags various bad patterns in our codebase.
+A [dylint](https://github.com/trailofbits/dylint) library that flags various bad
+patterns in our codebase.
 
 Install `dylint`, a pinned nightly toolchain and the necessary tools with
 
@@ -11,8 +12,9 @@ rustup toolchain install
 ```
 
 The channel and its components (`rustc-dev`, `rust-src`, `llvm-tools-preview`)
-are declared in `tooling/lints/rust-toolchain.toml`, so `rustup toolchain install`
-picks them up automatically when run from that directory.
+are declared in `tooling/lints/rust-toolchain.toml`, so
+`rustup toolchain install` picks them up automatically when run from that
+directory.
 
 # Demo
 
@@ -20,19 +22,33 @@ picks them up automatically when run from that directory.
 ./single-lint blocking_io_on_foreground
 ```
 
-
 ## Current lints
-- `shared_string_from_str_literal` — `SharedString::new/from` etc where `SharedString::from_static` should be used instead.
-- `async_block_without_await` — `async { … }` blocks whose body contains no `.await` expression.
-- `entity_update_in_render` — `Entity::update`/`WeakEntity::update` mutating an entity inside `Render::render`.
-- `map_lookup_then_insert` — map value lookups that branch into an insertion for the same key, on any map with an `entry` method (`HashMap`, `BTreeMap`, `FxHashMap`, `hashbrown`, `indexmap`, ...), and the same pattern on `HashSet`/`BTreeSet` (where a bare `insert` already searches only once). Keys are matched up to borrows/derefs, value-preserving conversions (`clone`, `to_owned`, `to_string` on string types, `to_vec` on slices, `String::from` on `&str` — each resolved by definition, not name), and immutable local aliases, so looking up `&key` and inserting `key.clone()` is caught.
+
+- `shared_string_from_str_literal` — `SharedString::new/from` etc where
+  `SharedString::from_static` should be used instead.
+- `async_block_without_await` — `async { … }` blocks whose body contains no
+  `.await` expression.
+- `entity_update_in_render` — `Entity::update`/`WeakEntity::update` mutating an
+  entity inside `Render::render`.
+- `map_lookup_then_insert` — map value lookups that branch into an insertion for
+  the same key, on any map with an `entry` method (`HashMap`, `BTreeMap`,
+  `FxHashMap`, `hashbrown`, `indexmap`, ...), and the same pattern on
+  `HashSet`/`BTreeSet` (where a bare `insert` already searches only once). Keys
+  are matched up to borrows/derefs, value-preserving conversions (`clone`,
+  `to_owned`, `to_string` on string types, `to_vec` on slices, `String::from` on
+  `&str` — each resolved by definition, not name), and immutable local aliases,
+  so looking up `&key` and inserting `key.clone()` is caught.
 - `notify_in_render` — `Context::notify()` called inside `Render::render`.
-- `owned_string_into_shared` — `String::from(<lit>).into()` / `<lit>.to_string().into()` / `<lit>.to_owned().into()` whose target is `SharedString`, `Arc<str>`, `Rc<str>`, or `Cow<'_, str>`.
-- `blocking_io_on_foreground` - Catch blocking IO calls that are called on the main thread (but not on closures or background threads)
+- `owned_string_into_shared` — `String::from(<lit>).into()` /
+  `<lit>.to_string().into()` / `<lit>.to_owned().into()` whose target is
+  `SharedString`, `Arc<str>`, `Rc<str>`, or `Cow<'_, str>`.
+- `blocking_io_on_foreground` - Catch blocking IO calls that are called on the
+  main thread (but not on closures or background threads)
 
 ## How to run
 
-Ideally you run this as part of the `clippy` script in the `zed/scripts` directory since this will also run our other linters.
+Ideally you run this as part of the `clippy` script in the `zed/scripts`
+directory since this will also run our other linters.
 
 ### Prerequisites
 
@@ -42,7 +58,8 @@ Install both tools (version 6 or later):
 cargo install cargo-dylint dylint-link
 ```
 
-- `cargo-dylint` is the `cargo` subcommand that builds and runs the lints; `dylint-link` is the linker used to build the lint library.
+- `cargo-dylint` is the `cargo` subcommand that builds and runs the lints;
+  `dylint-link` is the linker used to build the lint library.
 
 The workspace registers this library under `[workspace.metadata.dylint]` in the
 root `Cargo.toml`, so Dylint discovers it automatically — you do not pass a
@@ -82,6 +99,6 @@ It also handles two non-obvious gotchas:
 
 - `--force-warn` is required: after `-A warnings` silences the group, a plain
   `-W <lint>` does not reliably re-enable a driver-registered lint.
-- `DYLINT_RUSTFLAGS` is not part of Cargo's fingerprint, so the script cleans the
-  targeted package(s) first; otherwise Cargo replays a stale cache and the filter
-  appears to do nothing.
+- `DYLINT_RUSTFLAGS` is not part of Cargo's fingerprint, so the script cleans
+  the targeted package(s) first; otherwise Cargo replays a stale cache and the
+  filter appears to do nothing.

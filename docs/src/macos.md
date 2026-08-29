@@ -5,15 +5,19 @@ description: "Zed is developed primarily on macOS, making it a first-class platf
 
 # Zed on macOS
 
-Zed is developed primarily on macOS, making it a first-class platform with full feature support.
+Zed is developed primarily on macOS, making it a first-class platform with full
+feature support.
 
 ## Installing Zed
 
-Download Zed from the [download page](https://zed.dev/download). The download is a `.dmg` file—open it and drag Zed to your Applications folder.
+Download Zed from the [download page](https://zed.dev/download). The download is
+a `.dmg` file—open it and drag Zed to your Applications folder.
 
-For the preview build, which receives updates about a week ahead of stable, visit the [preview releases page](https://zed.dev/releases/preview).
+For the preview build, which receives updates about a week ahead of stable,
+visit the [preview releases page](https://zed.dev/releases/preview).
 
-After installation, Zed checks for updates automatically and prompts you when a new version is available.
+After installation, Zed checks for updates automatically and prompts you when a
+new version is available.
 
 ### Homebrew
 
@@ -31,24 +35,28 @@ brew install --cask zed@preview
 
 ### Building from Source
 
-To build Zed from source, see the [macOS development documentation](./development/macos.md).
+To build Zed from source, see the
+[macOS development documentation](./development/macos.md).
 
 ## System Requirements
 
 - macOS 10.15.7 (Catalina) or later
 - Apple Silicon (M1/M2/M3/M4) or Intel processor
 
-Zed uses Metal for GPU-accelerated rendering, which is available on all supported macOS versions.
+Zed uses Metal for GPU-accelerated rendering, which is available on all
+supported macOS versions.
 
 ## Installing the CLI
 
-Zed includes a command-line tool for opening files and projects from Terminal. To install it:
+Zed includes a command-line tool for opening files and projects from Terminal.
+To install it:
 
 1. Open Zed
 2. Open the command palette with `Cmd+Shift+P`
 3. Run {#action cli::InstallCliBinary}
 
-This creates a `zed` command in `/usr/local/bin`. You can then open files and folders:
+This creates a `zed` command in `/usr/local/bin`. You can then open files and
+folders:
 
 ```sh
 zed .                    # Open current folder
@@ -82,7 +90,8 @@ rm /usr/local/bin/zed
 
 ### Zed won't open or shows "damaged" warning
 
-If macOS reports that Zed is damaged or can't be opened, it's likely a Gatekeeper issue. Try:
+If macOS reports that Zed is damaged or can't be opened, it's likely a
+Gatekeeper issue. Try:
 
 1. Right-click (or Control-click) on Zed in Applications
 2. Select "Open" from the context menu
@@ -101,14 +110,19 @@ xattr -cr /Applications/Zed.app
 If the `zed` command isn't available after installation:
 
 1. Check that `/usr/local/bin` is in your PATH
-2. Try reinstalling the CLI via {#action cli::InstallCliBinary} in the command palette
+2. Try reinstalling the CLI via {#action cli::InstallCliBinary} in the command
+   palette
 3. Open a new terminal window to reload your PATH
 
 ### Can't install CLI {#cant-install-cli}
 
-{#action cli::InstallCliBinary} writes a `zed` symlink to `/usr/local/bin`, which requires administrator privileges. If your macOS account isn't in the `admin` group, Zed can't create that symlink and will report that it can't install the CLI automatically.
+{#action cli::InstallCliBinary} writes a `zed` symlink to `/usr/local/bin`,
+which requires administrator privileges. If your macOS account isn't in the
+`admin` group, Zed can't create that symlink and will report that it can't
+install the CLI automatically.
 
-Instead, you can add an alias pointing to the `cli` binary bundled inside the app. The path depends on where Zed is installed:
+Instead, you can add an alias pointing to the `cli` binary bundled inside the
+app. The path depends on where Zed is installed:
 
 ```sh
 # Default install (Zed in /Applications)
@@ -121,7 +135,8 @@ alias zed="$HOME/Applications/Zed.app/Contents/MacOS/cli"
 alias zed="$HOME/Applications/Zed Preview.app/Contents/MacOS/cli"
 ```
 
-Add the line that matches your install to your shell configuration file. Use `~/.zshrc` for Zsh (the default on modern macOS) or `~/.bashrc` for Bash.
+Add the line that matches your install to your shell configuration file. Use
+`~/.zshrc` for Zsh (the default on modern macOS) or `~/.bashrc` for Bash.
 
 After you restart your shell, you will be able to use `zed` from your terminal:
 
@@ -142,8 +157,12 @@ Zed uses Metal for rendering. If you experience graphical glitches:
 
 If Zed uses more resources than expected:
 
-1. Check for runaway language servers in the terminal output ({#action zed::OpenLog})
+1. Check for runaway language servers in the terminal output ({#action
+   zed::OpenLog})
 2. Try disabling extensions one by one to identify conflicts
-3. For large projects, consider using [project settings](./reference/all-settings.md#file-scan-exclusions) to exclude unnecessary folders from indexing
+3. For large projects, consider using
+   [project settings](./reference/all-settings.md#file-scan-exclusions) to
+   exclude unnecessary folders from indexing
 
-For additional help, see the [Troubleshooting guide](./troubleshooting.md) or visit the [Zed Discord](https://discord.gg/zed-community).
+For additional help, see the [Troubleshooting guide](./troubleshooting.md) or
+visit the [Zed Discord](https://discord.gg/zed-community).

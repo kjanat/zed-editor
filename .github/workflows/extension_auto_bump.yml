@@ -4,12 +4,12 @@ name: extension_auto_bump
 on:
   push:
     branches:
-    - main
+      - main
     paths:
-    - extensions/**
-    - '!extensions/test-extension/**'
-    - '!extensions/workflows/**'
-    - '!extensions/*.md'
+      - extensions/**
+      - "!extensions/test-extension/**"
+      - "!extensions/workflows/**"
+      - "!extensions/*.md"
 permissions:
   contents: read
 jobs:
@@ -17,45 +17,45 @@ jobs:
     if: (github.repository_owner == 'zed-industries' || github.repository_owner == 'zed-extensions')
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-        fetch-depth: 2
-    - id: detect
-      name: extension_auto_bump::detect_changed_extensions
-      run: |
-        COMPARE_REV="$(git rev-parse HEAD~1)"
-        CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
-        # Detect changed extension directories (excluding extensions/workflows)
-        CHANGED_EXTENSIONS=$(echo "$CHANGED_FILES" | grep -oP '^extensions/[^/]+(?=/)' | sort -u | grep -v '^extensions/workflows$' || true)
-        # Filter out deleted extensions
-        EXISTING_EXTENSIONS=""
-        for ext in $CHANGED_EXTENSIONS; do
-            if [ -f "$ext/extension.toml" ]; then
-                EXISTING_EXTENSIONS=$(printf '%s\n%s' "$EXISTING_EXTENSIONS" "$ext")
-            fi
-        done
-        CHANGED_EXTENSIONS=$(echo "$EXISTING_EXTENSIONS" | sed '/^$/d')
-        if [ -n "$CHANGED_EXTENSIONS" ]; then
-            EXTENSIONS_JSON=$(echo "$CHANGED_EXTENSIONS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-        else
-            EXTENSIONS_JSON="[]"
-        fi
-        # Filter out newly added extensions
-        FILTERED="[]"
-        for ext in $(echo "$EXTENSIONS_JSON" | jq -r '.[]'); do
-            if git show HEAD~1:"$ext/extension.toml" >/dev/null 2>&1; then
-                FILTERED=$(echo "$FILTERED" | jq -c --arg e "$ext" '. + [$e]')
-            fi
-        done
-        echo "changed_extensions=$FILTERED" >> "$GITHUB_OUTPUT"
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+          fetch-depth: 2
+      - id: detect
+        name: extension_auto_bump::detect_changed_extensions
+        run: |
+          COMPARE_REV="$(git rev-parse HEAD~1)"
+          CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
+          # Detect changed extension directories (excluding extensions/workflows)
+          CHANGED_EXTENSIONS=$(echo "$CHANGED_FILES" | grep -oP '^extensions/[^/]+(?=/)' | sort -u | grep -v '^extensions/workflows$' || true)
+          # Filter out deleted extensions
+          EXISTING_EXTENSIONS=""
+          for ext in $CHANGED_EXTENSIONS; do
+              if [ -f "$ext/extension.toml" ]; then
+                  EXISTING_EXTENSIONS=$(printf '%s\n%s' "$EXISTING_EXTENSIONS" "$ext")
+              fi
+          done
+          CHANGED_EXTENSIONS=$(echo "$EXISTING_EXTENSIONS" | sed '/^$/d')
+          if [ -n "$CHANGED_EXTENSIONS" ]; then
+              EXTENSIONS_JSON=$(echo "$CHANGED_EXTENSIONS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          else
+              EXTENSIONS_JSON="[]"
+          fi
+          # Filter out newly added extensions
+          FILTERED="[]"
+          for ext in $(echo "$EXTENSIONS_JSON" | jq -r '.[]'); do
+              if git show HEAD~1:"$ext/extension.toml" >/dev/null 2>&1; then
+                  FILTERED=$(echo "$FILTERED" | jq -c --arg e "$ext" '. + [$e]')
+              fi
+          done
+          echo "changed_extensions=$FILTERED" >> "$GITHUB_OUTPUT"
     outputs:
       changed_extensions: ${{ steps.detect.outputs.changed_extensions }}
     timeout-minutes: 5
   bump_extension_versions:
     needs:
-    - detect_changed_extensions
+      - detect_changed_extensions
     if: needs.detect_changed_extensions.outputs.changed_extensions != '[]'
     permissions:
       actions: write

@@ -6,8 +6,9 @@ description: Choose how Zed gets language models: Zed-hosted models, API access,
 # LLM Providers
 
 Use this page to choose which models power [the Zed Agent](./zed-agent.md) and
-other Zed-owned AI features, including [Inline Assistant](./inline-assistant.md),
-Git commit generation, thread summaries, and similar model-backed features.
+other Zed-owned AI features, including
+[Inline Assistant](./inline-assistant.md), Git commit generation, thread
+summaries, and similar model-backed features.
 
 Model access paths do not configure [External Agents](./external-agents.md) or
 [Terminal Threads](./terminal-threads.md). External Agents and Terminal Threads
@@ -28,12 +29,17 @@ the difference between the Zed Agent, External Agents, and Terminal Threads.
 
 ## Edit Prediction {#edit-prediction}
 
-[Edit Prediction](./edit-prediction.md) has its own provider setup under `edit_predictions`. LLM providers on this page apply to model-backed Zed AI features such as Zed Agent, Inline Assistant, Git commit generation, and thread summaries.
+[Edit Prediction](./edit-prediction.md) has its own provider setup under
+`edit_predictions`. LLM providers on this page apply to model-backed Zed AI
+features such as Zed Agent, Inline Assistant, Git commit generation, and thread
+summaries.
 
 ## Anthropic-Compatible Providers {#anthropic-api-compatible}
 
-Anthropic-compatible provider setup has moved to [Use API Access](./use-api-access.md#anthropic-compatible).
+Anthropic-compatible provider setup has moved to
+[Use API Access](./use-api-access.md#anthropic-compatible).
 
 ## OpenAI-Compatible Providers {#openai-api-compatible}
 
-OpenAI-compatible provider setup has moved to [Use API Access](./use-api-access.md#openai-compatible).
+OpenAI-compatible provider setup has moved to
+[Use API Access](./use-api-access.md#openai-compatible).

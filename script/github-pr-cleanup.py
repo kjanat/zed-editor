@@ -91,7 +91,12 @@ def github_graphql(query, variables):
 def github_rest_request(method, path, body=None):
     for attempt in range(MAX_RETRIES + 1):
         response = requests.request(
-            method, f"{GITHUB_API_URL}/{path}", headers=GITHUB_HEADERS, json=body, timeout=30)
+            method,
+            f"{GITHUB_API_URL}/{path}",
+            headers=GITHUB_HEADERS,
+            json=body,
+            timeout=30,
+        )
         if response.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES:
             time.sleep(RETRY_DELAY_SECONDS)
             continue
@@ -175,9 +180,9 @@ def post_comment(number, body, dry_run):
     else:
         github_rest_request(
             "POST",
-        f"repos/{REPO_OWNER}/{REPO_NAME}/issues/{number}/comments",
-        {"body": body},
-    )
+            f"repos/{REPO_OWNER}/{REPO_NAME}/issues/{number}/comments",
+            {"body": body},
+        )
 
 
 def close_pull_request(number, dry_run):
@@ -260,9 +265,7 @@ def draft_action(activity_at, comments, now):
     if latest_marker_comment_at(comments, DRAFT_CLOSE_MARKER, activity_at):
         return None, True
 
-    warning_at = latest_marker_comment_at(
-        comments, DRAFT_WARNING_MARKER, activity_at
-    )
+    warning_at = latest_marker_comment_at(comments, DRAFT_WARNING_MARKER, activity_at)
     if warning_at is not None:
         if now - warning_at >= DRAFT_CLOSE_AFTER_WARNING:
             return DRAFT_CLOSE_COMMENT, True

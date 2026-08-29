@@ -37,7 +37,9 @@ STAFF_TEAM_SLUG = "staff"
 BOT_LOGIN = "zed-community-bot[bot]"
 BOT_APP_SLUG = "zed-community-bot"
 ISSUE_DUPLICATE_ALERT_MARKER = "This issue appears to be a duplicate of"
-DISCUSSION_MATCH_ALERT_MARKER = "This looks like it may already be covered by an existing discussion"
+DISCUSSION_MATCH_ALERT_MARKER = (
+    "This looks like it may already be covered by an existing discussion"
+)
 TRIAGE_CONTEXT_MARKER = "Additional recent context for triagers"
 USER_FACING_MATCH_MARKERS = (
     ISSUE_DUPLICATE_ALERT_MARKER,
@@ -84,11 +86,12 @@ def github_api_get(path, params=None):
             return response.json()
         except requests.RequestException as e:
             transient = isinstance(e, (requests.ConnectionError, requests.Timeout)) or (
-                isinstance(e, requests.HTTPError) and e.response.status_code in TRANSIENT_HTTP_STATUSES
+                isinstance(e, requests.HTTPError)
+                and e.response.status_code in TRANSIENT_HTTP_STATUSES
             )
             if not transient or attempt == 2:
                 raise
-            wait = 2 ** attempt
+            wait = 2**attempt
             print(f"  Transient GitHub API error ({e}); retrying in {wait}s")
             time.sleep(wait)
 
@@ -153,7 +156,9 @@ def get_bot_comment_with_time(issue_number):
 
 def parse_suggested_issues(comment_body):
     """Extract issue numbers from the bot's comment (lines like '- #12345')."""
-    return [int(match) for match in re.findall(r"^- #(\d+)", comment_body, re.MULTILINE)]
+    return [
+        int(match) for match in re.findall(r"^- #(\d+)", comment_body, re.MULTILINE)
+    ]
 
 
 def github_api_graphql(query, variables=None, partial_errors_ok=False):
@@ -194,12 +199,15 @@ def find_canonical_among(duplicate_number, candidates):
             PLACEHOLDER
           }
         }
-        """.replace("PLACEHOLDER", "\n            ".join(
-            f'issue_{number}: issue(number: {number}) {{'
-            f' timelineItems(last: 50, itemTypes: [MARKED_AS_DUPLICATE_EVENT]) {{'
-            f' nodes {{ ... on MarkedAsDuplicateEvent {{ duplicate {{ ... on Issue {{ number }} }} }} }} }} }}'
-            for number in candidates
-        )),
+        """.replace(
+            "PLACEHOLDER",
+            "\n            ".join(
+                f"issue_{number}: issue(number: {number}) {{"
+                f" timelineItems(last: 50, itemTypes: [MARKED_AS_DUPLICATE_EVENT]) {{"
+                f" nodes {{ ... on MarkedAsDuplicateEvent {{ duplicate {{ ... on Issue {{ number }} }} }} }} }} }}"
+                for number in candidates
+            ),
+        ),
         {"owner": REPO_OWNER, "repo": REPO_NAME},
         partial_errors_ok=True,
     )
@@ -327,7 +335,14 @@ def set_field_value(item_id, field_name, value):
     )
 
 
-def add_or_update_project_item(issue_node_id, outcome, closed_as=None, status="Auto-classified", notes=None, bot_comment_time=None):
+def add_or_update_project_item(
+    issue_node_id,
+    outcome,
+    closed_as=None,
+    status="Auto-classified",
+    notes=None,
+    bot_comment_time=None,
+):
     """Add an issue to the project board (or update it if already there), setting field values."""
     item_id = find_project_item(issue_node_id)
     if item_id:
@@ -367,7 +382,9 @@ def classify_closed(issue_number, closer_login, state_reason):
 
     bot_comment = get_bot_comment_with_time(issue_number)
     bot_commented = bot_comment is not None
-    user_facing_alert = bot_commented and has_user_facing_match_alert(bot_comment["body"])
+    user_facing_alert = bot_commented and has_user_facing_match_alert(
+        bot_comment["body"]
+    )
     print(f"  Bot commented: {bot_commented}, user-facing alert: {user_facing_alert}")
 
     if bot_commented and not user_facing_alert and state_reason != "duplicate":
@@ -435,9 +452,13 @@ def classify_as_assist(issue, bot_comment):
     if not suggested:
         print("  -> Assist, needs review (could not parse bot suggestions)")
         add_or_update_project_item(
-            issue["node_id"], outcome="Assist", closed_as="duplicate",
-            status="Needs review", notes="Could not parse bot suggestions",
-            bot_comment_time=bot_comment["created_at"])
+            issue["node_id"],
+            outcome="Assist",
+            closed_as="duplicate",
+            status="Needs review",
+            notes="Could not parse bot suggestions",
+            bot_comment_time=bot_comment["created_at"],
+        )
         return
 
     # Let exceptions from find_canonical_among propagate — a query failure here is
@@ -456,16 +477,25 @@ def classify_as_assist(issue, bot_comment):
         print(f"  -> Possible Assist, needs review ({notes})")
 
     add_or_update_project_item(
-        issue["node_id"], outcome="Assist", closed_as="duplicate", status=status, notes=notes,
-        bot_comment_time=bot_comment["created_at"])
+        issue["node_id"],
+        outcome="Assist",
+        closed_as="duplicate",
+        status=status,
+        notes=notes,
+        bot_comment_time=bot_comment["created_at"],
+    )
 
 
 def classify_as_missed_opportunity(issue):
     """Issue closed as duplicate but the bot never commented."""
     print("  -> Missed opportunity")
     add_or_update_project_item(
-        issue["node_id"], outcome="Missed opportunity", closed_as="duplicate", status="Auto-classified",
-        bot_comment_time=issue["created_at"])
+        issue["node_id"],
+        outcome="Missed opportunity",
+        closed_as="duplicate",
+        status="Auto-classified",
+        bot_comment_time=issue["created_at"],
+    )
 
 
 def classify_open():
@@ -510,10 +540,16 @@ def classify_open():
                 continue
 
             print(f"  #{number}: adding as Noise")
-            add_or_update_project_item(node_id, outcome="Noise", status="Auto-classified",
-                                       bot_comment_time=bot_comment["created_at"])
+            add_or_update_project_item(
+                node_id,
+                outcome="Noise",
+                status="Auto-classified",
+                bot_comment_time=bot_comment["created_at"],
+            )
             added += 1
-        except Exception as error:  # broad catch: one issue failing shouldn't stop the sweep
+        except (
+            Exception
+        ) as error:  # broad catch: one issue failing shouldn't stop the sweep
             print(f"  #{number}: error processing issue, skipping: {error}")
             errors += 1
 
@@ -553,7 +589,9 @@ if __name__ == "__main__":
         try:
             PROJECT_NUMBER = int(raw_project_number)
         except ValueError:
-            print(f"Error: PROJECT_NUMBER must be an integer, got '{raw_project_number}'")
+            print(
+                f"Error: PROJECT_NUMBER must be an integer, got '{raw_project_number}'"
+            )
             sys.exit(1)
     else:
         PROJECT_NUMBER = DEFAULT_PROJECT_NUMBER

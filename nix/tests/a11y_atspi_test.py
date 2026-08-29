@@ -64,7 +64,9 @@ def click(node):
 def get_toggled_state(node):
     """Return whether the node is in a 'checked'/'pressed' state."""
     state_set = node.getState()
-    return state_set.contains(pyatspi.STATE_CHECKED) or state_set.contains(pyatspi.STATE_PRESSED)
+    return state_set.contains(pyatspi.STATE_CHECKED) or state_set.contains(
+        pyatspi.STATE_PRESSED
+    )
 
 
 def get_counter(app):
@@ -186,8 +188,10 @@ def run_tests():
     counter = get_counter(app)
     component = counter.queryComponent()
     extents = component.getExtents(pyatspi.DESKTOP_COORDS)
-    print(f"  Counter extents (desktop coords): x={extents.x}, y={extents.y}, "
-          f"width={extents.width}, height={extents.height}")
+    print(
+        f"  Counter extents (desktop coords): x={extents.x}, y={extents.y}, "
+        f"width={extents.width}, height={extents.height}"
+    )
     assert extents.width > 0 and extents.height > 0, (
         f"Expected non-zero extents from Component interface, got {extents}. "
         f"This likely means a11y_update_window_bounds is not reporting bounds."

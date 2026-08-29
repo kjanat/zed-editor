@@ -4,10 +4,10 @@ name: extensions::run_tests
 on:
   pull_request:
     branches:
-    - '**'
+      - "**"
   push:
     branches:
-    - main
+      - main
 permissions:
   contents: read
 jobs:

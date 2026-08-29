@@ -45,8 +45,8 @@ billing. They have the same capabilities as the Owner, except they cannot:
 - Cancel the subscription
 - Transfer organization ownership
 
-This role is suited for team leads or managers who handle day-to-day
-member access and organization settings.
+This role is suited for team leads or managers who handle day-to-day member
+access and organization settings.
 
 ### Billing Manager {#role-billing-manager}
 
@@ -73,13 +73,13 @@ the Members page.
 
 1. On the Members page, select **+ Invite Member**.
 2. Enter the member's company email address and choose a role.
-3. The invitee receives an email with instructions to join. After
-   accepting, they authenticate via GitHub.
+3. The invitee receives an email with instructions to join. After accepting,
+   they authenticate via GitHub.
 
 ### Changing a Member's Role {#changing-roles}
 
-1. On the Members page, find the member. You can filter by role or
-   search by name.
+1. On the Members page, find the member. You can filter by role or search by
+   name.
 2. Open the three-dot menu and select a new role.
 
 ### Removing a Member {#removing-members}
@@ -87,4 +87,5 @@ the Members page.
 1. On the Members page, find the member.
 2. Select **Remove** and confirm.
 
-Removing a member removes their access to organization settings and any organization-managed features. They can continue using Zed on their own.
+Removing a member removes their access to organization settings and any
+organization-managed features. They can continue using Zed on their own.

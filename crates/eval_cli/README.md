@@ -55,12 +55,12 @@ and `thread.json` to the output directory.
 
 ### Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Agent finished |
-| 1 | Error, such as model/auth/runtime failure |
-| 2 | Timeout |
-| 3 | Interrupted by SIGTERM or SIGINT |
+| Code | Meaning                                   |
+| ---- | ----------------------------------------- |
+| 0    | Agent finished                            |
+| 1    | Error, such as model/auth/runtime failure |
+| 2    | Timeout                                   |
+| 3    | Interrupted by SIGTERM or SIGINT          |
 
 ## Running benchmarks
 

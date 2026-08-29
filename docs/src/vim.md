@@ -5,50 +5,81 @@ description: Full Vim emulation in Zed with motions, text objects, visual mode, 
 
 # Vim Mode
 
-Zed includes a Vim emulation layer. This page covers enabling and disabling vim mode, key bindings, Zed-specific features, and configuration options.
+Zed includes a Vim emulation layer. This page covers enabling and disabling vim
+mode, key bindings, Zed-specific features, and configuration options.
 
 ## Zed's vim mode design
 
-Vim mode replicates the behavior of motions and commands where it makes sense and uses Zed-specific functionality where Zed's approach is better. The goal is a familiar experience that works out of the box without requiring configuration.
+Vim mode replicates the behavior of motions and commands where it makes sense
+and uses Zed-specific functionality where Zed's approach is better. The goal is
+a familiar experience that works out of the box without requiring configuration.
 
-This includes support for semantic navigation, multiple cursors, or other features usually provided by plugins like surrounding text.
+This includes support for semantic navigation, multiple cursors, or other
+features usually provided by plugins like surrounding text.
 
-So, Zed's vim mode does not replicate Vim one-to-one, but it meshes Vim's modal design with Zed's modern features to provide a more fluid experience. It's also configurable, so you can add your own key bindings or override the defaults.
+So, Zed's vim mode does not replicate Vim one-to-one, but it meshes Vim's modal
+design with Zed's modern features to provide a more fluid experience. It's also
+configurable, so you can add your own key bindings or override the defaults.
 
 ### Core differences
 
-There are four types of features in vim mode that use Zed's core functionality, leading to some differences in behavior:
+There are four types of features in vim mode that use Zed's core functionality,
+leading to some differences in behavior:
 
-1. **Motions**: vim mode uses Zed's semantic parsing to tune the behavior of motions per language. For example, in Rust, jumping to matching bracket with `%` works with the pipe character `|`. In JavaScript, `w` considers `$` to be a word character.
-2. **Visual block selections**: vim mode uses Zed's multiple cursor to emulate visual block selections, making block selections a lot more flexible. For example, anything you insert after a block selection updates on every line in real-time, and you can add or remove cursors anytime.
-3. **Macros**: vim mode uses Zed's recording system for vim macros. So, you can capture and replay more complex actions, like autocompletion.
-4. **Search and replace**: vim mode uses Zed's search system, so, the syntax for regular expressions is slightly different compared to Vim. [Head to the Regex differences section](#regex-differences) for details.
+1. **Motions**: vim mode uses Zed's semantic parsing to tune the behavior of
+   motions per language. For example, in Rust, jumping to matching bracket with
+   `%` works with the pipe character `|`. In JavaScript, `w` considers `$` to be
+   a word character.
+2. **Visual block selections**: vim mode uses Zed's multiple cursor to emulate
+   visual block selections, making block selections a lot more flexible. For
+   example, anything you insert after a block selection updates on every line in
+   real-time, and you can add or remove cursors anytime.
+3. **Macros**: vim mode uses Zed's recording system for vim macros. So, you can
+   capture and replay more complex actions, like autocompletion.
+4. **Search and replace**: vim mode uses Zed's search system, so, the syntax for
+   regular expressions is slightly different compared to Vim.
+   [Head to the Regex differences section](#regex-differences) for details.
 
-> **Note:** The foundations of Zed's vim mode should already cover many use cases, and we're always looking to improve it. If you find missing features that you rely on in your workflow, please [file an issue on GitHub](https://github.com/zed-industries/zed/issues).
+> **Note:** The foundations of Zed's vim mode should already cover many use
+> cases, and we're always looking to improve it. If you find missing features
+> that you rely on in your workflow, please
+> [file an issue on GitHub](https://github.com/zed-industries/zed/issues).
 
 ## Enabling and disabling vim mode
 
-When you first open Zed, you'll see a checkbox on the welcome screen that allows you to enable vim mode.
+When you first open Zed, you'll see a checkbox on the welcome screen that allows
+you to enable vim mode.
 
-If you missed this, you can toggle vim mode on or off anytime by opening the command palette and using the workspace command {#action workspace::ToggleVimMode}.
+If you missed this, you can toggle vim mode on or off anytime by opening the
+command palette and using the workspace command {#action
+workspace::ToggleVimMode}.
 
 > **Note**: This command toggles the following property in your user settings:
 >
 > ```json [settings]
 > {
->   "vim_mode": true
+> ```
+
+    "vim_mode": true
+
 > }
+>
+> ```
 > ```
 
 ## Zed-specific features
 
-Zed is built on a modern foundation that (among other things) uses Tree-sitter and language servers to understand the content of the file you're editing and supports multiple cursors out of the box.
+Zed is built on a modern foundation that (among other things) uses Tree-sitter
+and language servers to understand the content of the file you're editing and
+supports multiple cursors out of the box.
 
-Vim mode has several "core Zed" key bindings that will help you make the most of Zed's specific feature set.
+Vim mode has several "core Zed" key bindings that will help you make the most of
+Zed's specific feature set.
 
 ### Language server
 
-The following commands use the language server to help you navigate and refactor your code.
+The following commands use the language server to help you navigate and refactor
+your code.
 
 | Command                                  | Default Shortcut |
 | ---------------------------------------- | ---------------- |
@@ -79,7 +110,9 @@ The following commands use the language server to help you navigate and refactor
 
 ### Tree-sitter
 
-Tree-sitter is the parser Zed uses to understand the structure of your code. Zed provides motions that change the current cursor position, and text objects that can be used as the target of actions.
+Tree-sitter is the parser Zed uses to understand the structure of your code. Zed
+provides motions that change the current cursor position, and text objects that
+can be used as the target of actions.
 
 | Command                         | Default Shortcut            |
 | ------------------------------- | --------------------------- |
@@ -106,14 +139,16 @@ Tree-sitter is the parser Zed uses to understand the structure of your code. Zed
 | The current indent level, and one line before              | `a i`            |
 | The current indent level                                   | `i i`            |
 
-Note that the definitions for the targets of the `[m` family of motions are the same as the
-boundaries defined by `af`. The targets of the `[[` are the same as those defined by `ac`, though
-if there are no classes, then functions are also used. Similarly `gc` is used to find `[ /`. `g c`
+Note that the definitions for the targets of the `[m` family of motions are the
+same as the boundaries defined by `af`. The targets of the `[[` are the same as
+those defined by `ac`, though if there are no classes, then functions are also
+used. Similarly `gc` is used to find `[ /`. `g c`
 
-The definition of functions, classes and comments is language dependent, and support can be added
-to extensions by adding a [`textobjects.scm`]. The definition of arguments and tags operates at
-the Tree-sitter level, but looks for certain patterns in the parse tree and is not currently configurable
-per language.
+The definition of functions, classes and comments is language dependent, and
+support can be added to extensions by adding a [`textobjects.scm`]. The
+definition of arguments and tags operates at the Tree-sitter level, but looks
+for certain patterns in the parse tree and is not currently configurable per
+language.
 
 ### Multi cursor
 
@@ -143,7 +178,9 @@ These commands open new panes or jump to specific panes.
 
 ### In insert mode
 
-The following commands help you bring up Zed's completion menu, request a suggestion from GitHub Copilot, or open the inline AI assistant without leaving insert mode.
+The following commands help you bring up Zed's completion menu, request a
+suggestion from GitHub Copilot, or open the inline AI assistant without leaving
+insert mode.
 
 | Command                                                                      | Default Shortcut |
 | ---------------------------------------------------------------------------- | ---------------- |
@@ -155,21 +192,45 @@ The following commands help you bring up Zed's completion menu, request a sugges
 
 ### Supported plugins
 
-Zed's vim mode includes features commonly provided by plugins in the Vim ecosystem:
+Zed's vim mode includes features commonly provided by plugins in the Vim
+ecosystem:
 
-- You can surround text objects with `ys` (yank surround), change surrounding with `cs`, and delete surrounding with `ds`.
-- You can comment and uncomment selections with `gc` in visual mode and `gcc` in normal mode.
-- The project panel supports many shortcuts modeled after the Vim plugin `netrw`: navigation with `hjkl`, open file with `o`, open file in a new tab with `t`, etc.
-- You can add key bindings to your keymap to navigate "camelCase" names. [Head down to the Optional key bindings](#optional-key-bindings) section to learn how.
-- You can use `gR` to do [ReplaceWithRegister](https://github.com/vim-scripts/ReplaceWithRegister).
-- You can use `cx` for [vim-exchange](https://github.com/tommcdo/vim-exchange) functionality. Note that it does not have a default binding in visual mode, but you can add one to your keymap (refer to the [optional key bindings](#optional-key-bindings) section).
-- You can navigate to indent depths relative to your cursor with the [indent wise](https://github.com/jeetsukumaran/vim-indentwise) plugin `[-`, `]-`, `[+`, `]+`, `[=`, `]=`.
-- You can select quoted text with AnyQuotes and bracketed text with AnyBrackets text objects. Zed also provides MiniQuotes and MiniBrackets which offer alternative selection behavior based on the [mini.ai](https://github.com/echasnovski/mini.nvim/blob/main/readmes/mini-ai.md) Neovim plugin. See the [Quote and Bracket text objects](#quote-and-bracket-text-objects) section below for details.
-- You can configure AnyQuotes, AnyBrackets, MiniQuotes, and MiniBrackets text objects for selecting quoted and bracketed text using different selection strategies. See the [Any Bracket Functionality](#any-bracket-functionality) section below for details.
+- You can surround text objects with `ys` (yank surround), change surrounding
+  with `cs`, and delete surrounding with `ds`.
+- You can comment and uncomment selections with `gc` in visual mode and `gcc` in
+  normal mode.
+- The project panel supports many shortcuts modeled after the Vim plugin
+  `netrw`: navigation with `hjkl`, open file with `o`, open file in a new tab
+  with `t`, etc.
+- You can add key bindings to your keymap to navigate "camelCase" names.
+  [Head down to the Optional key bindings](#optional-key-bindings) section to
+  learn how.
+- You can use `gR` to do
+  [ReplaceWithRegister](https://github.com/vim-scripts/ReplaceWithRegister).
+- You can use `cx` for [vim-exchange](https://github.com/tommcdo/vim-exchange)
+  functionality. Note that it does not have a default binding in visual mode,
+  but you can add one to your keymap (refer to the
+  [optional key bindings](#optional-key-bindings) section).
+- You can navigate to indent depths relative to your cursor with the
+  [indent wise](https://github.com/jeetsukumaran/vim-indentwise) plugin `[-`,
+  `]-`, `[+`, `]+`, `[=`, `]=`.
+- You can select quoted text with AnyQuotes and bracketed text with AnyBrackets
+  text objects. Zed also provides MiniQuotes and MiniBrackets which offer
+  alternative selection behavior based on the
+  [mini.ai](https://github.com/echasnovski/mini.nvim/blob/main/readmes/mini-ai.md)
+  Neovim plugin. See the
+  [Quote and Bracket text objects](#quote-and-bracket-text-objects) section
+  below for details.
+- You can configure AnyQuotes, AnyBrackets, MiniQuotes, and MiniBrackets text
+  objects for selecting quoted and bracketed text using different selection
+  strategies. See the [Any Bracket Functionality](#any-bracket-functionality)
+  section below for details.
 
 ### Any Bracket Functionality
 
-Zed offers two different strategies for selecting text surrounded by any quote, or any bracket. These text objects are **not enabled by default** and must be configured in your keymap to be used.
+Zed offers two different strategies for selecting text surrounded by any quote,
+or any bracket. These text objects are **not enabled by default** and must be
+configured in your keymap to be used.
 
 #### Included Characters
 
@@ -180,7 +241,8 @@ Each text object type works with specific characters:
 | AnyQuotes/MiniQuotes     | Single quote (`'`), Double quote (`"`), Backtick (`` ` ``)                             |
 | AnyBrackets/MiniBrackets | Parentheses (`()`), Square brackets (`[]`), Curly braces (`{}`), Angle brackets (`<>`) |
 
-Both "Any" and "Mini" variants work with the same character sets, but differ in their selection strategy.
+Both "Any" and "Mini" variants work with the same character sets, but differ in
+their selection strategy.
 
 #### AnyQuotes and AnyBrackets (Traditional Vim behavior)
 
@@ -188,16 +250,24 @@ These text objects implement traditional Vim behavior:
 
 - **Selection priority**: Finds the innermost (closest) quotes or brackets first
 - **Fallback mechanism**: If none are found, falls back to the current line
-- **Character-based matching**: Focuses solely on open and close characters without considering syntax
-- **Vanilla Vim similarity**: AnyBrackets matches the behavior of commands like `ci<`, `ci(`, etc., in vanilla Vim, including potential edge cases (like considering `>` in `=>` as a closing delimiter)
+- **Character-based matching**: Focuses solely on open and close characters
+  without considering syntax
+- **Vanilla Vim similarity**: AnyBrackets matches the behavior of commands like
+  `ci<`, `ci(`, etc., in vanilla Vim, including potential edge cases (like
+  considering `>` in `=>` as a closing delimiter)
 
 #### MiniQuotes and MiniBrackets (mini.ai behavior)
 
-These text objects implement the behavior of the [mini.ai](https://github.com/echasnovski/mini.nvim/blob/main/readmes/mini-ai.md) Neovim plugin:
+These text objects implement the behavior of the
+[mini.ai](https://github.com/echasnovski/mini.nvim/blob/main/readmes/mini-ai.md)
+Neovim plugin:
 
-- **Selection priority**: Searches the current line first before expanding outward
-- **Tree-sitter integration**: Uses Tree-sitter queries for more context-aware selections
-- **Syntax-aware matching**: Can distinguish between actual brackets and similar characters in other contexts (like `>` in `=>`)
+- **Selection priority**: Searches the current line first before expanding
+  outward
+- **Tree-sitter integration**: Uses Tree-sitter queries for more context-aware
+  selections
+- **Syntax-aware matching**: Can distinguish between actual brackets and similar
+  characters in other contexts (like `>` in `=>`)
 
 #### Choosing Between Approaches
 
@@ -214,20 +284,22 @@ These text objects implement the behavior of the [mini.ai](https://github.com/ec
 
 #### Example Configuration
 
-To use these text objects, you need to add bindings to your keymap. Here's an example configuration that makes them available when using text object operators (`i` and `a`) or change-surrounds (`cs`):
+To use these text objects, you need to add bindings to your keymap. Here's an
+example configuration that makes them available when using text object operators
+(`i` and `a`) or change-surrounds (`cs`):
 
 ```json [keymap]
 {
-  "context": "vim_operator == a || vim_operator == i || vim_operator == cs",
-  "bindings": {
-    // Traditional Vim behavior
-    "q": "vim::AnyQuotes",
-    "b": "vim::AnyBrackets",
+	"context": "vim_operator == a || vim_operator == i || vim_operator == cs",
+	"bindings": {
+		// Traditional Vim behavior
+		"q": "vim::AnyQuotes",
+		"b": "vim::AnyBrackets",
 
-    // mini.ai plugin behavior
-    "Q": "vim::MiniQuotes",
-    "B": "vim::MiniBrackets"
-  }
+		// mini.ai plugin behavior
+		"Q": "vim::MiniQuotes",
+		"B": "vim::MiniBrackets"
+	}
 }
 ```
 
@@ -240,15 +312,25 @@ With this configuration, you can use commands like:
 
 ## Command palette
 
-Vim mode allows you to open Zed's command palette with `:`. You can then type to access any usual Zed command. Additionally, vim mode adds aliases for popular Vim commands to ensure your muscle memory transfers to Zed. For example, you can write `:w` or `:write` to save the file.
+Vim mode allows you to open Zed's command palette with `:`. You can then type to
+access any usual Zed command. Additionally, vim mode adds aliases for popular
+Vim commands to ensure your muscle memory transfers to Zed. For example, you can
+write `:w` or `:write` to save the file.
 
-Below, you'll find tables listing the commands you can use in the command palette. We put optional characters in square brackets to indicate that you can omit them.
+Below, you'll find tables listing the commands you can use in the command
+palette. We put optional characters in square brackets to indicate that you can
+omit them.
 
-> **Note**: We don't emulate the full power of Vim's command line yet. In particular, commands currently do not support arguments. Please [file issues on GitHub](https://github.com/zed-industries/zed) as you find things that are missing from the command palette.
+> **Note**: We don't emulate the full power of Vim's command line yet. In
+> particular, commands currently do not support arguments. Please
+> [file issues on GitHub](https://github.com/zed-industries/zed) as you find
+> things that are missing from the command palette.
 
 ### File and window management
 
-This table shows commands for managing windows, tabs, and panes. As commands don't support arguments currently, you cannot specify a filename when saving or creating a new file.
+This table shows commands for managing windows, tabs, and panes. As commands
+don't support arguments currently, you cannot specify a filename when saving or
+creating a new file.
 
 | Command         | Description                                          |
 | --------------- | ---------------------------------------------------- |
@@ -273,7 +355,8 @@ This table shows commands for managing windows, tabs, and panes. As commands don
 | `:tabc[lose]`   | Close the current tab                                |
 | `:ls`           | Show all buffers                                     |
 
-> **Note:** The `!` character is used to force the command to execute without saving changes or prompting before overwriting a file.
+> **Note:** The `!` character is used to force the command to execute without
+> saving changes or prompting before overwriting a file.
 
 ### Ex commands
 
@@ -324,7 +407,12 @@ These commands jump to specific positions in the file.
 
 ### Replacement
 
-This command replaces text. It emulates the substitute command in vim. The substitute command uses regular expressions, and Zed uses a slightly different syntax than vim. You can learn more about Zed's syntax below, [in the regex differences section](#regex-differences). Zed will replace only the first occurrence of the search pattern in the current line. To replace all matches append the `g` flag.
+This command replaces text. It emulates the substitute command in vim. The
+substitute command uses regular expressions, and Zed uses a slightly different
+syntax than vim. You can learn more about Zed's syntax below,
+[in the regex differences section](#regex-differences). Zed will replace only
+the first occurrence of the search pattern in the current line. To replace all
+matches append the `g` flag.
 
 | Command                 | Description                       |
 | ----------------------- | --------------------------------- |
@@ -354,23 +442,27 @@ These commands modify editor options locally for the current buffer.
 
 ### Command mnemonics
 
-Zed does not ship with any command mnemonics by default, but you can define short aliases for Zed commands using the `command_aliases` setting in your settings file. When you type an alias from this map in the command palette, it resolves to the mapped command.
+Zed does not ship with any command mnemonics by default, but you can define
+short aliases for Zed commands using the `command_aliases` setting in your
+settings file. When you type an alias from this map in the command palette, it
+resolves to the mapped command.
 
 #### Example Configuration
 
-To configure command mnemonics, add the `command_aliases` key to your settings file. Here's an example configuration with useful mnemonics:
+To configure command mnemonics, add the `command_aliases` key to your settings
+file. Here's an example configuration with useful mnemonics:
 
 ```json [settings]
 {
-  "command_aliases": {
-    "zlog": "zed::OpenLog",
-    "newf": "workspace::NewFile",
-    "diffs": "editor::ToggleSelectedDiffHunks",
-    "crp": "workspace::CopyRelativePath",
-    "cpp": "workspace::CopyPath",
-    "reveal": "editor::RevealInFileManager",
-    "clank": "editor::CancelLanguageServerWork"
-  }
+	"command_aliases": {
+		"zlog": "zed::OpenLog",
+		"newf": "workspace::NewFile",
+		"diffs": "editor::ToggleSelectedDiffHunks",
+		"crp": "workspace::CopyRelativePath",
+		"cpp": "workspace::CopyPath",
+		"reveal": "editor::RevealInFileManager",
+		"clank": "editor::CancelLanguageServerWork"
+	}
 }
 ```
 
@@ -388,30 +480,40 @@ With this configuration, you can use commands like:
 
 ### Selecting the correct context
 
-Zed's key bindings are evaluated only when the `"context"` property matches your location in the editor. For example, if you add key bindings to the `"Editor"` context, they will only work when you're editing a file. If you add key bindings to the `"Workspace"` context, they will work everywhere in Zed. Here's an example of a key binding that saves when you're editing a file:
+Zed's key bindings are evaluated only when the `"context"` property matches your
+location in the editor. For example, if you add key bindings to the `"Editor"`
+context, they will only work when you're editing a file. If you add key bindings
+to the `"Workspace"` context, they will work everywhere in Zed. Here's an
+example of a key binding that saves when you're editing a file:
 
 ```json [keymap]
 {
-  "context": "Editor",
-  "bindings": {
-    "ctrl-s": "workspace::Save"
-  }
+	"context": "Editor",
+	"bindings": {
+		"ctrl-s": "workspace::Save"
+	}
 }
 ```
 
-Contexts are nested, so when you're editing a file, the context is the `"Editor"` context, which is inside the `"Pane"` context, which is inside the `"Workspace"` context. That's why any key bindings you add to the `"Workspace"` context will work when you're editing a file. Here's an example:
+Contexts are nested, so when you're editing a file, the context is the
+`"Editor"` context, which is inside the `"Pane"` context, which is inside the
+`"Workspace"` context. That's why any key bindings you add to the `"Workspace"`
+context will work when you're editing a file. Here's an example:
 
 ```json [keymap]
 // This key binding will work when you're editing a file. It comes built into Zed by default as the workspace: save command.
 {
-  "context": "Workspace",
-  "bindings": {
-    "ctrl-s": "workspace::Save"
-  }
+	"context": "Workspace",
+	"bindings": {
+		"ctrl-s": "workspace::Save"
+	}
 }
 ```
 
-Contexts are expressions. They support boolean operators like `&&` (and) and `||` (or). For example, you can use the context `"Editor && vim_mode == normal"` to create key bindings that only work when you're editing a file _and_ you're in vim's normal mode.
+Contexts are expressions. They support boolean operators like `&&` (and) and
+`||` (or). For example, you can use the context `"Editor && vim_mode == normal"`
+to create key bindings that only work when you're editing a file *and* you're in
+vim's normal mode.
 
 Vim mode adds several contexts to the `"Editor"` context:
 
@@ -427,145 +529,177 @@ Vim mode adds several contexts to the `"Editor"` context:
 | vim_operator         | Set to `none` unless `vim_mode == operator`, in which case it is set to the current operator's default keybinding (e.g., after typing `d`, `vim_operator == d`)                    |
 | helix_mode           | Set when the current mode is a Helix mode (`helix_normal` or `helix_select`), including while an operator is pending and `vim_mode` reports `operator` or `waiting`                |
 
-> **Note**: Contexts are matched only on one level at a time. So it is possible to use the expression `"Editor && vim_mode == normal"`, but `"Workspace && vim_mode == normal"` will never match because we set the vim context at the `"Editor"` level.
+> **Note**: Contexts are matched only on one level at a time. So it is possible
+> to use the expression `"Editor && vim_mode == normal"`, but
+> `"Workspace && vim_mode == normal"` will never match because we set the vim
+> context at the `"Editor"` level.
 
 ### Useful contexts for vim mode key bindings
 
-Here's a template with useful vim mode contexts to help you customize your vim mode key bindings. You can copy it and integrate it into your user keymap.
+Here's a template with useful vim mode contexts to help you customize your vim
+mode key bindings. You can copy it and integrate it into your user keymap.
 
 ```json [keymap]
 [
-  {
-    "context": "VimControl && !menu",
-    "bindings": {
-      // Put key bindings here if you want them to work in normal & visual mode.
-    }
-  },
-  {
-    "context": "vim_mode == normal && !menu",
-    "bindings": {
-      // "shift-y": ["workspace::SendKeystrokes", "y $"] // Use neovim's yank behavior: yank to end of line.
-    }
-  },
-  {
-    "context": "vim_mode == insert",
-    "bindings": {
-      // "j k": "vim::NormalBefore" // In insert mode, make jk escape to normal mode.
-    }
-  },
-  {
-    "context": "EmptyPane || SharedScreen",
-    "bindings": {
-      // Put key bindings here (in addition to the context above) if you want them to
-      // work when no editor exists.
-      // "space f": "file_finder::Toggle"
-    }
-  }
+	{
+		"context": "VimControl && !menu",
+		"bindings": {
+			// Put key bindings here if you want them to work in normal & visual mode.
+		}
+	},
+	{
+		"context": "vim_mode == normal && !menu",
+		"bindings": {
+			// "shift-y": ["workspace::SendKeystrokes", "y $"] // Use neovim's yank behavior: yank to end of line.
+		}
+	},
+	{
+		"context": "vim_mode == insert",
+		"bindings": {
+			// "j k": "vim::NormalBefore" // In insert mode, make jk escape to normal mode.
+		}
+	},
+	{
+		"context": "EmptyPane || SharedScreen",
+		"bindings": {
+			// Put key bindings here (in addition to the context above) if you want them to
+			// work when no editor exists.
+			// "space f": "file_finder::Toggle"
+		}
+	}
 ]
 ```
 
-> **Note**: If you would like to emulate Vim's `map` commands (`nmap`, etc.), you can use the action `workspace::SendKeystrokes` in the correct context.
+> **Note**: If you would like to emulate Vim's `map` commands (`nmap`, etc.),
+> you can use the action `workspace::SendKeystrokes` in the correct context.
 
 ### Optional key bindings
 
-By default, you can navigate between the different files open in the editor with shortcuts like `ctrl+w` followed by one of `hjkl` to move to the left, down, up, or right, respectively.
+By default, you can navigate between the different files open in the editor with
+shortcuts like `ctrl+w` followed by one of `hjkl` to move to the left, down, up,
+or right, respectively.
 
-But you cannot use the same shortcuts to move between all the editor docks (the terminal, project panel, agent panel, ...). If you want to use the same shortcuts to navigate to the docks, you can add the following key bindings to your user keymap.
+But you cannot use the same shortcuts to move between all the editor docks (the
+terminal, project panel, agent panel, ...). If you want to use the same
+shortcuts to navigate to the docks, you can add the following key bindings to
+your user keymap.
 
 ```json [keymap]
 {
-  "context": "Dock",
-  "bindings": {
-    "ctrl-w h": "workspace::ActivatePaneLeft",
-    "ctrl-w l": "workspace::ActivatePaneRight",
-    "ctrl-w k": "workspace::ActivatePaneUp",
-    "ctrl-w j": "workspace::ActivatePaneDown"
-    // ... or other keybindings
-  }
+	"context": "Dock",
+	"bindings": {
+		"ctrl-w h": "workspace::ActivatePaneLeft",
+		"ctrl-w l": "workspace::ActivatePaneRight",
+		"ctrl-w k": "workspace::ActivatePaneUp",
+		"ctrl-w j": "workspace::ActivatePaneDown"
+		// ... or other keybindings
+	}
 }
 ```
 
-Subword motion, which allows you to navigate and select individual words in `camelCase` or `snake_case`, is not enabled by default. To enable it, add these bindings to your keymap.
+Subword motion, which allows you to navigate and select individual words in
+`camelCase` or `snake_case`, is not enabled by default. To enable it, add these
+bindings to your keymap.
 
 ```json [keymap]
 {
-  "context": "VimControl && !menu && vim_mode != operator",
-  "bindings": {
-    "w": "vim::NextSubwordStart",
-    "b": "vim::PreviousSubwordStart",
-    "e": "vim::NextSubwordEnd",
-    "g e": "vim::PreviousSubwordEnd"
-  }
+	"context": "VimControl && !menu && vim_mode != operator",
+	"bindings": {
+		"w": "vim::NextSubwordStart",
+		"b": "vim::PreviousSubwordStart",
+		"e": "vim::NextSubwordEnd",
+		"g e": "vim::PreviousSubwordEnd"
+	}
 }
 ```
 
 > Note: Operations like `dw` remain unaffected. If you would like operations to
 > also use subword motion, remove `vim_mode != operator` from the `context`.
 
-Vim mode comes with shortcuts to surround the selection in normal mode (`ys`), but it doesn't have a shortcut to add surrounds in visual mode. By default, `shift-s` substitutes the selection (erases the text and enters insert mode). To use `shift-s` to add surrounds in visual mode, you can add the following object to your keymap.
+Vim mode comes with shortcuts to surround the selection in normal mode (`ys`),
+but it doesn't have a shortcut to add surrounds in visual mode. By default,
+`shift-s` substitutes the selection (erases the text and enters insert mode). To
+use `shift-s` to add surrounds in visual mode, you can add the following object
+to your keymap.
 
 ```json [keymap]
 {
-  "context": "vim_mode == visual",
-  "bindings": {
-    "shift-s": "vim::PushAddSurrounds"
-  }
+	"context": "vim_mode == visual",
+	"bindings": {
+		"shift-s": "vim::PushAddSurrounds"
+	}
 }
 ```
 
-In non-modal text editors, cursor navigation typically wraps when moving past line ends. Zed, however, handles this behavior exactly like Vim by default: the cursor stops at line boundaries. If you prefer your cursor to wrap between lines, override these keybindings:
+In non-modal text editors, cursor navigation typically wraps when moving past
+line ends. Zed, however, handles this behavior exactly like Vim by default: the
+cursor stops at line boundaries. If you prefer your cursor to wrap between
+lines, override these keybindings:
 
 ```json [keymap]
 // In VimScript, this would look like this:
 // set whichwrap+=<,>,[,],h,l
 {
-  "context": "VimControl && !menu",
-  "bindings": {
-    "left": "vim::WrappingLeft",
-    "right": "vim::WrappingRight",
-    "h": "vim::WrappingLeft",
-    "l": "vim::WrappingRight"
-  }
+	"context": "VimControl && !menu",
+	"bindings": {
+		"left": "vim::WrappingLeft",
+		"right": "vim::WrappingRight",
+		"h": "vim::WrappingLeft",
+		"l": "vim::WrappingRight"
+	}
 }
 ```
 
-The [Sneak motion](https://github.com/justinmk/vim-sneak) feature allows for quick navigation to any two-character sequence in your text. You can enable it by adding the following keybindings to your keymap. By default, the `s` key is mapped to `vim::Substitute`. Adding these bindings will override that behavior, so ensure this change aligns with your workflow preferences.
+The [Sneak motion](https://github.com/justinmk/vim-sneak) feature allows for
+quick navigation to any two-character sequence in your text. You can enable it
+by adding the following keybindings to your keymap. By default, the `s` key is
+mapped to `vim::Substitute`. Adding these bindings will override that behavior,
+so ensure this change aligns with your workflow preferences.
 
 ```json [keymap]
 {
-  "context": "vim_mode == normal || vim_mode == visual",
-  "bindings": {
-    "s": "vim::PushSneak",
-    "shift-s": "vim::PushSneakBackward"
-  }
+	"context": "vim_mode == normal || vim_mode == visual",
+	"bindings": {
+		"s": "vim::PushSneak",
+		"shift-s": "vim::PushSneakBackward"
+	}
 }
 ```
 
-The Helix-style jump-to-word action shows jump labels at visible word starts. It has no default binding in Vim mode, but you can enable it by adding a keybinding to your keymap. This example uses `g w`, which matches the default Helix binding, but overrides Vim mode's default rewrap binding.
+The Helix-style jump-to-word action shows jump labels at visible word starts. It
+has no default binding in Vim mode, but you can enable it by adding a keybinding
+to your keymap. This example uses `g w`, which matches the default Helix
+binding, but overrides Vim mode's default rewrap binding.
 
 ```json [keymap]
 {
-  "context": "vim_mode == normal || vim_mode == visual",
-  "bindings": {
-    "g w": "vim::HelixJumpToWord"
-  }
+	"context": "vim_mode == normal || vim_mode == visual",
+	"bindings": {
+		"g w": "vim::HelixJumpToWord"
+	}
 }
 ```
 
-The [vim-exchange](https://github.com/tommcdo/vim-exchange) feature does not have a default binding for visual mode, as the `shift-x` binding conflicts with the default `shift-x` binding for visual mode (`vim::VisualDeleteLine`). To assign the default vim-exchange binding, add the following keybinding to your keymap:
+The [vim-exchange](https://github.com/tommcdo/vim-exchange) feature does not
+have a default binding for visual mode, as the `shift-x` binding conflicts with
+the default `shift-x` binding for visual mode (`vim::VisualDeleteLine`). To
+assign the default vim-exchange binding, add the following keybinding to your
+keymap:
 
 ```json [keymap]
 {
-  "context": "vim_mode == visual",
-  "bindings": {
-    "shift-x": "vim::Exchange"
-  }
+	"context": "vim_mode == visual",
+	"bindings": {
+		"shift-x": "vim::Exchange"
+	}
 }
 ```
 
 ### Restoring common text editing and Zed keybindings
 
-If you're using vim mode on Linux or Windows, you may find it overrides keybindings you can't live without: `ctrl+v` to paste, `ctrl+f` to search, etc. You can restore them by copying this data into your keymap:
+If you're using vim mode on Linux or Windows, you may find it overrides
+keybindings you can't live without: `ctrl+v` to paste, `ctrl+f` to search, etc.
+You can restore them by copying this data into your keymap:
 
 ```json [keymap]
 {
@@ -593,7 +727,7 @@ You can change the following settings to modify vim mode's behavior:
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | default_mode                 | The default mode to start in. One of "normal", "insert", "replace", "visual", "visual_line", "visual_block", "helix_normal".                                                                  | "normal"      |
 | use_system_clipboard         | Determines how system clipboard is used:<br><ul><li>"always": use for all operations</li><li>"never": only use when explicitly specified</li><li>"on_yank": use for yank operations</li></ul> | "always"      |
-| use_multiline_find           | deprecated                                                                                                                                                                                    |
+| use_multiline_find           | deprecated                                                                                                                                                                                    |               |
 | use_smartcase_find           | If `true`, `f` and `t` motions are case-insensitive when the target letter is lowercase.                                                                                                      | false         |
 | use_regex_search             | If `true`, then vim search will use regex mode                                                                                                                                                | true          |
 | gdefault                     | If `true`, the `:substitute` command replaces all matches in a line by default (as if `g` flag was given). The `g` flag then toggles this, replacing only the first match.                    | false         |
@@ -601,15 +735,17 @@ You can change the following settings to modify vim mode's behavior:
 | custom_digraphs              | An object that allows you to add custom digraphs. Read below for an example.                                                                                                                  | {}            |
 | highlight_on_yank_duration   | The duration of the highlight animation(in ms). Set to `0` to disable                                                                                                                         | 200           |
 
-Here's an example of adding a digraph for the zombie emoji. This allows you to type `ctrl-k f z` to insert a zombie emoji. You can add as many digraphs as you like.
+Here's an example of adding a digraph for the zombie emoji. This allows you to
+type `ctrl-k f z` to insert a zombie emoji. You can add as many digraphs as you
+like.
 
 ```json [settings]
 {
-  "vim": {
-    "custom_digraphs": {
-      "fz": "🧟‍♀️"
-    }
-  }
+	"vim": {
+		"custom_digraphs": {
+			"fz": "🧟‍♀️"
+		}
+	}
 }
 ```
 
@@ -617,24 +753,25 @@ Here's an example of these settings changed:
 
 ```json [settings]
 {
-  "vim": {
-    "default_mode": "insert",
-    "use_system_clipboard": "never",
-    "use_smartcase_find": true,
-    "use_regex_search": true,
-    "gdefault": true,
-    "toggle_relative_line_numbers": true,
-    "highlight_on_yank_duration": 50,
-    "custom_digraphs": {
-      "fz": "🧟‍♀️"
-    }
-  }
+	"vim": {
+		"default_mode": "insert",
+		"use_system_clipboard": "never",
+		"use_smartcase_find": true,
+		"use_regex_search": true,
+		"gdefault": true,
+		"toggle_relative_line_numbers": true,
+		"highlight_on_yank_duration": 50,
+		"custom_digraphs": {
+			"fz": "🧟‍♀️"
+		}
+	}
 }
 ```
 
 ## Useful core Zed settings for vim mode
 
-Here are a few general Zed settings that can help you fine-tune your Vim experience:
+Here are a few general Zed settings that can help you fine-tune your Vim
+experience:
 
 | Property                | Description                                                                                                                                                   | Default Value        |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
@@ -650,39 +787,57 @@ Here's an example of these settings changed:
 
 ```json [settings]
 {
-  // Disable cursor blink
-  "cursor_blink": false,
-  // Use relative line numbers
-  "relative_line_numbers": "enabled",
-  // Hide the scroll bar
-  "scrollbar": { "show": "never" },
-  // Prevent the buffer from scrolling beyond the last line
-  "scroll_beyond_last_line": "off",
-  // Allow the cursor to reach the edges of the screen
-  "vertical_scroll_margin": 0,
-  "gutter": {
-    // Disable line numbers completely
-    "line_numbers": false
-  },
-  "command_aliases": {
-    "W": "w",
-    "Wq": "wq",
-    "Q": "q"
-  }
+	// Disable cursor blink
+	"cursor_blink": false,
+	// Use relative line numbers
+	"relative_line_numbers": "enabled",
+	// Hide the scroll bar
+	"scrollbar": { "show": "never" },
+	// Prevent the buffer from scrolling beyond the last line
+	"scroll_beyond_last_line": "off",
+	// Allow the cursor to reach the edges of the screen
+	"vertical_scroll_margin": 0,
+	"gutter": {
+		// Disable line numbers completely
+		"line_numbers": false
+	},
+	"command_aliases": {
+		"W": "w",
+		"Wq": "wq",
+		"Q": "q"
+	}
 }
 ```
 
-The `command_aliases` property is a single object that maps keys or key sequences to vim mode commands. The example above defines multiple aliases: `W` for `w`, `Wq` for `wq`, and `Q` for `q`.
+The `command_aliases` property is a single object that maps keys or key
+sequences to vim mode commands. The example above defines multiple aliases: `W`
+for `w`, `Wq` for `wq`, and `Q` for `q`.
 
 ## Regex differences
 
-Zed uses a different regular expression engine from Vim. This means that you will have to use a different syntax in some cases. Here are the most common differences:
+Zed uses a different regular expression engine from Vim. This means that you
+will have to use a different syntax in some cases. Here are the most common
+differences:
 
-- **Capture groups**: Vim uses `\(` and `\)` to represent capture groups, in Zed these are `(` and `)`. On the flip side, in Vim, `(` and `)` represent literal parentheses, but in Zed these must be escaped to `\(` and `\)`.
-- **Matches**: When replacing, Vim uses the backslash character followed by a number to represent a matched capture group. For example, `\1`. Zed uses the dollar sign instead. So, when in Vim you use `\0` to represent the entire match, in Zed the syntax is `$0` instead. Same for numbered capture groups: `\1` in Vim is `$1` in Zed.
-- **Global option**: By default, in Vim, regex searches only match the first occurrence on a line, and you append `/g` at the end of your query to find all matches. In Zed, regex searches are global by default.
-- **Case sensitivity**: Vim uses `/i` to indicate a case-insensitive search. In Zed you can either write `(?i)` at the start of the pattern or toggle case-sensitivity with the shortcut {#kb search::ToggleCaseSensitive}.
+- **Capture groups**: Vim uses `\(` and `\)` to represent capture groups, in Zed
+  these are `(` and `)`. On the flip side, in Vim, `(` and `)` represent literal
+  parentheses, but in Zed these must be escaped to `\(` and `\)`.
+- **Matches**: When replacing, Vim uses the backslash character followed by a
+  number to represent a matched capture group. For example, `\1`. Zed uses the
+  dollar sign instead. So, when in Vim you use `\0` to represent the entire
+  match, in Zed the syntax is `$0` instead. Same for numbered capture groups:
+  `\1` in Vim is `$1` in Zed.
+- **Global option**: By default, in Vim, regex searches only match the first
+  occurrence on a line, and you append `/g` at the end of your query to find all
+  matches. In Zed, regex searches are global by default.
+- **Case sensitivity**: Vim uses `/i` to indicate a case-insensitive search. In
+  Zed you can either write `(?i)` at the start of the pattern or toggle
+  case-sensitivity with the shortcut {#kb search::ToggleCaseSensitive}.
 
-> **Note**: To help with the transition, the command palette will fix parentheses and replace groups for you when you write a Vim-style substitute command, `:%s//`. So, Zed will convert `%s:/\(a\)(b)/\1/` into a search for "(a)\(b\)" and a replacement of "$1".
+> **Note**: To help with the transition, the command palette will fix
+> parentheses and replace groups for you when you write a Vim-style substitute
+> command, `:%s//`. So, Zed will convert `%s:/\(a\)(b)/\1/` into a search for
+> "(a)\(b\)" and a replacement of "$1".
 
-For the full syntax supported by Zed's regex engine [see the regex crate documentation](https://docs.rs/regex/latest/regex/#syntax).
+For the full syntax supported by Zed's regex engine
+[see the regex crate documentation](https://docs.rs/regex/latest/regex/#syntax).

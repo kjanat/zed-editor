@@ -5,39 +5,51 @@ description: Customize Zed's themes, fonts, icons, UI density, and other visual 
 
 # Appearance
 
-Customize Zed's visual appearance to match your preferences. This guide covers themes, fonts, icons, and other visual settings.
+Customize Zed's visual appearance to match your preferences. This guide covers
+themes, fonts, icons, and other visual settings.
 
-For information on how the settings system works, see [All Settings](./reference/all-settings.md).
+For information on how the settings system works, see
+[All Settings](./reference/all-settings.md).
 
 ## Customize Zed in 5 Minutes
 
 Here's how to make Zed feel like home:
 
-1. **Pick a theme**: Press {#kb theme_selector::Toggle} to open the Theme Selector. Arrow through the list to preview themes in real time, and press Enter to apply.
+1. **Pick a theme**: Press {#kb theme_selector::Toggle} to open the Theme
+   Selector. Arrow through the list to preview themes in real time, and press
+   Enter to apply.
 
-2. **Toggle light/dark mode quickly**: Press {#kb theme::ToggleMode}. If you currently use a static `"theme": "..."` value, the first toggle converts it to dynamic mode settings with default themes.
+2. **Toggle light/dark mode quickly**: Press {#kb theme::ToggleMode}. If you
+   currently use a static `"theme": "..."` value, the first toggle converts it
+   to dynamic mode settings with default themes.
 
-3. **Choose an icon theme**: Run {#action icon_theme_selector::Toggle} from the command palette to browse icon themes.
+3. **Choose an icon theme**: Run {#action icon_theme_selector::Toggle} from the
+   command palette to browse icon themes.
 
-4. **Set your font**: Open the Settings Editor with {#kb zed::OpenSettings} and search for `buffer_font_family`. Set it to your preferred coding font.
+4. **Set your font**: Open the Settings Editor with {#kb zed::OpenSettings} and
+   search for `buffer_font_family`. Set it to your preferred coding font.
 
-5. **Adjust font size**: In the same Settings Editor, search for `buffer_font_size` and `ui_font_size` to tweak the editor and interface text sizes.
+5. **Adjust font size**: In the same Settings Editor, search for
+   `buffer_font_size` and `ui_font_size` to tweak the editor and interface text
+   sizes.
 
 That's it. You now have a personalized Zed setup.
 
 ## Themes
 
-Install themes from the Extensions page ({#action zed::Extensions}), then switch between them with the Theme Selector ({#kb theme_selector::Toggle}).
+Install themes from the Extensions page ({#action zed::Extensions}), then switch
+between them with the Theme Selector ({#kb theme_selector::Toggle}).
 
-Zed supports separate themes for light and dark mode with automatic switching based on your system preference:
+Zed supports separate themes for light and dark mode with automatic switching
+based on your system preference:
 
 ```json [settings]
 {
-  "theme": {
-    "mode": "system",
-    "light": "One Light",
-    "dark": "One Dark"
-  }
+	"theme": {
+		"mode": "system",
+		"light": "One Light",
+		"dark": "One Dark"
+	}
 }
 ```
 
@@ -47,17 +59,19 @@ You can also override specific theme attributes for fine-grained control.
 
 ## Icon Themes
 
-Customize file and folder icons in the Project Panel and tabs. Browse available icon themes with the Icon Theme Selector ({#action icon_theme_selector::Toggle} in the command palette).
+Customize file and folder icons in the Project Panel and tabs. Browse available
+icon themes with the Icon Theme Selector ({#action icon_theme_selector::Toggle}
+in the command palette).
 
 Like color themes, icon themes support separate light and dark variants:
 
 ```json [settings]
 {
-  "icon_theme": {
-    "mode": "system",
-    "light": "Zed (Default)",
-    "dark": "Zed (Default)"
-  }
+	"icon_theme": {
+		"mode": "system",
+		"light": "Zed (Default)",
+		"dark": "Zed (Default)"
+	}
 }
 ```
 
@@ -65,7 +79,8 @@ Like color themes, icon themes support separate light and dark variants:
 
 ## Fonts
 
-Zed uses three font settings and their fallback counterparts for different contexts:
+Zed uses three font settings and their fallback counterparts for different
+contexts:
 
 | Setting                   | Used for                  |
 | ------------------------- | ------------------------- |
@@ -80,17 +95,17 @@ Example configuration:
 
 ```json [settings]
 {
-  "buffer_font_family": "JetBrains Mono",
-  "buffer_font_fallbacks": ["Nerd Font"],
-  "buffer_font_size": 14,
-  "ui_font_family": "Inter",
-  "ui_font_fallbacks": ["Nerd Font"],
-  "ui_font_size": 16,
-  "terminal": {
-    "font_family": "JetBrains Mono",
-    "font_fallbacks": ["Nerd Font"],
-    "font_size": 14
-  }
+	"buffer_font_family": "JetBrains Mono",
+	"buffer_font_fallbacks": ["Nerd Font"],
+	"buffer_font_size": 14,
+	"ui_font_family": "Inter",
+	"ui_font_fallbacks": ["Nerd Font"],
+	"ui_font_size": 16,
+	"terminal": {
+		"font_family": "JetBrains Mono",
+		"font_fallbacks": ["Nerd Font"],
+		"font_size": 14
+	}
 }
 ```
 
@@ -100,9 +115,9 @@ To disable font ligatures:
 
 ```json [settings]
 {
-  "buffer_font_features": {
-    "calt": false
-  }
+	"buffer_font_features": {
+		"calt": false
+	}
 }
 ```
 
@@ -125,7 +140,8 @@ Zed provides extensive control over UI elements including:
 - **Gutter** — Line numbers, fold indicators, breakpoints
 - **Panels** — Project Panel, Terminal, Agent Panel sizing and docking
 
-→ [Visual Customization documentation](./visual-customization.md) for all UI element settings
+→ [Visual Customization documentation](./visual-customization.md) for all UI
+element settings
 
 ## What's Next
 

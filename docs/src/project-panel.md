@@ -20,20 +20,21 @@ project_panel::CollapseSelectedEntry} collapses it. {#kb
 project_panel::CollapseAllEntries} collapses every directory at once. {#kb
 project_panel::ExpandAllEntries} expands every directory at once. Press {#kb
 project_panel::Open} or click to preview a selected file, without giving it a
-permanent tab. Editing the file or double-clicking it promotes it to a permanent tab.
-Middle-clicking a file skips the preview and opens it in a permanent, focused tab
-right away.
+permanent tab. Editing the file or double-clicking it promotes it to a permanent
+tab. Middle-clicking a file skips the preview and opens it in a permanent,
+focused tab right away.
 
 ### Auto-reveal
 
-By default, switching to a file in the editor will automatically highlight it in the
-project panel and scroll it into view. This can be disabled with the
+By default, switching to a file in the editor will automatically highlight it in
+the project panel and scroll it into view. This can be disabled with the
 `project_panel.auto_reveal_entries` setting.
 
 ### Sticky Scroll
 
-When `project_panel.sticky_scroll` is enabled (the default), ancestor directories pin themselves to the top
-of the panel as you scroll, so you always know which directory you're on.
+When `project_panel.sticky_scroll` is enabled (the default), ancestor
+directories pin themselves to the top of the panel as you scroll, so you always
+know which directory you're on.
 
 ![Project Panel: Sticky Scroll Enabled](https://images.zed.dev/docs/project-panel/sticky-scroll-true.png)
 
@@ -41,11 +42,11 @@ of the panel as you scroll, so you always know which directory you're on.
 
 ### Directory Folding
 
-When `project_panel.auto_fold_dirs` is enabled (the default), chains of directories that each contain a
-single child directory are collapsed into one row (for example,
-`src/utils/helpers` instead of three separate levels). Right-click a folded
-directory and choose **Unfold Directory** to expand the chain, or **Fold
-Directory** to collapse it again.
+When `project_panel.auto_fold_dirs` is enabled (the default), chains of
+directories that each contain a single child directory are collapsed into one
+row (for example, `src/utils/helpers` instead of three separate levels).
+Right-click a folded directory and choose **Unfold Directory** to expand the
+chain, or **Fold Directory** to collapse it again.
 
 ![Project Panel: Auto Fold Directories Enabled](https://images.zed.dev/docs/project-panel/auto-fold-dirs-true.png)
 
@@ -74,15 +75,14 @@ keybindings below.
 - {#action project_panel::NewDirectory} ({#kb project_panel::NewDirectory})
   creates a new directory.
 
-An inline editor appears so you can type the name. Press `enter` to
-confirm or `escape` to cancel.
+An inline editor appears so you can type the name. Press `enter` to confirm or
+`escape` to cancel.
 
 ### Renaming
 
 Press {#kb project_panel::Rename} to rename the selected entry. The filename
 stem is pre-selected so you can type a new name without accidentally changing
-the extension. Press `enter` to confirm or `escape` to
-cancel.
+the extension. Press `enter` to confirm or `escape` to cancel.
 
 ### Cut, Copy, and Paste
 
@@ -121,14 +121,14 @@ be disabled with the `project_panel.drag_and_drop` setting.
 
 ## Git Integration
 
-When `project_panel.git_status` is enabled (the default), file and directory names are tinted
-to reflect their git status—modified, added, deleted, untracked, or conflicting.
-In projects that are not rooted at a git repository, status is shown only for
-[active repositories](./git.md#repository-activation).
+When `project_panel.git_status` is enabled (the default), file and directory
+names are tinted to reflect their git status—modified, added, deleted,
+untracked, or conflicting. In projects that are not rooted at a git repository,
+status is shown only for [active repositories](./git.md#repository-activation).
 
-Setting `project_panel.git_status_indicator` to `true` (disabled by default) adds a letter badge next
-to each name: **M** (modified), **A** (added), **D** (deleted), **U**
-(untracked) or **!** (conflict).
+Setting `project_panel.git_status_indicator` to `true` (disabled by default)
+adds a letter badge next to each name: **M** (modified), **A** (added), **D**
+(deleted), **U** (untracked) or **!** (conflict).
 
 ![Project Panel: Git Integration](https://images.zed.dev/docs/project-panel/git-status.png)
 
@@ -145,12 +145,14 @@ and warnings, `"errors"` for errors only, or `"off"` to hide them. Diagnostics
 propagate upward—if a file deep in a directory has an error, its ancestor
 folders show an indicator too.
 
-Enable `project_panel.diagnostic_badges` (disabled by default) to display numeric error and warning
-counts next to each entry. Use {#action project_panel::SelectNextDiagnostic} and
-{#action project_panel::SelectPrevDiagnostic} to navigate between files that
-have diagnostics.
+Enable `project_panel.diagnostic_badges` (disabled by default) to display
+numeric error and warning counts next to each entry. Use {#action
+project_panel::SelectNextDiagnostic} and {#action
+project_panel::SelectPrevDiagnostic} to navigate between files that have
+diagnostics.
 
-See also [Diagnostics & Quick Fixes](./diagnostics.md) for editor and tab diagnostic settings.
+See also [Diagnostics & Quick Fixes](./diagnostics.md) for editor and tab
+diagnostic settings.
 
 ## Filtering and Sorting
 
@@ -211,12 +213,12 @@ Undoing a move or rename (for example {#action project_panel::Rename}, a
 {#action project_panel::Cut} followed by paste, or a drag within the panel)
 returns the item to its original name or location.
 
-Undoing an operation that creates a file or directory (for example
-{#action project_panel::NewFile}, {#action project_panel::NewDirectory},
-{#action project_panel::Duplicate}, a {#action project_panel::Copy} followed by
-paste, or a drag from outside Zed) moves the new item to your system trash
-rather than deleting it. This keeps it recoverable and lets redo restore it, but
-it also means you may notice these items appear in your trash.
+Undoing an operation that creates a file or directory (for example {#action
+project_panel::NewFile}, {#action project_panel::NewDirectory}, {#action
+project_panel::Duplicate}, a {#action project_panel::Copy} followed by paste, or
+a drag from outside Zed) moves the new item to your system trash rather than
+deleting it. This keeps it recoverable and lets redo restore it, but it also
+means you may notice these items appear in your trash.
 
 When you batch several of these together, for example, selecting multiple files
 and moving them to another folder, the whole batch is undone or redone as a
@@ -226,13 +228,13 @@ single step, and a failure in one of the operations does not block the rest.
 
 - Undo and redo are not available when collaborating in a project shared by
   someone else. The same applies to {#action project_panel::Trash}, so when
-  working as a guest in a shared project, files can only be permanently
-  deleted, and file operations cannot be undone.
+  working as a guest in a shared project, files can only be permanently deleted,
+  and file operations cannot be undone.
 - Operations whose result is a path excluded from the project via the
   `file_scan_exclusions` setting are not recorded. For example, with
   `**/*.secret` excluded, creating a file named `token.secret`, or renaming an
-  existing file to `token.secret`, succeeds on disk, but the operation cannot
-  be undone from the panel.
+  existing file to `token.secret`, succeeds on disk, but the operation cannot be
+  undone from the panel.
 - Permanently deleting an item ({#action project_panel::Delete}) is not tracked
   and cannot be undone.
 - Undoing a {#action project_panel::Trash} restores the item from your system's

@@ -5,15 +5,20 @@ description: "Reference for Zed's command-line interface (CLI), including openin
 
 # CLI Reference
 
-Use Zed's command-line interface (CLI) to open files and directories, integrate with other tools, and control Zed from scripts.
+Use Zed's command-line interface (CLI) to open files and directories, integrate
+with other tools, and control Zed from scripts.
 
 ## Installation
 
-**macOS:** Run the {#action cli::InstallCliBinary} command from the command palette ({#kb command_palette::Toggle}) to install the `zed` CLI to `/usr/local/bin/zed`.
+**macOS:** Run the {#action cli::InstallCliBinary} command from the command
+palette ({#kb command_palette::Toggle}) to install the `zed` CLI to
+`/usr/local/bin/zed`.
 
-**Linux:** The CLI is included with Zed packages. The binary name may vary by distribution (commonly `zed` or `zeditor`).
+**Linux:** The CLI is included with Zed packages. The binary name may vary by
+distribution (commonly `zed` or `zeditor`).
 
-**Windows:** The CLI is included with Zed. Add Zed's installation directory to your PATH, or use the full path to `zed.exe`.
+**Windows:** The CLI is included with Zed. Add Zed's installation directory to
+your PATH, or use the full path to `zed.exe`.
 
 ## Usage
 
@@ -52,9 +57,11 @@ zed myfile.txt:42:10     # Open at line 42, column 10
 
 ### `-w`, `--wait`
 
-Wait for all opened files to be closed before the CLI exits. When opening a directory, waits until the window is closed.
+Wait for all opened files to be closed before the CLI exits. When opening a
+directory, waits until the window is closed.
 
-This is useful for integrating Zed with tools that expect an editor to block until editing is complete (e.g., `git commit`):
+This is useful for integrating Zed with tools that expect an editor to block
+until editing is complete (e.g., `git commit`):
 
 ```sh
 export EDITOR="zed --wait"
@@ -63,7 +70,8 @@ git commit  # Opens Zed and waits for you to close the commit message file
 
 ### `-n`, `--new`
 
-Open paths in a new workspace window, even if the paths are already open in an existing window:
+Open paths in a new workspace window, even if the paths are already open in an
+existing window:
 
 ```sh
 zed -n ~/projects/myproject
@@ -71,7 +79,8 @@ zed -n ~/projects/myproject
 
 ### `-a`, `--add`
 
-Add paths to the currently focused workspace instead of opening a new window. When multiple workspace windows are open, files open in the focused window:
+Add paths to the currently focused workspace instead of opening a new window.
+When multiple workspace windows are open, files open in the focused window:
 
 ```sh
 zed -a newfile.txt
@@ -93,7 +102,10 @@ Open paths in an existing Zed window instead of creating a new one:
 zed -e myfile.txt
 ```
 
-By default (without `-n`, `-a`, `-r`, or `-e`), directories open in the current window's sidebar. You can change this default with the `cli_default_open_behavior` setting. See [Windows & Projects](../windows-and-projects.md) for more details.
+By default (without `-n`, `-a`, `-r`, or `-e`), directories open in the current
+window's sidebar. You can change this default with the
+`cli_default_open_behavior` setting. See
+[Windows & Projects](../windows-and-projects.md) for more details.
 
 ### `--diff <OLD_PATH> <NEW_PATH>`
 
@@ -114,7 +126,8 @@ zed --foreground
 
 ### `--user-data-dir <DIR>`
 
-Use a custom directory for all user data (database, extensions, logs) instead of the default location:
+Use a custom directory for all user data (database, extensions, logs) instead of
+the default location:
 
 ```sh
 zed --user-data-dir ~/.zed-custom
@@ -240,11 +253,13 @@ export EDITOR="zed --wait"
 export VISUAL="zed --wait"
 ```
 
-Add these lines to your shell configuration file (e.g., `~/.bashrc`, `~/.zshrc`).
+Add these lines to your shell configuration file (e.g., `~/.bashrc`,
+`~/.zshrc`).
 
 ## macOS: Switching Release Channels
 
-On macOS, you can launch a specific release channel by passing the channel name as the first argument:
+On macOS, you can launch a specific release channel by passing the channel name
+as the first argument:
 
 ```sh
 zed --stable myfile.txt
@@ -254,7 +269,8 @@ zed --nightly myfile.txt
 
 ## WSL Integration (Windows)
 
-On Windows, the CLI supports opening paths from WSL distributions. This is handled automatically when launching Zed from within WSL.
+On Windows, the CLI supports opening paths from WSL distributions. This is
+handled automatically when launching Zed from within WSL.
 
 ## Exit Codes
 
@@ -263,4 +279,5 @@ On Windows, the CLI supports opening paths from WSL distributions. This is handl
 | `0`  | Success                           |
 | `1`  | Error (details printed to stderr) |
 
-When using `--wait`, the exit code reflects whether the files were saved before closing.
+When using `--wait`, the exit code reflects whether the files were saved before
+closing.

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 function export_vars_for_environment {
   local environment=$1
   local env_file="crates/collab/k8s/environments/${environment}.sh"

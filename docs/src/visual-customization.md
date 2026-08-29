@@ -5,39 +5,47 @@ description: "Various aspects of Zed's visual layout can be configured in the Se
 
 # Visual Customization
 
-Various aspects of Zed's visual layout can be configured in the Settings Editor ({#kb zed::OpenSettings}) or in your settings file ({#kb zed::OpenSettingsFile}).
+Various aspects of Zed's visual layout can be configured in the Settings Editor
+({#kb zed::OpenSettings}) or in your settings file ({#kb
+zed::OpenSettingsFile}).
 
-See [All Settings](./reference/all-settings.md) for additional information and other non-visual settings.
+See [All Settings](./reference/all-settings.md) for additional information and
+other non-visual settings.
 
 ## Themes
 
-You can install many [themes](./themes.md) and [icon themes](./icon-themes.md) in form of extensions by running {#action zed::Extensions} from the command palette.
+You can install many [themes](./themes.md) and [icon themes](./icon-themes.md)
+in form of extensions by running {#action zed::Extensions} from the command
+palette.
 
-You can preview/choose amongst your installed themes and icon themes with {#action theme_selector::Toggle} ({#kb theme_selector::Toggle}) and {#action icon_theme_selector::Toggle} which will modify the following settings:
+You can preview/choose amongst your installed themes and icon themes with
+{#action theme_selector::Toggle} ({#kb theme_selector::Toggle}) and {#action
+icon_theme_selector::Toggle} which will modify the following settings:
 
 ```json [settings]
 {
-  "theme": "One Dark",
-  "icon_theme": "Zed (Default)"
+	"theme": "One Dark",
+	"icon_theme": "Zed (Default)"
 }
 ```
 
-If you would like to use distinct themes for light mode/dark mode that can be set with:
+If you would like to use distinct themes for light mode/dark mode that can be
+set with:
 
 ```json [settings]
 {
-  "theme": {
-    "dark": "One Dark",
-    "light": "One Light",
-    // Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
-    "mode": "system"
-  },
-  "icon_theme": {
-    "dark": "Zed (Default)",
-    "light": "Zed (Default)",
-    // Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
-    "mode": "system"
-  }
+	"theme": {
+		"dark": "One Dark",
+		"light": "One Light",
+		// Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
+		"mode": "system"
+	},
+	"icon_theme": {
+		"dark": "Zed (Default)",
+		"light": "Zed (Default)",
+		// Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
+		"mode": "system"
+	}
 }
 ```
 
@@ -91,18 +99,19 @@ If you would like to use distinct themes for light mode/dark mode that can be se
 
 ### Font ligatures
 
-By default Zed enables font ligatures which will visually combine certain adjacent characters.
+By default Zed enables font ligatures which will visually combine certain
+adjacent characters.
 
-For example `=>` will be displayed as `→` and `!=` will be `≠`.
-This is purely cosmetic and the individual characters remain unchanged.
+For example `=>` will be displayed as `→` and `!=` will be `≠`. This is purely
+cosmetic and the individual characters remain unchanged.
 
 To disable this behavior use:
 
 ```json [settings]
 {
-  "buffer_font_features": {
-    "calt": false // Disable ligatures
-  }
+	"buffer_font_features": {
+		"calt": false // Disable ligatures
+	}
 }
 ```
 
@@ -110,66 +119,66 @@ To disable this behavior use:
 
 ```json [settings]
 {
-  // Whether to show full labels in line indicator or short ones
-  //   - `short`: "2 s, 15 l, 32 c"
-  //   - `long`: "2 selections, 15 lines, 32 characters"
-  "line_indicator_format": "long"
+	// Whether to show full labels in line indicator or short ones
+	//   - `short`: "2 s, 15 l, 32 c"
+	//   - `long`: "2 selections, 15 lines, 32 characters"
+	"line_indicator_format": "long"
 
-  // Individual status bar icons can be hidden:
-  // "project_panel": {"button": false },
-  // "outline_panel": {"button": false },
-  // "collaboration_panel": {"button": false },
-  // "git_panel": {"button": false },
+	// Individual status bar icons can be hidden:
+	// "project_panel": {"button": false },
+	// "outline_panel": {"button": false },
+	// "collaboration_panel": {"button": false },
+	// "git_panel": {"button": false },
 
-  // "agent": {"button": false },
-  // "debugger": {"button": false },
-  // "diagnostics": {"button": false },
-  // "search": {"button": false },
+	// "agent": {"button": false },
+	// "debugger": {"button": false },
+	// "diagnostics": {"button": false },
+	// "search": {"button": false },
 }
 ```
 
 ### Titlebar
 
 ```json [settings]
-  // Control which items are shown/hidden in the title bar
-  "title_bar": {
-    "show_branch_status_icon": false, // Show git status on branch icon
-    "show_branch_name": true,       // Show/hide branch name
-    "show_worktree_name": true,     // Show/hide worktree name
-    "show_project_items": true,     // Show/hide project host and name
-    "show_onboarding_banner": true, // Show/hide onboarding banners
-    "show_user_picture": true,      // Show/hide user avatar
-    "show_user_menu": true,         // Show/hide app user button
-    "show_sign_in": true,           // Show/hide sign-in button
-    "show_menus": false             // Show/hide menus
-  },
+// Control which items are shown/hidden in the title bar
+"title_bar": {
+  "show_branch_status_icon": false, // Show git status on branch icon
+  "show_branch_name": true,       // Show/hide branch name
+  "show_worktree_name": true,     // Show/hide worktree name
+  "show_project_items": true,     // Show/hide project host and name
+  "show_onboarding_banner": true, // Show/hide onboarding banners
+  "show_user_picture": true,      // Show/hide user avatar
+  "show_user_menu": true,         // Show/hide app user button
+  "show_sign_in": true,           // Show/hide sign-in button
+  "show_menus": false             // Show/hide menus
+},
 ```
 
 ## Workspace
 
 ```json [settings]
 {
-  // Force usage of Zed build in path prompts (file and directory pickers)
-  // instead of OS native pickers (false).
-  "use_system_path_prompts": true,
-  // Force usage of Zed built in confirmation prompts ("Do you want to save?")
-  // instead of OS native prompts (false). On linux this is ignored (always false).
-  "use_system_prompts": true,
+	// Force usage of Zed build in path prompts (file and directory pickers)
+	// instead of OS native pickers (false).
+	"use_system_path_prompts": true,
+	// Force usage of Zed built in confirmation prompts ("Do you want to save?")
+	// instead of OS native prompts (false). On linux this is ignored (always false).
+	"use_system_prompts": true,
 
-  // Active pane styling settings.
-  "active_pane_modifiers": {
-    // Inset border size of the active pane, in pixels.
-    "border_size": 0.0,
-    // Opacity of the inactive panes. 0 means transparent, 1 means opaque.
-    "inactive_opacity": 1.0
-  },
+	// Active pane styling settings.
+	"active_pane_modifiers": {
+		// Inset border size of the active pane, in pixels.
+		"border_size": 0.0,
+		// Opacity of the inactive panes. 0 means transparent, 1 means opaque.
+		"inactive_opacity": 1.0
+	},
 
-  // Layout mode of the bottom dock: contained, full, left_aligned, right_aligned
-  "bottom_dock_layout": "contained",
+	// Layout mode of the bottom dock: contained, full, left_aligned, right_aligned
+	"bottom_dock_layout": "contained",
 
-  // Whether to resize all the panels in a dock when resizing the dock.
-  // Can be a combination of "left", "right" and "bottom".
-  "resize_all_panels_in_dock": ["left"]
+	// Whether to resize all the panels in a dock when resizing the dock.
+	// Can be a combination of "left", "right" and "bottom".
+	"resize_all_panels_in_dock": ["left"]
 }
 ```
 
@@ -250,30 +259,30 @@ TBD: Centered layout related settings
 ### Git Blame {#editor-blame}
 
 ```json [settings]
-  "git": {
-    "inline_blame": {
-      "enabled": true,             // Show/hide inline blame
-      "delay_ms": 0,               // Show after delay (ms)
-      "location": "inline",        // inline, status_bar
-      "min_column": 0,             // Minimum column to inline display blame
-      "padding": 7,                // Padding between code and inline blame (em)
-      "show_commit_summary": false // Show/hide commit summary
-    },
-    "hunk_style": "staged_hollow"  // staged_hollow, unstaged_hollow
-  }
+"git": {
+  "inline_blame": {
+    "enabled": true,             // Show/hide inline blame
+    "delay_ms": 0,               // Show after delay (ms)
+    "location": "inline",        // inline, status_bar
+    "min_column": 0,             // Minimum column to inline display blame
+    "padding": 7,                // Padding between code and inline blame (em)
+    "show_commit_summary": false // Show/hide commit summary
+  },
+  "hunk_style": "staged_hollow"  // staged_hollow, unstaged_hollow
+}
 ```
 
 ### Editor Toolbar
 
 ```json [settings]
-  // Editor toolbar related settings
-  "toolbar": {
-    "breadcrumbs": true, // Whether to show breadcrumbs.
-    "quick_actions": true, // Whether to show quick action buttons.
-    "selections_menu": true, // Whether to show the Selections menu
-    "agent_review": true, // Whether to show agent review buttons
-    "code_actions": false // Whether to show code action buttons
-  }
+// Editor toolbar related settings
+"toolbar": {
+  "breadcrumbs": true, // Whether to show breadcrumbs.
+  "quick_actions": true, // Whether to show quick action buttons.
+  "selections_menu": true, // Whether to show the Selections menu
+  "agent_review": true, // Whether to show agent review buttons
+  "code_actions": false // Whether to show code action buttons
+}
 ```
 
 ### Editor Scrollbar and Minimap {#editor-scrollbar}
@@ -342,40 +351,40 @@ TBD: Centered layout related settings
 ### Status Bar
 
 ```json [settings]
-  "status_bar": {
-    // Show/hide a button that displays the active buffer's language.
-    // Clicking the button brings up the language selector.
-    // Defaults to true.
-    "active_language_button": true,
-    // Show/hide a button that displays the cursor's position.
-    // Clicking the button brings up an input for jumping to a line and column.
-    // Defaults to true.
-    "cursor_position_button": true,
-    // Show/hide a button that displays the buffer's line-ending mode.
-    // Clicking the button brings up the line-ending selector.
-    // Defaults to false.
-    "line_endings_button": false,
-    // Show/hide a button that displays the buffer's character encoding.
-    // If set to "non_utf8", the button is hidden only for UTF-8 without BOM.
-    // Defaults to "non_utf8".
-    "active_encoding_button": "non_utf8"
-  },
-  "global_lsp_settings": {
-    // Show/hide the LSP button in the status bar.
-    // Activity from the LSP is still shown.
-    // Button is not shown if "enable_language_server" if false.
-    "button": true
-  },
+"status_bar": {
+  // Show/hide a button that displays the active buffer's language.
+  // Clicking the button brings up the language selector.
+  // Defaults to true.
+  "active_language_button": true,
+  // Show/hide a button that displays the cursor's position.
+  // Clicking the button brings up an input for jumping to a line and column.
+  // Defaults to true.
+  "cursor_position_button": true,
+  // Show/hide a button that displays the buffer's line-ending mode.
+  // Clicking the button brings up the line-ending selector.
+  // Defaults to false.
+  "line_endings_button": false,
+  // Show/hide a button that displays the buffer's character encoding.
+  // If set to "non_utf8", the button is hidden only for UTF-8 without BOM.
+  // Defaults to "non_utf8".
+  "active_encoding_button": "non_utf8"
+},
+"global_lsp_settings": {
+  // Show/hide the LSP button in the status bar.
+  // Activity from the LSP is still shown.
+  // Button is not shown if "enable_language_server" if false.
+  "button": true
+},
 ```
 
 ### Multibuffer
 
 ```json [settings]
 {
-  // The default number of lines to expand excerpts in the multibuffer by.
-  "expand_excerpt_lines": 5,
-  // The default number of lines of context provided for excerpts in the multibuffer by.
-  "excerpt_context_lines": 2
+	// The default number of lines to expand excerpts in the multibuffer by.
+	"expand_excerpt_lines": 5,
+	// The default number of lines of context provided for excerpts in the multibuffer by.
+	"excerpt_context_lines": 2
 }
 ```
 
@@ -415,123 +424,126 @@ TBD: Centered layout related settings
 ### Edit Predictions {#editor-ai}
 
 ```json [settings]
-  "edit_predictions": {
-    "mode": "eager"                  // Automatically show (eager) or hold-alt (subtle)
-  },
-  "show_edit_predictions": true     // Show/hide predictions in editor
+"edit_predictions": {
+  "mode": "eager"                  // Automatically show (eager) or hold-alt (subtle)
+},
+"show_edit_predictions": true     // Show/hide predictions in editor
 ```
 
 ### Editor Inlay Hints
 
 ```json [settings]
 {
-  "inlay_hints": {
-    "enabled": false,
-    // Toggle certain types of hints on and off, all switched on by default.
-    "show_type_hints": true,
-    "show_parameter_hints": true,
-    "show_other_hints": true,
+	"inlay_hints": {
+		"enabled": false,
+		// Toggle certain types of hints on and off, all switched on by default.
+		"show_type_hints": true,
+		"show_parameter_hints": true,
+		"show_other_hints": true,
 
-    // Whether to show a background for inlay hints (theme `hint.background`)
-    "show_background": false, //
+		// Whether to show a background for inlay hints (theme `hint.background`)
+		"show_background": false, //
 
-    // Time to wait after editing before requesting hints (0 to disable debounce)
-    "edit_debounce_ms": 700,
-    // Time to wait after scrolling before requesting hints (0 to disable debounce)
-    "scroll_debounce_ms": 50,
+		// Time to wait after editing before requesting hints (0 to disable debounce)
+		"edit_debounce_ms": 700,
+		// Time to wait after scrolling before requesting hints (0 to disable debounce)
+		"scroll_debounce_ms": 50,
 
-    // A set of modifiers which, when pressed, will toggle the visibility of inlay hints.
-    "toggle_on_modifiers_press": {
-      "control": false,
-      "shift": false,
-      "alt": false,
-      "platform": false,
-      "function": false
-    }
-  }
+		// A set of modifiers which, when pressed, will toggle the visibility of inlay hints.
+		"toggle_on_modifiers_press": {
+			"control": false,
+			"shift": false,
+			"alt": false,
+			"platform": false,
+			"function": false
+		}
+	}
 }
 ```
 
 ## File Finder
 
 ```json [settings]
-  // File Finder Settings
-  "file_finder": {
-    "file_icons": true,         // Show/hide file icons
-    "modal_max_width": "small", // Horizontal size: small, medium, large, xlarge, full
-    "include_ignored": null     // gitignored files in results: true, false, null
-  },
+// File Finder Settings
+"file_finder": {
+  "file_icons": true,         // Show/hide file icons
+  "modal_max_width": "small", // Horizontal size: small, medium, large, xlarge, full
+  "include_ignored": null     // gitignored files in results: true, false, null
+},
 ```
 
 ## Project Panel
 
-Project panel can be shown/hidden with {#action project_panel::ToggleFocus} ({#kb project_panel::ToggleFocus}) or with {#action pane::RevealInProjectPanel} ({#kb pane::RevealInProjectPanel}).
+Project panel can be shown/hidden with {#action project_panel::ToggleFocus}
+({#kb project_panel::ToggleFocus}) or with {#action pane::RevealInProjectPanel}
+({#kb pane::RevealInProjectPanel}).
 
 ```json [settings]
-  // Project Panel Settings
-  "project_panel": {
-    "button": true,                 // Show/hide button in the status bar
-    "default_width": 240,           // Default panel width
-    "dock": "right",                // Position of the dock (left, right)
-    "entry_spacing": "comfortable", // Vertical spacing (comfortable, standard)
-    "file_icons": true,             // Show/hide file icons
-    "folder_indicator": "icon",     // Dir glyph: icon, chevron, both
-    "git_status": true,             // Indicate new/updated files
-    "indent_size": 20,              // Pixels for each successive indent
-    "auto_reveal_entries": true,    // Show file in panel when activating its buffer
-    "auto_fold_dirs": true,         // Fold dirs with single subdir
-    "bold_folder_labels": false,    // Show folder names with bold text
-    "sticky_scroll": true,          // Stick parent directories at top of the project panel.
-    "drag_and_drop": true,          // Whether drag and drop is enabled
-    "scrollbar": {                  // Project panel scrollbar settings
-      "show": null                  // Show/hide: (auto, system, always, never)
-    },
-    "show_diagnostics": "all",      //
-    // Settings related to indent guides in the project panel.
-    "indent_guides": {
-      // When to show indent guides in the project panel. (always, never)
-      "show": "always"
-    },
-    // Sort order for entries (directories_first, mixed, files_first)
-    "sort_mode": "directories_first",
-    // Whether to sort file and folder names case-sensitively.
-    // "default": Case-insensitive natural sort, lowercase preferred in ties.
-    // "upper":   Uppercase names grouped before lowercase, natural sort within.
-    // "lower":   Lowercase names grouped before uppercase, natural sort within.
-    // "unicode":  Pure Unicode codepoint comparison, no case folding.
-    "sort_order": "default",
-    // Whether to hide the root entry when only one folder is open in the window;
-    // this also affects how file paths appear in the file finder history.
-    "hide_root": false,
-    // Whether to hide the hidden entries in the project panel.
-    "hide_hidden": false
-  }
+// Project Panel Settings
+"project_panel": {
+  "button": true,                 // Show/hide button in the status bar
+  "default_width": 240,           // Default panel width
+  "dock": "right",                // Position of the dock (left, right)
+  "entry_spacing": "comfortable", // Vertical spacing (comfortable, standard)
+  "file_icons": true,             // Show/hide file icons
+  "folder_indicator": "icon",     // Dir glyph: icon, chevron, both
+  "git_status": true,             // Indicate new/updated files
+  "indent_size": 20,              // Pixels for each successive indent
+  "auto_reveal_entries": true,    // Show file in panel when activating its buffer
+  "auto_fold_dirs": true,         // Fold dirs with single subdir
+  "bold_folder_labels": false,    // Show folder names with bold text
+  "sticky_scroll": true,          // Stick parent directories at top of the project panel.
+  "drag_and_drop": true,          // Whether drag and drop is enabled
+  "scrollbar": {                  // Project panel scrollbar settings
+    "show": null                  // Show/hide: (auto, system, always, never)
+  },
+  "show_diagnostics": "all",      //
+  // Settings related to indent guides in the project panel.
+  "indent_guides": {
+    // When to show indent guides in the project panel. (always, never)
+    "show": "always"
+  },
+  // Sort order for entries (directories_first, mixed, files_first)
+  "sort_mode": "directories_first",
+  // Whether to sort file and folder names case-sensitively.
+  // "default": Case-insensitive natural sort, lowercase preferred in ties.
+  // "upper":   Uppercase names grouped before lowercase, natural sort within.
+  // "lower":   Lowercase names grouped before uppercase, natural sort within.
+  // "unicode":  Pure Unicode codepoint comparison, no case folding.
+  "sort_order": "default",
+  // Whether to hide the root entry when only one folder is open in the window;
+  // this also affects how file paths appear in the file finder history.
+  "hide_root": false,
+  // Whether to hide the hidden entries in the project panel.
+  "hide_hidden": false
+}
 ```
 
 ## Agent Panel
 
 ```json [settings]
 {
-  "agent": {
-    "enabled": true, // Enable/disable the agent
-    "button": true, // Show/hide the icon in the status bar
-    "dock": "right", // Where to dock: left, right, bottom
-    "default_width": 640, // Default width (left/right docked)
-    "default_height": 320 // Default height (bottom docked)
-  },
-  // Controls the font family and size for agent responses in the agent panel.
-  // If not specified, they fall back to the UI font family and size.
-  "agent_ui_font_family": "Inter",
-  "agent_ui_font_size": 15,
-  // Controls the font family and size for the agent panel's message editor
-  // and user messages.
-  // If not specified, the font family falls back to the buffer font family.
-  "agent_buffer_font_family": "Berkeley Mono",
-  "agent_buffer_font_size": 12
+	"agent": {
+		"enabled": true, // Enable/disable the agent
+		"button": true, // Show/hide the icon in the status bar
+		"dock": "right", // Where to dock: left, right, bottom
+		"default_width": 640, // Default width (left/right docked)
+		"default_height": 320 // Default height (bottom docked)
+	},
+	// Controls the font family and size for agent responses in the agent panel.
+	// If not specified, they fall back to the UI font family and size.
+	"agent_ui_font_family": "Inter",
+	"agent_ui_font_size": 15,
+	// Controls the font family and size for the agent panel's message editor
+	// and user messages.
+	// If not specified, the font family falls back to the buffer font family.
+	"agent_buffer_font_family": "Berkeley Mono",
+	"agent_buffer_font_size": 12
 }
 ```
 
-See [Zed AI Documentation](./ai/overview.md) for additional non-visual AI settings.
+See [Zed AI Documentation](./ai/overview.md) for additional non-visual AI
+settings.
 
 ## Terminal Panel
 
@@ -568,7 +580,8 @@ See [Zed AI Documentation](./ai/overview.md) for additional non-visual AI settin
   }
 ```
 
-See [Terminal settings](./reference/all-settings.md#terminal) for additional non-visual customization options.
+See [Terminal settings](./reference/all-settings.md#terminal) for additional
+non-visual customization options.
 
 ### Other Panels
 
@@ -616,12 +629,12 @@ See [Terminal settings](./reference/all-settings.md#terminal) for additional non
 
 ```json [settings]
 {
-  // Collaboration Panel
-  "collaboration_panel": {
-    "button": true, // Show/hide status bar icon
-    "dock": "left", // Where to dock: left, right
-    "default_width": 240 // Default width of the collaboration panel.
-  },
-  "show_call_status_icon": true // Shown call status in the OS status bar.
+	// Collaboration Panel
+	"collaboration_panel": {
+		"button": true, // Show/hide status bar icon
+		"dock": "left", // Where to dock: left, right
+		"default_width": 240 // Default width of the collaboration panel.
+	},
+	"show_call_status_icon": true // Shown call status in the OS status bar.
 }
 ```

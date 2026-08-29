@@ -13,13 +13,13 @@ if [ -n "$WSL_DISTRO_NAME" ]; then
 fi
 
 if [ $IN_WSL = true ]; then
-    WSL_USER="$USER"
-    if [ -z "$WSL_USER" ]; then
-        WSL_USER="$USERNAME"
-    fi
-    "$ZED_PATH/zed.exe" --wsl "$WSL_USER@$WSL_DISTRO_NAME" "$@"
-    exit $?
+	WSL_USER="$USER"
+	if [ -z "$WSL_USER" ]; then
+		WSL_USER="$USERNAME"
+	fi
+	"$ZED_PATH/zed.exe" --wsl "$WSL_USER@$WSL_DISTRO_NAME" "$@"
+	exit $?
 else
-    "$ZED_PATH/zed.exe" "$@"
-    exit $?
+	"$ZED_PATH/zed.exe" "$@"
+	exit $?
 fi

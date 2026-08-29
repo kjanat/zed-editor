@@ -3,15 +3,15 @@
 set -euo pipefail
 
 if command -v docker >/dev/null 2>&1; then
-    ENGINE="docker"
+	ENGINE="docker"
 elif command -v podman >/dev/null 2>&1; then
-    ENGINE="podman"
+	ENGINE="podman"
 else
-    echo "Neither Docker nor Podman found. Please install one of them."
-    exit 1
+	echo "Neither Docker nor Podman found. Please install one of them."
+	exit 1
 fi
 if [ ! -d ~/.mitmproxy ]; then
-    mkdir -p ~/.mitmproxy
+	mkdir -p ~/.mitmproxy
 fi
 
 CONTAINER_ID="$(${ENGINE} run -d --rm -it -v ~/.mitmproxy:/home/mitmproxy/.mitmproxy -p 9876:8080 mitmproxy/mitmproxy mitmdump)"

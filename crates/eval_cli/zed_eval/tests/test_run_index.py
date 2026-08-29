@@ -18,24 +18,20 @@ class RunIndexTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "nested" / "run-index.json"
             with self.with_index_path(path):
-                run_index.record_run(
-                    {
-                        "run_id": "run-1",
-                        "namespace": "alice",
-                        "experiment_name": "rf",
-                        "volume_name": "custom-volume",
-                        "agent_model": "sonnet-4.6",
-                        "created_at": "2026-01-01T00:00:00+00:00",
-                    }
-                )
-                run_index.record_run(
-                    {
-                        "run_id": "run-2",
-                        "namespace": "alice",
-                        "experiment_name": "qna",
-                        "volume_name": None,
-                    }
-                )
+                run_index.record_run({
+                    "run_id": "run-1",
+                    "namespace": "alice",
+                    "experiment_name": "rf",
+                    "volume_name": "custom-volume",
+                    "agent_model": "sonnet-4.6",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                })
+                run_index.record_run({
+                    "run_id": "run-2",
+                    "namespace": "alice",
+                    "experiment_name": "qna",
+                    "volume_name": None,
+                })
 
                 self.assertEqual(run_index.lookup("run-1")["volume"], "custom-volume")
                 self.assertEqual(
@@ -49,20 +45,16 @@ class RunIndexTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "run-index.json"
             with self.with_index_path(path):
-                run_index.record_run(
-                    {
-                        "run_id": "run-1",
-                        "namespace": "alice",
-                        "experiment_name": "rf",
-                    }
-                )
-                run_index.record_run(
-                    {
-                        "run_id": "run-1",
-                        "namespace": "bob",
-                        "experiment_name": "tw",
-                    }
-                )
+                run_index.record_run({
+                    "run_id": "run-1",
+                    "namespace": "alice",
+                    "experiment_name": "rf",
+                })
+                run_index.record_run({
+                    "run_id": "run-1",
+                    "namespace": "bob",
+                    "experiment_name": "tw",
+                })
 
                 entries = run_index.recent(10)
                 self.assertEqual(len(entries), 1)
@@ -78,19 +70,17 @@ class RunIndexTests(unittest.TestCase):
                 self.assertEqual(run_index.recent(), [])
 
                 path.write_text(
-                    json.dumps(
-                        {
-                            "runs": [
-                                {"run_id": "missing-location"},
-                                ["not", "a", "dict"],
-                                {
-                                    "run_id": "run-1",
-                                    "namespace": "alice",
-                                    "experiment_name": "rf",
-                                },
-                            ]
-                        }
-                    )
+                    json.dumps({
+                        "runs": [
+                            {"run_id": "missing-location"},
+                            ["not", "a", "dict"],
+                            {
+                                "run_id": "run-1",
+                                "namespace": "alice",
+                                "experiment_name": "rf",
+                            },
+                        ]
+                    })
                 )
                 self.assertIsNone(run_index.lookup("missing-location"))
                 self.assertEqual(run_index.lookup("run-1")["experiment_name"], "rf")
@@ -100,13 +90,11 @@ class RunIndexTests(unittest.TestCase):
             path = Path(temporary_directory) / "run-index.json"
             with self.with_index_path(path), patch.object(run_index, "MAX_ENTRIES", 2):
                 for index in range(3):
-                    run_index.record_run(
-                        {
-                            "run_id": f"run-{index}",
-                            "namespace": "alice",
-                            "experiment_name": "rf",
-                        }
-                    )
+                    run_index.record_run({
+                        "run_id": f"run-{index}",
+                        "namespace": "alice",
+                        "experiment_name": "rf",
+                    })
 
                 self.assertEqual(
                     [entry["run_id"] for entry in run_index.recent(10)],
@@ -118,13 +106,11 @@ class RunIndexTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "run-index.json"
             with self.with_index_path(path):
-                run_index.record_run(
-                    {
-                        "run_id": "run-1",
-                        "namespace": "alice",
-                        "experiment_name": "rf",
-                    }
-                )
+                run_index.record_run({
+                    "run_id": "run-1",
+                    "namespace": "alice",
+                    "experiment_name": "rf",
+                })
                 self.assertEqual(run_index.recent(0), [])
 
 

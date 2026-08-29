@@ -35,7 +35,8 @@ Does the writing flow like natural speech from a thoughtful developer?
 | 2     | Obvious structural patterns (parallel triplets, em dash chains) |
 | 1     | Robotic cadence, formulaic construction throughout              |
 
-**Red flags:** Em dash overuse, "It's not X, it's Y" constructions, triple parallel lists, sentences all same length.
+**Red flags:** Em dash overuse, "It's not X, it's Y" constructions, triple
+parallel lists, sentences all same length.
 
 ---
 
@@ -53,8 +54,10 @@ Does the copy state facts without hype or emotional manipulation?
 
 **Examples:**
 
-- ✅ "Zed renders every frame on the GPU. You'll notice the difference when you scroll."
-- ❌ "Experience the revolutionary speed that will absolutely transform how you code!"
+- ✅ "Zed renders every frame on the GPU. You'll notice the difference when you
+  scroll."
+- ❌ "Experience the revolutionary speed that will absolutely transform how you
+  code!"
 
 ---
 
@@ -72,7 +75,8 @@ Does the copy treat the reader as a peer, not a prospect?
 
 **Examples:**
 
-- ✅ "Tree-sitter provides incremental parsing, so syntax highlighting updates as you type."
+- ✅ "Tree-sitter provides incremental parsing, so syntax highlighting updates
+  as you type."
 - ❌ "Don't worry about the technical details — just know it's fast!"
 
 ---
@@ -91,8 +95,10 @@ Is the most important information first?
 
 **Examples:**
 
-- ✅ "Inline completions now stream token-by-token. Previously, you waited for the full response."
-- ❌ "We've been thinking a lot about the developer experience, and after months of work, we're thrilled to share that..."
+- ✅ "Inline completions now stream token-by-token. Previously, you waited for
+  the full response."
+- ❌ "We've been thinking a lot about the developer experience, and after months
+  of work, we're thrilled to share that..."
 
 ---
 
@@ -127,7 +133,8 @@ Does the tone remain unified throughout?
 | 2     | Multiple competing voices                  |
 | 1     | Jarring tonal inconsistency                |
 
-**Check for:** Shifts between casual/formal, technical/marketing, confident/hedging.
+**Check for:** Shifts between casual/formal, technical/marketing,
+confident/hedging.
 
 ---
 

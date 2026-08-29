@@ -25,18 +25,26 @@ BASE=(--ro-bind /nix /nix --ro-bind /run /run --proc /proc --dev /dev --unshare-
 
 PASS=0
 FAIL=0
-ok()   { echo "PASS: $1"; PASS=$((PASS + 1)); }
-bad()  { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
+ok() {
+	echo "PASS: $1"
+	PASS=$((PASS + 1))
+}
+bad() {
+	echo "FAIL: $1"
+	FAIL=$((FAIL + 1))
+}
 
 # expect_ok  <desc> <cmd...>   -> command must exit 0
 expect_ok() {
-  desc=$1; shift
-  if "$@"; then ok "$desc"; else bad "$desc (expected success, got exit $?)"; fi
+	desc=$1
+	shift
+	if "$@"; then ok "$desc"; else bad "$desc (expected success, got exit $?)"; fi
 }
 # expect_fail <desc> <cmd...>  -> command must exit non-zero
 expect_fail() {
-  desc=$1; shift
-  if "$@"; then bad "$desc (expected failure, but it succeeded)"; else ok "$desc"; fi
+	desc=$1
+	shift
+	if "$@"; then bad "$desc (expected failure, but it succeeded)"; else ok "$desc"; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -48,8 +56,8 @@ expect_fail() {
 ROOT=$(mktemp -d /tmp/bwrap-smoke.XXXXXX)
 trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$ROOT/secret" "$ROOT/allowed" "$ROOT/writable"
-echo "TOP SECRET" > "$ROOT/secret/secret.txt"
-echo "you may read me" > "$ROOT/allowed/note.txt"
+echo "TOP SECRET" >"$ROOT/secret/secret.txt"
+echo "you may read me" >"$ROOT/allowed/note.txt"
 
 echo "=================================================================="
 echo "bwrap: $BWRAP"
@@ -60,33 +68,33 @@ echo "## Filesystem isolation"
 # The host secret must be invisible: sandbox sees a fresh tmpfs at $ROOT,
 # so the secret path simply doesn't exist.
 expect_fail "host secret file is NOT readable from sandbox" \
-  "$BWRAP" "${BASE[@]}" --tmpfs "$ROOT" "$CAT" "$ROOT/secret/secret.txt"
+	"$BWRAP" "${BASE[@]}" --tmpfs "$ROOT" "$CAT" "$ROOT/secret/secret.txt"
 
 # Likewise nothing under /tmp leaks in by default (no bind for it).
 expect_fail "host /tmp is NOT visible from sandbox" \
-  "$BWRAP" "${BASE[@]}" --tmpfs /tmp "$CAT" "$ROOT/allowed/note.txt"
+	"$BWRAP" "${BASE[@]}" --tmpfs /tmp "$CAT" "$ROOT/allowed/note.txt"
 
 # An explicitly read-only bind IS readable...
 expect_ok "explicitly ro-bound file IS readable" \
-  "$BWRAP" "${BASE[@]}" --ro-bind "$ROOT/allowed" /data "$CAT" /data/note.txt
+	"$BWRAP" "${BASE[@]}" --ro-bind "$ROOT/allowed" /data "$CAT" /data/note.txt
 
 # ...but writing to a read-only bind must fail.
 expect_fail "writing to a ro-bound dir is denied" \
-  "$BWRAP" "${BASE[@]}" --ro-bind "$ROOT/allowed" /data "$TOUCH" /data/evil
+	"$BWRAP" "${BASE[@]}" --ro-bind "$ROOT/allowed" /data "$TOUCH" /data/evil
 
 # Confirm the host file was not modified/created behind the sandbox's back.
 expect_fail "ro-bind write did not leak to host" test -e "$ROOT/allowed/evil"
 
 # A read-write bind allows writes...
 expect_ok "writing to a rw-bound dir succeeds" \
-  "$BWRAP" "${BASE[@]}" --bind "$ROOT/writable" /data "$TOUCH" /data/hello
+	"$BWRAP" "${BASE[@]}" --bind "$ROOT/writable" /data "$TOUCH" /data/hello
 
 # ...and the write really lands on the host file (proves the bind, not a tmpfs).
 expect_ok "rw-bind write is visible on host" test -e "$ROOT/writable/hello"
 
 # Writing to a tmpfs overlay succeeds inside, but must NOT touch the host dir.
 expect_ok "writing into a tmpfs works inside sandbox" \
-  "$BWRAP" "${BASE[@]}" --tmpfs "$ROOT/writable" "$TOUCH" "$ROOT/writable/ephemeral"
+	"$BWRAP" "${BASE[@]}" --tmpfs "$ROOT/writable" "$TOUCH" "$ROOT/writable/ephemeral"
 expect_fail "tmpfs write did not leak to host" test -e "$ROOT/writable/ephemeral"
 
 echo "------------------------------------------------------------------"
@@ -96,20 +104,20 @@ NETCHECK='import socket; s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.s
 
 # With --unshare-net the sandbox has only loopback: outbound TCP must fail.
 expect_fail "outbound TCP is blocked with --unshare-net" \
-  "$BWRAP" "${BASE[@]}" --unshare-net "$PY" -c "$NETCHECK"
+	"$BWRAP" "${BASE[@]}" --unshare-net "$PY" -c "$NETCHECK"
 
 # Loopback still exists inside the isolated netns.
 expect_ok "loopback is up inside --unshare-net" \
-  "$BWRAP" "${BASE[@]}" --unshare-net "$PY" -c \
-    'import socket; socket.socket().bind(("127.0.0.1",0)); print("lo ok")'
+	"$BWRAP" "${BASE[@]}" --unshare-net "$PY" -c \
+	'import socket; socket.socket().bind(("127.0.0.1",0)); print("lo ok")'
 
 # Without --unshare-net the host network is shared, so the same connect works
 # (skipped automatically if the host itself has no outbound connectivity).
 if timeout 6 "$PY" -c "$NETCHECK" >/dev/null 2>&1; then
-  expect_ok "outbound TCP works when network is shared" \
-    "$BWRAP" "${BASE[@]}" "$PY" -c "$NETCHECK"
+	expect_ok "outbound TCP works when network is shared" \
+		"$BWRAP" "${BASE[@]}" "$PY" -c "$NETCHECK"
 else
-  echo "SKIP: host has no outbound TCP; cannot test shared-network case"
+	echo "SKIP: host has no outbound TCP; cannot test shared-network case"
 fi
 
 echo "=================================================================="

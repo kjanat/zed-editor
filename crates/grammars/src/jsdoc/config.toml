@@ -1,8 +1,8 @@
-name = "JSDoc"
-grammar = "jsdoc"
+name             = "JSDoc"
+grammar          = "jsdoc"
 autoclose_before = "]}"
-brackets = [
+brackets         = [
   { start = "{", end = "}", close = true, newline = false },
   { start = "[", end = "]", close = true, newline = false },
 ]
-hidden = true
+hidden           = true

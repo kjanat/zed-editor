@@ -417,11 +417,7 @@ fn different_key(map: &mut HashMap<String, usize>, first: String, second: String
     }
 }
 
-fn different_map(
-    first: &HashMap<String, usize>,
-    second: &mut HashMap<String, usize>,
-    key: String,
-) {
+fn different_map(first: &HashMap<String, usize>, second: &mut HashMap<String, usize>, key: String) {
     match first.get(&key) {
         Some(_) => {}
         None => {
@@ -513,10 +509,7 @@ fn inherent_clone_is_a_different_key(map: &mut HashMap<DisguisedKey, usize>, key
     }
 }
 
-fn inherent_to_owned_is_a_different_key(
-    map: &mut HashMap<DisguisedKey, usize>,
-    key: DisguisedKey,
-) {
+fn inherent_to_owned_is_a_different_key(map: &mut HashMap<DisguisedKey, usize>, key: DisguisedKey) {
     match map.get(&key) {
         Some(_) => {}
         None => {

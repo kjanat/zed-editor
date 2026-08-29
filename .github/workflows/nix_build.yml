@@ -3,12 +3,12 @@
 name: nix_build
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: '1'
+  RUST_BACKTRACE: "1"
 on:
   pull_request:
     types:
-    - labeled
-    - synchronize
+      - labeled
+      - synchronize
 permissions:
   contents: read
 jobs:
@@ -19,29 +19,29 @@ jobs:
       ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
       ZED_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
       ZED_CLOUD_PROVIDER_ADDITIONAL_MODELS_JSON: ${{ secrets.ZED_CLOUD_PROVIDER_ADDITIONAL_MODELS_JSON }}
-      GIT_LFS_SKIP_SMUDGE: '1'
+      GIT_LFS_SKIP_SMUDGE: "1"
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::cache_nix_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        cache: nix
-    - name: nix_build::build_nix::install_nix
-      uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      with:
-        github_access_token: ${{ secrets.GITHUB_TOKEN }}
-    - name: nix_build::build_nix::cachix_action
-      uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
-      with:
-        name: zed
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        cachixArgs: -v
-        pushFilter: -zed-editor-[0-9.]*
-    - name: nix_build::build_nix::build
-      run: nix build .#default -L --accept-flake-config
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::cache_nix_dependencies_namespace
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          cache: nix
+      - name: nix_build::build_nix::install_nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: nix_build::build_nix::cachix_action
+        uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
+        with:
+          name: zed
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cachixArgs: -v
+          pushFilter: -zed-editor-[0-9.]*
+      - name: nix_build::build_nix::build
+        run: nix build .#default -L --accept-flake-config
     timeout-minutes: 60
     continue-on-error: true
   build_nix_mac_aarch64:
@@ -51,44 +51,44 @@ jobs:
       ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
       ZED_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
       ZED_CLOUD_PROVIDER_ADDITIONAL_MODELS_JSON: ${{ secrets.ZED_CLOUD_PROVIDER_ADDITIONAL_MODELS_JSON }}
-      GIT_LFS_SKIP_SMUDGE: '1'
+      GIT_LFS_SKIP_SMUDGE: "1"
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::cache_nix_store_macos
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        path: ~/nix-cache
-    - name: nix_build::build_nix::install_nix
-      uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      with:
-        github_access_token: ${{ secrets.GITHUB_TOKEN }}
-    - name: nix_build::build_nix::configure_local_nix_cache
-      run: |
-        mkdir -p ~/nix-cache
-        echo "extra-substituters = file://$HOME/nix-cache?priority=10" | sudo tee -a /etc/nix/nix.conf
-        echo "require-sigs = false" | sudo tee -a /etc/nix/nix.conf
-        sudo launchctl kickstart -k system/org.nixos.nix-daemon
-    - name: nix_build::build_nix::cachix_action
-      uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
-      with:
-        name: zed
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        cachixArgs: -v
-        pushFilter: -zed-editor-[0-9.]*
-    - name: nix_build::build_nix::build
-      run: nix build .#default -L --accept-flake-config
-    - name: nix_build::build_nix::export_to_local_nix_cache
-      if: always()
-      run: |
-        if [ -L result ]; then
-          echo "Copying build closure to local binary cache..."
-          nix copy --to "file://$HOME/nix-cache" ./result || echo "Warning: nix copy to local cache failed"
-        else
-          echo "No build result found, skipping cache export."
-        fi
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::cache_nix_store_macos
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          path: ~/nix-cache
+      - name: nix_build::build_nix::install_nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: nix_build::build_nix::configure_local_nix_cache
+        run: |
+          mkdir -p ~/nix-cache
+          echo "extra-substituters = file://$HOME/nix-cache?priority=10" | sudo tee -a /etc/nix/nix.conf
+          echo "require-sigs = false" | sudo tee -a /etc/nix/nix.conf
+          sudo launchctl kickstart -k system/org.nixos.nix-daemon
+      - name: nix_build::build_nix::cachix_action
+        uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
+        with:
+          name: zed
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cachixArgs: -v
+          pushFilter: -zed-editor-[0-9.]*
+      - name: nix_build::build_nix::build
+        run: nix build .#default -L --accept-flake-config
+      - name: nix_build::build_nix::export_to_local_nix_cache
+        if: always()
+        run: |
+          if [ -L result ]; then
+            echo "Copying build closure to local binary cache..."
+            nix copy --to "file://$HOME/nix-cache" ./result || echo "Warning: nix copy to local cache failed"
+          else
+            echo "No build result found, skipping cache export."
+          fi
     timeout-minutes: 60
     continue-on-error: true
 concurrency:

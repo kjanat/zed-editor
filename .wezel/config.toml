@@ -1,5 +1,5 @@
 project_id = "85f406f4-69f1-4f41-b8e2-45550cd925d7"
-name = "zed"
+name       = "zed"
 
 [tools]
 targets = [

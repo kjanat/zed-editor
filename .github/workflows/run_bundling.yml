@@ -3,12 +3,12 @@
 name: run_bundling
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: '1'
+  RUST_BACKTRACE: "1"
 on:
   pull_request:
     types:
-    - labeled
-    - synchronize
+      - labeled
+      - synchronize
 permissions:
   contents: read
 jobs:
@@ -24,37 +24,37 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        cache: rust
-        path: ~/.rustup
-    - name: steps::setup_sentry
-      uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
-      with:
-        token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-    - name: steps::setup_linux
-      run: ./script/linux
-    - name: steps::download_wasi_sdk
-      run: ./script/download-wasi-sdk
-    - name: ./script/bundle-linux
-      run: ./script/bundle-linux
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-linux-aarch64.tar.gz
-        path: target/release/zed-linux-aarch64.tar.gz
-        if-no-files-found: error
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-remote-server-linux-aarch64.gz
-        path: target/zed-remote-server-linux-aarch64.gz
-        if-no-files-found: error
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::cache_rust_dependencies_namespace
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          cache: rust
+          path: ~/.rustup
+      - name: steps::setup_sentry
+        uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
+        with:
+          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      - name: steps::setup_linux
+        run: ./script/linux
+      - name: steps::download_wasi_sdk
+        run: ./script/download-wasi-sdk
+      - name: ./script/bundle-linux
+        run: ./script/bundle-linux
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-linux-aarch64.tar.gz
+          path: target/release/zed-linux-aarch64.tar.gz
+          if-no-files-found: error
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-remote-server-linux-aarch64.gz
+          path: target/zed-remote-server-linux-aarch64.gz
+          if-no-files-found: error
     timeout-minutes: 60
   bundle_linux_x86_64:
     if: |-
@@ -68,37 +68,37 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        cache: rust
-        path: ~/.rustup
-    - name: steps::setup_sentry
-      uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
-      with:
-        token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-    - name: steps::setup_linux
-      run: ./script/linux
-    - name: steps::download_wasi_sdk
-      run: ./script/download-wasi-sdk
-    - name: ./script/bundle-linux
-      run: ./script/bundle-linux
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-linux-x86_64.tar.gz
-        path: target/release/zed-linux-x86_64.tar.gz
-        if-no-files-found: error
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-remote-server-linux-x86_64.gz
-        path: target/zed-remote-server-linux-x86_64.gz
-        if-no-files-found: error
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::cache_rust_dependencies_namespace
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          cache: rust
+          path: ~/.rustup
+      - name: steps::setup_sentry
+        uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
+        with:
+          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      - name: steps::setup_linux
+        run: ./script/linux
+      - name: steps::download_wasi_sdk
+        run: ./script/download-wasi-sdk
+      - name: ./script/bundle-linux
+        run: ./script/bundle-linux
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-linux-x86_64.tar.gz
+          path: target/release/zed-linux-x86_64.tar.gz
+          if-no-files-found: error
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-remote-server-linux-x86_64.gz
+          path: target/zed-remote-server-linux-x86_64.gz
+          if-no-files-found: error
     timeout-minutes: 60
   build_static_bwrap_linux_aarch64:
     if: |-
@@ -106,33 +106,33 @@ jobs:
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'run-bundling'))
     runs-on: namespace-profile-8x32-ubuntu-2004-arm-m4
     steps:
-    - name: steps::cache_nix_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        cache: nix
-    - name: run_bundling::build_static_bwrap
-      uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      with:
-        github_access_token: ${{ secrets.GITHUB_TOKEN }}
-    - name: run_bundling::build_static_bwrap
-      uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
-      with:
-        name: zed
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        cachixArgs: -v
-    - name: run_bundling::build_static_bwrap
-      run: nix build nixpkgs#pkgsStatic.bubblewrap -L
-    - name: run_bundling::build_static_bwrap
-      run: |
-        cp result/bin/bwrap bwrap-linux-aarch64
-        chmod 755 bwrap-linux-aarch64
-        gzip -f --stdout --best bwrap-linux-aarch64 > bwrap-linux-aarch64.gz
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: bwrap-linux-aarch64.gz
-        path: bwrap-linux-aarch64.gz
-        if-no-files-found: error
+      - name: steps::cache_nix_dependencies_namespace
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          cache: nix
+      - name: run_bundling::build_static_bwrap
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: run_bundling::build_static_bwrap
+        uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
+        with:
+          name: zed
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cachixArgs: -v
+      - name: run_bundling::build_static_bwrap
+        run: nix build nixpkgs#pkgsStatic.bubblewrap -L
+      - name: run_bundling::build_static_bwrap
+        run: |
+          cp result/bin/bwrap bwrap-linux-aarch64
+          chmod 755 bwrap-linux-aarch64
+          gzip -f --stdout --best bwrap-linux-aarch64 > bwrap-linux-aarch64.gz
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bwrap-linux-aarch64.gz
+          path: bwrap-linux-aarch64.gz
+          if-no-files-found: error
     timeout-minutes: 60
   build_static_bwrap_linux_x86_64:
     if: |-
@@ -140,33 +140,33 @@ jobs:
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'run-bundling'))
     runs-on: namespace-profile-32x64-ubuntu-2004
     steps:
-    - name: steps::cache_nix_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        cache: nix
-    - name: run_bundling::build_static_bwrap
-      uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      with:
-        github_access_token: ${{ secrets.GITHUB_TOKEN }}
-    - name: run_bundling::build_static_bwrap
-      uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
-      with:
-        name: zed
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        cachixArgs: -v
-    - name: run_bundling::build_static_bwrap
-      run: nix build nixpkgs#pkgsStatic.bubblewrap -L
-    - name: run_bundling::build_static_bwrap
-      run: |
-        cp result/bin/bwrap bwrap-linux-x86_64
-        chmod 755 bwrap-linux-x86_64
-        gzip -f --stdout --best bwrap-linux-x86_64 > bwrap-linux-x86_64.gz
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: bwrap-linux-x86_64.gz
-        path: bwrap-linux-x86_64.gz
-        if-no-files-found: error
+      - name: steps::cache_nix_dependencies_namespace
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          cache: nix
+      - name: run_bundling::build_static_bwrap
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: run_bundling::build_static_bwrap
+        uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad
+        with:
+          name: zed
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cachixArgs: -v
+      - name: run_bundling::build_static_bwrap
+        run: nix build nixpkgs#pkgsStatic.bubblewrap -L
+      - name: run_bundling::build_static_bwrap
+        run: |
+          cp result/bin/bwrap bwrap-linux-x86_64
+          chmod 755 bwrap-linux-x86_64
+          gzip -f --stdout --best bwrap-linux-x86_64 > bwrap-linux-x86_64.gz
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bwrap-linux-x86_64.gz
+          path: bwrap-linux-x86_64.gz
+          if-no-files-found: error
     timeout-minutes: 60
   bundle_mac_aarch64:
     if: |-
@@ -183,41 +183,41 @@ jobs:
       APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        cache: rust
-        path: ~/.rustup
-    - name: steps::setup_node
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-      with:
-        node-version: '24'
-        check-latest: true
-        package-manager-cache: false
-    - name: steps::setup_sentry
-      uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
-      with:
-        token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-    - name: steps::clear_target_dir_if_large
-      run: ./script/clear-target-dir-if-larger-than 350 200
-    - name: run_bundling::bundle_mac::bundle_mac
-      run: ./script/bundle-mac aarch64-apple-darwin
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: Zed-aarch64.dmg
-        path: target/aarch64-apple-darwin/release/Zed-aarch64.dmg
-        if-no-files-found: error
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-remote-server-macos-aarch64.gz
-        path: target/zed-remote-server-macos-aarch64.gz
-        if-no-files-found: error
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::cache_rust_dependencies_namespace
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          cache: rust
+          path: ~/.rustup
+      - name: steps::setup_node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          check-latest: true
+          package-manager-cache: false
+      - name: steps::setup_sentry
+        uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
+        with:
+          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      - name: steps::clear_target_dir_if_large
+        run: ./script/clear-target-dir-if-larger-than 350 200
+      - name: run_bundling::bundle_mac::bundle_mac
+        run: ./script/bundle-mac aarch64-apple-darwin
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Zed-aarch64.dmg
+          path: target/aarch64-apple-darwin/release/Zed-aarch64.dmg
+          if-no-files-found: error
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-remote-server-macos-aarch64.gz
+          path: target/zed-remote-server-macos-aarch64.gz
+          if-no-files-found: error
     timeout-minutes: 60
   bundle_mac_x86_64:
     if: |-
@@ -234,41 +234,41 @@ jobs:
       APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-      with:
-        cache: rust
-        path: ~/.rustup
-    - name: steps::setup_node
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-      with:
-        node-version: '24'
-        check-latest: true
-        package-manager-cache: false
-    - name: steps::setup_sentry
-      uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
-      with:
-        token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-    - name: steps::clear_target_dir_if_large
-      run: ./script/clear-target-dir-if-larger-than 350 200
-    - name: run_bundling::bundle_mac::bundle_mac
-      run: ./script/bundle-mac x86_64-apple-darwin
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: Zed-x86_64.dmg
-        path: target/x86_64-apple-darwin/release/Zed-x86_64.dmg
-        if-no-files-found: error
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-remote-server-macos-x86_64.gz
-        path: target/zed-remote-server-macos-x86_64.gz
-        if-no-files-found: error
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::cache_rust_dependencies_namespace
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
+        with:
+          cache: rust
+          path: ~/.rustup
+      - name: steps::setup_node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          check-latest: true
+          package-manager-cache: false
+      - name: steps::setup_sentry
+        uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
+        with:
+          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      - name: steps::clear_target_dir_if_large
+        run: ./script/clear-target-dir-if-larger-than 350 200
+      - name: run_bundling::bundle_mac::bundle_mac
+        run: ./script/bundle-mac x86_64-apple-darwin
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Zed-x86_64.dmg
+          path: target/x86_64-apple-darwin/release/Zed-x86_64.dmg
+          if-no-files-found: error
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-remote-server-macos-x86_64.gz
+          path: target/zed-remote-server-macos-x86_64.gz
+          if-no-files-found: error
     timeout-minutes: 60
   bundle_windows_aarch64:
     if: |-
@@ -289,33 +289,33 @@ jobs:
       TIMESTAMP_DIGEST: SHA256
       TIMESTAMP_SERVER: http://timestamp.acs.microsoft.com
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::setup_sentry
-      uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
-      with:
-        token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-    - name: steps::clear_target_dir_if_large
-      run: ./script/clear-target-dir-if-larger-than.ps1 350 200
-      shell: pwsh
-    - name: run_bundling::bundle_windows::bundle_windows
-      run: script/bundle-windows.ps1 -Architecture aarch64
-      shell: pwsh
-      working-directory: ${{ env.ZED_WORKSPACE }}
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: Zed-aarch64.exe
-        path: target/Zed-aarch64.exe
-        if-no-files-found: error
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-remote-server-windows-aarch64.zip
-        path: target/zed-remote-server-windows-aarch64.zip
-        if-no-files-found: error
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::setup_sentry
+        uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
+        with:
+          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      - name: steps::clear_target_dir_if_large
+        run: ./script/clear-target-dir-if-larger-than.ps1 350 200
+        shell: pwsh
+      - name: run_bundling::bundle_windows::bundle_windows
+        run: script/bundle-windows.ps1 -Architecture aarch64
+        shell: pwsh
+        working-directory: ${{ env.ZED_WORKSPACE }}
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Zed-aarch64.exe
+          path: target/Zed-aarch64.exe
+          if-no-files-found: error
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-remote-server-windows-aarch64.zip
+          path: target/zed-remote-server-windows-aarch64.zip
+          if-no-files-found: error
     timeout-minutes: 60
   bundle_windows_x86_64:
     if: |-
@@ -336,33 +336,33 @@ jobs:
       TIMESTAMP_DIGEST: SHA256
       TIMESTAMP_SERVER: http://timestamp.acs.microsoft.com
     steps:
-    - name: steps::checkout_repo
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        clean: false
-    - name: steps::setup_sentry
-      uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
-      with:
-        token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-    - name: steps::clear_target_dir_if_large
-      run: ./script/clear-target-dir-if-larger-than.ps1 350 200
-      shell: pwsh
-    - name: run_bundling::bundle_windows::bundle_windows
-      run: script/bundle-windows.ps1 -Architecture x86_64
-      shell: pwsh
-      working-directory: ${{ env.ZED_WORKSPACE }}
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: Zed-x86_64.exe
-        path: target/Zed-x86_64.exe
-        if-no-files-found: error
-    - name: run_bundling::upload_artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: zed-remote-server-windows-x86_64.zip
-        path: target/zed-remote-server-windows-x86_64.zip
-        if-no-files-found: error
+      - name: steps::checkout_repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+      - name: steps::setup_sentry
+        uses: matbour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3
+        with:
+          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      - name: steps::clear_target_dir_if_large
+        run: ./script/clear-target-dir-if-larger-than.ps1 350 200
+        shell: pwsh
+      - name: run_bundling::bundle_windows::bundle_windows
+        run: script/bundle-windows.ps1 -Architecture x86_64
+        shell: pwsh
+        working-directory: ${{ env.ZED_WORKSPACE }}
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Zed-x86_64.exe
+          path: target/Zed-x86_64.exe
+          if-no-files-found: error
+      - name: run_bundling::upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-remote-server-windows-x86_64.zip
+          path: target/zed-remote-server-windows-x86_64.zip
+          if-no-files-found: error
     timeout-minutes: 60
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

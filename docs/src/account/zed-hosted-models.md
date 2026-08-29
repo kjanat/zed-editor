@@ -5,9 +5,13 @@ description: AI models available via Zed Pro including Claude Fable 5, Claude So
 
 # Zed-Hosted Models
 
-Zed's plans offer hosted versions of major LLMs with higher rate limits than direct API access. Model availability is updated regularly. To use your own API keys instead, see [LLM Providers](../ai/llm-providers.md). For general setup, see [AI Quick Start](../ai/quick-start.md).
+Zed's plans offer hosted versions of major LLMs with higher rate limits than
+direct API access. Model availability is updated regularly. To use your own API
+keys instead, see [LLM Providers](../ai/llm-providers.md). For general setup,
+see [AI Quick Start](../ai/quick-start.md).
 
-> **Note:** Claude Fable 5, Claude Opus models, GPT-5.5 pro, and GPT-5.4 pro are only available on Zed Pro and Zed Business.
+> **Note:** Claude Fable 5, Claude Opus models, GPT-5.5 pro, and GPT-5.4 pro are
+> only available on Zed Pro and Zed Business.
 
 | Model             | Provider  | Token Type          | Provider Price per 1M tokens | Zed Price per 1M tokens |
 | ----------------- | --------- | ------------------- | ---------------------------- | ----------------------- |
@@ -95,34 +99,52 @@ Zed's plans offer hosted versions of major LLMs with higher rate limits than dir
 | Gemini 3 Flash    | Google    | Input               | $0.50                        | $0.55                   |
 |                   | Google    | Output              | $3.00                        | $3.30                   |
 
-> **Warn:** Anthropic retains prompts and outputs sent to Claude Fable 5 for at least 30 days for trust and safety purposes. The no-training commitment still applies, and Zed does not retain your prompts or outputs. See [Provider Safety Retention for Designated Models](../ai/privacy-and-security.md#provider-safety-retention).
+> **Warn:** Anthropic retains prompts and outputs sent to Claude Fable 5 for at
+> least 30 days for trust and safety purposes. The no-training commitment still
+> applies, and Zed does not retain your prompts or outputs. See
+> [Provider Safety Retention for Designated Models](../ai/privacy-and-security.md#provider-safety-retention).
 
-The Claude Sonnet 5 prices shown above use Anthropic's introductory pricing through August 31, 2026.
+The Claude Sonnet 5 prices shown above use Anthropic's introductory pricing
+through August 31, 2026.
 
 ## Recent Model Retirements {#recent-model-retirements}
 
 Zed no longer offers the models below:
 
-- Claude Opus 4.1 → Claude Opus 4.5, Claude Opus 4.6, Claude Opus 4.7, or Claude Opus 4.8
+- Claude Opus 4.1 → Claude Opus 4.5, Claude Opus 4.6, Claude Opus 4.7, or Claude
+  Opus 4.8
 - Claude Sonnet 4 → Claude Sonnet 4.5 or Claude Sonnet 4.6
-- Claude Sonnet 3.7 (retired February 19, 2026) → Claude Sonnet 4.5 or Claude Sonnet 4.6
+- Claude Sonnet 3.7 (retired February 19, 2026) → Claude Sonnet 4.5 or Claude
+  Sonnet 4.6
 - GPT-5.1 and GPT-5 → GPT-5.2 or GPT-5.2-Codex
 - Gemini 2.5 Pro → Gemini 3.1 Pro
 - Gemini 3 Pro (retired March 26, 2026) → Gemini 3.1 Pro
 - Gemini 2.5 Flash → Gemini 3 Flash or Gemini 3.5 Flash
-- Grok 4, Grok 4 Fast, Grok 4 Fast (Non-Reasoning), and Grok Code Fast 1 ([retired May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement)). Zed no longer offers hosted xAI models.
+- Grok 4, Grok 4 Fast, Grok 4 Fast (Non-Reasoning), and Grok Code Fast 1
+  ([retired May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement)).
+  Zed no longer offers hosted xAI models.
 
 ## Usage {#usage}
 
-Any usage of a Zed-hosted model will be billed at the Zed Price (rightmost column above). See [Plans & Pricing](./plans-and-pricing.md) for details on Zed's plans and limits for use of hosted models.
+Any usage of a Zed-hosted model will be billed at the Zed Price (rightmost
+column above). See [Plans & Pricing](./plans-and-pricing.md) for details on
+Zed's plans and limits for use of hosted models.
 
-Because Zed-hosted Gemini models do not use Google context caching, Gemini usage is billed only as input and output tokens; there is no separate cached-input price for these models. This preserves zero-data-retention behavior for hosted Gemini requests. For background, see Google's Vertex AI documentation on [context caching](https://cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview) and [zero data retention](https://cloud.google.com/vertex-ai/generative-ai/docs/vertex-ai-zero-data-retention).
+Because Zed-hosted Gemini models do not use Google context caching, Gemini usage
+is billed only as input and output tokens; there is no separate cached-input
+price for these models. This preserves zero-data-retention behavior for hosted
+Gemini requests. For background, see Google's Vertex AI documentation on
+[context caching](https://cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview)
+and
+[zero data retention](https://cloud.google.com/vertex-ai/generative-ai/docs/vertex-ai-zero-data-retention).
 
-> LLMs can enter unproductive loops that require user intervention. Monitor longer-running tasks and interrupt if needed.
+> LLMs can enter unproductive loops that require user intervention. Monitor
+> longer-running tasks and interrupt if needed.
 
 ## Context Windows {#context-windows}
 
-A context window is the maximum span of text and code an LLM can consider at once, including both the input prompt and output generated by the model.
+A context window is the maximum span of text and code an LLM can consider at
+once, including both the input prompt and output generated by the model.
 
 | Model             | Provider  | Zed-Hosted Context Window |
 | ----------------- | --------- | ------------------------- |
@@ -152,13 +174,16 @@ A context window is the maximum span of text and code an LLM can consider at onc
 | Gemini 3.5 Flash  | Google    | 1M                        |
 | Gemini 3 Flash    | Google    | 1M                        |
 
-> Zed currently limits hosted Gemini 3.1 Pro requests to 200k tokens because pricing changes above that context size.
+> Zed currently limits hosted Gemini 3.1 Pro requests to 200k tokens because
+> pricing changes above that context size.
 
-Each Agent thread in Zed maintains its own context window.
-The more prompts, attached files, and responses included in a session, the larger the context window grows.
+Each Agent thread in Zed maintains its own context window. The more prompts,
+attached files, and responses included in a session, the larger the context
+window grows.
 
 Start a new thread for each distinct task to keep context focused.
 
 ## Tool Calls {#tool-calls}
 
-Models can use [tools](../ai/tools.md) to interface with your code, search the web, and perform other useful functions.
+Models can use [tools](../ai/tools.md) to interface with your code, search the
+web, and perform other useful functions.

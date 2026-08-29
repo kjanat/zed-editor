@@ -38,26 +38,25 @@ revision = "24007727d42b4caceda3095ac685c463fae1ba1a"
 +            .map(|c| (c, self.languages_by_id[c.language_id].path.as_ref()))
              .collect()
      }
-
 ```
 
 ## Cursor Position
 
 ```tree-sitter/crates/loader/src/loader.rs
-    fn language_for_id(&self, id: usize) -> LoaderResult<Language> {
-        let (path, language, externals) = &self.languages_by_id[id];
-        //  ^[CURSOR_POSITION]
-        language
-            .get_or_try_init(|| {
-                let src_path = path.join("src");
-                self.load_language_at_path(CompileConfig::new(
-                    &src_path,
-                    externals.as_deref(),
-                    None,
-                ))
-            })
-            .cloned()
-    }
+fn language_for_id(&self, id: usize) -> LoaderResult<Language> {
+    let (path, language, externals) = &self.languages_by_id[id];
+    //  ^[CURSOR_POSITION]
+    language
+        .get_or_try_init(|| {
+            let src_path = path.join("src");
+            self.load_language_at_path(CompileConfig::new(
+                &src_path,
+                externals.as_deref(),
+                None,
+            ))
+        })
+        .cloned()
+}
 ```
 
 ## Expected Patch

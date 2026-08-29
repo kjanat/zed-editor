@@ -5,7 +5,9 @@ description: "Configure Makefile language support in Zed, including language ser
 
 # Makefile
 
-Makefile language support in Zed is provided by the community-maintained [Make extension](https://github.com/caius/zed-make).
-Report issues to: [https://github.com/caius/zed-make/issues](https://github.com/caius/zed-make/issues).
+Makefile language support in Zed is provided by the community-maintained
+[Make extension](https://github.com/caius/zed-make). Report issues to:
+[https://github.com/caius/zed-make/issues](https://github.com/caius/zed-make/issues).
 
-- Tree-sitter: [caius/tree-sitter-make](https://github.com/caius/tree-sitter-make)
+- Tree-sitter:
+  [caius/tree-sitter-make](https://github.com/caius/tree-sitter-make)

@@ -3,7 +3,8 @@ repository_url = "https://github.com/microsoft/vscode"
 revision = "e28a92fc1fbe9de11eca2f8ad19899334bff8525"
 +++
 
-This prediction requires the model to see the `IDiffComputationResult` type definition.
+This prediction requires the model to see the `IDiffComputationResult` type
+definition.
 
 ## Edit History
 
@@ -23,17 +24,17 @@ This prediction requires the model to see the `IDiffComputationResult` type defi
 ## Cursor Position
 
 ```src/vs/editor/browser/widget/diffEditorWidget.ts
-			if (currentToken === this._diffComputationToken
-				&& currentOriginalModel === this._originalEditor.getModel()
-				&& currentModifiedModel === this._modifiedEditor.getModel()
-			) {
-				this._setState(editorBrowser.DiffEditorState.DiffComputed);
-				console.log("did quit:")
-				//                    ^[CURSOR_POSITION]
-				this._diffComputationResult = result;
-				this._updateDecorationsRunner.schedule();
-				this._onDidUpdateDiff.fire();
-			}
+if (currentToken === this._diffComputationToken
+	&& currentOriginalModel === this._originalEditor.getModel()
+	&& currentModifiedModel === this._modifiedEditor.getModel()
+) {
+	this._setState(editorBrowser.DiffEditorState.DiffComputed);
+	console.log("did quit:")
+	//                    ^[CURSOR_POSITION]
+	this._diffComputationResult = result;
+	this._updateDecorationsRunner.schedule();
+	this._onDidUpdateDiff.fire();
+}
 ```
 
 ## Expected Patch

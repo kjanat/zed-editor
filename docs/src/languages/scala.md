@@ -5,10 +5,12 @@ description: "Configure Scala language support in Zed, including language server
 
 # Scala
 
-Scala language support in Zed is provided by the community-maintained [Scala extension](https://github.com/scalameta/metals-zed).
-Report issues to: [https://github.com/scalameta/metals-zed/issues](https://github.com/scalameta/metals-zed/issues)
+Scala language support in Zed is provided by the community-maintained
+[Scala extension](https://github.com/scalameta/metals-zed). Report issues to:
+[https://github.com/scalameta/metals-zed/issues](https://github.com/scalameta/metals-zed/issues)
 
-- Tree-sitter: [tree-sitter/tree-sitter-scala](https://github.com/tree-sitter/tree-sitter-scala)
+- Tree-sitter:
+  [tree-sitter/tree-sitter-scala](https://github.com/tree-sitter/tree-sitter-scala)
 - Language Server: [scalameta/metals](https://github.com/scalameta/metals)
 
 ## Setup
@@ -24,10 +26,15 @@ Report issues to: [https://github.com/scalameta/metals-zed/issues](https://githu
 
 Behavior of the Metals language server can be controlled with:
 
-- `.scalafix.conf` file - See [Scalafix Configuration](https://scalacenter.github.io/scalafix/docs/users/configuration.html)
-- `.scalafmt.conf` file - See [Scalafmt Configuration](https://scalameta.org/scalafmt/docs/configuration.html)
+- `.scalafix.conf` file - See
+  [Scalafix Configuration](https://scalacenter.github.io/scalafix/docs/users/configuration.html)
+- `.scalafmt.conf` file - See
+  [Scalafmt Configuration](https://scalameta.org/scalafmt/docs/configuration.html)
 
-You can place these files in the root of your project or specify their location in the Metals configuration. See [Metals User Configuration](https://scalameta.org/metals/docs/editors/user-configuration) for more.
+You can place these files in the root of your project or specify their location
+in the Metals configuration. See
+[Metals User Configuration](https://scalameta.org/metals/docs/editors/user-configuration)
+for more.
 
 <!--
 TBD: Provide LSP configuration example for metals in Zed settings.json. metals.{javaHome,excludedPackages,customProjectRoot} etc.

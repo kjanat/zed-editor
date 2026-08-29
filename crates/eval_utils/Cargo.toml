@@ -1,17 +1,17 @@
 [package]
-name = "eval_utils"
-version = "0.1.0"
+name              = "eval_utils"
+version           = "0.1.0"
 edition.workspace = true
+license           = "GPL-3.0-or-later"
 publish.workspace = true
-license = "GPL-3.0-or-later"
-
-[lints]
-workspace = true
 
 [lib]
-path = "src/eval_utils.rs"
 doctest = false
+path    = "src/eval_utils.rs"
 
 [dependencies]
 gpui_platform.workspace = true
-smol.workspace = true
+smol.workspace          = true
+
+[lints]
+workspace = true

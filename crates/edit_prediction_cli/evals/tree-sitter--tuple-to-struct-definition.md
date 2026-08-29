@@ -89,7 +89,6 @@ pub struct CompileConfig<'a> {
      pub header_paths: Vec<&'a Path>,
 ```
 
-
 ```diff
 --- a/tree-sitter/crates/loader/src/loader.rs
 +++ b/tree-sitter/crates/loader/src/loader.rs

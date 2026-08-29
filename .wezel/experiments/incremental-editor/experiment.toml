@@ -9,7 +9,7 @@ description = "Measures rebuild time after a trivial edit to the editor crate"
 # Prime the build cache off a clean build, so the measured step below pays only
 # for editor and its dependents.
 [step.cargo.prime-cache]
-command = "build"
+command      = "build"
 build_target = ["zed"]
 
 # The patch only appends an empty `//!` line to the crate-root doc comment, so
@@ -17,7 +17,7 @@ build_target = ["zed"]
 # of touching the crate at all: rustc's incremental reuse for editor itself,
 # plus the relink of every crate downstream of it.
 [step.cargo.editor-doc-comment]
-apply-diff = true
-command = "build"
-build_target = ["zed"]
+apply-diff                       = true
+command                          = "build"
+build_target                     = ["zed"]
 summary.incremental-editor-build = { outcome = "time_ms", aggregation = "min", samples = 5 }

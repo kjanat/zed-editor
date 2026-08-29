@@ -15,29 +15,52 @@ Clone the [Zed repository](https://github.com/zed-industries/zed).
 
 - Install [rustup](https://www.rust-lang.org/tools/install)
 
-- Install either [Visual Studio](https://visualstudio.microsoft.com/downloads/) with the optional components `MSVC v*** - VS YYYY C++ x64/x86 build tools` and `MSVC v*** - VS YYYY C++ x64/x86 Spectre-mitigated libs (latest)` (`v***` is your VS version and `YYYY` is the release year. Adjust architecture as needed).
-- Or, if you prefer a slimmer installation, install only the [Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (plus the libs above) and the "Desktop development with C++" workload.
-  This setup is not picked up automatically by rustup. Before compiling, initialize environment variables by launching the developer shell (cmd/PowerShell) installed in the Start menu or Windows Terminal.
-- Install the Windows 11 or 10 SDK for your system, and make sure at least `Windows 10 SDK version 2104 (10.0.20348.0)` is installed. You can download it from the [Windows SDK Archive](https://developer.microsoft.com/windows/downloads/windows-sdk/).
-- Install [CMake](https://cmake.org/download) (required by [a dependency](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/)). Or you can install it through Visual Studio Installer, then manually add the `bin` directory to your `PATH`, for example: `C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
+- Install either [Visual Studio](https://visualstudio.microsoft.com/downloads/)
+  with the optional components `MSVC v*** - VS YYYY C++ x64/x86 build tools` and
+  `MSVC v*** - VS YYYY C++ x64/x86 Spectre-mitigated libs (latest)` (`v***` is
+  your VS version and `YYYY` is the release year. Adjust architecture as
+  needed).
+- Or, if you prefer a slimmer installation, install only the
+  [Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  (plus the libs above) and the "Desktop development with C++" workload. This
+  setup is not picked up automatically by rustup. Before compiling, initialize
+  environment variables by launching the developer shell (cmd/PowerShell)
+  installed in the Start menu or Windows Terminal.
+- Install the Windows 11 or 10 SDK for your system, and make sure at least
+  `Windows 10 SDK version 2104 (10.0.20348.0)` is installed. You can download it
+  from the
+  [Windows SDK Archive](https://developer.microsoft.com/windows/downloads/windows-sdk/).
+- Install [CMake](https://cmake.org/download) (required by
+  [a dependency](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/)).
+  Or you can install it through Visual Studio Installer, then manually add the
+  `bin` directory to your `PATH`, for example:
+  `C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
 
-> Starting with Visual Studio 2026 (or MSVC 14.50), you need to install optional components `MSVC Build Tools for x64/x86 (Latest)` and `C++ Spectre-mitigated libraries for x64/x86 (Latest MSVC)`, since Microsoft has decoupled the MSVC version from the Visual Studio version. The traditional naming format `MSVC v*** - VS YYYY C++ x64/x86 ...` will no longer be applicable to newer MSVC toolchain. See [this blog](https://devblogs.microsoft.com/cppblog/new-release-cadence-and-support-lifecycle-for-msvc-build-tools/) for more details.
+> Starting with Visual Studio 2026 (or MSVC 14.50), you need to install optional
+> components `MSVC Build Tools for x64/x86 (Latest)` and
+> `C++ Spectre-mitigated libraries for x64/x86 (Latest MSVC)`, since Microsoft
+> has decoupled the MSVC version from the Visual Studio version. The traditional
+> naming format `MSVC v*** - VS YYYY C++ x64/x86 ...` will no longer be
+> applicable to newer MSVC toolchain. See
+> [this blog](https://devblogs.microsoft.com/cppblog/new-release-cadence-and-support-lifecycle-for-msvc-build-tools/)
+> for more details.
 
-If you cannot compile Zed, make sure a Visual Studio installation includes at least the following components:
+If you cannot compile Zed, make sure a Visual Studio installation includes at
+least the following components:
 
 ```json
 {
-  "version": "1.0",
-  "components": [
-    "Microsoft.VisualStudio.Component.CoreEditor",
-    "Microsoft.VisualStudio.Workload.CoreEditor",
-    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-    "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake",
-    "Microsoft.VisualStudio.Component.VC.CMake.Project",
-    "Microsoft.VisualStudio.Component.Windows11SDK.26100",
-    "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
-  ],
-  "extensions": []
+	"version": "1.0",
+	"components": [
+		"Microsoft.VisualStudio.Component.CoreEditor",
+		"Microsoft.VisualStudio.Workload.CoreEditor",
+		"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+		"Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake",
+		"Microsoft.VisualStudio.Component.VC.CMake.Project",
+		"Microsoft.VisualStudio.Component.Windows11SDK.26100",
+		"Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
+	],
+	"extensions": []
 }
 ```
 
@@ -45,25 +68,25 @@ If you are using Build Tools only, make sure these components are installed:
 
 ```json
 {
-  "version": "1.0",
-  "components": [
-    "Microsoft.VisualStudio.Component.Roslyn.Compiler",
-    "Microsoft.Component.MSBuild",
-    "Microsoft.VisualStudio.Component.CoreBuildTools",
-    "Microsoft.VisualStudio.Workload.MSBuildTools",
-    "Microsoft.VisualStudio.Component.Windows10SDK",
-    "Microsoft.VisualStudio.Component.VC.CoreBuildTools",
-    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-    "Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
-    "Microsoft.VisualStudio.Component.Windows11SDK.26100",
-    "Microsoft.VisualStudio.Component.VC.CMake.Project",
-    "Microsoft.VisualStudio.Component.TextTemplating",
-    "Microsoft.VisualStudio.Component.VC.CoreIde",
-    "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
-    "Microsoft.VisualStudio.Workload.VCTools",
-    "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
-  ],
-  "extensions": []
+	"version": "1.0",
+	"components": [
+		"Microsoft.VisualStudio.Component.Roslyn.Compiler",
+		"Microsoft.Component.MSBuild",
+		"Microsoft.VisualStudio.Component.CoreBuildTools",
+		"Microsoft.VisualStudio.Workload.MSBuildTools",
+		"Microsoft.VisualStudio.Component.Windows10SDK",
+		"Microsoft.VisualStudio.Component.VC.CoreBuildTools",
+		"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+		"Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
+		"Microsoft.VisualStudio.Component.Windows11SDK.26100",
+		"Microsoft.VisualStudio.Component.VC.CMake.Project",
+		"Microsoft.VisualStudio.Component.TextTemplating",
+		"Microsoft.VisualStudio.Component.VC.CoreIde",
+		"Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
+		"Microsoft.VisualStudio.Workload.VCTools",
+		"Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
+	],
+	"extensions": []
 }
 ```
 
@@ -75,7 +98,11 @@ You can export this component list as follows:
 
 ### Notes
 
-Update `pg_hba.conf` in the `data` directory to use `trust` instead of `scram-sha-256` for the `host` method. Otherwise, the connection fails with `password authentication failed`. The file is typically at `C:\Program Files\PostgreSQL\17\data\pg_hba.conf`. After the change, it should look like this:
+Update `pg_hba.conf` in the `data` directory to use `trust` instead of
+`scram-sha-256` for the `host` method. Otherwise, the connection fails with
+`password authentication failed`. The file is typically at
+`C:\Program Files\PostgreSQL\17\data\pg_hba.conf`. After the change, it should
+look like this:
 
 ```conf
 # IPv4 local connections:
@@ -84,18 +111,24 @@ host    all             all             127.0.0.1/32            trust
 host    all             all             ::1/128                 trust
 ```
 
-If you are using a non-Latin Windows locale, set the `lc_messages` parameter in `postgresql.conf` (in the `data` directory) to `English_United States.1252` (or another UTF-8-compatible encoding available on your system). Otherwise, the database may panic. The file should look like this:
+If you are using a non-Latin Windows locale, set the `lc_messages` parameter in
+`postgresql.conf` (in the `data` directory) to `English_United States.1252` (or
+another UTF-8-compatible encoding available on your system). Otherwise, the
+database may panic. The file should look like this:
 
 ```conf
 # lc_messages = 'Chinese (Simplified)_China.936' # locale for system error message strings
 lc_messages = 'English_United States.1252'
 ```
 
-After this, restart the `postgresql` service. Press `Win`+`R` to open the Run dialog, enter `services.msc`, and select **OK**. In Services Manager, find `postgresql-x64-XX`, right-click it, and select **Restart**.
+After this, restart the `postgresql` service. Press `Win`+`R` to open the Run
+dialog, enter `services.msc`, and select **OK**. In Services Manager, find
+`postgresql-x64-XX`, right-click it, and select **Restart**.
 
 ## Building from source
 
-Once you have the dependencies installed, you can build Zed using [Cargo](https://doc.rust-lang.org/cargo/).
+Once you have the dependencies installed, you can build Zed using
+[Cargo](https://doc.rust-lang.org/cargo/).
 
 For a debug build:
 
@@ -115,23 +148,32 @@ And to run the tests:
 cargo test --workspace
 ```
 
-> **Note:** Visual regression tests are currently macOS-only and require Screen Recording permission. See [Building Zed for macOS](./macos.md#visual-regression-tests) for details.
+> **Note:** Visual regression tests are currently macOS-only and require Screen
+> Recording permission. See
+> [Building Zed for macOS](./macos.md#visual-regression-tests) for details.
 
 ## Installing from msys2
 
-Zed does not support unofficial MSYS2 Zed packages built for Mingw-w64. Please report any issues you may have with [mingw-w64-zed](https://packages.msys2.org/base/mingw-w64-zed) to [msys2/MINGW-packages/issues](https://github.com/msys2/MINGW-packages/issues?q=is%3Aissue+is%3Aopen+zed).
+Zed does not support unofficial MSYS2 Zed packages built for Mingw-w64. Please
+report any issues you may have with
+[mingw-w64-zed](https://packages.msys2.org/base/mingw-w64-zed) to
+[msys2/MINGW-packages/issues](https://github.com/msys2/MINGW-packages/issues?q=is%3Aissue+is%3Aopen+zed).
 
-Please refer to [MSYS2 documentation](https://www.msys2.org/docs/ides-editors/#zed) first.
+Please refer to
+[MSYS2 documentation](https://www.msys2.org/docs/ides-editors/#zed) first.
 
 ## Troubleshooting
 
 ### Setting `RUSTFLAGS` env var breaks builds
 
-If you set the `RUSTFLAGS` env var, it will override the `rustflags` settings in `.cargo/config.toml` which is required to properly build Zed.
+If you set the `RUSTFLAGS` env var, it will override the `rustflags` settings in
+`.cargo/config.toml` which is required to properly build Zed.
 
-Because these settings change over time, the resulting build errors may vary from linker failures to other hard-to-diagnose errors.
+Because these settings change over time, the resulting build errors may vary
+from linker failures to other hard-to-diagnose errors.
 
-If you need extra Rust flags, use one of the following approaches in `.cargo/config.toml`:
+If you need extra Rust flags, use one of the following approaches in
+`.cargo/config.toml`:
 
 Add your flags in the build section
 
@@ -145,14 +187,16 @@ Add your flags in the windows target section
 ```toml
 [target.'cfg(target_os = "windows")']
 rustflags = [
-    "--cfg",
-    "windows_slim_errors",
-    "-C",
-    "target-feature=+crt-static",
+  "--cfg",
+  "windows_slim_errors",
+  "-C",
+  "target-feature=+crt-static",
 ]
 ```
 
-Or, create a new `.cargo/config.toml` in the parent directory of the Zed repo (see below). This is useful in CI because you do not need to edit the repo's original `.cargo/config.toml`.
+Or, create a new `.cargo/config.toml` in the parent directory of the Zed repo
+(see below). This is useful in CI because you do not need to edit the repo's
+original `.cargo/config.toml`.
 
 ```
 upper_dir
@@ -166,10 +210,11 @@ upper_dir
         └── ...
 ```
 
-In the new (above) `.cargo/config.toml`, if we wanted to add `--cfg gles` to our rustflags, it would look like this
+In the new (above) `.cargo/config.toml`, if we wanted to add `--cfg gles` to our
+rustflags, it would look like this
 
 ```toml
-[target.'cfg(all())']
+[target."cfg(all())"]
 rustflags = ["--cfg", "gles"]
 ```
 
@@ -179,15 +224,20 @@ Try `cargo clean` and `cargo build`.
 
 ### `STATUS_ACCESS_VIOLATION`
 
-This error can happen if you are using the "rust-lld.exe" linker. Consider trying a different linker.
+This error can happen if you are using the "rust-lld.exe" linker. Consider
+trying a different linker.
 
-If you are using a global config, consider moving the Zed repository to a nested directory and add a `.cargo/config.toml` with a custom linker config in the parent directory.
+If you are using a global config, consider moving the Zed repository to a nested
+directory and add a `.cargo/config.toml` with a custom linker config in the
+parent directory.
 
-See this issue for more information [#12041](https://github.com/zed-industries/zed/issues/12041)
+See this issue for more information
+[#12041](https://github.com/zed-industries/zed/issues/12041)
 
 ### Invalid RC path selected
 
-Sometimes, depending on the security rules applied to your laptop, you may get the following error while compiling Zed:
+Sometimes, depending on the security rules applied to your laptop, you may get
+the following error while compiling Zed:
 
 ```
 error: failed to run custom build command for `zed(C:\Users\USER\src\zed\crates\zed)`
@@ -207,10 +257,12 @@ Caused by:
 warning: build failed, waiting for other jobs to finish...
 ```
 
-To fix this issue, manually set the `ZED_RC_TOOLKIT_PATH` environment variable to the RC toolkit path. Usually this is:
+To fix this issue, manually set the `ZED_RC_TOOLKIT_PATH` environment variable
+to the RC toolkit path. Usually this is:
 `C:\Program Files (x86)\Windows Kits\10\bin\<SDK_version>\x64`.
 
-See this [issue](https://github.com/zed-industries/zed/issues/18393) for more information.
+See this [issue](https://github.com/zed-industries/zed/issues/18393) for more
+information.
 
 ### Build fails: Path too long
 
@@ -239,7 +291,8 @@ And for Windows with this PS command:
 New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
 ```
 
-For more information on this, please see [win32 docs](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=powershell)
+For more information on this, please see
+[win32 docs](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=powershell)
 
 (You need to restart your system after enabling long-path support.)
 
@@ -247,10 +300,10 @@ For more information on this, please see [win32 docs](https://learn.microsoft.co
 
 #### Zed fails to launch
 
-Zed currently uses Vulkan as its graphics API on Windows. If Zed fails to launch, Vulkan is a common cause.
+Zed currently uses Vulkan as its graphics API on Windows. If Zed fails to
+launch, Vulkan is a common cause.
 
-You can check the Zed log at:
-`C:\Users\YOU\AppData\Local\Zed\logs\Zed.log`
+You can check the Zed log at: `C:\Users\YOU\AppData\Local\Zed\logs\Zed.log`
 
 If you see messages like:
 
@@ -259,6 +312,8 @@ If you see messages like:
 - `GPU Crashed`
 - `ERROR_SURFACE_LOST_KHR`
 
-Vulkan may not be working correctly on your system. Updating GPU drivers often resolves this.
+Vulkan may not be working correctly on your system. Updating GPU drivers often
+resolves this.
 
-If there's nothing Vulkan-related in the logs and you happen to have Bandicam installed, try uninstalling it. Zed is currently not compatible with Bandicam.
+If there's nothing Vulkan-related in the logs and you happen to have Bandicam
+installed, try uninstalling it. Zed is currently not compatible with Bandicam.

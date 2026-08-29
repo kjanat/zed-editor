@@ -84,9 +84,9 @@ def parse_parts(values: list[str] | None) -> list[str]:
     requested = parse_comma_values(values)
     if any(value.lower() == "all" for value in requested):
         return list(ALL_SWE_ATLAS_PARTS)
-    return dedupe_preserving_order(
-        [config.canonical_part(value) for value in requested]
-    )
+    return dedupe_preserving_order([
+        config.canonical_part(value) for value in requested
+    ])
 
 
 def configure_modal_environment(args: argparse.Namespace) -> None:

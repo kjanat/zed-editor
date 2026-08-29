@@ -5,17 +5,22 @@ description: "Extension Capabilities for Zed extensions."
 
 # Extension Capabilities
 
-The operations that Zed extensions are able to perform are governed by a capability system.
+The operations that Zed extensions are able to perform are governed by a
+capability system.
 
 ## Restricting capabilities
 
-As a user, you have the option of restricting the capabilities that are granted to extensions.
+As a user, you have the option of restricting the capabilities that are granted
+to extensions.
 
 This is controlled via the `granted_extension_capabilities` setting.
 
-Restricting or removing a capability will cause an error to be returned when an extension attempts to call the corresponding extension API without sufficient capabilities.
+Restricting or removing a capability will cause an error to be returned when an
+extension attempts to call the corresponding extension API without sufficient
+capabilities.
 
-For example, to restrict downloads to files from GitHub, set `host` for the `download_file` capability:
+For example, to restrict downloads to files from GitHub, set `host` for the
+`download_file` capability:
 
 ```diff
 {
@@ -28,21 +33,25 @@ For example, to restrict downloads to files from GitHub, set `host` for the `dow
 }
 ```
 
-If you don't want extensions to be able to perform _any_ capabilities, you can remove all granted capabilities:
+If you don't want extensions to be able to perform *any* capabilities, you can
+remove all granted capabilities:
 
 ```json
 {
-  "granted_extension_capabilities": []
+	"granted_extension_capabilities": []
 }
 ```
 
-> Note that this will likely make many extensions non-functional, at least in their default configuration.
+> Note that this will likely make many extensions non-functional, at least in
+> their default configuration.
 
 ## Capabilities
 
 ### `process:exec`
 
-The `process:exec` capability grants extensions the ability to invoke commands using [`zed_extension_api::process::Command`](https://docs.rs/zed_extension_api/latest/zed_extension_api/process/struct.Command.html).
+The `process:exec` capability grants extensions the ability to invoke commands
+using
+[`zed_extension_api::process::Command`](https://docs.rs/zed_extension_api/latest/zed_extension_api/process/struct.Command.html).
 
 #### Examples
 
@@ -60,7 +69,9 @@ To allow a specific command (e.g., `gem`) to be executed with any arguments:
 
 ### `download_file`
 
-The `download_file` capability grants extensions the ability to download files using [`zed_extension_api::download_file`](https://docs.rs/zed_extension_api/latest/zed_extension_api/fn.download_file.html).
+The `download_file` capability grants extensions the ability to download files
+using
+[`zed_extension_api::download_file`](https://docs.rs/zed_extension_api/latest/zed_extension_api/fn.download_file.html).
 
 #### Examples
 
@@ -84,7 +95,9 @@ To allow any file to be downloaded from a specific GitHub repository:
 
 ### `npm:install`
 
-The `npm:install` capability grants extensions the ability to install npm packages using [`zed_extension_api::npm_install_package`](https://docs.rs/zed_extension_api/latest/zed_extension_api/fn.npm_install_package.html).
+The `npm:install` capability grants extensions the ability to install npm
+packages using
+[`zed_extension_api::npm_install_package`](https://docs.rs/zed_extension_api/latest/zed_extension_api/fn.npm_install_package.html).
 
 #### Examples
 

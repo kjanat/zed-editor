@@ -134,20 +134,16 @@ def build_harness_command(run_request: dict[str, Any], jobs_dir: str) -> list[st
 
     openai_compatible_provider_json = run_request.get("openai_compatible_provider_json")
     if openai_compatible_provider_json:
-        command.extend(
-            [
-                "--ae",
-                f"ZED_OPENAI_COMPATIBLE_PROVIDERS={openai_compatible_provider_json}",
-            ]
-        )
+        command.extend([
+            "--ae",
+            f"ZED_OPENAI_COMPATIBLE_PROVIDERS={openai_compatible_provider_json}",
+        ])
     anthropic_available_models_json = run_request.get("anthropic_available_models_json")
     if anthropic_available_models_json:
-        command.extend(
-            [
-                "--ae",
-                f"ZED_ANTHROPIC_AVAILABLE_MODELS={anthropic_available_models_json}",
-            ]
-        )
+        command.extend([
+            "--ae",
+            f"ZED_ANTHROPIC_AVAILABLE_MODELS={anthropic_available_models_json}",
+        ])
 
     # NOTE: Pier's network allowlist for air-gapped DeepSWE tasks is declared by
     # the agent (`network_allowlist()` on a Pier-native agent class), not via a

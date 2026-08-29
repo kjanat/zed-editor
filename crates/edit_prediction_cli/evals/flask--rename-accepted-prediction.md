@@ -20,6 +20,7 @@ revision = "2fec0b206c6e83ea813ab26597e15c96fab08be7"
 ```
 
 // User accepted prediction:
+
 ```diff
 --- a/tests/test_basic.py
 +++ b/tests/test_basic.py

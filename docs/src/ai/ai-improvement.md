@@ -10,9 +10,8 @@ Normal AI requests are not retained by Zed. For
 prohibit training on your prompts or code context and require zero data
 retention, except for
 [provider-designated models with safety retention](./privacy-and-security.md#provider-safety-retention),
-such as Anthropic's Covered Models.
-This page covers the cases where Zed may retain AI data because you explicitly
-shared it or opted in.
+such as Anthropic's Covered Models. This page covers the cases where Zed may
+retain AI data because you explicitly shared it or opted in.
 
 AI features in Zed include:
 
@@ -28,14 +27,14 @@ For the broader request path and provider data boundaries, see
 
 Zed-hosted model zero-data-retention and no-training commitments, including the
 exception for provider-designated models with safety retention (such as
-Anthropic's Covered Models), are documented
-on [AI Privacy](./privacy-and-security.md#data-retention-and-training).
+Anthropic's Covered Models), are documented on
+[AI Privacy](./privacy-and-security.md#data-retention-and-training).
 
 ## Response Ratings and Feedback {#ai-feedback-with-ratings}
 
-You can rate AI responses or submit feedback to help improve Zed's system prompt,
-tools, and AI product experience. Each share is opt-in, and sharing once does not
-grant permission for future collection.
+You can rate AI responses or submit feedback to help improve Zed's system
+prompt, tools, and AI product experience. Each share is opt-in, and sharing once
+does not grant permission for future collection.
 
 > **Warning:** Rating an AI response sends the conversation thread to Zed. The
 > conversation thread includes your messages, AI responses, and thread metadata.
@@ -51,18 +50,18 @@ may store:
 - thread metadata, such as model used, token counts, and timestamps
 - metadata about your Zed installation
 
-If you do not rate responses or submit feedback, Zed does not store Customer Data
-related to your AI feature usage for improvement.
+If you do not rate responses or submit feedback, Zed does not store Customer
+Data related to your AI feature usage for improvement.
 
 Telemetry related to Zed's AI features is collected separately. This includes
 metadata such as the AI feature being used and high-level interactions with the
-feature to understand performance, such as agent response time or edit acceptance
-and rejection. See [Telemetry](../telemetry.md) for details.
+feature to understand performance, such as agent response time or edit
+acceptance and rejection. See [Telemetry](../telemetry.md) for details.
 
 Collected feedback data is stored in Snowflake. Zed periodically reviews this
 data to refine prompts, tools, and product behavior. Stored feedback data is
-anonymized and stripped of sensitive information such as access tokens, user IDs,
-and email addresses.
+anonymized and stripped of sensitive information such as access tokens, user
+IDs, and email addresses.
 
 ## Edit Prediction Training Data {#edit-predictions}
 
@@ -72,12 +71,13 @@ these conditions are met:
 1. You opt in by toggling **Training Data Collection** under the **Privacy**
    section of the Edit Prediction status bar menu.
 2. The project is open source, detected by the presence of a license file. See
-   the [license detection logic](https://github.com/zed-industries/zed/blob/main/crates/edit_prediction/src/license_detection.rs).
+   the
+   [license detection logic](https://github.com/zed-industries/zed/blob/main/crates/edit_prediction/src/license_detection.rs).
 3. The file is not excluded by `edit_predictions.disabled_globs`.
 
 Edit Prediction setup and provider configuration live on the
-[Edit Prediction](./edit-prediction.md) page. This page only covers training data
-collection and retention.
+[Edit Prediction](./edit-prediction.md) page. This page only covers training
+data collection and retention.
 
 ### File Exclusions {#file-exclusions}
 
@@ -86,17 +86,17 @@ regardless of opt-in status:
 
 ```json [settings]
 {
-  "edit_predictions": {
-    "disabled_globs": [
-      "**/.env*",
-      "**/*.pem",
-      "**/*.key",
-      "**/*.cert",
-      "**/*.crt",
-      "**/.dev.vars",
-      "**/secrets.yml"
-    ]
-  }
+	"edit_predictions": {
+		"disabled_globs": [
+			"**/.env*",
+			"**/*.pem",
+			"**/*.key",
+			"**/*.cert",
+			"**/*.crt",
+			"**/.dev.vars",
+			"**/secrets.yml"
+		]
+	}
 }
 ```
 
@@ -106,9 +106,9 @@ in your Zed settings file ([how to edit](../configuring-zed.md#settings-files)):
 
 ```json [settings]
 {
-  "edit_predictions": {
-    "disabled_globs": ["secret_dir/*", "**/*.log"]
-  }
+	"edit_predictions": {
+		"disabled_globs": ["secret_dir/*", "**/*.log"]
+	}
 }
 ```
 

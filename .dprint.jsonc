@@ -1,0 +1,44 @@
+{
+	"$schema": "https://dprint.dev/schemas/v0.json",
+	"extends": "https://cdn.jsdelivr.net/gh/kjanat/kjanat@master/configs/dprint.remote.json",
+	"useTabs": true,
+	"jsonSchemaSort": { "associations": ["**/schema.json", "**/*.schema.json"] },
+	"json": { "trailingCommas": "maintain" },
+	"typescript": { "lineWidth": 150 },
+	"markdown": { "textWrap": "always", "emphasisKind": "asterisks", "lineWidth": 80 },
+	"markup": { "associations": ["!**/*.svg"] },
+	"ruff": { "preview": true },
+	"yaml": { "printWidth": 160 },
+	"exec": {
+		"cwd": "${configDir}",
+		"cacheKey": "1",
+		"timeout": 30,
+		"commands": [
+			{
+				"command": "tombi format - --stdin-filename {{file_path}}",
+				"exts": ["toml"],
+				"cacheKeyFiles": ["tombi.toml"],
+				"setupCommand": "npm i -g tombi",
+			},
+			{
+				"command": "rustfmt",
+				"exts": ["rs"],
+				"cacheKeyFiles": ["rustfmt.toml", ".cargo/config.toml", "rust-toolchain.toml"],
+			}
+		]
+	},
+	"excludes": [
+		"**/*.hbs",
+		"**/*.lock",
+		"**/fixtures",
+		"**/node_modules",
+		"**/target",
+		"**/test_data",
+		"crates/gpui_web/examples/hello_web/.cargo/config.toml",
+		"nix/livekit-libwebrtc/update.sh",
+		"script/lib/deploy-helpers.sh",
+	],
+	"plugins": [
+		"npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
+	],
+}

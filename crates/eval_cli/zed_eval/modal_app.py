@@ -59,7 +59,8 @@ def reload_volume() -> None:
 
 
 build_image = (
-    modal.Image.from_registry(RUST_IMAGE, add_python="3.13")
+    modal.Image
+    .from_registry(RUST_IMAGE, add_python="3.13")
     .apt_install("cmake", "build-essential", "curl", "xz-utils", "git")
     .run_commands(
         f"rustup toolchain install {RUST_VERSION} --profile minimal"
@@ -75,7 +76,8 @@ build_image = (
 )
 
 controller_image = (
-    modal.Image.debian_slim(python_version="3.13")
+    modal.Image
+    .debian_slim(python_version="3.13")
     .apt_install("bash", "ca-certificates", "curl", "git", "tar")
     .pip_install(f"modal=={config.MODAL_VERSION}", "uv")
     .run_commands(
@@ -316,17 +318,15 @@ def list_builds(limit: int = 50) -> list[dict[str, Any]]:
             continue
         build_info = load_json(build_dir / "build-info.json") or {}
         ready = (build_dir / "READY").exists() and (build_dir / "eval-cli").exists()
-        rows.append(
-            {
-                "build_id": build_dir.name,
-                "ready": ready,
-                "base_sha": build_info.get("base_sha"),
-                "patch_sha256": build_info.get("patch_sha256"),
-                "built_at_utc": build_info.get("built_at_utc"),
-                "binary_sha256": build_info.get("binary_sha256"),
-                "source": build_info.get("source"),
-            }
-        )
+        rows.append({
+            "build_id": build_dir.name,
+            "ready": ready,
+            "base_sha": build_info.get("base_sha"),
+            "patch_sha256": build_info.get("patch_sha256"),
+            "built_at_utc": build_info.get("built_at_utc"),
+            "binary_sha256": build_info.get("binary_sha256"),
+            "source": build_info.get("source"),
+        })
     rows.sort(key=lambda row: row.get("built_at_utc") or "", reverse=True)
     return rows[:limit]
 
@@ -539,20 +539,18 @@ def record_baseline(record: dict[str, Any]) -> dict[str, Any]:
             and entry.get("model") == record["model"]
         )
     ]
-    entries.append(
-        {
-            "experiment": record["experiment"],
-            "model": record["model"],
-            "base_sha": record.get("base_sha"),
-            "base_ref": record.get("base_ref"),
-            "on_main": record.get("on_main"),
-            "clean": record.get("clean"),
-            "judge": record.get("judge"),
-            "run_id": (record.get("run") or {}).get("run_id"),
-            "recorded_at": record.get("recorded_at"),
-            "path": f"baselines/{experiment_slug}/{model_slug}/current.json",
-        }
-    )
+    entries.append({
+        "experiment": record["experiment"],
+        "model": record["model"],
+        "base_sha": record.get("base_sha"),
+        "base_ref": record.get("base_ref"),
+        "on_main": record.get("on_main"),
+        "clean": record.get("clean"),
+        "judge": record.get("judge"),
+        "run_id": (record.get("run") or {}).get("run_id"),
+        "recorded_at": record.get("recorded_at"),
+        "path": f"baselines/{experiment_slug}/{model_slug}/current.json",
+    })
     entries.sort(
         key=lambda entry: (entry.get("experiment") or "", entry.get("model") or "")
     )

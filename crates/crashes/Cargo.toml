@@ -1,20 +1,23 @@
 [package]
-name = "crashes"
-version = "0.1.0"
-publish.workspace = true
+name              = "crashes"
+version           = "0.1.0"
 edition.workspace = true
-license = "GPL-3.0-or-later"
+license           = "GPL-3.0-or-later"
+publish.workspace = true
+
+[lib]
+path = "src/crashes.rs"
 
 [dependencies]
 async-process.workspace = true
 crash-handler.workspace = true
-log.workspace = true
-minidumper.workspace = true
-parking_lot.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-system_specs.workspace = true
-zstd.workspace = true
+log.workspace           = true
+minidumper.workspace    = true
+parking_lot.workspace   = true
+serde.workspace         = true
+serde_json.workspace    = true
+system_specs.workspace  = true
+zstd.workspace          = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
@@ -27,6 +30,3 @@ windows.workspace = true
 
 [lints]
 workspace = true
-
-[lib]
-path = "src/crashes.rs"

@@ -5,11 +5,14 @@ description: Configure always-on personal and project instructions for Zed Agent
 
 # Instructions
 
-Instructions are always-on context for the Zed Agent. Use instructions for persistent guidance that should apply to every relevant agent interaction.
+Instructions are always-on context for the Zed Agent. Use instructions for
+persistent guidance that should apply to every relevant agent interaction.
 
-Use [Skills](./skills.md) instead when you want reusable task instructions that can be invoked by name.
+Use [Skills](./skills.md) instead when you want reusable task instructions that
+can be invoked by name.
 
-Zed supports [`AGENTS.md`](https://agents.md/) as the primary instruction file for personal and project-level agent guidance.
+Zed supports [`AGENTS.md`](https://agents.md/) as the primary instruction file
+for personal and project-level agent guidance.
 
 ## Personal Instructions {#personal-instructions}
 
@@ -25,7 +28,8 @@ On Windows, the equivalent file is under `%APPDATA%\Zed\AGENTS.md`.
 
 ## Project Instructions {#project-instructions}
 
-Project instruction files apply to the current project. Zed uses the first matching file in this list:
+Project instruction files apply to the current project. Zed uses the first
+matching file in this list:
 
 - `.rules`
 - `.cursorrules`
@@ -48,7 +52,8 @@ Project instructions override personal `AGENTS.md` when they conflict.
 | `CLAUDE.md`                       | Loaded as compatible project instructions by Zed Agent | Claude reads natively | Claude Code CLI reads natively   |
 | `.github/copilot-instructions.md` | Loaded as compatible project instructions by Zed Agent | Depends on the agent  | Depends on the CLI               |
 
-External Agents and Terminal Threads may read their own native instruction files directly. Do not assume Zed's instruction loader controls those agents.
+External Agents and Terminal Threads may read their own native instruction files
+directly. Do not assume Zed's instruction loader controls those agents.
 
 ## Instructions vs. Skills {#instructions-vs-skills}
 
@@ -63,4 +68,5 @@ Rules have been replaced by Skills and Instructions:
 
 - reusable, on-demand Rules become [Skills](./skills.md)
 - default, always-on Rules become personal `AGENTS.md`
-- project `.rules` files remain supported as compatibility project instruction files
+- project `.rules` files remain supported as compatibility project instruction
+  files

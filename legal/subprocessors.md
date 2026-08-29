@@ -3,29 +3,46 @@ title: Subprocessor List
 slug: subprocessors
 ---
 
-Zed uses select third-party subprocessors to deliver core product functionality. Each subprocessor processes customer personal data only as necessary to provide its service, and all are subject to appropriate data protection agreements.
+Zed uses select third-party subprocessors to deliver core product functionality.
+Each subprocessor processes customer personal data only as necessary to provide
+its service, and all are subject to appropriate data protection agreements.
 
 ### How Zed Uses Subprocessors
 
-To provide fast, reliable, and secure functionality, Zed relies on a small number of carefully vetted third-party subprocessors. These vendors help us deliver essential capabilities such as hosting, billing, analytics, real-time collaboration, and hosted AI features.
+To provide fast, reliable, and secure functionality, Zed relies on a small
+number of carefully vetted third-party subprocessors. These vendors help us
+deliver essential capabilities such as hosting, billing, analytics, real-time
+collaboration, and hosted AI features.
 
-Each subprocessor only processes customer personal data as needed to provide its service.
+Each subprocessor only processes customer personal data as needed to provide its
+service.
 
-Zed maintains contracts and data protection agreements with all subprocessors, including GDPR-compliant terms where applicable. We do not sell customer data, and we do not share customer personal data with vendors for advertising or marketing purposes.
+Zed maintains contracts and data protection agreements with all subprocessors,
+including GDPR-compliant terms where applicable. We do not sell customer data,
+and we do not share customer personal data with vendors for advertising or
+marketing purposes.
 
 ### AI Subprocessors
 
 Zed offers three modes for AI:
 
-1. **Bring your own API key** — data goes directly from the customer to the model provider; Zed does not process or store it.
-2. [**External Agents**](https://zed.dev/docs/ai/external-agents) — Zed uses ACP to provide an enhanced experience with terminal-based AI code agents like Claude Code or OpenAI Codex. Data is not processed or stored by Zed when using external agents.
-3. **Zed-hosted models** — Zed sends customer prompts to one of its AI providers (listed below). These vendors act as subprocessors only for customers who choose this mode.
+1. **Bring your own API key** — data goes directly from the customer to the
+   model provider; Zed does not process or store it.
+2. [**External Agents**](https://zed.dev/docs/ai/external-agents) — Zed uses ACP
+   to provide an enhanced experience with terminal-based AI code agents like
+   Claude Code or OpenAI Codex. Data is not processed or stored by Zed when
+   using external agents.
+3. **Zed-hosted models** — Zed sends customer prompts to one of its AI providers
+   (listed below). These vendors act as subprocessors only for customers who
+   choose this mode.
 
 ### Ongoing Updates
 
 **Last Updated**: March 2, 2026
 
-This subprocessor list is reviewed regularly. Zed will notify customers of material changes in accordance with our [Terms](https://zed.dev/terms) and [Privacy Policy](https://zed.dev/privacy-policy).
+This subprocessor list is reviewed regularly. Zed will notify customers of
+material changes in accordance with our [Terms](https://zed.dev/terms) and
+[Privacy Policy](https://zed.dev/privacy-policy).
 
 ---
 
@@ -90,13 +107,15 @@ This subprocessor list is reviewed regularly. Zed will notify customers of mater
 
 ## AI Services (Zed-Hosted Models)
 
-_These subprocessors apply only when customers opt to use Zed's hosted AI models. When users supply their own API keys, or use external agents, data is sent directly to the provider and does not pass through Zed's infrastructure._
+*These subprocessors apply only when customers opt to use Zed's hosted AI
+models. When users supply their own API keys, or use external agents, data is
+sent directly to the provider and does not pass through Zed's infrastructure.*
 
-| Subprocessor        | Purpose                                                                                                                                                                                                          | Data Location |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| Subprocessor        | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Data Location |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | **Anthropic**       | Requests may be sent to Anthropic even if you have another provider's model selected in chat (e.g. for summarization or generating git commit messages). We have a zero data retention agreement with Anthropic, except for models Anthropic designates as covered models, for which Anthropic retains prompts and outputs for 30 days for trust and safety purposes ([Anthropic's policy](https://support.claude.com/en/articles/15425996-data-retention-practices-for-mythos-class-models)). | United States |
-| **Baseten**         | Inference infrastructure for Edit Predictions                                                                                                                                                                    | United States |
-| **Exa Labs**        | AI-powered contextual search and retrieval                                                                                                                                                                       | United States |
-| **Google (Vertex)** | Requests may be sent to Google even if you have another provider's model selected in chat (e.g. for summarization). We have a zero data retention agreement with Google.                                         | United States |
-| **OpenAI**          | Requests may be sent to OpenAI even if you have another provider's model selected in chat (e.g. for summarization or generating git commit messages). We have a zero data retention agreement with OpenAI.       | United States |
-| **xAI**             | Requests may be sent to xAI even if you have another provider's model selected in chat (e.g. for summarization or generating git commit messages). We have a zero data retention agreement with xAI.             | United States |
+| **Baseten**         | Inference infrastructure for Edit Predictions                                                                                                                                                                                                                                                                                                                                                                                                                                                  | United States |
+| **Exa Labs**        | AI-powered contextual search and retrieval                                                                                                                                                                                                                                                                                                                                                                                                                                                     | United States |
+| **Google (Vertex)** | Requests may be sent to Google even if you have another provider's model selected in chat (e.g. for summarization). We have a zero data retention agreement with Google.                                                                                                                                                                                                                                                                                                                       | United States |
+| **OpenAI**          | Requests may be sent to OpenAI even if you have another provider's model selected in chat (e.g. for summarization or generating git commit messages). We have a zero data retention agreement with OpenAI.                                                                                                                                                                                                                                                                                     | United States |
+| **xAI**             | Requests may be sent to xAI even if you have another provider's model selected in chat (e.g. for summarization or generating git commit messages). We have a zero data retention agreement with xAI.                                                                                                                                                                                                                                                                                           | United States |

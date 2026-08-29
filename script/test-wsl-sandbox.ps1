@@ -34,68 +34,68 @@
 
 [CmdletBinding()]
 param(
-    [switch]$NoProvision,
-    [switch]$Release,
-    [switch]$AllowSkip
+	[switch]$NoProvision,
+	[switch]$Release,
+	[switch]$AllowSkip
 )
 
 $ErrorActionPreference = "Stop"
 
 if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-    Write-Error "wsl.exe was not found. Install WSL (https://learn.microsoft.com/windows/wsl/install) and try again."
+	Write-Error "wsl.exe was not found. Install WSL (https://learn.microsoft.com/windows/wsl/install) and try again."
 }
 
 # Run a command in the default WSL distro as root, throwing on failure.
 function Invoke-WslRoot {
-    param([Parameter(Mandatory = $true)][string]$Script)
-    & wsl.exe -u root -- sh -c $Script
-    if ($LASTEXITCODE -ne 0) {
-        throw "WSL command failed (exit $LASTEXITCODE): $Script"
-    }
+	param([Parameter(Mandatory = $true)][string]$Script)
+	& wsl.exe -u root -- sh -c $Script
+	if ($LASTEXITCODE -ne 0) {
+		throw "WSL command failed (exit $LASTEXITCODE): $Script"
+	}
 }
 
 # Run a command in the default WSL distro as the default user, returning its
 # exit code instead of throwing.
 function Test-Wsl {
-    param([Parameter(Mandatory = $true)][string]$Script)
-    & wsl.exe -- sh -lc $Script *> $null
-    return $LASTEXITCODE
+	param([Parameter(Mandatory = $true)][string]$Script)
+	& wsl.exe -- sh -lc $Script *> $null
+	return $LASTEXITCODE
 }
 
 if (-not $NoProvision) {
-    Write-Host "==> Provisioning the default WSL distro for sandbox testing"
+	Write-Host "==> Provisioning the default WSL distro for sandbox testing"
 
-    if ((Test-Wsl "command -v apt-get >/dev/null 2>&1") -eq 0) {
-        Write-Host "    Installing bubblewrap (apt-get)..."
-        Invoke-WslRoot "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap"
-    }
-    else {
-        Write-Warning "Auto-provisioning only supports apt-based distros. Install 'bubblewrap' in your default WSL distro manually, then re-run with -NoProvision."
-    }
+	if ((Test-Wsl "command -v apt-get >/dev/null 2>&1") -eq 0) {
+		Write-Host "    Installing bubblewrap (apt-get)..."
+		Invoke-WslRoot "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap"
+	}
+	else {
+		Write-Warning "Auto-provisioning only supports apt-based distros. Install 'bubblewrap' in your default WSL distro manually, then re-run with -NoProvision."
+	}
 
-    Write-Host "    Enabling unprivileged user namespaces (for this WSL VM session)..."
-    # Older kernels lack this key (the AppArmor restriction simply isn't
-    # present), so don't treat a missing key as an error.
-    Invoke-WslRoot "sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true"
+	Write-Host "    Enabling unprivileged user namespaces (for this WSL VM session)..."
+	# Older kernels lack this key (the AppArmor restriction simply isn't
+	# present), so don't treat a missing key as an error.
+	Invoke-WslRoot "sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true"
 }
 
 if ((Test-Wsl "command -v bwrap >/dev/null 2>&1") -ne 0) {
-    Write-Warning "bwrap is not installed in the default WSL distro; the sandbox cannot be enforced. Install 'bubblewrap' (or run without -NoProvision)."
+	Write-Warning "bwrap is not installed in the default WSL distro; the sandbox cannot be enforced. Install 'bubblewrap' (or run without -NoProvision)."
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repoRoot
 try {
-    $xtaskArgs = @("xtask", "wsl-sandbox-tests")
-    if (-not $AllowSkip) { $xtaskArgs += "--require-enforced" }
-    if ($Release) { $xtaskArgs += "--release" }
+	$xtaskArgs = @("xtask", "wsl-sandbox-tests")
+	if (-not $AllowSkip) { $xtaskArgs += "--require-enforced" }
+	if ($Release) { $xtaskArgs += "--release" }
 
-    Write-Host "==> Running: cargo $($xtaskArgs -join ' ')"
-    & cargo @xtaskArgs
-    $exitCode = $LASTEXITCODE
+	Write-Host "==> Running: cargo $($xtaskArgs -join ' ')"
+	& cargo @xtaskArgs
+	$exitCode = $LASTEXITCODE
 }
 finally {
-    Pop-Location
+	Pop-Location
 }
 
 exit $exitCode

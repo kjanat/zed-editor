@@ -16,20 +16,18 @@ class LaunchPlanTests(unittest.TestCase):
         return build_parser().parse_args(argv)
 
     def test_swe_atlas_defaults_judges_by_part(self) -> None:
-        args = self.parse(
-            [
-                "swe-atlas",
-                "--parts",
-                "qna,rf",
-                "--build",
-                "bld-test",
-                "--plan",
-                "--allow-untracked",
-                "--n-tasks",
-                "1",
-                "--yes",
-            ]
-        )
+        args = self.parse([
+            "swe-atlas",
+            "--parts",
+            "qna,rf",
+            "--build",
+            "bld-test",
+            "--plan",
+            "--allow-untracked",
+            "--n-tasks",
+            "1",
+            "--yes",
+        ])
 
         prepared = prepare_suite(args)
 
@@ -43,20 +41,18 @@ class LaunchPlanTests(unittest.TestCase):
         self.assertEqual(prepared[0][1]["agent_model"], config.DEFAULT_MODEL)
 
     def test_baseten_model_preset_generates_provider_json(self) -> None:
-        args = self.parse(
-            [
-                "swe-atlas",
-                "--parts",
-                "tw",
-                "--build",
-                "bld-test",
-                "--plan",
-                "--allow-untracked",
-                "--model",
-                "baseten:kimi-k2.7-code",
-                "--yes",
-            ]
-        )
+        args = self.parse([
+            "swe-atlas",
+            "--parts",
+            "tw",
+            "--build",
+            "bld-test",
+            "--plan",
+            "--allow-untracked",
+            "--model",
+            "baseten:kimi-k2.7-code",
+            "--yes",
+        ])
 
         prepared = prepare_suite(args)
         run_request = prepared[0][1]
@@ -75,16 +71,14 @@ class LaunchPlanTests(unittest.TestCase):
         )
 
     def test_interactive_suite_can_include_non_swe_atlas_benchmarks(self) -> None:
-        args = self.parse(
-            [
-                "swe-atlas",
-                "--build",
-                "bld-test",
-                "--plan",
-                "--allow-untracked",
-                "--yes",
-            ]
-        )
+        args = self.parse([
+            "swe-atlas",
+            "--build",
+            "bld-test",
+            "--plan",
+            "--allow-untracked",
+            "--yes",
+        ])
 
         prepared = prepare_benchmark_suite(
             args, ["qna", "terminal-bench-2.1", "deepswe"]
@@ -125,9 +119,14 @@ class LaunchPlanTests(unittest.TestCase):
         resolve_source.assert_not_called()
 
     def test_explicit_missing_build_uses_from_source(self) -> None:
-        args = self.parse(
-            ["run", "rf", "--build", "custom-build", "--from", "v0.210.0"]
-        )
+        args = self.parse([
+            "run",
+            "rf",
+            "--build",
+            "custom-build",
+            "--from",
+            "v0.210.0",
+        ])
 
         with (
             patch("zed_eval.launch.build_ready_on_volume", return_value=False),

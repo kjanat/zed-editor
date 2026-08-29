@@ -1,12 +1,12 @@
 [
-  {
-    "token_type": "variable",
-    "token_modifiers": ["readonly"],
-    "style": ["constant"]
-  },
-  {
-    "token_type": "string",
-    "token_modifiers": ["format"],
-    "style": ["string.special"]
-  }
+	{
+		"token_type": "variable",
+		"token_modifiers": ["readonly"],
+		"style": ["constant"]
+	},
+	{
+		"token_type": "string",
+		"token_modifiers": ["format"],
+		"style": ["string.special"]
+	}
 ]

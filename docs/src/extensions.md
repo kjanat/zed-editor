@@ -19,7 +19,8 @@ Zed lets you add new functionality using user-defined extensions.
 
 # Publishing your extension
 
-If you are considering to publish your extension, please have a look through our documentation to help you with that.
+If you are considering to publish your extension, please have a look through our
+documentation to help you with that.
 
 - [Publishing Your Extension](./extensions/publishing/overview.md)
   - [Publishing Prerequisites](./extensions/publishing/prerequisites.md)

@@ -13,24 +13,31 @@ Clone the [Zed repository](https://github.com/zed-industries/zed).
 
 - Install [rustup](https://www.rust-lang.org/tools/install)
 
-- Install [Xcode](https://apps.apple.com/us/app/xcode/id497799835?mt=12) from the macOS App Store or from the [Apple Developer](https://developer.apple.com/download/all/) website. The Apple Developer download requires a developer account.
+- Install [Xcode](https://apps.apple.com/us/app/xcode/id497799835?mt=12) from
+  the macOS App Store or from the
+  [Apple Developer](https://developer.apple.com/download/all/) website. The
+  Apple Developer download requires a developer account.
 
-> Launch Xcode after installation and install the macOS components (the default option).
+> Launch Xcode after installation and install the macOS components (the default
+> option).
 
-- Install [Xcode command line tools](https://developer.apple.com/xcode/resources/)
+- Install
+  [Xcode command line tools](https://developer.apple.com/xcode/resources/)
 
   ```sh
   xcode-select --install
   ```
 
-- Ensure that the Xcode command line tools are using your newly installed copy of Xcode:
+- Ensure that the Xcode command line tools are using your newly installed copy
+  of Xcode:
 
   ```sh
   sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
   sudo xcodebuild -license accept
   ```
 
-- Install `cmake` (required by [a dependency](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/))
+- Install `cmake` (required by
+  [a dependency](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/))
 
   ```sh
   brew install cmake
@@ -38,7 +45,8 @@ Clone the [Zed repository](https://github.com/zed-industries/zed).
 
 ## Building Zed from Source
 
-Once you have the dependencies installed, you can build Zed using [Cargo](https://doc.rust-lang.org/cargo/).
+Once you have the dependencies installed, you can build Zed using
+[Cargo](https://doc.rust-lang.org/cargo/).
 
 For a debug build:
 
@@ -60,7 +68,9 @@ cargo test --workspace
 
 ## Visual Regression Tests
 
-Zed includes visual regression tests that capture screenshots of real Zed windows and compare them against baseline images. These tests require macOS with Screen Recording permission.
+Zed includes visual regression tests that capture screenshots of real Zed
+windows and compare them against baseline images. These tests require macOS with
+Screen Recording permission.
 
 ### Prerequisites
 
@@ -118,8 +128,9 @@ xcrun: error: unable to find utility "metal", not a developer tool or in PATH
 
 Try `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`
 
-If you're on macOS 26, try `xcodebuild -downloadComponent MetalToolchain`.
-If that command fails, run `xcodebuild -runFirstLaunch` and try downloading the toolchain again.
+If you're on macOS 26, try `xcodebuild -downloadComponent MetalToolchain`. If
+that command fails, run `xcodebuild -runFirstLaunch` and try downloading the
+toolchain again.
 
 ### Cargo errors claiming that a dependency is using unstable features
 
@@ -144,7 +155,8 @@ Caused by:
   cargo:rerun-if-env-changed=BINDGEN_EXTRA_CLANG_ARGS
 ```
 
-This file is part of Xcode. Make sure the Xcode command line tools are installed and the path is set correctly:
+This file is part of Xcode. Make sure the Xcode command line tools are installed
+and the path is set correctly:
 
 ```sh
 xcode-select --install
@@ -166,7 +178,8 @@ cargo run
 
 ### Tests failing due to `Too many open files (os error 24)`
 
-This error seems to be caused by OS resource constraints. Installing and running tests with `cargo-nextest` should resolve the issue.
+This error seems to be caused by OS resource constraints. Installing and running
+tests with `cargo-nextest` should resolve the issue.
 
 - `cargo install cargo-nextest --locked`
 - `cargo nextest run --workspace --no-fail-fast`
@@ -175,23 +188,31 @@ This error seems to be caused by OS resource constraints. Installing and running
 
 ### Avoiding continual rebuilds
 
-If Zed continually rebuilds root crates, you may be opening the Zed codebase itself in your development build.
+If Zed continually rebuilds root crates, you may be opening the Zed codebase
+itself in your development build.
 
 This causes problems because `cargo run` exports a bunch of environment
-variables which are picked up by the `rust-analyzer` that runs in the development
-build of Zed. These environment variables are in turn passed to `cargo check`, which
-invalidates the build cache of some of the crates we depend on.
+variables which are picked up by the `rust-analyzer` that runs in the
+development build of Zed. These environment variables are in turn passed to
+`cargo check`, which invalidates the build cache of some of the crates we depend
+on.
 
-To avoid this, run the built binary against a different project, for example `cargo run ~/path/to/other/project`.
+To avoid this, run the built binary against a different project, for example
+`cargo run ~/path/to/other/project`.
 
 ### Speeding up verification
 
-If you build Zed frequently, macOS may keep verifying new builds, which can add a few seconds to each iteration.
+If you build Zed frequently, macOS may keep verifying new builds, which can add
+a few seconds to each iteration.
 
 To fix this, you can:
 
-- Run `sudo spctl developer-mode enable-terminal` to enable the Developer Tools panel in System Settings.
-- In System Settings, search for "Developer Tools" and add your terminal (e.g. iTerm or Ghostty) to the list under "Allow applications to use developer tools"
+- Run `sudo spctl developer-mode enable-terminal` to enable the Developer Tools
+  panel in System Settings.
+- In System Settings, search for "Developer Tools" and add your terminal (e.g.
+  iTerm or Ghostty) to the list under "Allow applications to use developer
+  tools"
 - Restart your terminal.
 
-Thanks to the nextest developers for publishing [this](https://nexte.st/docs/installation/macos/#gatekeeper).
+Thanks to the nextest developers for publishing
+[this](https://nexte.st/docs/installation/macos/#gatekeeper).

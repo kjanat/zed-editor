@@ -199,9 +199,11 @@ def command_rejudge(args: argparse.Namespace) -> int:
 
     controller = deployed_function(args, "rejudge_controller")
     call = controller.spawn(rejudge_request)
-    run_index.record_run(
-        {**rejudge_request, "volume_name": args.volume, "kind": "rejudge"}
-    )
+    run_index.record_run({
+        **rejudge_request,
+        "volume_name": args.volume,
+        "kind": "rejudge",
+    })
     parent = rejudge_request["parent"]
     print(f"Namespace:  {rejudge_request['namespace']}")
     print(f"Experiment: {rejudge_request['experiment_name']}")

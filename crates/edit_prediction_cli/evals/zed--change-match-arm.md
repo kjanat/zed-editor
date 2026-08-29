@@ -24,17 +24,17 @@ This prediction requires the model to see the `project::Event` enum.
 ## Cursor Position
 
 ```crates/edit_prediction/src/edit_prediction.rs
-                    {
-                        project_state.recent_paths.remove(ix);
-                    }
-                    project_state.recent_paths.push_front(path);
-                }
-            }
-            project::Event::Disk { .. } => {
-                //              ^[CURSOR_POSITION]
-                if cx.has_flag::<EditPredictionJumpsFeatureFlag>() {
-                    self.refresh_prediction_from_diagnostics(
-                        project,
+        {
+            project_state.recent_paths.remove(ix);
+        }
+        project_state.recent_paths.push_front(path);
+    }
+}
+project::Event::Disk { .. } => {
+    //              ^[CURSOR_POSITION]
+    if cx.has_flag::<EditPredictionJumpsFeatureFlag>() {
+        self.refresh_prediction_from_diagnostics(
+            project,
 ```
 
 ## Expected Patch

@@ -367,7 +367,9 @@ def list_project_issues(project_id):
 
 def post_comment(issue_number, body):
     github_rest_request(
-        "POST", f"repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}/comments", {"body": body}
+        "POST",
+        f"repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}/comments",
+        {"body": body},
     )
 
 
@@ -403,7 +405,9 @@ def send_slack(text):
         webhook,
         json={
             "text": message,
-            "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": message}}],
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": message}}
+            ],
         },
         timeout=30,
     )
@@ -606,7 +610,9 @@ def run_stale(project_number):
         if not guild_assignees:
             continue
 
-        labels = [label["name"] for label in (content.get("labels") or {}).get("nodes", [])]
+        labels = [
+            label["name"] for label in (content.get("labels") or {}).get("nodes", [])
+        ]
         if NUDGE_HOLD_LABEL in labels:
             continue
 

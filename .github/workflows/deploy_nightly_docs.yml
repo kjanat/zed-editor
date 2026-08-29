@@ -4,7 +4,7 @@ name: deploy_nightly_docs
 on:
   push:
     branches:
-    - main
+      - main
 permissions: {}
 jobs:
   deploy_docs:

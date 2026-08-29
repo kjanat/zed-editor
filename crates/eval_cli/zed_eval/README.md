@@ -82,7 +82,8 @@ The controller secret should contain:
 - `MODAL_TOKEN_ID`
 - `MODAL_TOKEN_SECRET`
 
-The LLM-provider secret should contain the keys your selected models need, such as:
+The LLM-provider secret should contain the keys your selected models need, such
+as:
 
 - `ANTHROPIC_API_KEY`
 - `OPENAI_API_KEY`
@@ -119,14 +120,14 @@ zed-eval run deepswe --from local --dry-run
 
 Supported benchmark selectors:
 
-| Selector | Meaning | Scoring |
-| --- | --- | --- |
-| `swe-atlas` | `qna`, `rf`, and `tw` | LLM judge |
-| `qna` / `swe-atlas-qna` | SWE-Atlas Codebase Q&A | LLM judge |
-| `rf` / `swe-atlas-rf` | SWE-Atlas Refactoring | LLM judge |
-| `tw` / `swe-atlas-tw` | SWE-Atlas Test Writing | LLM judge |
-| `terminal-bench-2.1` / `tb21` | Terminal-Bench 2.1 | tests |
-| `deepswe` | DeepSWE | tests |
+| Selector                      | Meaning                | Scoring   |
+| ----------------------------- | ---------------------- | --------- |
+| `swe-atlas`                   | `qna`, `rf`, and `tw`  | LLM judge |
+| `qna` / `swe-atlas-qna`       | SWE-Atlas Codebase Q&A | LLM judge |
+| `rf` / `swe-atlas-rf`         | SWE-Atlas Refactoring  | LLM judge |
+| `tw` / `swe-atlas-tw`         | SWE-Atlas Test Writing | LLM judge |
+| `terminal-bench-2.1` / `tb21` | Terminal-Bench 2.1     | tests     |
+| `deepswe`                     | DeepSWE                | tests     |
 
 For an interactive prompt, use:
 
@@ -144,8 +145,8 @@ Terminal-Bench, and DeepSWE.
 - `--from local` builds current `HEAD` plus tracked changes.
 - `--from <ref/tag/sha>` builds a clean git ref, tag, or SHA.
 
-Builds are content-addressed and reused when possible. You can also name or reuse
-a build explicitly:
+Builds are content-addressed and reused when possible. You can also name or
+reuse a build explicitly:
 
 ```sh
 zed-eval build --from local
@@ -238,8 +239,8 @@ zed-eval suite fetch <suite-id>
 
 ## Rejudge a finished run
 
-`rejudge` creates a new derived run by re-running only the judge. It does not redo
-the agent's work or modify the parent run.
+`rejudge` creates a new derived run by re-running only the judge. It does not
+redo the agent's work or modify the parent run.
 
 ```sh
 zed-eval rejudge <parent-run-id> --judge deepseek-v4-pro
@@ -319,12 +320,12 @@ eval-cli \
 
 Exit codes:
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Agent finished |
-| 1 | Error, such as model/auth/runtime failure |
-| 2 | Timeout |
-| 3 | Interrupted by SIGTERM or SIGINT |
+| Code | Meaning                                   |
+| ---- | ----------------------------------------- |
+| 0    | Agent finished                            |
+| 1    | Error, such as model/auth/runtime failure |
+| 2    | Timeout                                   |
+| 3    | Interrupted by SIGTERM or SIGINT          |
 
 ## Harbor/Pier installed agent
 

@@ -16,7 +16,6 @@ revision = "2fec0b206c6e83ea813ab26597e15c96fab08be7"
 +imfrom werkzeug.local import LocalProxy
 
  from .globals import request
-
 ```
 
 ## Cursor Position

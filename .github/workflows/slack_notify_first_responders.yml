@@ -9,9 +9,9 @@ permissions:
 
 env:
   SEVERITY_LABELS: '["severity:S0", "severity:S1"]'
-  REPRODUCIBLE_LABEL: 'state:reproducible'
+  REPRODUCIBLE_LABEL: "state:reproducible"
   REACH_LABELS: '["reach:all users", "reach:many users"]'
-  MARKER_REACTION: 'eyes'
+  MARKER_REACTION: "eyes"
 
 jobs:
   notify-slack:

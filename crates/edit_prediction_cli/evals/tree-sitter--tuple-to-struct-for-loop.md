@@ -57,15 +57,15 @@ revision = "24007727d42b4caceda3095ac685c463fae1ba1a"
 ## Cursor Position
 
 ```tree-sitter/crates/loader/src/loader.rs
-                    let mut language_id = None;
-                    for (id, (path, _, _)) in
-                    //       ^[CURSOR_POSITION]
-                        self.languages_by_id.iter().enumerate().skip(language_count)
-                    {
-                        if language_path == *path {
-                            language_id = Some(id);
-                        }
-                    }
+let mut language_id = None;
+for (id, (path, _, _)) in
+//       ^[CURSOR_POSITION]
+    self.languages_by_id.iter().enumerate().skip(language_count)
+{
+    if language_path == *path {
+        language_id = Some(id);
+    }
+}
 ```
 
 ## Expected Patch

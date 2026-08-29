@@ -35,14 +35,14 @@ revision = "24007727d42b4caceda3095ac685c463fae1ba1a"
 ## Cursor Position
 
 ```tree-sitter/crates/loader/src/loader.rs
-    #[must_use]
-    pub fn get_all_language_configurations(&self) -> Vec<(&LanguageConfiguration, &Path)> {
-        self.language_configurations
-            .iter()
-            .map(|c| (c, self.languages_by_id[c.language_id].0.as_ref()))
-            //                                               ^[CURSOR_POSITION]
-            .collect()
-    }
+#[must_use]
+pub fn get_all_language_configurations(&self) -> Vec<(&LanguageConfiguration, &Path)> {
+    self.language_configurations
+        .iter()
+        .map(|c| (c, self.languages_by_id[c.language_id].0.as_ref()))
+        //                                               ^[CURSOR_POSITION]
+        .collect()
+}
 ```
 
 ## Expected Patch
@@ -58,5 +58,4 @@ revision = "24007727d42b4caceda3095ac685c463fae1ba1a"
 +            .map(|c| (c, self.languages_by_id[c.language_id].path.as_ref()))
              .collect()
      }
-
 ```

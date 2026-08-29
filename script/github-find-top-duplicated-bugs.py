@@ -171,9 +171,7 @@ def build_markdown_body(duplicate_magnets):
         lines.append("")
 
         for info in issues:
-            lines.append(
-                f"-   [{info['duplicate_count']:2d} dupes] {info['url']}"
-            )
+            lines.append(f"-   [{info['duplicate_count']:2d} dupes] {info['url']}")
 
     return "\n".join(lines)
 

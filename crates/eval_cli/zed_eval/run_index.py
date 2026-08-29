@@ -84,20 +84,18 @@ def _load_entries() -> list[dict[str, Any]]:
 
 
 def _entry_from_request(run_request: dict[str, Any]) -> dict[str, Any] | None:
-    entry = _normalize_entry(
-        {
-            "run_id": run_request.get("run_id"),
-            "namespace": run_request.get("namespace"),
-            "experiment_name": run_request.get("experiment_name"),
-            "volume": run_request.get("volume_name"),
-            "agent_model": run_request.get("agent_model"),
-            "judge_preset": run_request.get("judge_preset"),
-            "build_id": run_request.get("build_id"),
-            "suite_id": run_request.get("suite_id"),
-            "kind": run_request.get("kind"),
-            "created_at": run_request.get("created_at"),
-        }
-    )
+    entry = _normalize_entry({
+        "run_id": run_request.get("run_id"),
+        "namespace": run_request.get("namespace"),
+        "experiment_name": run_request.get("experiment_name"),
+        "volume": run_request.get("volume_name"),
+        "agent_model": run_request.get("agent_model"),
+        "judge_preset": run_request.get("judge_preset"),
+        "build_id": run_request.get("build_id"),
+        "suite_id": run_request.get("suite_id"),
+        "kind": run_request.get("kind"),
+        "created_at": run_request.get("created_at"),
+    })
     return entry
 
 

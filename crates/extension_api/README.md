@@ -4,16 +4,17 @@ This crate lets you write extensions for Zed in Rust.
 
 ## Extension Manifest
 
-You'll need an `extension.toml` file at the root of your extension directory, with the following structure:
+You'll need an `extension.toml` file at the root of your extension directory,
+with the following structure:
 
 ```toml
-id = "my-extension"
-name = "My Extension"
-description = "..."
-version = "0.0.1"
+id             = "my-extension"
+name           = "My Extension"
+description    = "..."
+version        = "0.0.1"
 schema_version = 1
-authors = ["Your Name <you@example.com>"]
-repository = "https://github.com/your/extension-repository"
+authors        = ["Your Name <you@example.com>"]
+repository     = "https://github.com/your/extension-repository"
 ```
 
 ## Cargo metadata
@@ -31,7 +32,8 @@ crate-type = ["cdylib"]
 
 ## Implementing an Extension
 
-To define your extension, create a type that implements the `Extension` trait, and register it.
+To define your extension, create a type that implements the `Extension` trait,
+and register it.
 
 ```rust
 use zed_extension_api as zed;
@@ -51,15 +53,18 @@ zed::register_extension!(MyExtension);
 
 To run your extension in Zed as you're developing it:
 
-- Make sure you have [Rust installed](https://www.rust-lang.org/learn/get-started)
+- Make sure you have
+  [Rust installed](https://www.rust-lang.org/learn/get-started)
 - Have the `wasm32-wasip2` target installed (`rustup target add wasm32-wasip2`)
-- Open the extensions view using the `zed: extensions` action in the command palette.
+- Open the extensions view using the `zed: extensions` action in the command
+  palette.
 - Click the `Install Dev Extension` button in the top right
 - Choose the path to your extension directory.
 
 ## Compatible Zed versions
 
-Extensions created using newer versions of the Zed extension API won't be compatible with older versions of Zed.
+Extensions created using newer versions of the Zed extension API won't be
+compatible with older versions of Zed.
 
 Here is the compatibility of the `zed_extension_api` with versions of Zed:
 

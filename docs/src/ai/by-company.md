@@ -5,9 +5,11 @@ description: Find the right Zed setup path for OpenAI, ChatGPT, Codex, Claude, G
 
 # AI by Company
 
-Use this page when you know the company, subscription, provider, agent, or CLI you want to use in Zed.
+Use this page when you know the company, subscription, provider, agent, or CLI
+you want to use in Zed.
 
-For detailed setup, follow the links in the `Setup` column. This page answers routing questions; it does not replace the setup pages.
+For detailed setup, follow the links in the `Setup` column. This page answers
+routing questions; it does not replace the setup pages.
 
 ## Zed {#zed}
 
@@ -33,7 +35,10 @@ For detailed setup, follow the links in the `Setup` column. This page answers ro
 | Claude Agent via ACP | Hosted in Zed     | Claude in an External Agent thread                 | Owned by Claude/Anthropic               | [External Agents](./external-agents.md#claude-agent) |
 | Claude Code CLI      | Run in terminal   | Native Claude Code experience in a Terminal Thread | Claude subscription or Claude Code auth | [Terminal Threads](./terminal-threads.md)            |
 
-Claude Pro and Max subscriptions are separate from Anthropic API credits. If you want Claude subscription-limit behavior, use Claude Agent or Claude Code where supported. See [Use an Existing Subscription](./use-an-existing-subscription.md#claude).
+Claude Pro and Max subscriptions are separate from Anthropic API credits. If you
+want Claude subscription-limit behavior, use Claude Agent or Claude Code where
+supported. See
+[Use an Existing Subscription](./use-an-existing-subscription.md#claude).
 
 ## Google / Gemini / Gemini CLI {#google-gemini}
 
@@ -66,7 +71,9 @@ Claude Pro and Max subscriptions are separate from Anthropic API credits. If you
 | Cursor External Agent | Hosted in Zed   | Cursor in an External Agent thread, where available    | Cursor account/subscription | [External Agents](./external-agents.md#cursor) |
 | Cursor CLI/TUI        | Run in terminal | Native Cursor command-line experience, where available | Cursor account/subscription | [Terminal Threads](./terminal-threads.md)      |
 
-Cursor subscriptions do not configure Zed's LLM provider settings. If you want to use a work Cursor subscription in Zed, use the Cursor External Agent or a Terminal Threads workflow where available.
+Cursor subscriptions do not configure Zed's LLM provider settings. If you want
+to use a work Cursor subscription in Zed, use the Cursor External Agent or a
+Terminal Threads workflow where available.
 
 ## Pi Coding Agent {#pi}
 
@@ -75,7 +82,8 @@ Cursor subscriptions do not configure Zed's LLM provider settings. If you want t
 | Pi Coding Agent | Hosted in Zed   | Pi in an External Agent thread, where available    | Owned by Pi       | [External Agents](./external-agents.md#pi) |
 | Pi CLI/TUI      | Run in terminal | Native Pi command-line experience, where available | Owned by Pi       | [Terminal Threads](./terminal-threads.md)  |
 
-Pi is an agent harness, not a Zed LLM subscription. Pi may support provider auth such as ChatGPT, Claude, or Copilot through its own setup flow.
+Pi is an agent harness, not a Zed LLM subscription. Pi may support provider auth
+such as ChatGPT, Claude, or Copilot through its own setup flow.
 
 ## Poolside {#poolside}
 
@@ -84,7 +92,10 @@ Pi is an agent harness, not a Zed LLM subscription. Pi may support provider auth
 | Poolside External Agent | Hosted in Zed   | Poolside in an External Agent thread | Poolside or configured provider | [External Agents](./external-agents.md#poolside) |
 | `pool` CLI              | Run in terminal | Native Poolside Agent CLI experience | Poolside or configured provider | [Terminal Threads](./terminal-threads.md)        |
 
-Install Poolside from the ACP Registry, configure Zed with the Poolside Agent CLI, or add Poolside as a Custom Agent. See [External Agents](./external-agents.md#poolside) for setup steps and platform-specific details.
+Install Poolside from the ACP Registry, configure Zed with the Poolside Agent
+CLI, or add Poolside as a Custom Agent. See
+[External Agents](./external-agents.md#poolside) for setup steps and
+platform-specific details.
 
 ## DeepSeek {#deepseek}
 
@@ -114,4 +125,5 @@ Paid DeepSeek usage is API access in Zed, not subscription sign-in.
 
 ## Other API Providers {#other-api-providers}
 
-For Mistral, xAI, and OpenAI-compatible endpoints that are not listed above, see [Use API Access](./use-api-access.md).
+For Mistral, xAI, and OpenAI-compatible endpoints that are not listed above, see
+[Use API Access](./use-api-access.md).

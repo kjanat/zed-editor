@@ -1,11 +1,11 @@
 # Build eval-cli for Linux.
 #
 # Usage (from the zed repo root):
-#   docker build --platform linux/amd64 -f crates/eval_cli/Dockerfile -t eval-cli-builder .
-#   docker cp "$(docker create eval-cli-builder)":/eval-cli ./target/eval-cli
+# docker build --platform linux/amd64 -f crates/eval_cli/Dockerfile -t eval-cli-builder .
+# docker cp "$(docker create eval-cli-builder)":/eval-cli ./target/eval-cli
 #
 # Or use the helper script:
-#   crates/eval_cli/script/build-linux
+# crates/eval_cli/script/build-linux
 
 FROM rust:1.97.1@sha256:3382bd20aa942806c533e9a73cd000474fb3ef173f71e684cc9b942675781769 AS builder
 

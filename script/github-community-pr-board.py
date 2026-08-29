@@ -183,10 +183,18 @@ def recompute_signals(pr, project, project_item):
     total_changes = pr.get("additions", 0) + pr.get("deletions", 0)
     author_login = (pr.get("user") or {}).get("login")
 
-    set_field_optional(project, project_item, "Size", compute_size_bucket(total_changes))
-    set_field_optional(project, project_item, "Contributor", compute_contributor(pr_labels))
-    set_field_optional(project, project_item, "Issue Linked", github_pr_issue_type(pr["node_id"]))
-    set_number_field_optional(project, project_item, "Upvotes", github_pr_upvotes(pr["node_id"], author_login))
+    set_field_optional(
+        project, project_item, "Size", compute_size_bucket(total_changes)
+    )
+    set_field_optional(
+        project, project_item, "Contributor", compute_contributor(pr_labels)
+    )
+    set_field_optional(
+        project, project_item, "Issue Linked", github_pr_issue_type(pr["node_id"])
+    )
+    set_number_field_optional(
+        project, project_item, "Upvotes", github_pr_upvotes(pr["node_id"], author_login)
+    )
 
 
 def refresh_signals_if_on_board(pr, project_number):
@@ -491,9 +499,7 @@ def github_pr_issue_type(pr_node_id):
     refs = data["node"]["closingIssuesReferences"]
     if refs["totalCount"] == 0:
         return "No issue"
-    type_names = {
-        n["issueType"]["name"] for n in refs["nodes"] if n.get("issueType")
-    }
+    type_names = {n["issueType"]["name"] for n in refs["nodes"] if n.get("issueType")}
     for priority in ("Crash", "Bug", "Feature", "Docs"):
         if priority in type_names:
             return priority

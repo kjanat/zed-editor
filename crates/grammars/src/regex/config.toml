@@ -1,9 +1,9 @@
-name = "Regex"
-grammar = "regex"
+name             = "Regex"
+grammar          = "regex"
 autoclose_before = ")]}"
-brackets = [
+brackets         = [
   { start = "(", end = ")", close = true, newline = false },
   { start = "{", end = "}", close = true, newline = false },
   { start = "[", end = "]", close = true, newline = false },
 ]
-hidden = true
+hidden           = true

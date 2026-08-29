@@ -1,14 +1,18 @@
 # Modelines
 
-Modelines are special comments at the beginning or end of a file that configure editor settings for that specific file. Zed supports both Vim and Emacs modeline formats, allowing you to specify settings like tab size, indentation style, and file type directly within your files.
+Modelines are special comments at the beginning or end of a file that configure
+editor settings for that specific file. Zed supports both Vim and Emacs modeline
+formats, allowing you to specify settings like tab size, indentation style, and
+file type directly within your files.
 
 ## Configuration
 
-Use the [`modeline_lines`](./reference/all-settings.md#modeline-lines) setting to control how many lines Zed searches for modelines:
+Use the [`modeline_lines`](./reference/all-settings.md#modeline-lines) setting
+to control how many lines Zed searches for modelines:
 
 ```json [settings]
 {
-  "modeline_lines": 5
+	"modeline_lines": 5
 }
 ```
 
@@ -16,7 +20,8 @@ Set to `0` to disable modeline parsing entirely.
 
 ## Emacs
 
-Zed has some compatibility support for [Emacs file variables](https://www.gnu.org/software/emacs/manual/html_node/emacs/Specifying-File-Variables.html).
+Zed has some compatibility support for
+[Emacs file variables](https://www.gnu.org/software/emacs/manual/html_node/emacs/Specifying-File-Variables.html).
 
 Example:
 
@@ -38,7 +43,8 @@ Example:
 
 ## Vim
 
-Zed has some compatibility support for [Vim modeline](https://vimhelp.org/options.txt.html#modeline).
+Zed has some compatibility support for
+[Vim modeline](https://vimhelp.org/options.txt.html#modeline).
 
 Example:
 
@@ -64,4 +70,5 @@ Example:
 
 - The first kilobyte of a file is searched for modelines.
 - Emacs modelines take precedence over Vim modelines when both are present.
-- Modelines in the first few lines take precedence over those at the end of the file.
+- Modelines in the first few lines take precedence over those at the end of the
+  file.

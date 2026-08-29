@@ -53,15 +53,15 @@ revision = "29e6da6efa2287aaa981635a475d425ff4fd5d5c"
 ## Cursor Position
 
 ```src/vs/workbench/contrib/debug/browser/debugCommands.ts
-	weight: KeybindingWeight.WorkbenchContrib,
-	primary: isWeb ? (KeyMod.Alt | KeyCode.F10) : KeyCode.F10, // Browsers do not allow F10 to be binded so we have to bind an alternative
-	when: CONTEXT_DEBUG_STATE.isEqualTo('stopped'),
-	handler: (accessor: ServicesAccessor, _: string, context: CallStackContext | unknown) => {
-	//       ^[CURSOR_POSITION]
-		const contextKeyService = accessor.get(IContextKeyService);
-		if (CONTEXT_DISASSEMBLY_VIEW_FOCUS.getValue(contextKeyService)) {
-			getThreadAndRun(accessor, context, (thread: IThread) => thread.next('instruction'));
-		} else {
+weight: KeybindingWeight.WorkbenchContrib,
+primary: isWeb ? (KeyMod.Alt | KeyCode.F10) : KeyCode.F10, // Browsers do not allow F10 to be binded so we have to bind an alternative
+when: CONTEXT_DEBUG_STATE.isEqualTo('stopped'),
+handler: (accessor: ServicesAccessor, _: string, context: CallStackContext | unknown) => {
+//       ^[CURSOR_POSITION]
+	const contextKeyService = accessor.get(IContextKeyService);
+	if (CONTEXT_DISASSEMBLY_VIEW_FOCUS.getValue(contextKeyService)) {
+		getThreadAndRun(accessor, context, (thread: IThread) => thread.next('instruction'));
+	} else {
 ```
 
 ## Expected Patch

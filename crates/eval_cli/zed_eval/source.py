@@ -140,15 +140,13 @@ def resolve_remote_ref(repo_url: str, ref: str) -> str:
     """
     if _FULL_SHA_RE.fullmatch(ref):
         return ref.lower()
-    output = git_output(
-        [
-            "ls-remote",
-            repo_url,
-            ref,
-            f"refs/tags/{ref}",
-            f"refs/heads/{ref}",
-        ]
-    )
+    output = git_output([
+        "ls-remote",
+        repo_url,
+        ref,
+        f"refs/tags/{ref}",
+        f"refs/heads/{ref}",
+    ])
     entries: list[tuple[str, str]] = []
     for line in output.splitlines():
         sha, _, name = line.partition("\t")

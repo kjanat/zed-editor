@@ -1,5 +1,6 @@
 #!/usr/bin/env nix-shell
 #!nix-shell -i bash -p gitMinimal curl gojq gclient2nix
+# shellcheck shell=bash
 
 set -eou pipefail
 package="livekit-libwebrtc"

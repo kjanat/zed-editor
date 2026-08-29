@@ -7,4 +7,5 @@ description: Zed's SOC2 certification status.
 
 Zed is working toward SOC2 Type 1 certification.
 
-For updates or compliance questions, email [sales@zed.dev](mailto:sales@zed.dev).
+For updates or compliance questions, email
+[sales@zed.dev](mailto:sales@zed.dev).

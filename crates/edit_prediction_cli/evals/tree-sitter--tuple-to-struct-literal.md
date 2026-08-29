@@ -94,38 +94,38 @@ revision = "24007727d42b4caceda3095ac685c463fae1ba1a"
 ## Cursor Position
 
 ```tree-sitter/crates/loader/src/loader.rs
-                    let language_id = if let Some(language_id) = language_id {
-                        language_id
-                    } else {
-                        self.languages_by_id.push(LanguageEntry {
-                            path: language_path,
-                            language: OnceCell::new(),
-                            external_files: grammar
-                                .external_files
-                                .clone()
-                                .into_vec()
-                                .map(|files| {
-                                    files
-                                        .into_iter()
-                                        .map(|path| {
-                                            let path = parser_path.join(path);
-                                            // prevent p being above/outside of parser_path
-                                            if path.starts_with(parser_path) {
-                                                Ok(path)
-                                            } else {
-                                                Err(LoaderError::ExternalFile(
-                                                    path.to_string_lossy().to_string(),
-                                                    parser_path.to_string_lossy().to_string(),
-                                                ))
-                                            }
-                                        })
-                                        .collect::<LoaderResult<Vec<_>>>()
-                                })
-                                .transpose()?,
-                                //            ^[CURSOR_POSITION]
-                        ));
-                        self.languages_by_id.len() - 1
-                    };
+let language_id = if let Some(language_id) = language_id {
+    language_id
+} else {
+    self.languages_by_id.push(LanguageEntry {
+        path: language_path,
+        language: OnceCell::new(),
+        external_files: grammar
+            .external_files
+            .clone()
+            .into_vec()
+            .map(|files| {
+                files
+                    .into_iter()
+                    .map(|path| {
+                        let path = parser_path.join(path);
+                        // prevent p being above/outside of parser_path
+                        if path.starts_with(parser_path) {
+                            Ok(path)
+                        } else {
+                            Err(LoaderError::ExternalFile(
+                                path.to_string_lossy().to_string(),
+                                parser_path.to_string_lossy().to_string(),
+                            ))
+                        }
+                    })
+                    .collect::<LoaderResult<Vec<_>>>()
+            })
+            .transpose()?,
+            //            ^[CURSOR_POSITION]
+    ));
+    self.languages_by_id.len() - 1
+};
 ```
 
 ## Expected Patch

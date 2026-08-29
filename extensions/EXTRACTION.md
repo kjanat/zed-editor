@@ -1,10 +1,14 @@
 # Extracting an extension to dedicated repo
 
-These are some notes of how to extract an extension from the main zed repository and generate a new repository which preserves the history as best as possible. In the this example we will be extracting the `ruby` extension, substitute as appropriate.
+These are some notes of how to extract an extension from the main zed repository
+and generate a new repository which preserves the history as best as possible.
+In the this example we will be extracting the `ruby` extension, substitute as
+appropriate.
 
 ## Pre-requisites
 
-Install [git-filter-repo](https://github.com/newren/git-filter-repo/blob/main/INSTALL.md):
+Install
+[git-filter-repo](https://github.com/newren/git-filter-repo/blob/main/INSTALL.md):
 
 ```
 brew install git-filter-repo
@@ -12,10 +16,10 @@ brew install git-filter-repo
 
 ## Process
 
-We are going to use a `$LANGNAME` variable for all these steps. Make sure it is set correctly.
+We are going to use a `$LANGNAME` variable for all these steps. Make sure it is
+set correctly.
 
-> **Note**
-> If you get `zsh: command not found: #` errors, run:
+> **Note** If you get `zsh: command not found: #` errors, run:
 > `setopt interactive_comments && echo "setopt interactive_comments" >> ~/.zshrc`
 
 1. Create a clean clone the zed repository, delete tags and delete branches.
@@ -30,10 +34,14 @@ cd $LANGNAME
 
 2. Create an expressions.txt file somewhere (e.g. `~/projects/$LANGNAME.txt`)
 
-This file takes the form of `pattern==>replacement`, where the replacement is optional.
-Note whitespace matters so `ruby: ==>` is removing the `ruby:` prefix from a commit messages and adding a space after `==> ` means the replacement begins with a space. Regex capture groups are numbered `\1`, `\2`, etc.
+This file takes the form of `pattern==>replacement`, where the replacement is
+optional. Note whitespace matters so `ruby: ==>` is removing the `ruby:` prefix
+from a commit messages and adding a space after `==>` means the replacement
+begins with a space. Regex capture groups are numbered `\1`, `\2`, etc.
 
-See: [Git Filter Repo Docs](https://htmlpreview.github.io/?https://github.com/newren/git-filter-repo/blob/docs/html/git-filter-repo.html) for more.
+See:
+[Git Filter Repo Docs](https://htmlpreview.github.io/?https://github.com/newren/git-filter-repo/blob/docs/html/git-filter-repo.html)
+for more.
 
 ```sh
 # Create regex mapping for rewriting commit messages (edit as appropriate)
@@ -58,13 +66,12 @@ git filter-repo \
 
 3. Review the commits.
 
-This is your last chance to make any modifications.
-If you don't fix it now, it'll be wrong forever.
+This is your last chance to make any modifications. If you don't fix it now,
+it'll be wrong forever.
 
 For example, a previous commit message was `php/ruby: bump version to 0.0.5`
-which was replaced with `php/bump version to 0.0.5`
-so I added a new line to expressions.txt with `php/==>`
-and next run it became `bump version to 0.0.5`.
+which was replaced with `php/bump version to 0.0.5` so I added a new line to
+expressions.txt with `php/==>` and next run it became `bump version to 0.0.5`.
 
 4. [Optional] Generate tags
 
@@ -83,13 +90,16 @@ git tag v0.0.2 abcd1234
 git tag v0.0.3 deadbeef
 ```
 
-Usually the initial extraction didn't mention a version number so you can just do that one manually.
+Usually the initial extraction didn't mention a version number so you can just
+do that one manually.
 
 4. [Optional] Add a README.md and commit.
 
 5. Push to the new repo
 
-Create a new empty repo on github under the [zed-extensions](https://github.com/organizations/zed-extensions/repositories/new) organization.
+Create a new empty repo on github under the
+[zed-extensions](https://github.com/organizations/zed-extensions/repositories/new)
+organization.
 
 ```
 git remote add origin git@github.com:zed-extensions/$LANGNAME

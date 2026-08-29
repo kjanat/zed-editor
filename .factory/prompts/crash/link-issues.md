@@ -1,6 +1,7 @@
 # Crash Issue Linking
 
-You are linking a crash to potentially related GitHub issues so human reviewers can quickly validate whether a fix may resolve multiple reports.
+You are linking a crash to potentially related GitHub issues so human reviewers
+can quickly validate whether a fix may resolve multiple reports.
 
 ## Inputs
 
@@ -13,13 +14,15 @@ If either is missing, stop and report what is missing.
 
 ## Goal
 
-Search GitHub issues and produce a reviewer-ready shortlist grouped by confidence:
+Search GitHub issues and produce a reviewer-ready shortlist grouped by
+confidence:
 
 - **High confidence**
 - **Medium confidence**
 - **Low confidence**
 
-The output is advisory only. Humans must confirm before adding closing keywords or making release claims.
+The output is advisory only. Humans must confirm before adding closing keywords
+or making release claims.
 
 ## Workflow
 
@@ -35,7 +38,8 @@ Extract concrete signals from the crash + analysis:
 
 ### Step 2: Search GitHub Issues
 
-Search **only** issues in `zed-industries/zed` (prefer `gh issue list` / `gh issue view` / GraphQL if available) by:
+Search **only** issues in `zed-industries/zed` (prefer `gh issue list` /
+`gh issue view` / GraphQL if available) by:
 
 1. Panic/error text
 2. Function/file names
@@ -48,9 +52,12 @@ Check both open and recently closed issues in `zed-industries/zed`.
 
 Assign confidence based on evidence quality:
 
-- **High:** direct technical overlap (same crash site or same invariant violation with matching repro language)
-- **Medium:** partial overlap (same subsystem and symptom, but indirect stack/repro match)
-- **Low:** thematic similarity only (same area/keywords without solid technical match)
+- **High:** direct technical overlap (same crash site or same invariant
+  violation with matching repro language)
+- **Medium:** partial overlap (same subsystem and symptom, but indirect
+  stack/repro match)
+- **Low:** thematic similarity only (same area/keywords without solid technical
+  match)
 
 Avoid inflated confidence. If uncertain, downgrade.
 
@@ -62,23 +69,28 @@ Write `LINKED_ISSUES.md` using this exact structure:
 # Potentially Related GitHub Issues
 
 ## High Confidence
+
 - [#12345](https://github.com/zed-industries/zed/issues/12345) — <title>
   - Why: <1-2 sentence evidence-backed rationale>
   - Evidence: <stack frame / error text / repro alignment>
 
 ## Medium Confidence
+
 - ...
 
 ## Low Confidence
+
 - ...
 
 ## Reviewer Checklist
+
 - [ ] Confirm High confidence issues should be referenced in PR body
 - [ ] Confirm any issue should receive closing keywords (`Fixes #...`)
 - [ ] Reject false positives before merge
 ```
 
-If no credible matches are found, keep sections present and write `- None found` under each.
+If no credible matches are found, keep sections present and write `- None found`
+under each.
 
 ## Rules
 

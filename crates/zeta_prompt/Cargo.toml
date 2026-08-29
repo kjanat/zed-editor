@@ -1,21 +1,21 @@
 [package]
-name = "zeta_prompt"
-version = "0.1.0"
-publish.workspace = true
+name              = "zeta_prompt"
+version           = "0.1.0"
 edition.workspace = true
-license = "GPL-3.0-or-later"
-
-[lints]
-workspace = true
+license           = "GPL-3.0-or-later"
+publish.workspace = true
 
 [lib]
 path = "src/zeta_prompt.rs"
 
 [dependencies]
-anyhow.workspace = true
+anyhow.workspace     = true
 imara-diff.workspace = true
-serde.workspace = true
-strum.workspace = true
+serde.workspace      = true
+strum.workspace      = true
 
 [dev-dependencies]
 indoc.workspace = true
+
+[lints]
+workspace = true

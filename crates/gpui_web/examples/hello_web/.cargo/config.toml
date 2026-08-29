@@ -1,3 +1,5 @@
+#:tombi schema.strict = false
+
 [target.wasm32-unknown-unknown]
 rustflags = [
     "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",

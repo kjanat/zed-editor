@@ -219,12 +219,12 @@ When documenting settings:
 
 ```json [settings]
 {
-  "agent": {
-    "default_model": {
-      "provider": "anthropic",
-      "model": "claude-sonnet-4"
-    }
-  }
+	"agent": {
+		"default_model": {
+			"provider": "anthropic",
+			"model": "claude-sonnet-4"
+		}
+	}
 }
 ```
 

@@ -5,18 +5,28 @@ description: "Configure Rego language support in Zed, including language servers
 
 # Rego
 
-Rego language support in Zed is provided by the community-maintained [Rego extension](https://github.com/StyraInc/zed-rego).
+Rego language support in Zed is provided by the community-maintained
+[Rego extension](https://github.com/StyraInc/zed-rego).
 
-- Tree-sitter: [FallenAngel97/tree-sitter-rego](https://github.com/FallenAngel97/tree-sitter-rego)
-- Language Server: [open-policy-agent/regal](https://github.com/open-policy-agent/regal)
+- Tree-sitter:
+  [FallenAngel97/tree-sitter-rego](https://github.com/FallenAngel97/tree-sitter-rego)
+- Language Server:
+  [open-policy-agent/regal](https://github.com/open-policy-agent/regal)
 
 ## Installation
 
-The extension is largely based on the [Regal](https://docs.styra.com/regal/language-server) language server which should be installed to make use of the extension. Read the [getting started](https://docs.styra.com/regal#getting-started) instructions for more information.
+The extension is largely based on the
+[Regal](https://docs.styra.com/regal/language-server) language server which
+should be installed to make use of the extension. Read the
+[getting started](https://docs.styra.com/regal#getting-started) instructions for
+more information.
 
 ## Configuration
 
-The extension's behavior is configured in the `.regal/config.yaml` file. The following is an example configuration which disables the `todo-comment` rule, customizes the `line-length` rule, and ignores test files for the `opa-fmt` rule:
+The extension's behavior is configured in the `.regal/config.yaml` file. The
+following is an example configuration which disables the `todo-comment` rule,
+customizes the `line-length` rule, and ignores test files for the `opa-fmt`
+rule:
 
 ```yaml
 rules:
@@ -40,4 +50,6 @@ rules:
           - "*_test.rego"
 ```
 
-Read Regal's [configuration documentation](https://docs.styra.com/regal#configuration) for more information.
+Read Regal's
+[configuration documentation](https://docs.styra.com/regal#configuration) for
+more information.

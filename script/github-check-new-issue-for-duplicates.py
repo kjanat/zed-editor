@@ -49,9 +49,33 @@ PREFIXES_TO_COLLAPSE = ["languages", "parity", "tooling"]
 
 # stopwords to filter from title keyword searches (short words handled by len > 2 filter)
 STOPWORDS = {
-    "after", "all", "also", "and", "any", "but", "can't", "does", "doesn't",
-    "don't", "for", "from", "have", "just", "not", "only", "some", "that",
-    "the", "this", "when", "while", "with", "won't", "work", "working", "zed",
+    "after",
+    "all",
+    "also",
+    "and",
+    "any",
+    "but",
+    "can't",
+    "does",
+    "doesn't",
+    "don't",
+    "for",
+    "from",
+    "have",
+    "just",
+    "not",
+    "only",
+    "some",
+    "that",
+    "the",
+    "this",
+    "when",
+    "while",
+    "with",
+    "won't",
+    "work",
+    "working",
+    "zed",
 }
 
 # HTTP statuses we'll retry on for GET requests
@@ -73,11 +97,12 @@ def github_api_get(path, params=None):
             return response.json()
         except requests.RequestException as e:
             transient = isinstance(e, (requests.ConnectionError, requests.Timeout)) or (
-                isinstance(e, requests.HTTPError) and e.response.status_code in TRANSIENT_HTTP_STATUSES
+                isinstance(e, requests.HTTPError)
+                and e.response.status_code in TRANSIENT_HTTP_STATUSES
             )
             if not transient or attempt == 2:
                 raise
-            wait = 2 ** attempt
+            wait = 2**attempt
             log(f"  Transient GitHub API error ({e}); retrying in {wait}s")
             time.sleep(wait)
 
@@ -91,12 +116,14 @@ def github_search_issues(query, per_page=50, sort=None):
 
 
 def github_api_graphql(query, variables=None):
-    """Run a GraphQL query against the GitHub API, retrying transient failures. """
+    """Run a GraphQL query against the GitHub API, retrying transient failures."""
     url = f"{GITHUB_API}/graphql"
     for attempt in range(3):
         try:
             response = requests.post(
-                url, headers=GITHUB_HEADERS, json={"query": query, "variables": variables or {}}
+                url,
+                headers=GITHUB_HEADERS,
+                json={"query": query, "variables": variables or {}},
             )
             response.raise_for_status()
             data = response.json()
@@ -105,11 +132,12 @@ def github_api_graphql(query, variables=None):
             return data["data"]
         except requests.RequestException as e:
             transient = isinstance(e, (requests.ConnectionError, requests.Timeout)) or (
-                isinstance(e, requests.HTTPError) and e.response.status_code in TRANSIENT_HTTP_STATUSES
+                isinstance(e, requests.HTTPError)
+                and e.response.status_code in TRANSIENT_HTTP_STATUSES
             )
             if not transient or attempt == 2:
                 raise
-            wait = 2 ** attempt
+            wait = 2**attempt
             log(f"  Transient GitHub GraphQL error ({e}); retrying in {wait}s")
             time.sleep(wait)
 
@@ -143,10 +171,14 @@ def build_comment(likely_matches, possible_matches, related_closed_candidates):
     """Compose the full comment body. Returns empty string if there's nothing to post."""
     sections = []
     likely_issues = [m for m in likely_matches if m["candidate"]["kind"] == "issue"]
-    likely_discussions = [m for m in likely_matches if m["candidate"]["kind"] == "discussion"]
+    likely_discussions = [
+        m for m in likely_matches if m["candidate"]["kind"] == "discussion"
+    ]
 
     if likely_issues:
-        match_list = "\n".join(f"- {format_candidate_reference(m)}" for m in likely_issues)
+        match_list = "\n".join(
+            f"- {format_candidate_reference(m)}" for m in likely_issues
+        )
         explanations = "\n\n".join(
             f"**{format_candidate_reference(m)}:** {m['explanation']}\n\n"
             f"**Shared root cause:** {m['shared_root_cause']}"
@@ -170,9 +202,12 @@ No action needed. A maintainer will review this shortly.
 </details>""")
 
     if likely_discussions:
-        match_list = "\n".join(f"- {format_candidate_reference(m)}" for m in likely_discussions)
+        match_list = "\n".join(
+            f"- {format_candidate_reference(m)}" for m in likely_discussions
+        )
         explanations = "\n\n".join(
-            f"**{format_candidate_reference(m)}:** {m['explanation']}" for m in likely_discussions
+            f"**{format_candidate_reference(m)}:** {m['explanation']}"
+            for m in likely_discussions
         )
         sections.append(f"""This looks like it may already be covered by an existing discussion:
 
@@ -188,7 +223,9 @@ Zed tracks feature requests and open-ended topics in Discussions rather than Iss
 </details>""")
 
     possible_issues = [m for m in possible_matches if m["candidate"]["kind"] == "issue"]
-    possible_discussions = [m for m in possible_matches if m["candidate"]["kind"] == "discussion"]
+    possible_discussions = [
+        m for m in possible_matches if m["candidate"]["kind"] == "discussion"
+    ]
     if possible_matches or related_closed_candidates:
         parts = []
         if possible_issues:
@@ -205,7 +242,9 @@ Zed tracks feature requests and open-ended topics in Discussions rather than Iss
                 f" — {m['explanation']}"
                 for m in related_closed_candidates
             ]
-            parts.append("**Recently closed, possibly the same bug:**\n\n" + "\n".join(lines))
+            parts.append(
+                "**Recently closed, possibly the same bug:**\n\n" + "\n".join(lines)
+            )
         if possible_discussions:
             lines = [
                 f"- {format_candidate_reference(m)} — {m['explanation']}"
@@ -223,7 +262,9 @@ Zed tracks feature requests and open-ended topics in Discussions rather than Iss
     if not sections:
         return ""
 
-    sections.append("---\n<sub>This is an automated analysis and might be incorrect.</sub>")
+    sections.append(
+        "---\n<sub>This is an automated analysis and might be incorrect.</sub>"
+    )
     return "\n\n".join(sections)
 
 
@@ -242,17 +283,22 @@ def _claude_request(api_key, payload):
     data = response.json()
 
     usage = data.get("usage", {})
-    log(f"  Token usage - Input: {usage.get('input_tokens', 'N/A')}, Output: {usage.get('output_tokens', 'N/A')}")
+    log(
+        f"  Token usage - Input: {usage.get('input_tokens', 'N/A')}, Output: {usage.get('output_tokens', 'N/A')}"
+    )
     return data
 
 
 def call_claude(api_key, system_prompt, user_content, max_tokens=1024):
     """Send a message to Claude and return the text response. Raises on non-2xx status."""
-    data = _claude_request(api_key, {
-        "max_tokens": max_tokens,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_content}],
-    })
+    data = _claude_request(
+        api_key,
+        {
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_content}],
+        },
+    )
 
     content = data.get("content", [])
     if content and content[0].get("type") == "text":
@@ -267,13 +313,16 @@ def call_claude_tool(api_key, system_prompt, user_content, tool, max_tokens=1024
     instead of free-form text we'd have to parse out of prose or markdown fences. Raises on
     non-2xx status, or if no tool_use block is returned.
     """
-    data = _claude_request(api_key, {
-        "max_tokens": max_tokens,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_content}],
-        "tools": [tool],
-        "tool_choice": {"type": "tool", "name": tool["name"]},
-    })
+    data = _claude_request(
+        api_key,
+        {
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_content}],
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": tool["name"]},
+        },
+    )
 
     if data.get("stop_reason") == "max_tokens":
         log("  Warning: response hit max_tokens; structured output may be truncated")
@@ -288,7 +337,9 @@ def fetch_issue(issue_number: int):
     """Fetch issue from GitHub and return as a dict."""
     log(f"Fetching issue #{issue_number}")
 
-    issue_data = github_api_get(f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}")
+    issue_data = github_api_get(
+        f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}"
+    )
     issue = {
         "number": issue_number,
         "title": issue_data["title"],
@@ -297,17 +348,23 @@ def fetch_issue(issue_number: int):
         "type": (issue_data.get("type") or {}).get("name"),
     }
 
-    log(f"  Title: {issue['title']}\n  Type: {issue['type']}\n  Author: {issue['author']}")
+    log(
+        f"  Title: {issue['title']}\n  Type: {issue['type']}\n  Author: {issue['author']}"
+    )
     return issue
 
 
 def should_skip(issue):
     """Check if issue should be skipped in duplicate detection process."""
     if issue["type"] and issue["type"] not in ["Bug", "Crash"]:
-        log(f"  Skipping: issue type '{issue['type']}' is not blank and not a bug/crash report")
+        log(
+            f"  Skipping: issue type '{issue['type']}' is not blank and not a bug/crash report"
+        )
         return True
 
-    if issue["author"] and check_team_membership(REPO_OWNER, STAFF_TEAM_SLUG, issue["author"]):
+    if issue["author"] and check_team_membership(
+        REPO_OWNER, STAFF_TEAM_SLUG, issue["author"]
+    ):
         log(f"  Skipping: author '{issue['author']}' is a {STAFF_TEAM_SLUG} member")
         return True
 
@@ -345,7 +402,8 @@ def format_taxonomy_for_claude(area_labels):
     for area in area_labels:
         name = area["name"]
         collapsible_prefix = next(
-            (p for p in PREFIXES_TO_COLLAPSE if name.startswith(f"{p}/")), None)
+            (p for p in PREFIXES_TO_COLLAPSE if name.startswith(f"{p}/")), None
+        )
 
         if collapsible_prefix:
             lines.add(f"- {collapsible_prefix}/* (multiple specific sub-labels exist)")
@@ -383,10 +441,10 @@ canonical issue's title or body. Use the report body as well as its title, inclu
 such as error codes or requested mechanisms, and vary vocabulary when useful. Do not include GitHub
 qualifiers such as repo:, is:, label:, or in:, and do not wrap terms in quotes."""
     user_content = f"""# Issue Title
-{issue['title']}
+{issue["title"]}
 
 # Issue Body
-{issue['body'][:4000]}"""
+{issue["body"][:4000]}"""
     try:
         response = call_claude_tool(
             anthropic_key,
@@ -396,13 +454,17 @@ qualifiers such as repo:, is:, label:, or in:, and do not wrap terms in quotes."
             max_tokens=300,
         )
     except (requests.RequestException, ValueError) as error:
-        log(f"  Search query generation failed ({error}); falling back to title and area searches")
+        log(
+            f"  Search query generation failed ({error}); falling back to title and area searches"
+        )
         return []
 
     queries = []
     for query in response.get("queries", []):
         if not isinstance(query, str) or re.search(
-            r"\b(?:repo|is|label|state|created|updated|closed|in):", query, re.IGNORECASE
+            r"\b(?:repo|is|label|state|created|updated|closed|in):",
+            query,
+            re.IGNORECASE,
         ):
             continue
         terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9_./+#'-]*", query)
@@ -452,12 +514,14 @@ Examples of valid responses (each line is a complete response on its own):
 {taxonomy}
 
 # Issue Title
-{issue['title']}
+{issue["title"]}
 
 # Issue Body
-{issue['body'][:4000]}"""
+{issue["body"][:4000]}"""
 
-    response = call_claude(anthropic_key, system_prompt, user_content, max_tokens=100).strip()
+    response = call_claude(
+        anthropic_key, system_prompt, user_content, max_tokens=100
+    ).strip()
     log(f"  Detected areas: {response}")
 
     if response.lower() == "none":
@@ -481,7 +545,9 @@ def parse_duplicate_magnets():
     """
     log(f"Parsing duplicate magnets from #{TRACKING_ISSUE_NUMBER}")
 
-    issue_data = github_api_get(f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{TRACKING_ISSUE_NUMBER}")
+    issue_data = github_api_get(
+        f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{TRACKING_ISSUE_NUMBER}"
+    )
     body = issue_data.get("body") or ""
 
     # parse the issue body
@@ -528,7 +594,9 @@ def enrich_magnets(magnets):
     """Fetch details for magnets and normalize them as candidates."""
     log(f"  Fetching details for {len(magnets)} magnets")
     for magnet in magnets:
-        data = github_api_get(f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{magnet['number']}")
+        data = github_api_get(
+            f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{magnet['number']}"
+        )
         magnet.update({
             "key": f"issue:{magnet['number']}",
             "kind": "issue",
@@ -578,19 +646,28 @@ def filter_author_referenced_candidates(issue, candidates):
         discussion_shorthand_pattern, "", text, flags=re.IGNORECASE
     )
     referenced_keys = {
-        f"issue:{number}" for number in re.findall(r"#(\d+)\b", text_without_discussion_shorthand)
+        f"issue:{number}"
+        for number in re.findall(r"#(\d+)\b", text_without_discussion_shorthand)
     }
     referenced_keys.update(f"discussion:{number}" for number in discussion_numbers)
 
-    resource_pattern = rf"https?://github\.com/{REPO_OWNER}/{REPO_NAME}/(issues|discussions)/(\d+)\b"
+    resource_pattern = (
+        rf"https?://github\.com/{REPO_OWNER}/{REPO_NAME}/(issues|discussions)/(\d+)\b"
+    )
     for resource, number in re.findall(resource_pattern, text, re.IGNORECASE):
         kind = "issue" if resource.lower() == "issues" else "discussion"
         referenced_keys.add(f"{kind}:{number}")
 
-    omitted = [candidate["key"] for candidate in candidates if candidate["key"] in referenced_keys]
+    omitted = [
+        candidate["key"]
+        for candidate in candidates
+        if candidate["key"] in referenced_keys
+    ]
     if omitted:
         log(f"  Omitted candidates already referenced by the author: {omitted}")
-    return [candidate for candidate in candidates if candidate["key"] not in referenced_keys]
+    return [
+        candidate for candidate in candidates if candidate["key"] not in referenced_keys
+    ]
 
 
 def rank_search_candidates(candidates):
@@ -628,7 +705,11 @@ def select_search_candidates(candidates, limit):
             selected_keys.add(candidate["key"])
 
     for search_type, quota in reserved:
-        matching = [candidate for candidate in candidates if search_type in candidate["matched_searches"]]
+        matching = [
+            candidate
+            for candidate in candidates
+            if search_type in candidate["matched_searches"]
+        ]
         for candidate in matching[:quota]:
             add(candidate)
 
@@ -651,13 +732,19 @@ def extract_error_snippet(body):
     return snippet
 
 
-def search_for_similar_issues(issue, detected_areas, search_queries, max_searches_per_state=12):
+def search_for_similar_issues(
+    issue, detected_areas, search_queries, max_searches_per_state=12
+):
     """Search for similar open issues and issues closed within the last 90 days."""
     log("Searching for similar issues")
 
     ninety_days_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
-    title_keywords = [word for word in issue["title"].split() if word.lower() not in STOPWORDS and len(word) > 2]
+    title_keywords = [
+        word
+        for word in issue["title"].split()
+        if word.lower() not in STOPWORDS and len(word) > 2
+    ]
     keywords_query = " ".join(title_keywords) if title_keywords else None
 
     error_snippet = extract_error_snippet(issue["body"])
@@ -668,12 +755,17 @@ def search_for_similar_issues(issue, detected_areas, search_queries, max_searche
             queries.append(("title_keywords", f"{base} {keywords_query}"))
         if error_snippet:
             queries.append(("error_pattern", f'{base} in:body "{error_snippet}"'))
-        queries.extend(("area_label", f'{base} label:"area:{area}"') for area in detected_areas)
+        queries.extend(
+            ("area_label", f'{base} label:"area:{area}"') for area in detected_areas
+        )
         return queries
 
     open_queries = build_queries(f"repo:{REPO_OWNER}/{REPO_NAME} is:issue is:open")
     open_queries.extend(
-        ("popular_area", f'repo:{REPO_OWNER}/{REPO_NAME} is:issue is:open label:"area:{area}"')
+        (
+            "popular_area",
+            f'repo:{REPO_OWNER}/{REPO_NAME} is:issue is:open label:"area:{area}"',
+        )
         for area in detected_areas
     )
     # closed pass: filter by close date so we catch issues closed recently regardless of
@@ -707,7 +799,9 @@ def search_for_similar_issues(issue, detected_areas, search_queries, max_searche
                         if search_type not in existing["matched_searches"]:
                             existing["matched_searches"].append(search_type)
                         if search_type not in ("area_label", "popular_area"):
-                            existing["best_match_rank"] = min(existing["best_match_rank"], result_rank)
+                            existing["best_match_rank"] = min(
+                                existing["best_match_rank"], result_rank
+                            )
                         continue
                     body = item.get("body") or ""
                     seen_issues[number] = {
@@ -724,7 +818,9 @@ def search_for_similar_issues(issue, detected_areas, search_queries, max_searche
                         "source": "issue_search",
                         "matched_searches": [search_type],
                         "best_match_rank": (
-                            result_rank if search_type not in ("area_label", "popular_area") else 1000
+                            result_rank
+                            if search_type not in ("area_label", "popular_area")
+                            else 1000
                         ),
                     }
             except requests.RequestException as e:
@@ -737,9 +833,8 @@ def search_for_similar_issues(issue, detected_areas, search_queries, max_searche
 
 def enrich_popular_candidate_comments(candidates):
     for candidate in candidates:
-        if (
-            candidate["kind"] != "issue"
-            or "popular_area" not in candidate.get("matched_searches", [])
+        if candidate["kind"] != "issue" or "popular_area" not in candidate.get(
+            "matched_searches", []
         ):
             continue
         try:
@@ -751,7 +846,9 @@ def enrich_popular_candidate_comments(candidates):
             log(f"  Failed to fetch comments for {candidate['key']}: {error}")
             continue
         bodies = [comment.get("body") or "" for comment in comments]
-        candidate["recent_comments_preview"] = "\n\n---\n\n".join(filter(None, bodies[-5:]))[-3000:]
+        candidate["recent_comments_preview"] = "\n\n---\n\n".join(
+            filter(None, bodies[-5:])
+        )[-3000:]
 
 
 def search_discussions(issue, detected_areas, search_queries, max_searches=6):
@@ -763,7 +860,9 @@ def search_discussions(issue, detected_areas, search_queries, max_searches=6):
     the discussion.
     """
     log("Searching discussions")
-    title_keywords = [w for w in issue["title"].split() if w.lower() not in STOPWORDS and len(w) > 2]
+    title_keywords = [
+        w for w in issue["title"].split() if w.lower() not in STOPWORDS and len(w) > 2
+    ]
     keywords_query = " ".join(title_keywords) if title_keywords else None
     if not search_queries and not keywords_query:
         return []
@@ -774,7 +873,10 @@ def search_discussions(issue, detected_areas, search_queries, max_searches=6):
         queries.append(("title_keywords", f"{base} {keywords_query}"))
     if keywords_query:
         for area in detected_areas:
-            queries.append(("area_label", f'{base} {keywords_query} label:"area:{area}"'))
+            queries.append((
+                "area_label",
+                f'{base} {keywords_query} label:"area:{area}"',
+            ))
 
     gql = """
     query($q: String!) {
@@ -804,7 +906,9 @@ def search_discussions(issue, detected_areas, search_queries, max_searches=6):
                 if existing:
                     if search_type not in existing["matched_searches"]:
                         existing["matched_searches"].append(search_type)
-                    existing["best_match_rank"] = min(existing["best_match_rank"], result_rank)
+                    existing["best_match_rank"] = min(
+                        existing["best_match_rank"], result_rank
+                    )
                     continue
                 body = node.get("bodyText") or ""
                 seen[number] = {
@@ -830,20 +934,29 @@ def search_discussions(issue, detected_areas, search_queries, max_searches=6):
 
 def analyze_duplicates(anthropic_key, issue, candidates):
     """Use Claude to identify likely, possible, and related closed candidates."""
-    magnets = [candidate for candidate in candidates if candidate["source"] == "known_duplicate_magnet"]
+    magnets = [
+        candidate
+        for candidate in candidates
+        if candidate["source"] == "known_duplicate_magnet"
+    ]
     magnet_keys = {candidate["key"] for candidate in magnets}
     open_issues = [
-        candidate for candidate in candidates
-        if candidate["kind"] == "issue" and candidate["state"] == "open"
+        candidate
+        for candidate in candidates
+        if candidate["kind"] == "issue"
+        and candidate["state"] == "open"
         and candidate["key"] not in magnet_keys
     ]
     closed_issues = [
-        candidate for candidate in candidates
-        if candidate["kind"] == "issue" and candidate["state"] == "closed"
+        candidate
+        for candidate in candidates
+        if candidate["kind"] == "issue"
+        and candidate["state"] == "closed"
         and candidate["key"] not in magnet_keys
     ]
     open_discussions = [
-        candidate for candidate in candidates
+        candidate
+        for candidate in candidates
         if candidate["kind"] == "discussion" and candidate["state"] == "open"
     ]
 
@@ -854,7 +967,11 @@ def analyze_duplicates(anthropic_key, issue, candidates):
         + open_discussions[:10]
     )
     if not selected_candidates:
-        return {"likely_matches": [], "possible_matches": [], "related_closed_candidates": []}
+        return {
+            "likely_matches": [],
+            "possible_matches": [],
+            "related_closed_candidates": [],
+        }
 
     enrich_popular_candidate_comments(selected_candidates)
 
@@ -863,7 +980,9 @@ def analyze_duplicates(anthropic_key, issue, candidates):
         f"  Candidate pool: {len(magnets)} magnets, {len(open_issues)} open issues, "
         f"{len(closed_issues)} closed issues, {len(open_discussions)} open discussions"
     )
-    log(f"  Candidates given to proposer: {[candidate['key'] for candidate in selected_candidates]}")
+    log(
+        f"  Candidates given to proposer: {[candidate['key'] for candidate in selected_candidates]}"
+    )
 
     system_prompt = """You analyze a new GitHub issue against candidates that may be issues or discussions.
 
@@ -982,11 +1101,11 @@ field first with a brief scratchpad weighing the strongest candidates and whethe
 share a root cause, then fill each bucket. Use empty arrays where nothing relevant is
 found."""
 
-    user_content = f"""## New Issue #{issue['number']}
-**Title:** {issue['title']}
+    user_content = f"""## New Issue #{issue["number"]}
+**Title:** {issue["title"]}
 
 **Body:**
-{issue['body'][:6000]}
+{issue["body"][:6000]}
 
 ## Candidates to Compare
 {json.dumps(selected_candidates, indent=2)}"""
@@ -994,7 +1113,10 @@ found."""
     match_schema = {
         "type": "object",
         "properties": {
-            "candidate_key": {"type": "string", "description": "The candidate's full key"},
+            "candidate_key": {
+                "type": "string",
+                "description": "The candidate's full key",
+            },
             "shared_root_cause": {
                 "type": "string",
                 "description": "The specific shared bug/root cause. Include for issue matches only.",
@@ -1009,8 +1131,14 @@ found."""
     related_closed_schema = {
         "type": "object",
         "properties": {
-            "candidate_key": {"type": "string", "description": "The candidate's full key"},
-            "explanation": {"type": "string", "description": "Why this is useful triage context"},
+            "candidate_key": {
+                "type": "string",
+                "description": "The candidate's full key",
+            },
+            "explanation": {
+                "type": "string",
+                "description": "Why this is useful triage context",
+            },
         },
         "required": ["candidate_key", "explanation"],
     }
@@ -1027,17 +1155,29 @@ found."""
                 },
                 "likely_matches": {"type": "array", "items": match_schema},
                 "possible_matches": {"type": "array", "items": match_schema},
-                "related_closed_candidates": {"type": "array", "items": related_closed_schema},
+                "related_closed_candidates": {
+                    "type": "array",
+                    "items": related_closed_schema,
+                },
             },
-            "required": ["reasoning", "likely_matches", "possible_matches", "related_closed_candidates"],
+            "required": [
+                "reasoning",
+                "likely_matches",
+                "possible_matches",
+                "related_closed_candidates",
+            ],
         },
     }
 
-    data = call_claude_tool(anthropic_key, system_prompt, user_content, analysis_tool, max_tokens=3072)
+    data = call_claude_tool(
+        anthropic_key, system_prompt, user_content, analysis_tool, max_tokens=3072
+    )
     if data.get("reasoning"):
         log(f"  Reasoning: {data['reasoning']}")
 
-    candidates_by_key = {candidate["key"]: candidate for candidate in selected_candidates}
+    candidates_by_key = {
+        candidate["key"]: candidate for candidate in selected_candidates
+    }
 
     def resolve_matches(matches, expected_state, label):
         resolved = []
@@ -1049,7 +1189,11 @@ found."""
             if candidate is None or candidate["state"] != expected_state or key in seen:
                 dropped.append(key)
                 continue
-            if candidate["kind"] == "issue" and expected_state == "open" and not match.get("shared_root_cause"):
+            if (
+                candidate["kind"] == "issue"
+                and expected_state == "open"
+                and not match.get("shared_root_cause")
+            ):
                 dropped.append(key)
                 continue
             seen.add(key)
@@ -1059,19 +1203,31 @@ found."""
         return resolved
 
     likely = resolve_matches(data.get("likely_matches", []), "open", "likely_matches")
-    possible = resolve_matches(data.get("possible_matches", []), "open", "possible_matches")
+    possible = resolve_matches(
+        data.get("possible_matches", []), "open", "possible_matches"
+    )
     related_closed = resolve_matches(
         data.get("related_closed_candidates", []), "closed", "related_closed_candidates"
     )
 
     likely_keys = {match["candidate_key"] for match in likely}
-    overlap = [match["candidate_key"] for match in possible if match["candidate_key"] in likely_keys]
+    overlap = [
+        match["candidate_key"]
+        for match in possible
+        if match["candidate_key"] in likely_keys
+    ]
     if overlap:
-        log(f"  Dropped {len(overlap)} possible matches already in likely matches: {overlap}")
-    possible = [match for match in possible if match["candidate_key"] not in likely_keys]
+        log(
+            f"  Dropped {len(overlap)} possible matches already in likely matches: {overlap}"
+        )
+    possible = [
+        match for match in possible if match["candidate_key"] not in likely_keys
+    ]
 
-    log(f"  Found {len(likely)} likely, {len(possible)} possible, and "
-        f"{len(related_closed)} related closed matches")
+    log(
+        f"  Found {len(likely)} likely, {len(possible)} possible, and "
+        f"{len(related_closed)} related closed matches"
+    )
     return {
         "likely_matches": likely,
         "possible_matches": possible,
@@ -1139,26 +1295,26 @@ def critique_proposed_matches(anthropic_key, issue, likely_matches, possible_mat
         candidate = match["candidate"]
         key = candidate["key"]
         shared_root_cause = match.get("shared_root_cause") or "Not applicable"
-        user_content = f"""## New Issue #{issue['number']}
-**Title:** {issue['title']}
+        user_content = f"""## New Issue #{issue["number"]}
+**Title:** {issue["title"]}
 
 **Body:**
-{issue['body'][:6000]}
+{issue["body"][:6000]}
 
 ## Candidate {key}
-**Kind:** {candidate['kind']}
-**Title:** {candidate['title']}
+**Kind:** {candidate["kind"]}
+**Title:** {candidate["title"]}
 
 **Body preview:**
-{candidate['body_preview']}
+{candidate["body_preview"]}
 
 **Recent comments:**
-{candidate.get('recent_comments_preview') or 'None provided'}
+{candidate.get("recent_comments_preview") or "None provided"}
 
 ## Proposed Match
 **Confidence:** {confidence}
 **Shared root cause:** {shared_root_cause}
-**Explanation:** {match['explanation']}"""
+**Explanation:** {match["explanation"]}"""
 
         log(f"  Match critique: evaluating {confidence} match {key}")
         try:
@@ -1170,7 +1326,9 @@ def critique_proposed_matches(anthropic_key, issue, likely_matches, possible_mat
                 max_tokens=600,
             )
         except (requests.RequestException, ValueError) as e:
-            log(f"  Match critique: verdict call failed for {key} ({e}); omitting candidate")
+            log(
+                f"  Match critique: verdict call failed for {key} ({e}); omitting candidate"
+            )
             continue
 
         verdict = verdict_data.get("verdict")
@@ -1185,7 +1343,9 @@ def critique_proposed_matches(anthropic_key, issue, likely_matches, possible_mat
         else:
             log(f"  Match critique: omitting {key} — {rationale}")
 
-    log(f"  Match critique: kept {len(kept_likely)} likely and {len(kept_possible)} possible matches")
+    log(
+        f"  Match critique: kept {len(kept_likely)} likely and {len(kept_possible)} possible matches"
+    )
     return {"likely_matches": kept_likely, "possible_matches": kept_possible}
 
 
@@ -1267,26 +1427,28 @@ def critique_related_closed_candidates(anthropic_key, issue, proposed):
         log("  Related candidate critique: proposer surfaced 0 candidates; skipping")
         return []
 
-    log(f"  Related candidate critique: proposer surfaced {len(proposed)} candidate(s): "
-        f"{[m['candidate_key'] for m in proposed]}")
+    log(
+        f"  Related candidate critique: proposer surfaced {len(proposed)} candidate(s): "
+        f"{[m['candidate_key'] for m in proposed]}"
+    )
 
     kept = []
     for match in proposed:
         candidate = match["candidate"]
         key = candidate["key"]
         state_reason = candidate.get("state_reason") or "unknown"
-        user_content = f"""## New Issue #{issue['number']}
-**Title:** {issue['title']}
+        user_content = f"""## New Issue #{issue["number"]}
+**Title:** {issue["title"]}
 
 **Body:**
-{issue['body'][:6000]}
+{issue["body"][:6000]}
 
 ## Closed Candidate {key}
-**Title:** {candidate.get('title', '')}
+**Title:** {candidate.get("title", "")}
 **State reason:** {state_reason}
 
 **Body preview:**
-{candidate.get('body_preview', '')}"""
+{candidate.get("body_preview", "")}"""
 
         log(f"  Related candidate critique: evaluating {key}")
         try:
@@ -1298,7 +1460,9 @@ def critique_related_closed_candidates(anthropic_key, issue, proposed):
                 max_tokens=600,
             )
         except (requests.RequestException, ValueError) as e:
-            log(f"  Related candidate critique: verdict call failed for {key} ({e}); omitting candidate")
+            log(
+                f"  Related candidate critique: verdict call failed for {key} ({e}); omitting candidate"
+            )
             continue
 
         verdict = verdict_data.get("verdict")
@@ -1310,7 +1474,9 @@ def critique_related_closed_candidates(anthropic_key, issue, proposed):
             kept.append(match)
         else:
             rule_str = f"rule {rule}" if rule else "no specific rule"
-            log(f"  Related candidate critique: omitting {key} ({rule_str}) — {rationale}")
+            log(
+                f"  Related candidate critique: omitting {key} ({rule_str}) — {rationale}"
+            )
 
     log(f"  Related candidate critique: kept {len(kept)} of {len(proposed)} candidates")
     return kept
@@ -1319,7 +1485,11 @@ def critique_related_closed_candidates(anthropic_key, issue, proposed):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Identify potential duplicate issues")
     parser.add_argument("issue_number", type=int, help="Issue number to analyze")
-    parser.add_argument("--dry-run", action="store_true", help="Skip posting comment, just log what would be posted")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Skip posting comment, just log what would be posted",
+    )
     args = parser.parse_args()
 
     github_token = os.environ.get("GITHUB_TOKEN")
@@ -1367,12 +1537,21 @@ if __name__ == "__main__":
         anthropic_key, issue, analysis["related_closed_candidates"]
     )
 
-    comment_body = build_comment(likely_matches, possible_matches, related_closed_candidates)
+    comment_body = build_comment(
+        likely_matches, possible_matches, related_closed_candidates
+    )
     commented = False
 
     if comment_body:
         if args.dry_run:
-            log("Dry run - would post comment:\n" + "-" * 40 + "\n" + comment_body + "\n" + "-" * 40)
+            log(
+                "Dry run - would post comment:\n"
+                + "-" * 40
+                + "\n"
+                + comment_body
+                + "\n"
+                + "-" * 40
+            )
         else:
             log("Posting comment")
             try:
@@ -1383,20 +1562,22 @@ if __name__ == "__main__":
                 log(f"  Comment we were trying to post:\n{comment_body}")
                 sys.exit(1)
 
-    print(json.dumps({
-        "skipped": False,
-        "issue": {
-            "number": issue["number"],
-            "title": issue["title"],
-            "author": issue["author"],
-            "type": issue["type"],
-        },
-        "detected_areas": detected_areas,
-        "magnets_count": len(relevant_magnets),
-        "search_results_count": len(search_results),
-        "likely_matches": likely_matches,
-        "possible_matches": possible_matches,
-        "related_closed_candidates": related_closed_candidates,
-        "discussion_results_count": len(discussion_results),
-        "commented": commented,
-    }))
+    print(
+        json.dumps({
+            "skipped": False,
+            "issue": {
+                "number": issue["number"],
+                "title": issue["title"],
+                "author": issue["author"],
+                "type": issue["type"],
+            },
+            "detected_areas": detected_areas,
+            "magnets_count": len(relevant_magnets),
+            "search_results_count": len(search_results),
+            "likely_matches": likely_matches,
+            "possible_matches": possible_matches,
+            "related_closed_candidates": related_closed_candidates,
+            "discussion_results_count": len(discussion_results),
+            "commented": commented,
+        })
+    )

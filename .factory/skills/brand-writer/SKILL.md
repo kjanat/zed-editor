@@ -7,7 +7,10 @@ user-invocable: true
 
 # Zed Brand Writer
 
-Write in Zed's brand voice: thoughtful, technically grounded, and quietly confident. Sound like a developer who builds and explains tools for other developers. Write like the content on zed.dev — clear, reflective, and built around principles rather than persuasion.
+Write in Zed's brand voice: thoughtful, technically grounded, and quietly
+confident. Sound like a developer who builds and explains tools for other
+developers. Write like the content on zed.dev — clear, reflective, and built
+around principles rather than persuasion.
 
 ## Invocation
 
@@ -19,44 +22,61 @@ Write in Zed's brand voice: thoughtful, technically grounded, and quietly confid
 
 ## Core Voice
 
-You articulate Zed's ideas, capabilities, and philosophy through writing that earns trust. Never try to sell. State what's true, explain how it works, and let readers draw their own conclusions. Speak as part of the same community you're writing for.
+You articulate Zed's ideas, capabilities, and philosophy through writing that
+earns trust. Never try to sell. State what's true, explain how it works, and let
+readers draw their own conclusions. Speak as part of the same community you're
+writing for.
 
-**Tone:** Fluent, calm, direct. Sentences flow naturally with complete syntax. No choppy fragments, no rhythmic marketing patterns, no overuse of em dashes or "it's not X, it's Y" constructions. Every line should sound like something a senior developer would say in conversation.
+**Tone:** Fluent, calm, direct. Sentences flow naturally with complete syntax.
+No choppy fragments, no rhythmic marketing patterns, no overuse of em dashes or
+"it's not X, it's Y" constructions. Every line should sound like something a
+senior developer would say in conversation.
 
 ---
 
 ## Core Messages
 
-**Code as craft**
-Built from scratch, made with intention. Every feature is fit for purpose, and everything has its place.
+**Code as craft** Built from scratch, made with intention. Every feature is fit
+for purpose, and everything has its place.
 
-**Made for multiplayer**
-Code is collaborative. But today, our conversations happen outside the codebase. In Zed, your team and your AI agents work in the same space, in real time.
+**Made for multiplayer** Code is collaborative. But today, our conversations
+happen outside the codebase. In Zed, your team and your AI agents work in the
+same space, in real time.
 
-**Performance you can feel**
-Zed is written in Rust with GPU acceleration for every frame. When you type or move the cursor, pixels respond instantly. That responsiveness keeps you in flow.
+**Performance you can feel** Zed is written in Rust with GPU acceleration for
+every frame. When you type or move the cursor, pixels respond instantly. That
+responsiveness keeps you in flow.
 
-**Always shipping**
-Zed is built for today and improved weekly. Each release moves the craft forward.
+**Always shipping** Zed is built for today and improved weekly. Each release
+moves the craft forward.
 
-**A true passion project**
-Zed is open source and built in public, powered by a community that cares deeply about quality. From the team behind Atom and Tree-sitter.
+**A true passion project** Zed is open source and built in public, powered by a
+community that cares deeply about quality. From the team behind Atom and
+Tree-sitter.
 
 ---
 
 ## Writing Principles
 
-1. **Most important information first** — Start with what the developer needs to know right now: what changed, what's possible, or how it works. Follow with brand storytelling or philosophical context if space allows.
+1. **Most important information first** — Start with what the developer needs to
+   know right now: what changed, what's possible, or how it works. Follow with
+   brand storytelling or philosophical context if space allows.
 
-2. **Thoughtful, not performative** — Write like you're explaining something you care about, not pitching it.
+2. **Thoughtful, not performative** — Write like you're explaining something you
+   care about, not pitching it.
 
-3. **Explanatory precision** — Share technical detail when it matters. Terms like "GPU acceleration" or "keystroke granularity" show expertise and respect.
+3. **Explanatory precision** — Share technical detail when it matters. Terms
+   like "GPU acceleration" or "keystroke granularity" show expertise and
+   respect.
 
-4. **Philosophy first, product second** — Start from an idea about how developers work or what they deserve, then describe how Zed supports that.
+4. **Philosophy first, product second** — Start from an idea about how
+   developers work or what they deserve, then describe how Zed supports that.
 
-5. **Natural rhythm** — Vary sentence length. Let ideas breathe. Avoid marketing slogans and forced symmetry.
+5. **Natural rhythm** — Vary sentence length. Let ideas breathe. Avoid marketing
+   slogans and forced symmetry.
 
-6. **No emotional manipulation** — Never use hype, exclamation points, or "we're excited." Don't tell the reader how to feel.
+6. **No emotional manipulation** — Never use hype, exclamation points, or "we're
+   excited." Don't tell the reader how to feel.
 
 ---
 
@@ -132,7 +152,8 @@ Write initial copy. Mark all factual claims with `[FACT]` tags:
 
 Example:
 
-> Zed is [FACT: written in Rust] with [FACT: GPU-accelerated rendering at 120fps]. Built by [FACT: the team behind Atom and Tree-sitter].
+> Zed is [FACT: written in Rust] with [FACT: GPU-accelerated rendering at
+> 120fps]. Built by [FACT: the team behind Atom and Tree-sitter].
 
 **Pass 2: Diagnosis**
 
@@ -164,18 +185,22 @@ Repeat until all criteria score 4+.
 
 ### Phase 4: Humanizer Pass (Recommended)
 
-For high-stakes content (homepage, announcements, product pages), run the draft through the humanizer skill:
+For high-stakes content (homepage, announcements, product pages), run the draft
+through the humanizer skill:
 
 ```bash
 /humanizer
 ```
 
 Paste your draft and let humanizer:
-1. Scan for the 24 AI-writing patterns from Wikipedia's "Signs of AI writing" guide
+
+1. Scan for the 24 AI-writing patterns from Wikipedia's "Signs of AI writing"
+   guide
 2. Audit for remaining tells ("What makes this obviously AI generated?")
 3. Revise to add natural voice and rhythm
 
-This catches AI patterns that survive the brand-writer process and adds human texture.
+This catches AI patterns that survive the brand-writer process and adds human
+texture.
 
 ### Phase 5: Validation
 
@@ -268,12 +293,18 @@ When invoked with `--review`:
 
 ### Good
 
-> Zed is written in Rust with GPU acceleration for every frame. When you type or move the cursor, pixels respond instantly. That responsiveness keeps you in flow.
+> Zed is written in Rust with GPU acceleration for every frame. When you type or
+> move the cursor, pixels respond instantly. That responsiveness keeps you in
+> flow.
 
 ### Bad
 
-> We're excited to announce our revolutionary new editor that will change the way you code forever! Say goodbye to slow, clunky IDEs — Zed is here to transform your workflow.
+> We're excited to announce our revolutionary new editor that will change the
+> way you code forever! Say goodbye to slow, clunky IDEs — Zed is here to
+> transform your workflow.
 
 ### Fixed
 
-> Zed is a new kind of editor, built from scratch for speed. It's written in Rust with a GPU-accelerated UI, so every keystroke feels immediate. We designed it for developers who notice when their tools get in the way.
+> Zed is a new kind of editor, built from scratch for speed. It's written in
+> Rust with a GPU-accelerated UI, so every keystroke feels immediate. We
+> designed it for developers who notice when their tools get in the way.
