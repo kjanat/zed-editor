@@ -9,7 +9,7 @@ Welcome to Zed, a high-performance, multiplayer code editor from the creators of
 
 ---
 
-### Installation
+## Installation
 
 On macOS, Linux, and Windows you can
 [download Zed directly](https://zed.dev/download) or install Zed via your local
@@ -21,20 +21,20 @@ Other platforms are not yet available:
 - Web
   ([tracking discussion](https://github.com/zed-industries/zed/discussions/26195))
 
-### Developing Zed
+## Developing Zed
 
 - [Building Zed for macOS](./docs/src/development/macos.md)
 - [Building Zed for Linux](./docs/src/development/linux.md)
 - [Building Zed for Windows](./docs/src/development/windows.md)
 
-### Contributing
+## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
 
 Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open
 roles.
 
-### Licensing
+## Licensing
 
 Zed source code is licensed primarily under GPL-3.0-or-later, with Apache-2.0
 components where marked.
@@ -61,8 +61,9 @@ following:
 
 ## Sponsorship
 
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
+THIS Zed is forked from by Zed Industries, Inc., and developed by
+[**@kjanat**](https://github.com/kjanat), an individual.
 
 If you’d like to financially support the project, you can do so via GitHub
-Sponsors. Sponsorships go directly to Zed Industries and are used as general
-company revenue. There are no perks or entitlements associated with sponsorship.
+Sponsors. Sponsorships go directly to Kaj Kowalski and are used. There are no
+perks or entitlements associated with sponsorship.
