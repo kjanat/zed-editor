@@ -2519,6 +2519,16 @@ impl Buffer {
         let Some(file) = self.file.as_ref() else {
             return false;
         };
+        // The disk comparison below is only meaningful on the machine that observes
+        // the disk. A remote buffer's worktree observation and its save receipt travel
+        // on independent channels, so a lagging observation still carries the mtime
+        // from before a save this buffer already recorded, which would read as a
+        // change. The host runs this same check against its own disk when it executes
+        // the save, and a real foreign change reaches remote buffers through the
+        // reload diff that sets `has_conflict` above.
+        if !file.is_local() {
+            return false;
+        }
         match file.disk_state() {
             DiskState::New => false,
             // Inequality, not `>`: an mtime that is merely *different* from the one recorded
