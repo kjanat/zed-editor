@@ -36,7 +36,7 @@ jobs:
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
         fetch-depth: 0
@@ -77,7 +77,7 @@ jobs:
     steps:
     - id: generate-token
       name: steps::generate_token
-      uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         app-id: ${{ secrets.app-id }}
         private-key: ${{ secrets.app-secret }}
@@ -87,11 +87,11 @@ jobs:
         permission-issues: write
         permission-pull-requests: write
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
     - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@a90bb5d4b27522ce881c6e98eebd7d7e6d1653f9
+      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
       with:
         cache: rust
         path: ~/.rustup
@@ -145,7 +145,7 @@ jobs:
         BUMP_TYPE: ${{ inputs.bump-type }}
         WORKING_DIR: ${{ inputs.working-directory }}
     - name: steps::create_pull_request
-      uses: peter-evans/create-pull-request@98357b18bf14b5342f975ff684046ec3b2a07725
+      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
       with:
         title: ${{ steps.bump-version.outputs.title }}
         body: ${{ steps.bump-version.outputs.body }}
@@ -171,7 +171,7 @@ jobs:
     steps:
     - id: generate-token
       name: steps::generate_token
-      uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         app-id: ${{ secrets.app-id }}
         private-key: ${{ secrets.app-secret }}
@@ -179,7 +179,7 @@ jobs:
         repositories: ${{ github.event.repository.name }}
         permission-contents: write
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
     - id: determine-tag
@@ -198,7 +198,7 @@ jobs:
         CURRENT_VERSION: ${{ needs.check_version_changed.outputs.current_version }}
         WORKING_DIR: ${{ inputs.working-directory }}
     - name: steps::create_tag
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
       with:
         script: |
           github.rest.git.createRef({
@@ -224,7 +224,7 @@ jobs:
     steps:
     - id: generate-token
       name: steps::generate_token
-      uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         app-id: ${{ secrets.app-id }}
         private-key: ${{ secrets.app-secret }}
@@ -235,7 +235,7 @@ jobs:
         permission-members: read
         permission-pull-requests: write
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
     - id: get-extension-id
@@ -254,7 +254,7 @@ jobs:
       env:
         COMMITTER_TOKEN: ${{ steps.generate-token.outputs.token }}
     - name: enable_automerge_if_staff
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
       with:
         script: |
           const prNumber = process.env.PR_NUMBER;
