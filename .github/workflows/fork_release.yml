@@ -133,8 +133,11 @@ jobs:
       - name: Resolve release version
         shell: pwsh
         run: |
-          $version = ./script/get-crate-version.ps1 zed
-          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          $lock = Get-Content Cargo.lock -Raw
+          if ($lock -notmatch '(?m)^name = "zed"\r?\nversion = "([^"]+)"') {
+            throw 'no zed package entry in Cargo.lock'
+          }
+          "RELEASE_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
       - name: Bundle
         shell: pwsh
         run: script/bundle-windows.ps1 -Architecture ${{ matrix.arch }}
