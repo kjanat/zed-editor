@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://www.schemastore.org/github-issue-config.json
-blank_issues_enabled: false
+blank_issues_enabled: true
 contact_links:
   - name: Feature request
     url: https://github.com/zed-industries/zed/discussions/new?category=feature-requests
