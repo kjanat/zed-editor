@@ -24,6 +24,7 @@
 				"command": "rustfmt",
 				"exts": ["rs"],
 				"cacheKeyFiles": ["rustfmt.toml", ".cargo/config.toml", "rust-toolchain.toml"],
+				"setupCommand": "rustup component add rustfmt"
 			}
 		]
 	},
