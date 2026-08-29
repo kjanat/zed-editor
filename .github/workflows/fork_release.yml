@@ -28,8 +28,53 @@ defaults:
     shell: bash -euxo pipefail {0}
 
 jobs:
+  create_draft_release:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve the tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG}"
+          if [[ -z "${tag}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+              tag="${GITHUB_REF_NAME}"
+            else
+              tag="dev-${GITHUB_SHA:0:7}"
+            fi
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            exit 0
+          fi
+          prerelease=()
+          case "${TAG}" in
+            v[0-9]*) ;;
+            *) prerelease=(--prerelease) ;;
+          esac
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --draft \
+            "${prerelease[@]}"
+
   bundle_linux:
     if: github.repository == 'kjanat/zed-editor'
+    needs: create_draft_release
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +85,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    permissions:
+      contents: write
     env:
       CC: clang-18
       CXX: clang++-18
@@ -62,16 +109,18 @@ jobs:
         run: ./script/download-wasi-sdk
       - name: Bundle
         run: ./script/bundle-linux
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: zed-linux-${{ matrix.arch }}
-          path: |
-            target/release/zed-linux-${{ matrix.arch }}.tar.gz
-            target/zed-remote-server-linux-${{ matrix.arch }}.gz
-          if-no-files-found: error
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create_draft_release.outputs.tag }}
+        run: |
+          gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber \
+            "target/release/zed-linux-${{ matrix.arch }}.tar.gz" \
+            "target/zed-remote-server-linux-${{ matrix.arch }}.gz"
 
   bundle_mac:
     if: github.repository == 'kjanat/zed-editor'
+    needs: create_draft_release
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +131,8 @@ jobs:
             target: x86_64-apple-darwin
     runs-on: macos-15
     timeout-minutes: 180
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,22 +144,26 @@ jobs:
           package-manager-cache: false
       - name: Bundle
         run: ./script/bundle-mac ${{ matrix.target }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: zed-macos-${{ matrix.arch }}
-          path: |
-            target/${{ matrix.target }}/release/Zed-${{ matrix.arch }}.dmg
-            target/zed-remote-server-macos-${{ matrix.arch }}.gz
-          if-no-files-found: error
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create_draft_release.outputs.tag }}
+        run: |
+          gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber \
+            "target/${{ matrix.target }}/release/Zed-${{ matrix.arch }}.dmg" \
+            "target/zed-remote-server-macos-${{ matrix.arch }}.gz"
 
   bundle_windows:
     if: github.repository == 'kjanat/zed-editor'
+    needs: create_draft_release
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
     runs-on: windows-2022
     timeout-minutes: 180
+    permissions:
+      contents: write
     env:
       ZED_WORKSPACE: ${{ github.workspace }}
     steps:
@@ -141,58 +196,31 @@ jobs:
       - name: Bundle
         shell: pwsh
         run: script/bundle-windows.ps1 -Architecture ${{ matrix.arch }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: zed-windows-${{ matrix.arch }}
-          path: |
-            target/Zed-${{ matrix.arch }}.exe
-            target/zed-remote-server-windows-${{ matrix.arch }}.zip
-          if-no-files-found: error
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create_draft_release.outputs.tag }}
+        run: |
+          gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber \
+            "target/Zed-${{ matrix.arch }}.exe" \
+            "target/zed-remote-server-windows-${{ matrix.arch }}.zip"
 
   publish:
     if: github.repository == 'kjanat/zed-editor'
     needs:
+      - create_draft_release
       - bundle_linux
       - bundle_mac
       - bundle_windows
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          path: artifacts
-      - name: Collect release assets
-        run: |
-          mkdir -p release-assets
-          find artifacts -type f -exec mv -t release-assets/ {} +
-          ls -l release-assets
-      - name: Publish to GitHub Releases
+      - name: Take the release out of draft
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create_draft_release.outputs.tag }}
         run: |
-          tag="${INPUT_TAG}"
-          if [[ -z "${tag}" ]]; then
-            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-              tag="${GITHUB_REF_NAME}"
-            else
-              tag="dev-${GITHUB_SHA:0:7}"
-            fi
-          fi
-          prerelease=()
-          case "${tag}" in
-            v[0-9]*) ;;
-            *) prerelease=(--prerelease) ;;
-          esac
-          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${tag}" --repo "${GITHUB_REPOSITORY}" --clobber release-assets/*
-          else
-            gh release create "${tag}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "${tag}" \
-              --generate-notes \
-              "${prerelease[@]}" \
-              release-assets/*
-          fi
+          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}"
