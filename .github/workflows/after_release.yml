@@ -75,7 +75,7 @@ jobs:
         maxLength: 2000
         truncationSymbol: '...'
     - name: after_release::post_to_discord::discord_webhook_action
-      uses: tsickert/discord-webhook@c840d45a03a323fbc3f7507ac7769dbd91bfb164
+      uses: tsickert/discord-webhook@b217a69502f52803de774ded2b1ab7c282e99645 # v7.0.0
       with:
         webhook-url: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTES }}
         content: ${{ steps.get-content.outputs.string }}
@@ -124,11 +124,11 @@ jobs:
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
     - name: release::create_sentry_release
-      uses: getsentry/action-release@526942b68292201ac6bbb99b9a0747d4abee354c
+      uses: getsentry/action-release@ff07929a6537bac57790c3451cf4d364aca38528 # v3.7
       with:
         environment: production
       env:

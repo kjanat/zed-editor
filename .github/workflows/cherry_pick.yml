@@ -29,7 +29,7 @@ jobs:
     steps:
     - id: generate-token
       name: steps::authenticate_as_zippy
-      uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         app-id: ${{ secrets.ZED_ZIPPY_APP_ID }}
         private-key: ${{ secrets.ZED_ZIPPY_APP_PRIVATE_KEY }}
@@ -39,7 +39,7 @@ jobs:
         permission-workflows: write
         permission-pull-requests: write
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
         token: ${{ steps.generate-token.outputs.token }}

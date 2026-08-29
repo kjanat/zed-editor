@@ -26,7 +26,7 @@ jobs:
       CXX: clang++
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
     - name: autofix_pr::run_autofix::checkout_pr
@@ -39,7 +39,7 @@ jobs:
         mkdir -p ./../.cargo
         cp ./.cargo/ci-config.toml ./../.cargo/config.toml
     - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@a90bb5d4b27522ce881c6e98eebd7d7e6d1653f9
+      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
       with:
         cache: rust
         path: ~/.rustup
@@ -48,12 +48,12 @@ jobs:
     - name: steps::download_wasi_sdk
       run: ./script/download-wasi-sdk
     - name: steps::setup_pnpm
-      uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
       with:
         version: '9'
     - name: autofix_pr::run_autofix::install_cargo_shear
       if: inputs.run_clippy == true || inputs.run_clippy == 'true'
-      uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9
+      uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
       with:
         tool: cargo-shear@1.13.4
     - name: autofix_pr::run_autofix::run_cargo_fix
@@ -100,7 +100,7 @@ jobs:
     steps:
     - id: generate-token
       name: steps::authenticate_as_zippy
-      uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         app-id: ${{ secrets.ZED_ZIPPY_APP_ID }}
         private-key: ${{ secrets.ZED_ZIPPY_APP_PRIVATE_KEY }}
@@ -109,7 +109,7 @@ jobs:
         permission-contents: write
         permission-workflows: write
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
         token: ${{ steps.generate-token.outputs.token }}

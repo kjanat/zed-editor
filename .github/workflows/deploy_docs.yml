@@ -87,7 +87,7 @@ jobs:
       env:
         CHANNEL: ${{ inputs.channel }}
     - name: steps::checkout_repo
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         clean: false
         ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -96,7 +96,7 @@ jobs:
         mkdir -p ./../.cargo
         cp ./.cargo/ci-config.toml ./../.cargo/config.toml
     - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@a90bb5d4b27522ce881c6e98eebd7d7e6d1653f9
+      uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
       with:
         cache: rust
         path: ~/.rustup
@@ -107,7 +107,7 @@ jobs:
     - name: ./script/generate-action-metadata
       run: ./script/generate-action-metadata
     - name: deploy_docs::lychee_link_check
-      uses: lycheeverse/lychee-action@82202e5e9c2f4ef1a55a3d02563e1cb6041e5332
+      uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
       with:
         args: --no-progress --exclude '^http' './docs/src/**/*'
         fail: true
@@ -124,25 +124,25 @@ jobs:
         DOCS_CHANNEL: ${{ steps.resolve-channel.outputs.channel }}
         MDBOOK_BOOK__SITE_URL: ${{ steps.resolve-channel.outputs.site_url }}
     - name: deploy_docs::lychee_link_check
-      uses: lycheeverse/lychee-action@82202e5e9c2f4ef1a55a3d02563e1cb6041e5332
+      uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
       with:
         args: --no-progress --exclude '^http' 'target/deploy/docs'
         fail: true
         jobSummary: false
     - name: deploy_docs::docs_deploy_steps::deploy_to_cf_pages
-      uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+      uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
       with:
         apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         command: pages deploy target/deploy --project-name=${{ steps.resolve-channel.outputs.project_name }} --branch main
     - name: deploy_docs::docs_deploy_steps::upload_install_script
-      uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+      uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
       with:
         apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         command: r2 object put -f script/install.sh zed-open-source-website-assets/install.sh
     - name: deploy_docs::docs_deploy_steps::deploy_docs_worker
-      uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+      uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
       with:
         apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

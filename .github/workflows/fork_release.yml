@@ -1,0 +1,196 @@
+name: fork_release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish the release under
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
+jobs:
+  bundle_linux:
+    if: github.repository == 'kjanat/zed-editor'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - name: Reclaim runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: ./script/linux
+      - name: Put llvm-objcopy on PATH
+        run: |
+          if ! command -v llvm-objcopy >/dev/null 2>&1; then
+            for dir in /usr/lib/llvm-*/bin; do
+              if [[ -x "${dir}/llvm-objcopy" ]]; then
+                echo "${dir}" >> "${GITHUB_PATH}"
+              fi
+            done
+          fi
+      - name: Download WASI SDK
+        run: ./script/download-wasi-sdk
+      - name: Bundle
+        run: ./script/bundle-linux
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-linux-${{ matrix.arch }}
+          path: |
+            target/release/zed-linux-${{ matrix.arch }}.tar.gz
+            target/zed-remote-server-linux-${{ matrix.arch }}.gz
+          if-no-files-found: error
+
+  bundle_mac:
+    if: github.repository == 'kjanat/zed-editor'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          check-latest: true
+          package-manager-cache: false
+      - name: Bundle
+        run: ./script/bundle-mac ${{ matrix.target }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-macos-${{ matrix.arch }}
+          path: |
+            target/${{ matrix.target }}/release/Zed-${{ matrix.arch }}.dmg
+            target/zed-remote-server-macos-${{ matrix.arch }}.gz
+          if-no-files-found: error
+
+  bundle_windows:
+    if: github.repository == 'kjanat/zed-editor'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      ZED_WORKSPACE: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # script/bundle-windows.ps1 sources the dev shell from the Community
+      # install path, which the hosted image does not have.
+      - name: Point the Community install path at the installed edition
+        shell: pwsh
+        run: |
+          $expected = 'C:\Program Files\Microsoft Visual Studio\2022\Community'
+          if (-not (Test-Path $expected)) {
+            $editions = @('Enterprise', 'Professional', 'BuildTools')
+            $installed = $editions |
+              ForEach-Object { "C:\Program Files\Microsoft Visual Studio\2022\$_" } |
+              Where-Object { Test-Path $_ } |
+              Select-Object -First 1
+            if (-not $installed) { throw 'No Visual Studio 2022 installation found' }
+            New-Item -ItemType Junction -Path $expected -Target $installed | Out-Null
+          }
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $version = ./script/get-crate-version.ps1 zed
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Bundle
+        shell: pwsh
+        run: script/bundle-windows.ps1 -Architecture ${{ matrix.arch }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zed-windows-${{ matrix.arch }}
+          path: |
+            target/Zed-${{ matrix.arch }}.exe
+            target/zed-remote-server-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  publish:
+    if: github.repository == 'kjanat/zed-editor'
+    needs:
+      - bundle_linux
+      - bundle_mac
+      - bundle_windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: artifacts
+      - name: Collect release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -exec mv -t release-assets/ {} +
+          ls -l release-assets
+      - name: Publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG}"
+          if [[ -z "${tag}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+              tag="${GITHUB_REF_NAME}"
+            else
+              tag="dev-${GITHUB_SHA:0:7}"
+            fi
+          fi
+          prerelease=()
+          case "${tag}" in
+            v[0-9]*) ;;
+            *) prerelease=(--prerelease) ;;
+          esac
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${tag}" --repo "${GITHUB_REPOSITORY}" --clobber release-assets/*
+          else
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "${tag}" \
+              --generate-notes \
+              "${prerelease[@]}" \
+              release-assets/*
+          fi
