@@ -1,0 +1,109 @@
+# Upstream drift watcher for kjanat/zed-editor.
+#
+# Weekly (and on demand): fetch zed-industries/zed main, try to merge it
+# into master on the rolling branch sync/upstream, and either open/update
+# a PR (clean merge) or open an issue listing the conflicted files.
+#
+# The merge lands as a merge commit on purpose: this fork's commits are
+# signed and tagged, so rebasing would rewrite SHAs that releases and the
+# base/v* tags already point to.
+#
+# Token note: PRs created with the default GITHUB_TOKEN do not trigger
+# other workflows, so fork_ci would not run on the sync PR. Add a classic
+# PAT with repo scope as the SYNC_TOKEN secret to get CI on these PRs;
+# without it the workflow still works, but you kick off fork_ci on the PR
+# manually (or push any empty commit to the branch).
+---
+name: fork_upstream_sync
+on:
+  schedule: [cron: "0 6 * * 1"] # Mondays 06:00 UTC
+  workflow_dispatch: null
+concurrency: { group: "${{ github.workflow }}", cancel-in-progress: false }
+permissions: { contents: write, pull-requests: write, issues: write }
+jobs:
+  sync:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+      UPSTREAM: https://github.com/zed-industries/zed.git
+      SYNC_BRANCH: sync/upstream
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: master, fetch-depth: 0, token: "${{ secrets.SYNC_TOKEN || github.token }}" }
+      - name: Fetch upstream
+        run: git remote add upstream "${UPSTREAM}"; git fetch upstream main --no-tags
+
+      - name: Check for new upstream commits
+        id: drift
+        run: |
+          BEHIND="$(git rev-list --count master..upstream/main)"
+          echo "behind=${BEHIND}" >> "${GITHUB_OUTPUT}"
+          echo "Upstream is ${BEHIND} commits ahead of master." | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Attempt the merge
+        id: merge
+        if: steps.drift.outputs.behind != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${SYNC_BRANCH}"
+          if git merge --no-edit upstream/main; then
+            echo "result=clean"    >> "${GITHUB_OUTPUT}"
+          else
+            echo "result=conflict" >> "${GITHUB_OUTPUT}"
+            git diff --name-only --diff-filter=U | tee /tmp/conflicts.txt | tee -a "${GITHUB_STEP_SUMMARY}"
+            git merge --abort
+          fi
+
+      - name: Push the sync branch and open or update the PR
+        if: steps.merge.outputs.result == 'clean'
+        run: |
+          git push --force origin "${SYNC_BRANCH}"
+          EXISTING=$(gh pr list --repo "${GITHUB_REPOSITORY}" \
+            --head "${SYNC_BRANCH}" --base master --state open \
+            --json number --jq '.[0].number // empty')
+          BEHIND="${{ steps.drift.outputs.behind }}"
+          if [[ -n "${EXISTING}" ]]; then
+            gh pr comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Updated: upstream is now ${BEHIND} commits ahead; the branch has been re-merged and force-pushed."
+          else
+            gh pr create --repo "${GITHUB_REPOSITORY}" \
+              --head "${SYNC_BRANCH}" --base master \
+              --title "Merge upstream (${BEHIND} commits)" \
+              --body "$(printf 'Automated weekly sync: merges zed-industries/zed main into master.\n\nMerging this through the normal flow keeps every upstream sync gated by fork_ci, the same gate as local work. If fork_ci did not start on this PR, the run was created with the default token; start it manually or configure SYNC_TOKEN.')"
+          fi
+
+      - name: Open a conflict issue
+        if: steps.merge.outputs.result == 'conflict'
+        run: |
+          TITLE="Upstream sync conflict ($(date -u +%Y-%m-%d))"
+          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" \
+            --state open --search "Upstream sync conflict in:title" \
+            --json number --jq '.[0].number // empty')
+          CONFLICTS="$(cat /tmp/conflicts.txt)"
+          cat > /tmp/issue-body.md <<EOF
+          Merging upstream main into master hits conflicts in:
+
+          \`\`\`
+          ${CONFLICTS}
+          \`\`\`
+
+          Resolve locally:
+
+          \`\`\`
+          git fetch upstream main
+          git merge upstream/main
+          # resolve, test, push
+          \`\`\`
+          EOF
+          if [[ -n "${EXISTING}" ]]; then
+            gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/issue-body.md
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --body-file /tmp/issue-body.md
+          fi
+
+      - name: Nothing to do
+        if: steps.drift.outputs.behind == '0'
+        run: echo "master is level with upstream main." | tee -a "${GITHUB_STEP_SUMMARY}"

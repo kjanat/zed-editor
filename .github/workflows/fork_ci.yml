@@ -1,0 +1,80 @@
+# CI gate for kjanat/zed-editor.
+#
+# Distilled from upstream's run_tests.yml, which runs on Zed's namespace-*
+# and self-hosted runners that do not exist on this fork. This variant fits
+# GitHub-hosted runners by testing only the crates this fork actually
+# changes; the full workspace is covered by the release pipeline's builds.
+#
+# Guards every push and PR on master, including the PRs the upstream-sync
+# workflow opens.
+---
+name: fork_ci
+on:
+  push: { branches: [master] }
+  pull_request: { branches: [master] }
+  workflow_dispatch: null
+concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Keep debug test builds inside the runner's disk. Without this a debug
+  # build of these crates plus dependencies overflows ubuntu-latest.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  style:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: kjanat/dprint-check@v3
+
+  clippy:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Reclaim runner disk space
+        run: df -h /; sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost; df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { shared-key: fork-ci-clippy, cache-on-failure: true }
+      - name: Install build dependencies
+        run: ./script/linux
+      - name: clippy
+        run: ./script/clippy
+
+  tests:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Reclaim runner disk space
+        run: df -h /; sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost; df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { shared-key: fork-ci-tests, cache-on-failure: true }
+      - name: Install build dependencies
+        run: ./script/linux
+      # The crates this fork's commits touch, in dependency order.
+      # The regression tests for the seventeen fixes all live here;
+      # if one of these goes red after an upstream merge, the merge broke a fix.
+      - name: Test the crates this fork changes
+        run: >
+          cargo test
+          -p fs
+          -p language
+          -p worktree
+          -p project
+          -p lsp
+          -p language_tools
+          -p repl
+          -p auto_update
+      - name: Show disk usage
+        if: always()
+        run: df -h /
