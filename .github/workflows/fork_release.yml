@@ -134,7 +134,7 @@ jobs:
         shell: pwsh
         run: |
           $lock = Get-Content Cargo.lock -Raw
-          if ($lock -notmatch '(?m)^name = "zed"\r?\nversion = "([^"]+)"') {
+          if ($lock -notmatch '(?m)^name[ \t]*=[ \t]*"zed"[ \t]*\r?\nversion[ \t]*=[ \t]*"([^"]+)"') {
             throw 'no zed package entry in Cargo.lock'
           }
           "RELEASE_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
