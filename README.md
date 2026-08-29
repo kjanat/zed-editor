@@ -1,25 +1,21 @@
 # Zed
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
+[![Zed:badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/kjanat/zed-editor/HEAD/assets/badge/v0.json)][zed]
+[![CI:badge](https://github.com/kjanat/zed-editor/actions/workflows/fork_ci.yml/badge.svg)][CI:workflow]
 
 Welcome to Zed, a high-performance, multiplayer code editor from the creators of
-[Atom](https://github.com/atom/atom) and
-[Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+[Atom] and [Tree-sitter].
 
 ---
 
 ## Installation
 
-On macOS, Linux, and Windows you can
-[download Zed directly](https://zed.dev/download) or install Zed via your local
-package manager
-([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+On macOS, Linux, and Windows you can [download Zed directly][download] or
+install Zed via your local package manager ([macOS]/[Linux]/[Windows]).
 
 Other platforms are not yet available:
 
-- Web
-  ([tracking discussion](https://github.com/zed-industries/zed/discussions/26195))
+- Web ([tracking discussion])
 
 ## Developing Zed
 
@@ -31,9 +27,6 @@ Other platforms are not yet available:
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open
-roles.
-
 ## Licensing
 
 Zed source code is licensed primarily under GPL-3.0-or-later, with Apache-2.0
@@ -42,9 +35,8 @@ components where marked.
 License information for third party dependencies must be correctly provided for
 CI to pass.
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to
-automatically comply with open source licenses. If CI is failing, check the
-following:
+We use [`cargo-about`] to automatically comply with open source licenses. If CI
+is failing, check the following:
 
 - Is it showing a `no license specified` error for a crate you've created? If
   so, add `publish = false` under `[package]` in your crate's Cargo.toml.
@@ -56,14 +48,26 @@ following:
   `script/licenses/zed-licenses.toml`.
 - Is `cargo-about` unable to find the license for a dependency? If so, add a
   clarification field at the end of `script/licenses/zed-licenses.toml`, as
-  specified in the
-  [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
+  specified in the [cargo-about book].
 
 ## Sponsorship
 
-THIS Zed is forked from by Zed Industries, Inc., and developed by
-[**@kjanat**](https://github.com/kjanat), an individual.
+THIS Zed is forked by [**@kjanat**][kjanat] from Zed Industries, Inc., and
+developed by an individual.
 
-If you’d like to financially support the project, you can do so via GitHub
-Sponsors. Sponsorships go directly to Kaj Kowalski and are used. There are no
-perks or entitlements associated with sponsorship.
+If you’d like to financially support the fork, you can do so via GitHub
+Sponsors. Sponsorships go directly to Kaj Kowalski and are used by him. There
+are no perks or entitlements associated with sponsorship.
+
+[kjanat]: https://github.com/kjanat
+[zed]: https://zed.dev
+[CI:workflow]: https://github.com/kjanat/zed-editor/actions/workflows/fork_ci.yml
+[Atom]: https://github.com/atom/atom
+[Tree-sitter]: https://github.com/tree-sitter/tree-sitter
+[download]: https://zed.dev/download
+[cargo-about book]: https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration
+[`cargo-about`]: https://github.com/EmbarkStudios/cargo-about
+[tracking discussion]: https://github.com/zed-industries/zed/discussions/26195
+[macOS]: https://zed.dev/docs/installation#macos
+[Linux]: https://zed.dev/docs/linux#installing-via-a-package-manager
+[Windows]: https://zed.dev/docs/windows#package-managers
