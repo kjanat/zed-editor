@@ -12,6 +12,15 @@
         "min"
       ]
     },
+    "Command": {
+      "description": "Cargo subcommand to invoke.",
+      "type": "string",
+      "enum": [
+        "build",
+        "bench",
+        "test"
+      ]
+    },
     "DiffField": {
       "description": "Either a boolean (uses `<step.name>.patch`) or an explicit patch filename.",
       "anyOf": [
@@ -67,6 +76,23 @@
           "format": "uint"
         }
       }
+    },
+    "PackageSpecifier": {
+      "description": "Either a list of package names or the literal string \"workspace\".",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "string",
+          "enum": [
+            "workspace"
+          ]
+        }
+      ]
     },
     "Step_cargo": {
       "description": "Body of a `[step.<tool>.<step_name>]` table. The tool name is recovered from the outer key, not a field; flatten-collected `rest` is forwarded to the forager plugin via `FORAGER_INPUTS` as JSON.",
@@ -192,6 +218,20 @@
         }
       },
       "additionalProperties": false
+    },
+    "TargetSpecifier": {
+      "description": "Either a boolean selecting every target of the kind, or a list of target names.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
     }
   },
   "title": "Wezel experiment.toml",
