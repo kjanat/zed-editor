@@ -40,6 +40,9 @@ jobs:
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CC: clang-18
+      CXX: clang++-18
     steps:
       - name: Reclaim runner disk space
         run: |
@@ -50,15 +53,17 @@ jobs:
           persist-credentials: false
       - name: Install build dependencies
         run: ./script/linux
-      - name: Put llvm-objcopy on PATH
+      # webrtc-sys needs a C++20 frontend; g++ on this image rejects
+      # PortInterface::Network() with -fpermissive.
+      - name: Install clang 18
         run: |
-          if ! command -v llvm-objcopy >/dev/null 2>&1; then
-            for dir in /usr/lib/llvm-*/bin; do
-              if [[ -x "${dir}/llvm-objcopy" ]]; then
-                echo "${dir}" >> "${GITHUB_PATH}"
-              fi
-            done
-          fi
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 18
+          sudo apt-get install -y lld-18
+      - name: Put the LLVM 18 tools on PATH
+        run: |
+          echo /usr/lib/llvm-18/bin >> "${GITHUB_PATH}"
       - name: Download WASI SDK
         run: ./script/download-wasi-sdk
       - name: Bundle
