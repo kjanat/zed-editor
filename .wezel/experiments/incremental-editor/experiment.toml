@@ -1,4 +1,5 @@
 #:schema ../../schema.json
+#:tombi schema.strict = false
 
 description = "Measures rebuild time after a trivial edit to the editor crate"
 

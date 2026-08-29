@@ -81,6 +81,9 @@ project                     = { workspace = true, features = ["test-support"] }
 tempfile.workspace          = true
 workspace                   = { workspace = true, features = ["test-support"] }
 
+[build-dependencies]
+toml.workspace = true
+
 # Wasmtime is included as a dependency in order to enable the same
 # features that are enabled in Zed.
 #

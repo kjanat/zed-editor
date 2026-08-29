@@ -49,5 +49,8 @@ theme_settings.workspace          = true
 util.workspace                    = true
 watch.workspace                   = true
 
+[build-dependencies]
+toml.workspace = true
+
 [lints]
 workspace = true
