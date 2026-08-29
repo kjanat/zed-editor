@@ -206,7 +206,7 @@ impl ImageItem {
 
         let old_state = old_file.disk_state();
         let new_state = new_file.disk_state();
-        if old_state != new_state {
+        if old_state.differs_from(new_state) {
             file_changed = true;
             if matches!(new_state, DiskState::Present { .. }) {
                 cx.emit(ImageItemEvent::ReloadNeeded)
@@ -851,7 +851,8 @@ impl LocalImageStore {
                     disk_state: match entry.mtime {
                         Some(mtime) => DiskState::Present {
                             mtime,
-                            size: entry.size,
+                            size: Some(entry.size),
+                            inode: Some(entry.inode),
                         },
                         None => old_file.disk_state,
                     },

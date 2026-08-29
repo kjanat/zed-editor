@@ -397,7 +397,28 @@ pub enum DiskState {
     /// File created in Zed that has not been saved.
     New,
     /// File present on the filesystem.
-    Present { mtime: MTime, size: u64 },
+    ///
+    /// `size` and `inode` accompany `mtime` because the timestamp alone cannot see an external
+    /// write: a tool that rewrites a file within one mtime tick - formatters, build steps,
+    /// `git` operations and sync clients all do - would otherwise compare equal to the
+    /// previous state, so no reload is requested and the buffer stays stale indefinitely. A
+    /// rewrite that changes the file's length is caught by `size`, and one that keeps it is
+    /// usually caught by `inode`, since most such tools replace the file by renaming a new one
+    /// over it.
+    ///
+    /// A gap remains: a tool that rewrites the file *in place* to the same length within one
+    /// mtime tick keeps all three fields and is invisible here. Only hashing the contents
+    /// would catch it, and that would mean reading every file on every scan.
+    ///
+    /// Either field is `None` where that observation could not establish it, which is the case
+    /// for a file described over the wire whose worktree entry has not arrived yet. Compare
+    /// two states with [`DiskState::differs_from`] rather than `==`, so that a field one side
+    /// could not see is not itself read as a change.
+    Present {
+        mtime: MTime,
+        size: Option<u64>,
+        inode: Option<u64>,
+    },
     /// Deleted file that was previously present.
     Deleted,
     /// An old version of a file that was previously present
@@ -406,6 +427,34 @@ pub enum DiskState {
 }
 
 impl DiskState {
+    /// Whether these two observations of a file describe contents that may differ.
+    ///
+    /// This is deliberately not `!=`. Size and identity are compared only where both
+    /// observations established them, so a state assembled from a worktree that has not fully
+    /// arrived is judged on the fields the two have in common, rather than being reported as
+    /// changed for what one of them could not see.
+    pub fn differs_from(self, other: Self) -> bool {
+        fn known_and_different(one: Option<u64>, other: Option<u64>) -> bool {
+            matches!((one, other), (Some(one), Some(other)) if one != other)
+        }
+
+        match (self, other) {
+            (
+                DiskState::Present { mtime, size, inode },
+                DiskState::Present {
+                    mtime: other_mtime,
+                    size: other_size,
+                    inode: other_inode,
+                },
+            ) => {
+                mtime != other_mtime
+                    || known_and_different(size, other_size)
+                    || known_and_different(inode, other_inode)
+            }
+            _ => self != other,
+        }
+    }
+
     /// Returns the file's last known modification time on disk.
     pub fn mtime(self) -> Option<MTime> {
         match self {
@@ -416,11 +465,12 @@ impl DiskState {
         }
     }
 
-    /// Returns the file's size on disk in bytes.
+    /// Returns the file's size on disk in bytes, where the file is present and the observation
+    /// established its size.
     pub fn size(self) -> Option<u64> {
         match self {
             DiskState::New => None,
-            DiskState::Present { size, .. } => Some(size),
+            DiskState::Present { size, .. } => size,
             DiskState::Deleted => None,
             DiskState::Historic { .. } => None,
         }
@@ -1721,7 +1771,7 @@ impl Buffer {
 
             let old_state = old_file.disk_state();
             let new_state = new_file.disk_state();
-            if old_state != new_state {
+            if old_state.differs_from(new_state) {
                 file_changed = true;
                 if !was_dirty && matches!(new_state, DiskState::Present { .. }) {
                     cx.emit(BufferEvent::ReloadNeeded)
@@ -2471,10 +2521,15 @@ impl Buffer {
         };
         match file.disk_state() {
             DiskState::New => false,
+            // Inequality, not `>`: an mtime that is merely *different* from the one recorded
+            // at the last save or reload means the file changed underneath us. Requiring it to
+            // be strictly greater misses every case `MTime`'s own documentation warns about -
+            // coarse mtime granularity making a same-tick external write compare equal, clock
+            // adjustments, restored backups, and tools that preserve timestamps (`cp -p`,
+            // `rsync -t`, `touch -r`) - and this check is the only thing standing between a
+            // save and silently overwriting newer contents on disk.
             DiskState::Present { mtime, .. } => match self.saved_mtime {
-                Some(saved_mtime) => {
-                    mtime.bad_is_greater_than(saved_mtime) && self.has_unsaved_edits()
-                }
+                Some(saved_mtime) => mtime != saved_mtime && self.has_unsaved_edits(),
                 None => true,
             },
             DiskState::Deleted => false,

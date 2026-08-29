@@ -2,6 +2,7 @@ use super::*;
 use crate::Buffer;
 use clock::ReplicaId;
 use collections::BTreeMap;
+use fs::MTime;
 use futures::FutureExt as _;
 use futures_lite::future::yield_now;
 use gpui::{App, AppContext as _, BorrowAppContext, Entity};
@@ -5443,4 +5444,39 @@ fn test_formatted_chunks(cx: &mut gpui::App) {
             );
         }
     }
+}
+
+#[test]
+fn test_disk_state_differs_from() {
+    let mtime = MTime::from_seconds_and_nanos(100, 0);
+    let later = MTime::from_seconds_and_nanos(200, 0);
+    let present = |mtime, size, inode| DiskState::Present {
+        mtime,
+        size: Some(size),
+        inode: Some(inode),
+    };
+    let partial = |mtime, size, inode| DiskState::Present { mtime, size, inode };
+
+    assert!(!present(mtime, 10, 1).differs_from(present(mtime, 10, 1)));
+    assert!(present(mtime, 10, 1).differs_from(present(later, 10, 1)));
+    assert!(present(mtime, 10, 1).differs_from(present(mtime, 20, 1)));
+
+    // The case identity exists for: an external tool renamed a new file of the same length
+    // over this one within a single mtime tick.
+    assert!(present(mtime, 10, 1).differs_from(present(mtime, 10, 2)));
+
+    // A field one side could not establish is not itself a change, in either direction, so a
+    // file whose worktree entry has not arrived does not report every update as one.
+    assert!(!present(mtime, 10, 1).differs_from(partial(mtime, Some(10), None)));
+    assert!(!partial(mtime, None, None).differs_from(present(mtime, 10, 1)));
+    assert!(!partial(mtime, None, None).differs_from(partial(mtime, None, None)));
+    assert!(partial(mtime, None, None).differs_from(partial(later, None, None)));
+
+    // What both sides do know still decides it.
+    assert!(partial(mtime, Some(10), None).differs_from(partial(mtime, Some(20), None)));
+
+    // Everything else compares structurally.
+    assert!(DiskState::New.differs_from(DiskState::Deleted));
+    assert!(DiskState::New.differs_from(partial(mtime, None, None)));
+    assert!(!DiskState::Deleted.differs_from(DiskState::Deleted));
 }
