@@ -31,6 +31,7 @@ workspace.workspace       = true
 [dev-dependencies]
 clock                 = { workspace = true, "features" = ["test-support"] }
 ctor.workspace        = true
+db                    = { workspace = true, "features" = ["test-support"] }
 futures.workspace     = true
 gpui                  = { workspace = true, "features" = ["test-support"] }
 parking_lot.workspace = true
