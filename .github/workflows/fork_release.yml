@@ -242,6 +242,39 @@ jobs:
             "target/Zed-${arch}.exe#Zed for Windows (${arch}, installer)" \
             "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})"
 
+  bwrap_linux:
+    if: github.repository == 'kjanat/zed-editor'
+    needs: create_draft_release
+    strategy:
+      fail-fast: false
+      matrix: { include: [{ arch: x86_64, runner: ubuntu-latest }, { arch: aarch64, runner: ubuntu-24.04-arm }] }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions: { contents: write, id-token: write, attestations: write }
+    env: { GH_REPO: "${{ github.repository }}" }
+    steps:
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with: { github_access_token: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Build static bubblewrap
+        env: { arch: "${{ matrix.arch }}" }
+        run: |
+          nix build nixpkgs#pkgsStatic.bubblewrap -L
+          cp result/bin/bwrap "bwrap-linux-${arch}"
+          chmod 755 "bwrap-linux-${arch}"
+          gzip -f --stdout --best "bwrap-linux-${arch}" > "bwrap-linux-${arch}.gz"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: bwrap-linux-${{ matrix.arch }}.gz
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ needs.create_draft_release.outputs.tag }}
+          arch: ${{ matrix.arch }}
+        run: |
+          gh release upload "${tag}" --clobber \
+            "bwrap-linux-${arch}.gz#Static bubblewrap (${arch})"
+
   pacman_repo:
     if: github.repository == 'kjanat/zed-editor' && startsWith(needs.create_draft_release.outputs.tag, 'v')
     needs: [create_draft_release, bundle_linux]
@@ -310,7 +343,7 @@ jobs:
 
   publish:
     if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled()
-    needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, pacman_repo]
+    needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, bwrap_linux, pacman_repo]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: { contents: write }
