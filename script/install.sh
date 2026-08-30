@@ -12,21 +12,21 @@ main() {
 	ZED_VERSION="${ZED_VERSION:-latest}"
 	# Use TMPDIR if available (for environments with non-standard temp directories)
 	if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
-		temp="$(mktemp -d "$TMPDIR/zed-XXXXXX")"
+		temp="$(mktemp -d "${TMPDIR}/zed-XXXXXX")"
 	else
 		temp="$(mktemp -d "/tmp/zed-XXXXXX")"
 	fi
 
-	if [ "$platform" = "Darwin" ]; then
+	if [ "${platform}" = "Darwin" ]; then
 		platform="macos"
-	elif [ "$platform" = "Linux" ]; then
+	elif [ "${platform}" = "Linux" ]; then
 		platform="linux"
 	else
-		echo "Unsupported platform $platform"
+		echo "Unsupported platform ${platform}"
 		exit 1
 	fi
 
-	case "$platform-$arch" in
+	case "${platform}-${arch}" in
 		macos-arm64* | linux-arm64* | linux-aarch64)
 			arch="aarch64"
 			;;
@@ -52,24 +52,25 @@ main() {
 		exit 1
 	fi
 
-	"$platform" "$@"
+	"${platform}" "$@"
 
-	if [ "$(command -v zed)" = "$HOME/.local/bin/zed" ]; then
+	zed_command="$(command -v zed || true)"
+	if [ "${zed_command}" = "${HOME}/.local/bin/zed" ]; then
 		echo "Zed has been installed. Run with 'zed'"
 	else
 		echo "To run Zed from your terminal, you must add ~/.local/bin to your PATH"
 		echo "Run:"
 
-		case "$SHELL" in
+		case "${SHELL}" in
 			*zsh)
-				echo "   echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.zshrc"
+				echo "   echo 'export PATH=\${HOME}/.local/bin:\$PATH' >> ~/.zshrc"
 				echo "   source ~/.zshrc"
 				;;
 			*fish)
-				echo "   fish_add_path -U $HOME/.local/bin"
+				echo "   fish_add_path -U ${HOME}/.local/bin"
 				;;
 			*)
-				echo "   echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.bashrc"
+				echo "   echo 'export PATH=\${HOME}/.local/bin:\$PATH' >> ~/.bashrc"
 				echo "   source ~/.bashrc"
 				;;
 		esac
@@ -80,24 +81,24 @@ main() {
 
 linux() {
 	if [ -n "${ZED_BUNDLE_PATH:-}" ]; then
-		cp "$ZED_BUNDLE_PATH" "$temp/zed-linux-$arch.tar.gz"
+		cp "${ZED_BUNDLE_PATH}" "${temp}/zed-linux-${arch}.tar.gz"
 	else
-		echo "Downloading Zed version: $ZED_VERSION"
-		if [ "$ZED_VERSION" = "latest" ]; then
-			url="https://github.com/kjanat/zed-editor/releases/latest/download/zed-linux-$arch.tar.gz"
+		echo "Downloading Zed version: ${ZED_VERSION}"
+		if [ "${ZED_VERSION}" = "latest" ]; then
+			url="https://github.com/kjanat/zed-editor/releases/latest/download/zed-linux-${arch}.tar.gz"
 		else
-			url="https://github.com/kjanat/zed-editor/releases/download/v${ZED_VERSION#v}/zed-linux-$arch.tar.gz"
+			url="https://github.com/kjanat/zed-editor/releases/download/v${ZED_VERSION#v}/zed-linux-${arch}.tar.gz"
 		fi
-		curl "$url" >"$temp/zed-linux-$arch.tar.gz"
+		curl "${url}" >"${temp}/zed-linux-${arch}.tar.gz"
 	fi
 
 	suffix=""
-	if [ "$channel" != "stable" ]; then
-		suffix="-$channel"
+	if [ "${channel}" != "stable" ]; then
+		suffix="-${channel}"
 	fi
 
 	appid=""
-	case "$channel" in
+	case "${channel}" in
 		stable)
 			appid="dev.zed.Zed"
 			;;
@@ -117,68 +118,68 @@ linux() {
 	esac
 
 	# Unpack
-	rm -rf "$HOME/.local/zed$suffix.app"
-	mkdir -p "$HOME/.local/zed$suffix.app"
-	tar -xzf "$temp/zed-linux-$arch.tar.gz" -C "$HOME/.local/"
+	rm -rf "${HOME}/.local/zed${suffix}.app"
+	mkdir -p "${HOME}/.local/zed${suffix}.app"
+	tar -xzf "${temp}/zed-linux-${arch}.tar.gz" -C "${HOME}/.local/"
 
-	zed_editor="$HOME/.local/zed$suffix.app/libexec/zed-editor"
-	if [ -f "$zed_editor" ] && command -v ldd >/dev/null 2>&1; then
-		missing="$(ldd "$zed_editor" 2>/dev/null | sed -n 's/^[[:space:]]*\(.*\) => not found$/\1/p')"
-		if [ -n "$missing" ]; then
+	zed_editor="${HOME}/.local/zed${suffix}.app/libexec/zed-editor"
+	if [ -f "${zed_editor}" ] && command -v ldd >/dev/null 2>&1; then
+		missing="$(ldd "${zed_editor}" 2>/dev/null | sed -n 's/^[[:space:]]*\(.*\) => not found$/\1/p')"
+		if [ -n "${missing}" ]; then
 			echo "Warning: your system is missing libraries that Zed needs:"
-			echo "$missing" | sed 's/^/    /'
+			echo "${missing}" | sed 's/^/    /'
 			echo "Install them with your package manager, or Zed will fail to start."
 		fi
 	fi
 
 	# Setup ~/.local directories
-	mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
+	mkdir -p "${HOME}/.local/bin" "${HOME}/.local/share/applications"
 
 	# Link the binary
-	if [ -f "$HOME/.local/zed$suffix.app/bin/zed" ]; then
-		ln -sf "$HOME/.local/zed$suffix.app/bin/zed" "$HOME/.local/bin/zed"
+	if [ -f "${HOME}/.local/zed${suffix}.app/bin/zed" ]; then
+		ln -sf "${HOME}/.local/zed${suffix}.app/bin/zed" "${HOME}/.local/bin/zed"
 	else
 		# support for versions before 0.139.x.
-		ln -sf "$HOME/.local/zed$suffix.app/bin/cli" "$HOME/.local/bin/zed"
+		ln -sf "${HOME}/.local/zed${suffix}.app/bin/cli" "${HOME}/.local/bin/zed"
 	fi
 
 	# Copy .desktop file
-	desktop_file_path="$HOME/.local/share/applications/${appid}.desktop"
-	src_dir="$HOME/.local/zed$suffix.app/share/applications"
-	if [ -f "$src_dir/${appid}.desktop" ]; then
-		cp "$src_dir/${appid}.desktop" "${desktop_file_path}"
+	desktop_file_path="${HOME}/.local/share/applications/${appid}.desktop"
+	src_dir="${HOME}/.local/zed${suffix}.app/share/applications"
+	if [ -f "${src_dir}/${appid}.desktop" ]; then
+		cp "${src_dir}/${appid}.desktop" "${desktop_file_path}"
 	else
 		# Fallback for older tarballs
-		cp "$src_dir/zed$suffix.desktop" "${desktop_file_path}"
+		cp "${src_dir}/zed${suffix}.desktop" "${desktop_file_path}"
 	fi
-	sed -i "s|Icon=zed|Icon=$HOME/.local/zed$suffix.app/share/icons/hicolor/512x512/apps/zed.png|g" "${desktop_file_path}"
-	sed -i "s|Exec=zed|Exec=$HOME/.local/zed$suffix.app/bin/zed|g" "${desktop_file_path}"
+	sed -i "s|Icon=zed|Icon=${HOME}/.local/zed${suffix}.app/share/icons/hicolor/512x512/apps/zed.png|g" "${desktop_file_path}"
+	sed -i "s|Exec=zed|Exec=${HOME}/.local/zed${suffix}.app/bin/zed|g" "${desktop_file_path}"
 }
 
 macos() {
-	echo "Downloading Zed version: $ZED_VERSION"
-	if [ "$ZED_VERSION" = "latest" ]; then
-		url="https://github.com/kjanat/zed-editor/releases/latest/download/Zed-$arch.dmg"
+	echo "Downloading Zed version: ${ZED_VERSION}"
+	if [ "${ZED_VERSION}" = "latest" ]; then
+		url="https://github.com/kjanat/zed-editor/releases/latest/download/Zed-${arch}.dmg"
 	else
-		url="https://github.com/kjanat/zed-editor/releases/download/v${ZED_VERSION#v}/Zed-$arch.dmg"
+		url="https://github.com/kjanat/zed-editor/releases/download/v${ZED_VERSION#v}/Zed-${arch}.dmg"
 	fi
-	curl "$url" >"$temp/Zed-$arch.dmg"
-	hdiutil attach -quiet "$temp/Zed-$arch.dmg" -mountpoint "$temp/mount"
+	curl "${url}" >"${temp}/Zed-${arch}.dmg"
+	hdiutil attach -quiet "${temp}/Zed-${arch}.dmg" -mountpoint "${temp}/mount"
 	app="$(
-		cd "$temp/mount/"
+		cd "${temp}/mount/"
 		echo *.app
 	)"
-	echo "Installing $app"
-	if [ -d "/Applications/$app" ]; then
-		echo "Removing existing $app"
-		rm -rf "/Applications/$app"
+	echo "Installing ${app}"
+	if [ -d "/Applications/${app}" ]; then
+		echo "Removing existing ${app}"
+		rm -rf "/Applications/${app}"
 	fi
-	ditto "$temp/mount/$app" "/Applications/$app"
-	hdiutil detach -quiet "$temp/mount"
+	ditto "${temp}/mount/${app}" "/Applications/${app}"
+	hdiutil detach -quiet "${temp}/mount"
 
-	mkdir -p "$HOME/.local/bin"
+	mkdir -p "${HOME}/.local/bin"
 	# Link the binary
-	ln -sf "/Applications/$app/Contents/MacOS/cli" "$HOME/.local/bin/zed"
+	ln -sf "/Applications/${app}/Contents/MacOS/cli" "${HOME}/.local/bin/zed"
 }
 
 main "$@"
