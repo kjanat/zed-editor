@@ -64,6 +64,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.arch == 'x86_64'
         with: { shared-key: bundle-linux-x86_64, cache-on-failure: true }
+      - name: Build as the stable release channel
+        run: echo stable > crates/zed/RELEASE_CHANNEL
+      - name: Bake the release version from the tag
+        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        run: |
+          if [[ "${tag}" == v[0-9]* ]]; then
+            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
+            rm crates/zed/Cargo.toml.bak
+          fi
       - name: Install build dependencies
         run: ./script/linux
       - name: Install clang 18
@@ -102,6 +111,15 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with: { node-version: "24", check-latest: true, package-manager-cache: false }
+      - name: Build as the stable release channel
+        run: echo stable > crates/zed/RELEASE_CHANNEL
+      - name: Bake the release version from the tag
+        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        run: |
+          if [[ "${tag}" == v[0-9]* ]]; then
+            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
+            rm crates/zed/Cargo.toml.bak
+          fi
       - name: Bundle
         env: { target: "${{ matrix.target }}" }
         run: ./script/bundle-mac "${target}"
@@ -143,12 +161,21 @@ jobs:
             if (-not $installed) { throw 'No Visual Studio 2022 installation found' }
             New-Item -ItemType Junction -Path $expected -Target $installed | Out-Null
           }
+      - name: Build as the stable release channel
+        run: echo stable > crates/zed/RELEASE_CHANNEL
+      - name: Bake the release version from the tag
+        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        run: |
+          if [[ "${tag}" == v[0-9]* ]]; then
+            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
+            rm crates/zed/Cargo.toml.bak
+          fi
       - name: Resolve release version
         shell: pwsh
         run: |
-          $lock = Get-Content Cargo.lock -Raw
-          if ($lock -notmatch '(?m)^name[ \t]*=[ \t]*"zed"[ \t]*\r?\nversion[ \t]*=[ \t]*"([^"]+)"') {
-            throw 'no zed package entry in Cargo.lock'
+          $toml = Get-Content crates/zed/Cargo.toml -Raw
+          if ($toml -notmatch '(?m)^version[ \t]*=[ \t]*"([^"]+)"') {
+            throw 'no version in crates/zed/Cargo.toml'
           }
           "RELEASE_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
       - name: Bundle
@@ -169,9 +196,64 @@ jobs:
             "target/Zed-${arch}.exe" \
             "target/zed-remote-server-windows-${arch}.zip"
 
+  pacman_repo:
+    if: github.repository == 'kjanat/zed-editor' && startsWith(needs.create_draft_release.outputs.tag, 'v')
+    needs: [create_draft_release, bundle_linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: { contents: write }
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      tag: ${{ needs.create_draft_release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Install Arch packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y makepkg pacman-package-manager libarchive-tools fakeroot zstd
+      - name: Download the Linux tarballs
+        run: gh release download "${tag}" --pattern 'zed-linux-*.tar.gz'
+      - name: Build the packages
+        run: |
+          version="${tag#v}"
+          for arch in x86_64 aarch64; do
+            build="build-${arch}"
+            mkdir -p "${build}"
+            sed "s/@VERSION@/${version}/" script/pacman/PKGBUILD.in > "${build}/PKGBUILD"
+            cp script/pacman/zed.sh "${build}/"
+            cp "zed-linux-${arch}.tar.gz" "${build}/"
+            cat > "${build}/makepkg.conf" <<EOF
+          if [ -f /etc/makepkg.conf ]; then source /etc/makepkg.conf; fi
+          CARCH="${arch}"
+          CHOST="${arch}-pc-linux-gnu"
+          PKGEXT='.pkg.tar.zst'
+          EOF
+            (cd "${build}" && makepkg --config makepkg.conf --force --nodeps --ignorearch)
+            mv "${build}"/zed-kjanat-*.pkg.tar.zst .
+          done
+      - name: Build the repository databases
+        run: |
+          repo-add zed-kjanat.db.tar.gz zed-kjanat-*-x86_64.pkg.tar.zst
+          repo-add zed-kjanat-aarch64.db.tar.gz zed-kjanat-*-aarch64.pkg.tar.zst
+          for link in zed-kjanat.db zed-kjanat.files zed-kjanat-aarch64.db zed-kjanat-aarch64.files; do
+            target=$(readlink -f "${link}")
+            rm "${link}"
+            cp "${target}" "${link}"
+          done
+      - name: Upload to the draft release
+        run: |
+          gh release upload "${tag}" --clobber \
+            zed-kjanat-*.pkg.tar.zst \
+            zed-kjanat.db zed-kjanat.db.tar.gz \
+            zed-kjanat.files zed-kjanat.files.tar.gz \
+            zed-kjanat-aarch64.db zed-kjanat-aarch64.db.tar.gz \
+            zed-kjanat-aarch64.files zed-kjanat-aarch64.files.tar.gz
+
   publish:
-    if: github.repository == 'kjanat/zed-editor'
-    needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows]
+    if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled()
+    needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, pacman_repo]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: { contents: write }

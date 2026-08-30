@@ -1,0 +1,33 @@
+pkgname=zed-kjanat
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Zed editor, kjanat fork, prebuilt from this fork's GitHub releases"
+arch=('x86_64' 'aarch64')
+url="https://github.com/kjanat/zed-editor"
+license=('GPL-3.0-or-later')
+depends=('alsa-lib' 'gcc-libs' 'glib2' 'glibc' 'vulkan-icd-loader')
+provides=('zed')
+conflicts=('zed')
+options=('!strip' '!debug')
+source=('zed.sh')
+source_x86_64=('zed-linux-x86_64.tar.gz')
+source_aarch64=('zed-linux-aarch64.tar.gz')
+sha256sums=('SKIP')
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -dm755 "$pkgdir/usr/lib"
+    cp -a zed.app "$pkgdir/usr/lib/$pkgname"
+    install -Dm755 zed.sh "$pkgdir/usr/bin/zed"
+    install -dm755 "$pkgdir/usr/share/applications"
+    ln -s "/usr/lib/$pkgname/share/applications/dev.zed.Zed.desktop" \
+        "$pkgdir/usr/share/applications/dev.zed.Zed.desktop"
+    for size in 512x512 1024x1024; do
+        install -dm755 "$pkgdir/usr/share/icons/hicolor/$size/apps"
+        ln -s "/usr/lib/$pkgname/share/icons/hicolor/$size/apps/zed.png" \
+            "$pkgdir/usr/share/icons/hicolor/$size/apps/zed.png"
+    done
+    install -Dm644 "$pkgdir/usr/lib/$pkgname/licenses.md" \
+        "$pkgdir/usr/share/licenses/$pkgname/licenses.md"
+}
