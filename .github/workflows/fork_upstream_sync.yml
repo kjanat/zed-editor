@@ -57,6 +57,25 @@ jobs:
             git merge --abort
           fi
 
+      # Upstream does not run this fork's dprint config, so a clean merge still
+      # arrives unformatted and fork_ci's style job fails on files nobody here
+      # wrote. Reformat on the branch instead of leaving it for a human.
+      - name: Install dprint
+        if: steps.merge.outputs.result == 'clean'
+        uses: kjanat/dprint-check@v3
+        with: { install-only: "true" }
+
+      - name: Format the merge
+        if: steps.merge.outputs.result == 'clean'
+        run: |
+          dprint fmt
+          if git diff --quiet; then
+            echo "Upstream needed no reformatting." | tee -a "${GITHUB_STEP_SUMMARY}"
+          else
+            git diff --name-only | tee -a "${GITHUB_STEP_SUMMARY}"
+            git commit --all --message "Apply this fork's formatting to the upstream merge"
+          fi
+
       - name: Push the sync branch and open or update the PR
         if: steps.merge.outputs.result == 'clean'
         run: |
