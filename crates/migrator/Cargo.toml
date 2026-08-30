@@ -23,6 +23,7 @@ tree-sitter                  = { workspace = true, features = ["wasm"] }
 tree-sitter-json.workspace   = true
 
 [dev-dependencies]
+indoc.workspace             = true
 pretty_assertions.workspace = true
 unindent.workspace          = true
 
