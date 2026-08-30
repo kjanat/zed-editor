@@ -3682,6 +3682,86 @@ fn random_filename(rng: &mut impl Rng) -> String {
 }
 
 #[gpui::test]
+async fn test_single_file_worktree_sees_a_second_replacement_written_by_rename(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    init_test(cx);
+
+    let fs = Arc::new(RealFs::new(None, cx.executor()));
+    let temp_root = TempTree::new(json!({
+        "file.txt": "one",
+    }));
+    let file_path = temp_root.path().join("file.txt");
+
+    let tree = Worktree::local(
+        file_path.as_path(),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+
+    let root_inode = |cx: &mut TestAppContext| {
+        tree.read_with(cx, |tree, _| {
+            tree.entry_for_path(rel_path("")).unwrap().inode
+        })
+    };
+
+    // Replace the file by renaming a sibling over it, the way an atomic save does. The
+    // name stays put while the inode behind it changes. Zed's own save writes this way, so
+    // the first replacement is routinely Zed saving the file itself.
+    let replace = async |contents: &'static [u8]| {
+        let replacement = temp_root.path().join("replacement");
+        fs.write(&replacement, contents).await.unwrap();
+        fs.rename(
+            &replacement,
+            &file_path,
+            fs::RenameOptions {
+                overwrite: true,
+                ignore_if_exists: false,
+                create_parents: false,
+            },
+        )
+        .await
+        .unwrap();
+    };
+
+    let await_new_inode = async |cx: &mut TestAppContext, previous: u64| {
+        for _ in 0..100 {
+            cx.executor().run_until_parked();
+            let inode = root_inode(cx);
+            if inode != previous {
+                return inode;
+            }
+            cx.executor()
+                .timer(std::time::Duration::from_millis(50))
+                .await;
+        }
+        previous
+    };
+
+    let first = root_inode(cx);
+    replace(b"two").await;
+    let second = await_new_inode(cx, first).await;
+    assert_ne!(second, first, "the first replacement went unnoticed");
+
+    replace(b"three").await;
+    let third = await_new_inode(cx, second).await;
+    assert_ne!(
+        third, second,
+        "the worktree stopped seeing the file once it had been replaced one time"
+    );
+}
+
+#[gpui::test]
 async fn test_private_single_file_worktree(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());

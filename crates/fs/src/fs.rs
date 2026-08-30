@@ -71,6 +71,11 @@ use std::ffi::OsStr;
 pub trait Watcher: Send + Sync {
     fn add(&self, path: &Path) -> Result<()>;
     fn remove(&self, path: &Path) -> Result<()>;
+
+    /// Whether a watch on a file tracks the inode behind its path, leaving a replacement
+    /// renamed over that path unreported. Callers that need the path itself watched add
+    /// its parent directory when this holds.
+    fn file_watch_follows_inode(&self, path: &Path) -> bool;
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -1391,6 +1396,10 @@ impl Watcher for RealWatcher {
 
     fn remove(&self, _: &Path) -> Result<()> {
         Ok(())
+    }
+
+    fn file_watch_follows_inode(&self, _: &Path) -> bool {
+        false
     }
 }
 
@@ -2821,6 +2830,10 @@ impl Watcher for FakeWatcher {
             .push((path.clone(), self.tx.clone()));
         prefixes.push(path);
         Ok(())
+    }
+
+    fn file_watch_follows_inode(&self, _path: &Path) -> bool {
+        true
     }
 
     fn remove(&self, path: &Path) -> Result<()> {

@@ -141,6 +141,10 @@ impl Watcher for FsWatcher {
         self.add_existing_path(path)
     }
 
+    fn file_watch_follows_inode(&self, path: &Path) -> bool {
+        file_watch_follows_inode(path)
+    }
+
     fn remove(&self, path: &std::path::Path) -> anyhow::Result<()> {
         log::trace!("remove watched path: {path:?}");
         self.pending_registrations.lock().remove(path);
@@ -177,6 +181,17 @@ fn path_covered_by_recursive_registration(
                 })
             })
     })
+}
+
+/// Whether a watch on this file would track the inode behind its path.
+///
+/// Linux inotify drops its own watch once the last link to the watched inode goes away,
+/// which is what renaming a replacement over the path does. The macOS and Windows
+/// backends match events by path instead, and a poll watch compares metadata by path, so
+/// neither loses the file. Both of those also register recursively, per `watch` above,
+/// which makes watching a parent directory there expensive as well as pointless.
+fn file_watch_follows_inode(path: &Path) -> bool {
+    !cfg!(any(target_os = "windows", target_os = "macos")) && !requires_poll_watcher(path)
 }
 
 /// Detect whether a path requires polling instead of native file watching.

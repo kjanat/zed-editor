@@ -1366,6 +1366,19 @@ impl LocalWorktree {
                 let fs_case_sensitive = fs.is_case_sensitive().await;
 
                 let is_single_file = snapshot.snapshot.root_dir().is_none();
+                // An atomic save renames a replacement over the path, so a watch that
+                // follows the inode is left on a file nothing writes to any more. The first
+                // such save is still reported, by the old inode being unlinked, and every
+                // change after it is silent. A directory worktree is covered by the watch
+                // the scanner takes on each directory it walks; a single-file one has none,
+                // so it watches the parent. Events for siblings arrive too and are dropped
+                // for failing to strip the root.
+                if is_single_file
+                    && watcher.file_watch_follows_inode(&abs_path)
+                    && let Some(parent) = abs_path.parent()
+                {
+                    watcher.add(parent).log_err();
+                }
                 let mut scanner = BackgroundScanner {
                     fs,
                     fs_case_sensitive,
@@ -4523,6 +4536,14 @@ impl BackgroundScanner {
                 .watch(root_abs_path.as_path(), FS_WATCH_LATENCY)
                 .await;
             self.watcher = watcher;
+            if self.is_single_file
+                && self
+                    .watcher
+                    .file_watch_follows_inode(root_abs_path.as_path())
+                && let Some(parent) = root_abs_path.as_path().parent()
+            {
+                self.watcher.add(parent).log_err();
+            }
             fs_events_rx = Box::pin(events.map(|events| events.into_iter().collect()));
 
             let state = self.state.lock().await;
@@ -7196,6 +7217,10 @@ impl fs::Watcher for NullWatcher {
 
     fn remove(&self, _path: &Path) -> Result<()> {
         Ok(())
+    }
+
+    fn file_watch_follows_inode(&self, _path: &Path) -> bool {
+        false
     }
 }
 
