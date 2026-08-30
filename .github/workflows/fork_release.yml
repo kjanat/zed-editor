@@ -242,6 +242,62 @@ jobs:
             "target/Zed-${arch}.exe#Zed for Windows (${arch}, installer)" \
             "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})"
 
+  remote_server_freebsd:
+    if: github.repository == 'kjanat/zed-editor'
+    needs: create_draft_release
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions: { contents: write, id-token: write, attestations: write }
+    env: { GH_REPO: "${{ github.repository }}" }
+    steps:
+      - name: Reclaim runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Build as the stable release channel
+        run: echo stable > crates/zed/RELEASE_CHANNEL
+      - name: Bake the release version from the tag
+        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        run: |
+          if [[ "${tag}" == v[0-9]* ]]; then
+            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
+            rm crates/zed/Cargo.toml.bak
+          fi
+      # Built on 13.2, the oldest 13.x the VM images offer, so the binary runs on
+      # every 13.2+ host; a build on a newer minor is not guaranteed to run on older ones.
+      - name: Build in a FreeBSD VM
+        uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1 # v1.5.5
+        with:
+          release: "13.2"
+          mem: 10240
+          cpu: 4
+          prepare: pkg install -y cmake git perl5 protobuf rustup-init
+          run: |
+            set -ex
+            rustup-init -y --profile minimal --default-toolchain none
+            export PATH="$HOME/.cargo/bin:$PATH"
+            export CARGO_TARGET_DIR=/root/target
+            cargo build --release --package remote_server
+            if ldd /root/target/release/remote_server | grep -q 'libcrypto\|libssl'; then
+              echo "remote_server depends on libssl or libcrypto" >&2
+              exit 1
+            fi
+            gzip -f --stdout --best /root/target/release/remote_server > zed-remote-server-freebsd-x86_64.gz
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: zed-remote-server-freebsd-x86_64.gz
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ needs.create_draft_release.outputs.tag }}
+        run: |
+          gh release upload "${tag}" --clobber \
+            "zed-remote-server-freebsd-x86_64.gz#Zed remote server for FreeBSD (x86_64)"
+
   bwrap_linux:
     if: github.repository == 'kjanat/zed-editor'
     needs: create_draft_release
@@ -343,7 +399,7 @@ jobs:
 
   publish:
     if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled()
-    needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, bwrap_linux, pacman_repo]
+    needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, remote_server_freebsd, bwrap_linux, pacman_repo]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: { contents: write }

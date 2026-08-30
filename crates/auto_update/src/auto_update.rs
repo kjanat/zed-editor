@@ -128,7 +128,9 @@ fn release_asset_name(asset: &str, os: &str, arch: &str) -> Result<String> {
         ("zed", "linux") => Ok(format!("zed-linux-{arch}.tar.gz")),
         ("zed", "macos") => Ok(format!("Zed-{arch}.dmg")),
         ("zed", "windows") => Ok(format!("Zed-{arch}.exe")),
-        ("zed-remote-server", "linux" | "macos") => Ok(format!("zed-remote-server-{os}-{arch}.gz")),
+        ("zed-remote-server", "linux" | "macos" | "freebsd") => {
+            Ok(format!("zed-remote-server-{os}-{arch}.gz"))
+        }
         ("zed-remote-server", "windows") => Ok(format!("zed-remote-server-windows-{arch}.zip")),
         _ => anyhow::bail!("no release asset for {asset} on {os}-{arch}"),
     }

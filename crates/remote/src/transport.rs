@@ -32,6 +32,7 @@ fn parse_platform(output: &str) -> Result<RemotePlatform> {
     let os = match os {
         "Darwin" => RemoteOs::MacOs,
         "Linux" => RemoteOs::Linux,
+        "FreeBSD" => RemoteOs::FreeBsd,
         _ => anyhow::bail!(
             "Prebuilt remote servers are not yet available for {os:?}. See https://zed.dev/docs/remote-development"
         ),
@@ -44,7 +45,7 @@ fn parse_platform(output: &str) -> Result<RemotePlatform> {
         || arch.starts_with("aarch64")
     {
         RemoteArch::Aarch64
-    } else if arch.starts_with("x86") {
+    } else if arch.starts_with("x86") || arch == "amd64" {
         RemoteArch::X86_64
     } else {
         anyhow::bail!(
@@ -64,6 +65,8 @@ pub(crate) fn os_version_command(os: RemoteOs) -> (&'static str, &'static [&'sta
         // Matches the `/etc/os-release` parsing in `client::telemetry::os_version`.
         RemoteOs::Linux => ("cat", &["/etc/os-release"]),
         RemoteOs::MacOs => ("sw_vers", &["-productVersion"]),
+        // Prints e.g. "14.3-RELEASE-p1".
+        RemoteOs::FreeBsd => ("freebsd-version", &[]),
         // Prints e.g. "Microsoft Windows [Version 10.0.19045.5011]".
         RemoteOs::Windows => ("cmd.exe", &["/c", "ver"]),
     }
@@ -83,8 +86,8 @@ pub(crate) fn parse_os_version(os: RemoteOs, output: &str) -> Option<String> {
     }
     match os {
         RemoteOs::Linux => util::parse_os_release(output),
-        RemoteOs::MacOs => {
-            // `sw_vers -productVersion` prints a single version line.
+        RemoteOs::MacOs | RemoteOs::FreeBsd => {
+            // `sw_vers -productVersion` and `freebsd-version` print a single version line.
             output
                 .lines()
                 .next_back()
@@ -304,6 +307,7 @@ async fn build_remote_server_from_source(
             RemoteOs::MacOs => "apple-darwin",
             RemoteOs::Windows if cfg!(windows) => "pc-windows-msvc",
             RemoteOs::Windows => "pc-windows-gnu",
+            RemoteOs::FreeBsd => "unknown-freebsd",
         }
     );
     let mut rust_flags = match std::env::var("RUSTFLAGS") {
@@ -500,6 +504,14 @@ mod tests {
         assert_eq!(result.os, RemoteOs::Linux);
         assert_eq!(result.arch, RemoteArch::X86_64);
 
+        let result = parse_platform("FreeBSD amd64\n").unwrap();
+        assert_eq!(result.os, RemoteOs::FreeBsd);
+        assert_eq!(result.arch, RemoteArch::X86_64);
+
+        let result = parse_platform("FreeBSD arm64\n").unwrap();
+        assert_eq!(result.os, RemoteOs::FreeBsd);
+        assert_eq!(result.arch, RemoteArch::Aarch64);
+
         assert!(parse_platform("Windows x86_64\n").is_err());
         assert!(parse_platform("Linux armv7l\n").is_err());
     }
@@ -525,6 +537,11 @@ mod tests {
             Some("26.0".to_string())
         );
         assert_eq!(parse_os_version(RemoteOs::MacOs, ""), None);
+
+        assert_eq!(
+            parse_os_version(RemoteOs::FreeBsd, "14.3-RELEASE-p1\n"),
+            Some("14.3-RELEASE-p1".to_string())
+        );
 
         // Windows `cmd.exe /c ver`, with the trailing revision dropped to match
         // the `major.minor.build` format used by local Windows telemetry.
