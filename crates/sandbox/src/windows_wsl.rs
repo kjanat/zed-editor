@@ -81,8 +81,8 @@ const HELPER_RESULT_PREFIX: &str = "zed-wsl-helper:";
 /// not use the public install script (`install.sh`), which puts `zed` on the
 /// user's `PATH` and writes desktop entries we don't want. Instead the Windows
 /// side resolves the exact channel+version (see `wsl_zed_release`) and this
-/// script downloads that release's Linux tarball straight from
-/// `cloud.zed.dev/releases` and unpacks it into a private, off-`PATH` location
+/// script downloads that release's Linux tarball straight from this fork's
+/// GitHub releases and unpacks it into a private, off-`PATH` location
 /// (`~/.local/libexec/zed/<channel>`, the conventional spot for executables run
 /// by other programs rather than directly by the user). One managed copy per
 /// channel is kept, tracked by a marker file so an exact channel+version match
@@ -118,7 +118,11 @@ case "$arch" in
     aarch64 | arm64) arch="aarch64" ;;
     *) echo "unsupported WSL architecture for the zed sandbox helper: $arch" >&2; exit 1 ;;
 esac
-url="https://cloud.zed.dev/releases/$channel/$version/download?asset=zed&arch=$arch&os=linux&source=zed-wsl-sandbox"
+if [ "$version" = "latest" ]; then
+    url="https://github.com/kjanat/zed-editor/releases/latest/download/zed-linux-$arch.tar.gz"
+else
+    url="https://github.com/kjanat/zed-editor/releases/download/v$version/zed-linux-$arch.tar.gz"
+fi
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/zed-wsl-helper-XXXXXX")
 trap 'rm -rf "$tmp"' EXIT

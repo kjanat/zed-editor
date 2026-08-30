@@ -109,14 +109,29 @@ actions!(
     ]
 );
 
-#[derive(Serialize, Debug)]
-pub struct AssetQuery<'a> {
-    asset: &'a str,
-    os: &'a str,
-    arch: &'a str,
-    metrics_id: Option<&'a str>,
-    system_id: Option<&'a str>,
-    is_staff: Option<bool>,
+const FORK_RELEASES_REPO: &str = "kjanat/zed-editor";
+
+#[derive(Deserialize, Debug)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Deserialize, Debug)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+fn release_asset_name(asset: &str, os: &str, arch: &str) -> Result<String> {
+    match (asset, os) {
+        ("zed", "linux") => Ok(format!("zed-linux-{arch}.tar.gz")),
+        ("zed", "macos") => Ok(format!("Zed-{arch}.dmg")),
+        ("zed", "windows") => Ok(format!("Zed-{arch}.exe")),
+        ("zed-remote-server", "linux" | "macos") => Ok(format!("zed-remote-server-{os}-{arch}.gz")),
+        ("zed-remote-server", "windows") => Ok(format!("zed-remote-server-windows-{arch}.zip")),
+        _ => anyhow::bail!("no release asset for {asset} on {os}-{arch}"),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -346,14 +361,11 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
             let mut current_version = auto_updater.current_version.clone();
             current_version.pre = semver::Prerelease::EMPTY;
             current_version.build = semver::BuildMetadata::EMPTY;
-            let release_channel = release_channel.dev_name();
-            let path = format!("/releases/{release_channel}/{current_version}");
-            auto_updater.client.http_client().build_url(&path)
+            format!("https://github.com/{FORK_RELEASES_REPO}/releases/tag/v{current_version}")
         }
-        ReleaseChannel::Nightly => {
-            "https://github.com/zed-industries/zed/commits/nightly/".to_string()
+        ReleaseChannel::Nightly | ReleaseChannel::Dev => {
+            format!("https://github.com/{FORK_RELEASES_REPO}/commits/master/")
         }
-        ReleaseChannel::Dev => "https://github.com/zed-industries/zed/commits/main/".to_string(),
     };
     Some(url)
 }
@@ -669,50 +681,24 @@ impl AutoUpdater {
 
     async fn get_release_asset(
         this: &Entity<Self>,
-        release_channel: ReleaseChannel,
+        _release_channel: ReleaseChannel,
         version: Option<Version>,
         asset: &str,
         os: &str,
         arch: &str,
         cx: &mut AsyncApp,
     ) -> Result<ReleaseAsset> {
-        let client = this.read_with(cx, |this, _| this.client.clone());
+        let http_client = this.read_with(cx, |this, _| this.client.http_client());
 
-        let (system_id, metrics_id, is_staff) = if client.telemetry().metrics_enabled() {
-            (
-                client.telemetry().system_id(),
-                client.telemetry().metrics_id(),
-                client.telemetry().is_staff(),
-            )
-        } else {
-            (None, None, None)
-        };
-
-        let version = if let Some(mut version) = version {
+        let url = if let Some(mut version) = version {
             version.pre = semver::Prerelease::EMPTY;
             version.build = semver::BuildMetadata::EMPTY;
-            version.to_string()
+            format!("https://api.github.com/repos/{FORK_RELEASES_REPO}/releases/tags/v{version}")
         } else {
-            "latest".to_string()
+            format!("https://api.github.com/repos/{FORK_RELEASES_REPO}/releases/latest")
         };
-        let http_client = client.http_client();
 
-        let path = format!("/releases/{}/{}/asset", release_channel.dev_name(), version,);
-        let url = http_client.build_zed_cloud_url_with_query(
-            &path,
-            AssetQuery {
-                os,
-                arch,
-                asset,
-                metrics_id: metrics_id.as_deref(),
-                system_id: system_id.as_deref(),
-                is_staff,
-            },
-        )?;
-
-        let mut response = http_client
-            .get(url.as_str(), Default::default(), true)
-            .await?;
+        let mut response = http_client.get(&url, Default::default(), true).await?;
         let mut body = Vec::new();
         response.body_mut().read_to_end(&mut body).await?;
 
@@ -722,11 +708,30 @@ impl AutoUpdater {
             String::from_utf8_lossy(&body),
         );
 
-        serde_json::from_slice(body.as_slice()).with_context(|| {
-            format!(
-                "error deserializing release {:?}",
-                String::from_utf8_lossy(&body),
-            )
+        let release: GithubRelease =
+            serde_json::from_slice(body.as_slice()).with_context(|| {
+                format!(
+                    "error deserializing release {:?}",
+                    String::from_utf8_lossy(&body),
+                )
+            })?;
+
+        let asset_name = release_asset_name(asset, os, arch)?;
+        let github_asset = release
+            .assets
+            .into_iter()
+            .find(|github_asset| github_asset.name == asset_name)
+            .with_context(|| format!("release {} has no asset {asset_name}", release.tag_name))?;
+
+        let version = release
+            .tag_name
+            .strip_prefix('v')
+            .unwrap_or(&release.tag_name)
+            .to_string();
+
+        Ok(ReleaseAsset {
+            version,
+            url: github_asset.browser_download_url,
         })
     }
 
@@ -1446,14 +1451,15 @@ mod tests {
                 let release_available = release_available.load(atomic::Ordering::Relaxed);
                 let dmg_rx = dmg_rx.clone();
                 async move {
-                if req.uri().path() == "/releases/stable/latest/asset" {
+                if req.uri().path() == "/repos/kjanat/zed-editor/releases/latest" {
+                    let asset_name = release_asset_name("zed", OS, ARCH).unwrap();
                     if release_available {
                         return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.1","url":"https://test.example/new-download"}"#.into()
+                            format!(r#"{{"tag_name":"v0.100.1","assets":[{{"name":"{asset_name}","browser_download_url":"https://test.example/new-download"}}]}}"#).into()
                         ).unwrap());
                     } else {
                         return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.0","url":"https://test.example/old-download"}"#.into()
+                            format!(r#"{{"tag_name":"v0.100.0","assets":[{{"name":"{asset_name}","browser_download_url":"https://test.example/old-download"}}]}}"#).into()
                         ).unwrap());
                     }
                 } else if req.uri().path() == "/new-download" {
