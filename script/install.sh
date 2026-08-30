@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-# Downloads a tarball from https://zed.dev/releases and unpacks it
-# into ~/.local/. If you'd prefer to do this manually, instructions are at
-# https://zed.dev/docs/linux.
+# Downloads a tarball from https://github.com/kjanat/zed-editor/releases and
+# unpacks it into ~/.local/. If you'd prefer to do this manually, instructions
+# are at https://zed.dev/docs/linux.
 
 main() {
 	platform="$(uname -s)"
@@ -83,7 +83,12 @@ linux() {
 		cp "$ZED_BUNDLE_PATH" "$temp/zed-linux-$arch.tar.gz"
 	else
 		echo "Downloading Zed version: $ZED_VERSION"
-		curl "https://cloud.zed.dev/releases/$channel/$ZED_VERSION/download?asset=zed&arch=$arch&os=linux&source=install.sh" >"$temp/zed-linux-$arch.tar.gz"
+		if [ "$ZED_VERSION" = "latest" ]; then
+			url="https://github.com/kjanat/zed-editor/releases/latest/download/zed-linux-$arch.tar.gz"
+		else
+			url="https://github.com/kjanat/zed-editor/releases/download/v${ZED_VERSION#v}/zed-linux-$arch.tar.gz"
+		fi
+		curl "$url" >"$temp/zed-linux-$arch.tar.gz"
 	fi
 
 	suffix=""
@@ -152,7 +157,12 @@ linux() {
 
 macos() {
 	echo "Downloading Zed version: $ZED_VERSION"
-	curl "https://cloud.zed.dev/releases/$channel/$ZED_VERSION/download?asset=zed&os=macos&arch=$arch&source=install.sh" >"$temp/Zed-$arch.dmg"
+	if [ "$ZED_VERSION" = "latest" ]; then
+		url="https://github.com/kjanat/zed-editor/releases/latest/download/Zed-$arch.dmg"
+	else
+		url="https://github.com/kjanat/zed-editor/releases/download/v${ZED_VERSION#v}/Zed-$arch.dmg"
+	fi
+	curl "$url" >"$temp/Zed-$arch.dmg"
 	hdiutil attach -quiet "$temp/Zed-$arch.dmg" -mountpoint "$temp/mount"
 	app="$(
 		cd "$temp/mount/"
