@@ -1,8 +1,12 @@
 # Upstream drift watcher for kjanat/zed-editor.
 #
-# Weekly (and on demand): fetch zed-industries/zed main, try to merge it
-# into master on the rolling branch sync/upstream, and either open/update
+# Twice a day (and on demand): fetch zed-industries/zed main, try to merge
+# it into master on the rolling branch sync/upstream, and either open/update
 # a PR (clean merge) or open an issue listing the conflicted files.
+#
+# The branch is rebuilt and force-pushed every run, which is also how a red
+# sync PR repairs itself. A PR that stays blocked gets an issue, and commits
+# by anyone other than the bot on the branch stop the run outright.
 #
 # The merge lands as a merge commit on purpose: this fork's commits are
 # signed and tagged, so rebasing would rewrite SHAs that releases and the
@@ -16,7 +20,7 @@
 ---
 name: fork_upstream_sync
 on:
-  schedule: [cron: "0 6 * * 1"] # Mondays 06:00 UTC
+  schedule: [cron: "0 6,18 * * *"] # 06:00 and 18:00 UTC
   workflow_dispatch: null
 concurrency: { group: "${{ github.workflow }}", cancel-in-progress: false }
 permissions: { contents: write, pull-requests: write, issues: write }
@@ -42,9 +46,91 @@ jobs:
           echo "behind=${BEHIND}" >> "${GITHUB_OUTPUT}"
           echo "Upstream is ${BEHIND} commits ahead of master." | tee -a "${GITHUB_STEP_SUMMARY}"
 
+      # The sync branch is rebuilt from scratch every run, so force-pushing over
+      # a red PR is the repair: it re-merges the current master and upstream and
+      # reformats. Commits a human put on the branch are the one thing a
+      # force-push would destroy, so those stop the run.
+      - name: Inspect the open sync PR
+        id: open_pr
+        if: steps.drift.outputs.behind != '0'
+        run: |
+          git fetch origin "${SYNC_BRANCH}" || true
+          FOREIGN=""
+          if git rev-parse --verify --quiet "refs/remotes/origin/${SYNC_BRANCH}" >/dev/null; then
+            FOREIGN="$(git log --format='%an' "origin/${SYNC_BRANCH}" --not master \
+              | grep -vFx 'github-actions[bot]' | sort -u | paste -sd ', ' - || true)"
+          fi
+          NUMBER="$(gh pr list --repo "${GITHUB_REPOSITORY}" \
+            --head "${SYNC_BRANCH}" --base master --state open \
+            --json number --jq '.[0].number // empty')"
+          STATE=""
+          FAILED=""
+          if [[ -n "${NUMBER}" ]]; then
+            # GitHub computes mergeStateStatus lazily and answers UNKNOWN until
+            # its background job finishes.
+            for _ in 1 2 3; do
+              STATE="$(gh pr view "${NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                --json mergeStateStatus --jq '.mergeStateStatus')"
+              [[ "${STATE}" != "UNKNOWN" ]] && break
+              sleep 10
+            done
+            FAILED="$(gh pr view "${NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --json statusCheckRollup \
+              --jq '[.statusCheckRollup[]? | select((.conclusion // "") | ascii_upcase | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED")) | .name] | unique | join(", ")')"
+          fi
+          PR_BLOCKED=false
+          case "${STATE}" in
+            DIRTY | BLOCKED) PR_BLOCKED=true ;;
+            *) ;;
+          esac
+          [[ -n "${FAILED}" ]] && PR_BLOCKED=true
+          {
+            echo "number=${NUMBER}"
+            echo "state=${STATE}"
+            echo "failed=${FAILED}"
+            echo "foreign=${FOREIGN}"
+            echo "blocked=${PR_BLOCKED}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Open sync PR: ${NUMBER:-none}, merge state ${STATE:-n/a}, failing checks: ${FAILED:-none}, other authors on the branch: ${FOREIGN:-none}" \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Report a sync that needs attention
+        if: steps.open_pr.outputs.blocked == 'true' || steps.open_pr.outputs.foreign != ''
+        env:
+          NUMBER: ${{ steps.open_pr.outputs.number }}
+          STATE: ${{ steps.open_pr.outputs.state }}
+          FAILED: ${{ steps.open_pr.outputs.failed }}
+          FOREIGN: ${{ steps.open_pr.outputs.foreign }}
+          BEHIND: ${{ steps.drift.outputs.behind }}
+        run: |
+          TITLE="Upstream sync needs attention"
+          EXISTING="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
+            --state open --search "Upstream sync needs attention in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [[ -n "${FOREIGN}" ]]; then
+            OUTCOME="Commits by ${FOREIGN} sit on \`${SYNC_BRANCH}\`, so this run stopped instead of force-pushing over them. Merge or close the PR, or delete the branch, to let syncing continue."
+          else
+            OUTCOME="This run re-merged and force-pushed the branch anyway, which is how a red sync usually repairs itself. If the same checks fail again, they need a human."
+          fi
+          cat > /tmp/attention-body.md <<EOF
+          Upstream is ${BEHIND} commits ahead of master.
+
+          - Sync PR: ${NUMBER:-none open}
+          - Merge state: \`${STATE:-n/a}\`
+          - Failing checks: ${FAILED:-none}
+          - Other authors on the branch: ${FOREIGN:-none}
+
+          ${OUTCOME}
+          EOF
+          if [[ -n "${EXISTING}" ]]; then
+            gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/attention-body.md
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --body-file /tmp/attention-body.md
+          fi
+
       - name: Attempt the merge
         id: merge
-        if: steps.drift.outputs.behind != '0'
+        if: steps.drift.outputs.behind != '0' && steps.open_pr.outputs.foreign == ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
