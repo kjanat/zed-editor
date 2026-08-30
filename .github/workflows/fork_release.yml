@@ -27,6 +27,8 @@ jobs:
             else tag="dev-${GITHUB_SHA:0:7}"; fi
           fi
           echo "tag=${tag}" | tee "${GITHUB_ENV}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, fetch-depth: 0 }
       - name: Create the draft release
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
@@ -36,10 +38,36 @@ jobs:
             v[0-9]*) ;;
             *) prerelease=(--prerelease) ;;
           esac
+          prev=$(git describe --tags --match 'v*' --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
+          range="${GITHUB_SHA}"
+          if [[ -n "${prev}" ]]; then range="${prev}..${GITHUB_SHA}"; fi
+          {
+            echo "## Changes"
+            echo
+            git log --first-parent --format='- %s' "${range}"
+            cat <<'EOF'
+
+          ## Arch / Manjaro
+
+          Append to `/etc/pacman.conf` (on aarch64 the section name is `[zed-kjanat-aarch64]`):
+
+          ```ini
+          [zed-kjanat]
+          SigLevel = Optional TrustAll
+          Server = https://github.com/kjanat/zed-editor/releases/latest/download
+          ```
+
+          Then `sudo pacman -Syu zed-kjanat`. The package provides and conflicts with `zed`, and disables in-app auto-update: pacman owns updates.
+          EOF
+            if [[ -n "${prev}" ]]; then
+              echo
+              echo "**Full changelog**: https://github.com/${GH_REPO}/compare/${prev}...${tag}"
+            fi
+          } > notes.md
           gh release create "${tag}" \
             --target "${GITHUB_SHA}" \
             --title "${tag}" \
-            --generate-notes \
+            --notes-file notes.md \
             --draft \
             "${prerelease[@]}"
 
