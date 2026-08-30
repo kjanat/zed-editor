@@ -13,8 +13,8 @@ Extensions" from the menu bar.
 
 ## Installation Location
 
-- On macOS, extensions are installed in
-  `~/Library/Application Support/Zed/extensions`.
+- On macOS, extensions are installed in `~/Library/Application
+  Support/Zed/extensions`.
 - On Linux, they are installed in either `$XDG_DATA_HOME/zed/extensions` or
   `~/.local/share/zed/extensions`.
 - On Windows, the directory is `%LOCALAPPDATA%\Zed\extensions`.

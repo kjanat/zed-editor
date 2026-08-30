@@ -33,15 +33,16 @@ Clone the [Zed repository](https://github.com/zed-industries/zed).
 - Install [CMake](https://cmake.org/download) (required by
   [a dependency](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/)).
   Or you can install it through Visual Studio Installer, then manually add the
-  `bin` directory to your `PATH`, for example:
-  `C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
+  `bin` directory to your `PATH`, for example: `C:\Program Files\Microsoft
+  Visual
+  Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
 
 > Starting with Visual Studio 2026 (or MSVC 14.50), you need to install optional
-> components `MSVC Build Tools for x64/x86 (Latest)` and
-> `C++ Spectre-mitigated libraries for x64/x86 (Latest MSVC)`, since Microsoft
-> has decoupled the MSVC version from the Visual Studio version. The traditional
-> naming format `MSVC v*** - VS YYYY C++ x64/x86 ...` will no longer be
-> applicable to newer MSVC toolchain. See
+> components `MSVC Build Tools for x64/x86 (Latest)` and `C++ Spectre-mitigated
+> libraries for x64/x86 (Latest MSVC)`, since Microsoft has decoupled the MSVC
+> version from the Visual Studio version. The traditional naming format `MSVC
+> v*** - VS YYYY C++ x64/x86 ...` will no longer be applicable to newer MSVC
+> toolchain. See
 > [this blog](https://devblogs.microsoft.com/cppblog/new-release-cadence-and-support-lifecycle-for-msvc-build-tools/)
 > for more details.
 
@@ -100,9 +101,9 @@ You can export this component list as follows:
 
 Update `pg_hba.conf` in the `data` directory to use `trust` instead of
 `scram-sha-256` for the `host` method. Otherwise, the connection fails with
-`password authentication failed`. The file is typically at
-`C:\Program Files\PostgreSQL\17\data\pg_hba.conf`. After the change, it should
-look like this:
+`password authentication failed`. The file is typically at `C:\Program
+Files\PostgreSQL\17\data\pg_hba.conf`. After the change, it should look like
+this:
 
 ```conf
 # IPv4 local connections:
@@ -258,8 +259,8 @@ warning: build failed, waiting for other jobs to finish...
 ```
 
 To fix this issue, manually set the `ZED_RC_TOOLKIT_PATH` environment variable
-to the RC toolkit path. Usually this is:
-`C:\Program Files (x86)\Windows Kits\10\bin\<SDK_version>\x64`.
+to the RC toolkit path. Usually this is: `C:\Program Files (x86)\Windows
+Kits\10\bin\<SDK_version>\x64`.
 
 See this [issue](https://github.com/zed-industries/zed/issues/18393) for more
 information.

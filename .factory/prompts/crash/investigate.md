@@ -119,9 +119,8 @@ computation to change. If there are multiple options, list them with tradeoffs.>
 
 - **Don't guess.** If you're unsure about a code path, read the source. Use
   `grep` to find relevant functions, types, and call sites.
-- **Check the git history.** If the crash appeared in a specific version,
-  `git log` on the relevant files may reveal a recent change that introduced the
-  bug.
+- **Check the git history.** If the crash appeared in a specific version, `git
+  log` on the relevant files may reveal a recent change that introduced the bug.
 - **Look at existing tests.** The crate likely has tests that show how to set up
   the relevant subsystem. Follow those patterns rather than inventing new test
   infrastructure.

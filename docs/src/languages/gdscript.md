@@ -26,8 +26,8 @@ You will need:
 
 ## Setup
 
-1. Inside your Godot editor, open Editor Settings, look for
-   `Text Editor -> External` and set the following options:
+1. Inside your Godot editor, open Editor Settings, look for `Text Editor ->
+   External` and set the following options:
    - Exec Path: `/path/to/zed`
    - Exec Flags: `{project} {file}:{line}:{col}`
    - Use External Editor: "✅ On"

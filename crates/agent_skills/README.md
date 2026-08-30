@@ -267,9 +267,9 @@ proposes "let's just bump the cap" or "let's make it dynamic," the answer is no
 
 ## Activation
 
-The skill tool — when the model decides to load a skill, it calls
-`skill { name: "brand-writer" }` and gets back the body of `SKILL.md` wrapped in
-a `<skill_content>` envelope.
+The skill tool — when the model decides to load a skill, it calls `skill { name:
+"brand-writer" }` and gets back the body of `SKILL.md` wrapped in a
+`<skill_content>` envelope.
 
 The slash command — when the user types `/brand-writer`, the same envelope gets
 injected into the conversation as a user message and the model responds.

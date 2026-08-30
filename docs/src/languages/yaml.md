@@ -45,8 +45,8 @@ relative to your project root:
 Paths starting with `./` resolve relative to the worktree root. Paths starting
 with `~/` expand to your home directory.
 
-Note, settings keys must be nested, so `yaml.keyOrdering` becomes
-`{"yaml": { "keyOrdering": true }}`.
+Note, settings keys must be nested, so `yaml.keyOrdering` becomes `{"yaml": {
+"keyOrdering": true }}`.
 
 ## Formatting
 

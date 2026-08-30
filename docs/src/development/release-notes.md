@@ -43,9 +43,8 @@ entirely.
   request to find this information (although it should be included in docs as
   well).
 - For pull requests that are reverts:
-  - If the item being reverted **has already been shipped**, include a
-    `Release Notes` line explaining why we reverted, as this is a breaking
-    change.
+  - If the item being reverted **has already been shipped**, include a `Release
+    Notes` line explaining why we reverted, as this is a breaking change.
 - If the item being reverted **hasn't been shipped**, edit the original PR's
   `Release Notes` line to `N/A`; otherwise, it will still be included and the
   release notes compiler may not know to skip it.

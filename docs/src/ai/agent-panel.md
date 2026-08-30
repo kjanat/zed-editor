@@ -263,7 +263,7 @@ the {#kb agent::ToggleModelSelector} keybinding.
 
 > The same model can be offered via multiple providers - for example, Claude
 > Sonnet 4.5 is available via Zed Pro, OpenRouter, Anthropic directly, and more.
-> Make sure you've selected the correct model ***provider*** for the model you'd
+> Make sure you've selected the correct model _**provider**_ for the model you'd
 > like to use, delineated by the logo to the left of the model in the model
 > selector.
 
@@ -320,8 +320,8 @@ You can rate agent responses to help improve Zed's system prompt and tools.
 > **Warning:** Rating an AI response sends the conversation thread to Zed. The
 > conversation thread includes your messages, AI responses, and thread metadata.
 > See [Feedback and Training Data](./ai-improvement.md) and
-> [AI Privacy](./privacy-and-security.md) for more information. ***If you don't
-> want data persisted on Zed's servers, don't rate***. We will not collect data
+> [AI Privacy](./privacy-and-security.md) for more information. _**If you don't
+> want data persisted on Zed's servers, don't rate**_. We will not collect data
 > for improving Zed's agent experience without you explicitly rating responses.
 
 To help improve Zed's system prompt and tools, rate responses with the thumbs

@@ -48,11 +48,10 @@ sessions, including the Agent Panel and Inline Assistant.
    > on improving this, but suggest in the meantime opening only specific
    > projects, or subfolders of very large mono-repos.
 
-For simple cases where you don't need any SSH arguments, you can run
-`zed ssh://[<user>@]<host>[:<port>]/<path>` to open a remote folder/file
-directly. The CLI also accepts the scp style
-`zed ssh://[<user>@]<host>:~/project` or
-`zed ssh://[<user>@]<host>:/absolute/path`. If you'd like to hotlink into an SSH
+For simple cases where you don't need any SSH arguments, you can run `zed
+ssh://[<user>@]<host>[:<port>]/<path>` to open a remote folder/file directly.
+The CLI also accepts the scp style `zed ssh://[<user>@]<host>:~/project` or `zed
+ssh://[<user>@]<host>:/absolute/path`. If you'd like to hotlink into an SSH
 project, use a link of the format: `zed://ssh/[<user>@]<host>[:<port>]/<path>`.
 
 ## Supported platforms
@@ -124,10 +123,10 @@ There are two additional Zed-specific options per connection,
 }
 ```
 
-If you use the command line to open a connection to a host by doing
-`zed ssh://192.168.1.10/~/.vimrc`, then extra options are read from your
-settings file by finding the first connection that matches the
-host/username/port of the URL on the command line.
+If you use the command line to open a connection to a host by doing `zed
+ssh://192.168.1.10/~/.vimrc`, then extra options are read from your settings
+file by finding the first connection that matches the host/username/port of the
+URL on the command line.
 
 Additionally it's worth noting that while you can pass a password on the command
 line `zed ssh://user:password@host/~`, we do not support writing a password to

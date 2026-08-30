@@ -246,8 +246,8 @@ What this means in practice:
 - Run configurations aren't a thing. Define reusable commands in `tasks.json`
   instead. Note that your existing `.idea/` configurations won't carry
   over—you'll set up the ones you need fresh.
-- npm scripts live in the terminal. Run `npm run dev`, `pnpm build`, or
-  `yarn test` directly—there's no dedicated npm panel.
+- npm scripts live in the terminal. Run `npm run dev`, `pnpm build`, or `yarn
+  test` directly—there's no dedicated npm panel.
 - No framework detection. Zed treats React, Angular, Vue, and vanilla JS/TS the
   same way.
 

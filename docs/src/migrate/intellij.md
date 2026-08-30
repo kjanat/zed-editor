@@ -299,8 +299,8 @@ language has strong LSP support that covers most of what you need.
 
 ### Tool Windows vs. Docks
 
-IntelliJ organizes auxiliary views into numbered tool windows (Project = 1, Git
-= 9, Terminal = Alt+F12, etc.). Zed uses a similar concept called "docks":
+IntelliJ organizes auxiliary views into numbered tool windows (Project = 1,
+Git = 9, Terminal = Alt+F12, etc.). Zed uses a similar concept called "docks":
 
 | IntelliJ Tool Window | Zed Equivalent | Shortcut (JetBrains keymap) |
 | -------------------- | -------------- | --------------------------- |

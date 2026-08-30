@@ -12,20 +12,20 @@ Zed's built-in REPL uses
 you can run code interactively in regular editor files.
 
 <figure style="width: 100%; margin: 0; overflow: hidden; border-top-left-radius: 2px; border-top-right-radius: 2px;">
-    <video loop controls playsinline>
-        <source
-            src="https://customer-snccc0j9v3kfzkif.cloudflarestream.com/aec66e79f23d6d1a0bee5e388a3f17cc/downloads/default.mp4"
-            type='video/webm; codecs="vp8.0, vorbis"'
-        />
-        <source
-            src="https://customer-snccc0j9v3kfzkif.cloudflarestream.com/aec66e79f23d6d1a0bee5e388a3f17cc/downloads/default.mp4"
-            type='video/mp4; codecs="avc1.4D401E, mp4a.40.2"'
-        />
-        <source
-          src="https://zed.dev/img/post/repl/typescript-deno-kernel-markdown.png"
-          type="image/png"
-        />
-    </video>
+	<video loop controls playsinline>
+		<source
+			src="https://customer-snccc0j9v3kfzkif.cloudflarestream.com/aec66e79f23d6d1a0bee5e388a3f17cc/downloads/default.mp4"
+			type='video/webm; codecs="vp8.0, vorbis"'
+		/>
+		<source
+			src="https://customer-snccc0j9v3kfzkif.cloudflarestream.com/aec66e79f23d6d1a0bee5e388a3f17cc/downloads/default.mp4"
+			type='video/mp4; codecs="avc1.4D401E, mp4a.40.2"'
+		/>
+		<source
+			src="https://zed.dev/img/post/repl/typescript-deno-kernel-markdown.png"
+			type="image/png"
+		/>
+	</video>
 </figure>
 
 ## Installation
@@ -258,5 +258,5 @@ Available kernels:
 
 > Note: Zed makes best effort usage of `sys.prefix` and `CONDA_PREFIX` to find
 > kernels in Python environments. If you want to explicitly control this, run
-> `python -m ipykernel install --user --name myenv --display-name "Python (myenv)"`
-> to install the kernel directly while in the environment.
+> `python -m ipykernel install --user --name myenv --display-name "Python
+> (myenv)"` to install the kernel directly while in the environment.

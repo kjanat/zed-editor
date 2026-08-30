@@ -44,8 +44,8 @@ which gopls
 gopls version
 ```
 
-If `gopls` is not found you will likely need to add
-`export PATH="$PATH:$HOME/go/bin"` to your `.zshrc` / `.bash_profile`
+If `gopls` is not found you will likely need to add `export
+PATH="$PATH:$HOME/go/bin"` to your `.zshrc` / `.bash_profile`
 
 ## Inlay Hints
 
@@ -124,9 +124,9 @@ information.
 
 ## Debugging
 
-Zed supports zero-configuration debugging of Go tests and entry points
-(`func main`) using Delve. Run {#action debugger::Start} ({#kb debugger::Start})
-to see a contextual list of these preconfigured debug tasks.
+Zed supports zero-configuration debugging of Go tests and entry points (`func
+main`) using Delve. Run {#action debugger::Start} ({#kb debugger::Start}) to see
+a contextual list of these preconfigured debug tasks.
 
 For more control, you can add debug configurations to `.zed/debug.json`. See
 below for examples.

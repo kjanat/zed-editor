@@ -158,8 +158,8 @@ directories still prompt or block.
 
 ## Shell Compatibility
 
-For the `terminal` tool, Zed parses chained commands (e.g.,
-`echo hello && rm file`) to check each sub-command against your patterns.
+For the `terminal` tool, Zed parses chained commands (e.g., `echo hello && rm
+file`) to check each sub-command against your patterns.
 
 All supported shells work with tool permission patterns, including sh, bash,
 zsh, dash, fish, PowerShell 7+, pwsh, cmd, xonsh, csh, tcsh, Nushell, Elvish,
@@ -194,8 +194,8 @@ recursive deletion of critical directories:
 
 These patterns catch any flag combination (e.g., `-fr`, `-rfv`, `-r -f`,
 `--recursive --force`) and are case-insensitive. They are checked against both
-the raw command and each parsed sub-command in chained commands (e.g.,
-`ls && rm -rf /`).
+the raw command and each parsed sub-command in chained commands (e.g., `ls && rm
+-rf /`).
 
 There are no other built-in rules. The default settings file ({#action
 zed::OpenDefaultSettings}) includes commented-out examples for protecting `.env`

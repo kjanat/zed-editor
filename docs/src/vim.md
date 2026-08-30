@@ -530,9 +530,9 @@ Vim mode adds several contexts to the `"Editor"` context:
 | helix_mode           | Set when the current mode is a Helix mode (`helix_normal` or `helix_select`), including while an operator is pending and `vim_mode` reports `operator` or `waiting`                |
 
 > **Note**: Contexts are matched only on one level at a time. So it is possible
-> to use the expression `"Editor && vim_mode == normal"`, but
-> `"Workspace && vim_mode == normal"` will never match because we set the vim
-> context at the `"Editor"` level.
+> to use the expression `"Editor && vim_mode == normal"`, but `"Workspace &&
+> vim_mode == normal"` will never match because we set the vim context at the
+> `"Editor"` level.
 
 ### Useful contexts for vim mode key bindings
 

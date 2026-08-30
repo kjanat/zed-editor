@@ -238,9 +238,9 @@ setting it to `true` will force the task to be reevaluated before each run.
 ## Custom keybindings for tasks
 
 You can define your own keybindings for your tasks via an additional argument to
-`task::Spawn`. If you wanted to bind the aforementioned
-`echo current file's path` task to `alt-g`, you would add the following snippet
-in your [`keymap.json`](./key-bindings.md) file:
+`task::Spawn`. If you wanted to bind the aforementioned `echo current file's
+path` task to `alt-g`, you would add the following snippet in your
+[`keymap.json`](./key-bindings.md) file:
 
 ```json [keymap]
 {

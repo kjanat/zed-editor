@@ -63,8 +63,8 @@ settings in `settings.json`.
 
 The full list of lsp `settings` can be found
 [here](https://github.com/fwcd/kotlin-language-server/blob/main/server/src/main/kotlin/org/javacs/kt/Configuration.kt)
-under `class Configuration` and initialization_options under
-`class InitializationOptions`.
+under `class Configuration` and initialization_options under `class
+InitializationOptions`.
 
 #### JVM Target
 

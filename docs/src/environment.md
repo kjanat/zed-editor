@@ -5,7 +5,7 @@ description: How Zed detects and uses environment variables. Shell integration, 
 
 # Environment Variables
 
-***Note**: The following only applies to Zed 0.152.0 and later.*
+_**Note**: The following only applies to Zed 0.152.0 and later._
 
 Multiple features in Zed are affected by environment variables:
 

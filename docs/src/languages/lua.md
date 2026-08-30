@@ -29,10 +29,10 @@ project.
 
 See [LuaLS Settings Documentation](https://luals.github.io/wiki/settings/) for
 all available configuration options, or when editing this file in Zed available
-settings options will autocomplete, (e.g `runtime.version` will show
-`"Lua 5.1"`, `"Lua 5.2"`, `"Lua 5.3"`, `"Lua 5.4"` and `"LuaJIT"` as allowed
-values). Note when importing settings options from VS Code, remove the `Lua.`
-prefix. (e.g. `runtime.version` instead of `Lua.runtime.version`).
+settings options will autocomplete, (e.g `runtime.version` will show `"Lua
+5.1"`, `"Lua 5.2"`, `"Lua 5.3"`, `"Lua 5.4"` and `"LuaJIT"` as allowed values).
+Note when importing settings options from VS Code, remove the `Lua.` prefix.
+(e.g. `runtime.version` instead of `Lua.runtime.version`).
 
 ### LuaCATS Definitions
 
@@ -173,10 +173,9 @@ for all available options.
 Alternatively to use [StyLua](https://github.com/JohnnyMorganz/StyLua) for
 auto-formatting:
 
-1. Install [StyLua](https://github.com/JohnnyMorganz/StyLua):
-   `brew install stylua` or
-   `cargo install stylua --features lua52,lua53,lua54,luau,luajit` (feel free to
-   remove any Lua versions you don't need).
+1. Install [StyLua](https://github.com/JohnnyMorganz/StyLua): `brew install
+   stylua` or `cargo install stylua --features lua52,lua53,lua54,luau,luajit`
+   (feel free to remove any Lua versions you don't need).
 2. Configure formatting in Settings ({#kb zed::OpenSettings}) under Languages >
    Lua, or add to your settings file:
 

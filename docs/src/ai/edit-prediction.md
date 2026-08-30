@@ -97,8 +97,8 @@ LSP completions menu is open, you can add the following to your keymap:
 
 Open the keymap editor with {#action zed::OpenKeymap} ({#kb zed::OpenKeymap}),
 search for `AcceptEditPrediction`, right click on the binding for `tab` and hit
-`edit`. Then change the context the binding is active in to just
-`Editor && edit_prediction` and save it.
+`edit`. Then change the context the binding is active in to just `Editor &&
+edit_prediction` and save it.
 
 Alternatively, you can put the following in your `keymap.json`:
 

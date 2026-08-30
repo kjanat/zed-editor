@@ -211,9 +211,9 @@ rust-analyzer.cargo.allTargets (default: true)
     Pass --all-targets to cargo invocation
 ```
 
-Which would mean that every time Zed saves, a
-`cargo check --workspace --all-targets` command is run, checking the entire
-project (workspace), lib, doc, test, bin, bench and
+Which would mean that every time Zed saves, a `cargo check --workspace
+--all-targets` command is run, checking the entire project (workspace), lib,
+doc, test, bin, bench and
 [other targets](https://doc.rust-lang.org/cargo/reference/cargo-targets.html).
 
 While that works fine on small projects, it does not scale well.

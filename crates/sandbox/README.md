@@ -105,8 +105,9 @@ Consider the following case:
   - the first subagent tries to swap `project/cache` with a symlink to
     `/home/alice` using [`renameat2(2)`][renameat2] with the `RENAME_EXCHANGE`
     flag set
-  - the second subagent tries to run
-    `echo 'export PATH="proj/obfuscated.../evil_eavesdropping_sudo/bin:$PATH"' >> proj/cache/.bashrc`
+  - the second subagent tries to run `echo 'export
+    PATH="proj/obfuscated.../evil_eavesdropping_sudo/bin:$PATH"' >>
+    proj/cache/.bashrc`
 - The user sends a prompt, we pick up the evil `AGENTS.md` instructions, and the
   agent does them
 - Zed checks whether paths are symlinks outside the allowable paths before
@@ -209,8 +210,8 @@ The flow for this approach in detail is:
 - open each *writable* path we `--bind` and get an `O_PATH` FD (which pins the
   inode without granting read/write on its contents)
 - create an `SCM_RIGHTS` socket over which we can send the FDs
-- run
-  `bwrap --bind /path1 /path1 ... -- zed --zed-linux-sandbox-launcher <untrusted program args>`
+- run `bwrap --bind /path1 /path1 ... -- zed --zed-linux-sandbox-launcher
+  <untrusted program args>`
   - note: we use (potentially swapped) paths
   - we also mount the socket in the sandbox
 - the sandbox bridge reads the FDs from the socket, does the following for each
@@ -273,13 +274,12 @@ time, rather than re-deriving it from the FD every run:
 
 - At approval, we resolve the requested path to its canonical (symlink-free)
   target and persist that canonical path alongside the request.
-- At enforcement, we open the persisted canonical path with
-  `O_PATH | O_NOFOLLOW`, reject a symlink leaf (an `S_IFLNK` check, since
-  `readlink` of an `O_NOFOLLOW` symlink FD returns the symlink's own path and
-  would spuriously match), and require
-  `readlink(/proc/self/fd/N) == persisted canonical`. If any component became a
-  symlink after approval, the FD resolves elsewhere and this diverges, so we
-  fail closed.
+- At enforcement, we open the persisted canonical path with `O_PATH |
+  O_NOFOLLOW`, reject a symlink leaf (an `S_IFLNK` check, since `readlink` of an
+  `O_NOFOLLOW` symlink FD returns the symlink's own path and would spuriously
+  match), and require `readlink(/proc/self/fd/N) == persisted canonical`. If any
+  component became a symlink after approval, the FD resolves elsewhere and this
+  diverges, so we fail closed.
 
 This host-side, **pre-mount** readlink check composes with the existing
 in-sandbox, **post-mount** `fstat(fd) == lstat(mount)` check to cover every

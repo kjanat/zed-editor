@@ -20,13 +20,13 @@ Zed uses two different rust crates for matching glob patterns:
   patterns stored in `.gitignore` files
 - [glob crate](https://docs.rs/glob/latest/glob/) for matching file paths in Zed
 
-While simple expressions are portable across environments (e.g. running
-`ls *.py` or `*.tmp` in a gitignore) there is significant divergence in the
-support for and syntax of more advanced features (character classes, exclusions,
-`**`, etc) across implementations. For the rest of this document we will be
-describing globs as supported in Zed via the `glob` crate implementation. Please
-see [References](#references) below for documentation links for glob pattern
-syntax for `.gitignore`, shells and other programming languages.
+While simple expressions are portable across environments (e.g. running `ls
+*.py` or `*.tmp` in a gitignore) there is significant divergence in the support
+for and syntax of more advanced features (character classes, exclusions, `**`,
+etc) across implementations. For the rest of this document we will be describing
+globs as supported in Zed via the `glob` crate implementation. Please see
+[References](#references) below for documentation links for glob pattern syntax
+for `.gitignore`, shells and other programming languages.
 
 The `glob` crate is implemented entirely in rust and does not rely on the `glob`
 / `fnmatch` interfaces provided by your platform's libc. This means that globs

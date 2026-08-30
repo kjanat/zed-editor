@@ -71,14 +71,14 @@ different versions:
 2. **Test the first version:**
 
    - Checkout the commit you want to measure
-   - Run Zed in release mode and use it for 5-10 seconds:
-     `cargo run --release &> version-a`
+   - Run Zed in release mode and use it for 5-10 seconds: `cargo run --release
+     &> version-a`
 
 3. **Test the second version:**
 
    - Checkout another commit you want to compare
-   - Run Zed in release mode and use it for 5-10 seconds:
-     `cargo run --release &> version-b`
+   - Run Zed in release mode and use it for 5-10 seconds: `cargo run --release
+     &> version-b`
 
 4. **Generate comparison:**
 
@@ -93,8 +93,7 @@ performance data between the provided versions.
 ### Using `util_macros::perf`
 
 For benchmarking unit tests, annotate them with the `#[perf]` attribute from the
-`util_macros` crate. Then run `cargo
-perf-test -p $CRATE` to benchmark them. See
+`util_macros` crate. Then run `cargo perf-test -p $CRATE` to benchmark them. See
 the rustdoc documentation on `crates/util_macros` and `tooling/perf` for
 in-depth examples and explanations.
 

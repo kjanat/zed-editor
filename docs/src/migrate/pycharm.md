@@ -322,8 +322,8 @@ class creates database tables.
   definitions, model classes, or template usages.
 - Rely on your language server's "find references" (`Alt+F7`) for navigation—it
   works, just without framework context
-- Consider using framework-specific CLI tools (`python manage.py`,
-  `flask routes`) from Zed's terminal
+- Consider using framework-specific CLI tools (`python manage.py`, `flask
+  routes`) from Zed's terminal
 
 > **Tip:** For database work, pick up a dedicated tool like DataGrip, DBeaver,
 > or TablePlus. Many developers who switch to Zed keep DataGrip around

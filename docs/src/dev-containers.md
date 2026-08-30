@@ -19,8 +19,8 @@ open a project inside a development container.
   true.
 - Your project must contain a `.devcontainer/devcontainer.json` directory/file.
 
-By default Zed builds dev container images with BuildKit when the
-`docker buildx` plugin is available. If your Docker-compatible engine lacks an
+By default Zed builds dev container images with BuildKit when the `docker
+buildx` plugin is available. If your Docker-compatible engine lacks an
 integrated BuildKit (for example, Apple Container accessed through a Docker-API
 bridge), set `"dev_container_use_buildkit": false` in your settings.json to use
 the classic Docker builder instead.
@@ -50,8 +50,8 @@ projects::OpenRemote} binding) and choose the "Connect Dev Container" option.
 If you modify `.devcontainer/devcontainer.json`, Zed does not currently rebuild
 or reload the container automatically. After changing configuration:
 
-- Stop or kill the existing container manually (e.g., via
-  `docker kill <container>`).
+- Stop or kill the existing container manually (e.g., via `docker kill
+  <container>`).
 - Reopen the project in the container.
 
 ## Working in a Dev Container

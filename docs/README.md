@@ -89,8 +89,8 @@ rather than hardcoding the keybinding.
 
 #### Keymap Overlays
 
-`{#kb:keymap_name scope::Action}` - e.g.,
-`{#kb:jetbrains editor::GoToDefinition}`.
+`{#kb:keymap_name scope::Action}` - e.g., `{#kb:jetbrains
+editor::GoToDefinition}`.
 
 This resolves the keybinding from a keymap overlay (e.g., JetBrains) first,
 falling back to the default keymap if the overlay doesn't define a binding for

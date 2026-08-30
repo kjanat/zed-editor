@@ -52,8 +52,8 @@ Download the profiler:
 
 - Clone the repo at git@github.com:wolfpld/tracy.git
 - `cd profiler && mkdir build && cd build`
-- Run cmake to generate build files:
-  `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..`
+- Run cmake to generate build files: `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+  ..`
 - Build the profiler: `ninja`
 - [Optional] move the profiler somewhere nice like ~/.local/bin on linux
 
@@ -129,11 +129,11 @@ Download the importer
 
 - Clone the repo at git@github.com:zed-industries/tracy.git on v0.12.2 branch
 - `cd import && mkdir build && cd build`
-- Run cmake to generate build files:
-  `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..`
+- Run cmake to generate build files: `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+  ..`
 - Build the importer: `ninja`
-- Run the importer on the trace file:
-  `./tracy-import-miniprofiler /path/to/trace.miniprof.json /path/to/output.tracy`
+- Run the importer on the trace file: `./tracy-import-miniprofiler
+  /path/to/trace.miniprof.json /path/to/output.tracy`
 - Open the trace in tracy:
   - If you're on windows download the v0.12.2 version from the releases on the
     upstream repo
@@ -147,7 +147,8 @@ Download the importer
 - Hit the save button. This opens a save dialog or if that fails to open the
   trace gets saved in your working directory.
 - Convert the profile so it can be imported in tracy using the importer:
-  `./tracy-import-miniprofiler <path to performance_profile.miniprof.json> output.tracy`
+  `./tracy-import-miniprofiler <path to performance_profile.miniprof.json>
+  output.tracy`
 - Go to <https://tracy.nereid.pl/> hit the 'power button' in the top left and
   then open saved trace.
 - Now zoom in to see the tasks and how long they took

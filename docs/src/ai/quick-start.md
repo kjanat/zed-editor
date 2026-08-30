@@ -90,8 +90,8 @@ For general settings mechanics, see [Configuring Zed](../configuring-zed.md).
 
 ## Turn AI Off {#turn-ai-off}
 
-Open the Settings Editor with {#action zed::OpenSettings}, search for
-`Disable AI`, and enable it.
+Open the Settings Editor with {#action zed::OpenSettings}, search for `Disable
+AI`, and enable it.
 
 You can also add this to your settings file:
 

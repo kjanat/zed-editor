@@ -19,8 +19,8 @@ brew install git-filter-repo
 We are going to use a `$LANGNAME` variable for all these steps. Make sure it is
 set correctly.
 
-> **Note** If you get `zsh: command not found: #` errors, run:
-> `setopt interactive_comments && echo "setopt interactive_comments" >> ~/.zshrc`
+> **Note** If you get `zsh: command not found: #` errors, run: `setopt
+> interactive_comments && echo "setopt interactive_comments" >> ~/.zshrc`
 
 1. Create a clean clone the zed repository, delete tags and delete branches.
 

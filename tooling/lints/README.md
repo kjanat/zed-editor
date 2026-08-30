@@ -12,9 +12,8 @@ rustup toolchain install
 ```
 
 The channel and its components (`rustc-dev`, `rust-src`, `llvm-tools-preview`)
-are declared in `tooling/lints/rust-toolchain.toml`, so
-`rustup toolchain install` picks them up automatically when run from that
-directory.
+are declared in `tooling/lints/rust-toolchain.toml`, so `rustup toolchain
+install` picks them up automatically when run from that directory.
 
 # Demo
 

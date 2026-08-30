@@ -267,8 +267,8 @@ Zed doesn't have a Cargo GUI. You work with Cargo through:
 
 **How to adapt:**
 
-- Get comfortable with Cargo CLI commands: `cargo build`, `cargo run`,
-  `cargo test`, `cargo clippy`, `cargo doc`
+- Get comfortable with Cargo CLI commands: `cargo build`, `cargo run`, `cargo
+  test`, `cargo clippy`, `cargo doc`
 - Use tasks for commands you run frequently
 - For dependency management, edit `Cargo.toml` directly (rust-analyzer provides
   completions for crate names and versions)

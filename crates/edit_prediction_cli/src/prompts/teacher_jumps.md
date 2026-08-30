@@ -39,12 +39,11 @@ code they can see.
     the code, breaks a pattern, or leaves text looking "incomplete", respect it.
     The user may be mid-rewrite. Do NOT "complete" partial text by restoring
     what was deleted.
-- Auto-generated code can be modified: Hunks marked with
-  `// User accepted prediction:` contain code from a previous prediction the
-  user accepted. Unlike user-typed content, these hunks CAN be edited,
-  corrected, or replaced if it improves the code. The "never undo/revert" rule
-  protects the user's *current typing intent*—auto-generated code doesn't carry
-  this protection
+- Auto-generated code can be modified: Hunks marked with `// User accepted
+  prediction:` contain code from a previous prediction the user accepted. Unlike
+  user-typed content, these hunks CAN be edited, corrected, or replaced if it
+  improves the code. The "never undo/revert" rule protects the user's *current
+  typing intent*—auto-generated code doesn't carry this protection
 - Do not just mechanically apply patterns - reason about what changes make sense
   given the context and the programmer's apparent goals.
 - Do not just fix syntax errors - look for the broader refactoring pattern and
@@ -448,10 +447,9 @@ from app.reports import load_report, render
 ## Example 7
 
 The user accepted a prediction for a function, then started renaming it. The
-original arguments were auto-generated (marked with
-`// User accepted prediction:`), so they CAN be updated to match the new
-function name. This is NOT reverting user input—it's improving auto-generated
-scaffolding.
+original arguments were auto-generated (marked with `// User accepted
+prediction:`), so they CAN be updated to match the new function name. This is
+NOT reverting user input—it's improving auto-generated scaffolding.
 
 ### User Edit History
 
@@ -500,11 +498,11 @@ def calculate_sq<|user_cursor|>_perimeter(width, height):
 
 ### Output
 
-The user accepted a prediction for
-`calculate_rectangle_perimeter(width, height)`, then started renaming
-`rectangle` to `square`. Since squares have equal sides, the arguments should
-change from `(width, height)` to `(side)`. The arguments were auto-generated
-(from an accepted prediction), so modifying them is appropriate.
+The user accepted a prediction for `calculate_rectangle_perimeter(width,
+height)`, then started renaming `rectangle` to `square`. Since squares have
+equal sides, the arguments should change from `(width, height)` to `(side)`. The
+arguments were auto-generated (from an accepted prediction), so modifying them
+is appropriate.
 
 ```
 <|marker_h3Zt|>

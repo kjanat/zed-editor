@@ -135,10 +135,9 @@ Creates a new file or overwrites an existing file with completely new contents.
 Executes shell commands and returns the combined output, creating a new shell
 process for each invocation.
 
-**Example:** After editing a Rust file, run
-`cargo test --package my_crate 2>&1 | tail -30` to confirm the changes don't
-break existing tests. Or run `git diff --stat` to review which files have been
-modified before wrapping up a task.
+**Example:** After editing a Rust file, run `cargo test --package my_crate 2>&1
+| tail -30` to confirm the changes don't break existing tests. Or run `git diff
+--stat` to review which files have been modified before wrapping up a task.
 
 ## Other Tools
 

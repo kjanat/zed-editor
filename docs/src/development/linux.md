@@ -167,10 +167,9 @@ this when Zed is using a lot of CPU. It is not useful for hangs.
 
 ### During the incident
 
-- Find the PID (process ID) using:
-  `ps -eo size,pid,comm | grep zed | sort | head -n 1 | cut -d ' ' -f 2` Or find
-  the PID of `zed-editor` with the highest RAM usage in something like
-  htop/btop/top.
+- Find the PID (process ID) using: `ps -eo size,pid,comm | grep zed | sort |
+  head -n 1 | cut -d ' ' -f 2` Or find the PID of `zed-editor` with the highest
+  RAM usage in something like htop/btop/top.
 
 - Install perf: On Ubuntu (derivatives) run `sudo apt install linux-tools`.
 
@@ -198,11 +197,11 @@ This can be done by Zed staff.
 +debug = "full"
 ```
 
-- Add the symbols to the perf database:
-  `perf buildid-cache -v -a <path to release zed binary>`
+- Add the symbols to the perf database: `perf buildid-cache -v -a <path to
+  release zed binary>`
 
-- Resolve the symbols from the db:
-  `perf inject -i perf.data -o perf_with_symbols.data`
+- Resolve the symbols from the db: `perf inject -i perf.data -o
+  perf_with_symbols.data`
 
 - Install flamegraph: `cargo install cargo-flamegraph`
 

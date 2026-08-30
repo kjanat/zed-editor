@@ -102,8 +102,8 @@ Add environment variables to all terminal sessions:
 }
 ```
 
-> **Tip:** Use `:` to separate multiple values in a single variable:
-> `"PATH": "/custom/path:$PATH"`
+> **Tip:** Use `:` to separate multiple values in a single variable: `"PATH":
+> "/custom/path:$PATH"`
 
 ### Python Virtual Environment Detection
 

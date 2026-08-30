@@ -13,16 +13,13 @@ runs:
     - name: Install test runner
       working-directory: ${{ inputs.working-directory }}
       uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
-      with:
-        tool: nextest
+      with: { tool: nextest }
 
     - name: Install Node
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-      with:
-        node-version: "18"
+      with: { node-version: "18" }
 
     - name: Run tests
       shell: powershell
       working-directory: ${{ inputs.working-directory }}
-      run: |
-        cargo nextest run --workspace --no-fail-fast --failure-output immediate-final
+      run: cargo nextest run --workspace --no-fail-fast --failure-output immediate-final

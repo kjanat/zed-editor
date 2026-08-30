@@ -38,8 +38,8 @@ Extract concrete signals from the crash + analysis:
 
 ### Step 2: Search GitHub Issues
 
-Search **only** issues in `zed-industries/zed` (prefer `gh issue list` /
-`gh issue view` / GraphQL if available) by:
+Search **only** issues in `zed-industries/zed` (prefer `gh issue list` / `gh
+issue view` / GraphQL if available) by:
 
 1. Panic/error text
 2. Function/file names

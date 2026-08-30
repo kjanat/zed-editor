@@ -194,20 +194,19 @@ Zed requires a GPU to run effectively. Under the hood, we use
 seeing problems with performance, or Zed fails to load, it is possible that
 Vulkan is the culprit.
 
-If you see a notification saying
-`Zed failed to open a window: NoSupportedDeviceFound` this means that Vulkan
-cannot find a compatible GPU. You can try running
-[vkcube](https://github.com/krh/vkcube) (usually available as part of the
-`vulkaninfo` or `vulkan-tools` package on various distributions) to try to
-troubleshoot where the issue is coming from like so:
+If you see a notification saying `Zed failed to open a window:
+NoSupportedDeviceFound` this means that Vulkan cannot find a compatible GPU. You
+can try running [vkcube](https://github.com/krh/vkcube) (usually available as
+part of the `vulkaninfo` or `vulkan-tools` package on various distributions) to
+try to troubleshoot where the issue is coming from like so:
 
 ```
 vkcube
 ```
 
-> ***Note***: Try running in both X11 and wayland modes by running
-> `vkcube -m [x11|wayland]`. Some versions of `vkcube` use `vkcube` to run in
-> X11 and `vkcube-wayland` to run in wayland.
+> _**Note**_: Try running in both X11 and wayland modes by running `vkcube -m
+> [x11|wayland]`. Some versions of `vkcube` use `vkcube` to run in X11 and
+> `vkcube-wayland` to run in wayland.
 
 This should output a line describing your current graphics setup and show a
 rotating cube. If this does not work, you should be able to fix it by installing
@@ -327,7 +326,7 @@ ZED_LOG=wgpu=info /path/to/zed/cli --foreground .
 It is also highly recommended when pasting the log into a github issue, to do so
 with the following template:
 
-> ***Note***: The whitespace in the template is important, and will cause
+> _**Note**_: The whitespace in the template is important, and will cause
 > incorrect formatting if not preserved.
 
 ````
