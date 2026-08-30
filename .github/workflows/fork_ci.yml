@@ -47,6 +47,9 @@ jobs:
         run: ./script/linux
       - name: clippy
         run: ./script/clippy
+      - name: Show disk usage
+        if: always()
+        run: df -h /
 
   tests:
     if: github.repository == 'kjanat/zed-editor'

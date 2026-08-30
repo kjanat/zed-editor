@@ -74,6 +74,9 @@ jobs:
         run: ./script/download-wasi-sdk
       - name: Bundle
         run: ./script/bundle-linux
+      - name: Show disk usage
+        if: always()
+        run: df -h /
       - name: Upload to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,6 +105,9 @@ jobs:
       - name: Bundle
         env: { target: "${{ matrix.target }}" }
         run: ./script/bundle-mac "${target}"
+      - name: Show disk usage
+        if: always()
+        run: df -h /
       - name: Upload to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -149,6 +155,10 @@ jobs:
         shell: pwsh
         env: { arch: "${{ matrix.arch }}" }
         run: script/bundle-windows.ps1 -Architecture $env:arch
+      - name: Show disk usage
+        if: always()
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
       - name: Upload to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
