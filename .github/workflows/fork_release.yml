@@ -121,8 +121,8 @@ jobs:
           arch: ${{ matrix.arch }}
         run: |
           gh release upload "${tag}" --clobber \
-            "target/release/zed-linux-${arch}.tar.gz" \
-            "target/zed-remote-server-linux-${arch}.gz"
+            "target/release/zed-linux-${arch}.tar.gz#Zed for Linux (${arch}, tar.gz)" \
+            "target/zed-remote-server-linux-${arch}.gz#Zed remote server for Linux (${arch})"
 
   bundle_mac:
     if: github.repository == 'kjanat/zed-editor'
@@ -162,8 +162,8 @@ jobs:
           arch: ${{ matrix.arch }}
         run: |
           gh release upload "${tag}" --clobber \
-            "target/${target}/release/Zed-${arch}.dmg" \
-            "target/zed-remote-server-macos-${arch}.gz"
+            "target/${target}/release/Zed-${arch}.dmg#Zed for macOS (${arch}, DMG)" \
+            "target/zed-remote-server-macos-${arch}.gz#Zed remote server for macOS (${arch})"
 
   bundle_windows:
     if: github.repository == 'kjanat/zed-editor'
@@ -221,8 +221,8 @@ jobs:
           tag: ${{ needs.create_draft_release.outputs.tag }}
         run: |
           gh release upload "${tag}" --clobber \
-            "target/Zed-${arch}.exe" \
-            "target/zed-remote-server-windows-${arch}.zip"
+            "target/Zed-${arch}.exe#Zed for Windows (${arch}, installer)" \
+            "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})"
 
   pacman_repo:
     if: github.repository == 'kjanat/zed-editor' && startsWith(needs.create_draft_release.outputs.tag, 'v')
@@ -272,12 +272,14 @@ jobs:
           done
       - name: Upload to the draft release
         run: |
+          version="${tag#v}"
           gh release upload "${tag}" --clobber \
-            zed-kjanat-*.pkg.tar.zst \
-            zed-kjanat.db zed-kjanat.db.tar.gz \
-            zed-kjanat.files zed-kjanat.files.tar.gz \
-            zed-kjanat-aarch64.db zed-kjanat-aarch64.db.tar.gz \
-            zed-kjanat-aarch64.files zed-kjanat-aarch64.files.tar.gz
+            "zed-kjanat-${version}-1-x86_64.pkg.tar.zst#Arch/Manjaro package (x86_64)" \
+            "zed-kjanat-${version}-1-aarch64.pkg.tar.zst#Arch/Manjaro package (aarch64)" \
+            "zed-kjanat.db#Pacman repo database (x86_64)" \
+            "zed-kjanat.files#Pacman repo file list (x86_64)" \
+            "zed-kjanat-aarch64.db#Pacman repo database (aarch64)" \
+            "zed-kjanat-aarch64.files#Pacman repo file list (aarch64)"
 
   publish:
     if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled()
