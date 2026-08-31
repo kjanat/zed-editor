@@ -1,5 +1,6 @@
 ---
 name: fork_release
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0} {1}{2}', inputs.tag || 'untagged', inputs.only, !inputs.upload && ' (dry run)' || '') || '' }}
 on:
   push: { tags: ["v*"] }
   workflow_dispatch:
