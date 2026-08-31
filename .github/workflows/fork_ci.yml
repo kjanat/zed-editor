@@ -105,6 +105,10 @@ jobs:
           - name: Install nextest
             uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
             with: { tool: nextest }
+          # The extension_host suite shells out to cargo, and no shard step
+          # compiles anything, so the pinned toolchain must be provisioned here.
+          - name: Install the pinned Rust toolchain
+            run: rustup toolchain install
           - name: Download the test archive
             uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
             with: { name: nextest-archive }
