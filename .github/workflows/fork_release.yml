@@ -246,6 +246,7 @@ jobs:
     if: github.repository == 'kjanat/zed-editor'
     needs: create_draft_release
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 180
     permissions: { contents: write, id-token: write, attestations: write }
     env: { GH_REPO: "${{ github.repository }}" }
