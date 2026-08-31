@@ -61,12 +61,18 @@ jobs:
         with: { shared-key: fork-ci-tests, cache-on-failure: true }
       - name: Install build dependencies
         run: ./script/linux
+      # Upstream's tests assume nextest's process-per-test isolation; under
+      # plain cargo test they share process globals and flake.
+      - name: Install nextest
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+        with: { tool: nextest }
       # The crates this fork's commits touch, in dependency order.
       # The regression tests for the seventeen fixes all live here;
       # if one of these goes red after an upstream merge, the merge broke a fix.
       - name: Test the crates this fork changes
         run: >
-          cargo test
+          cargo nextest run
+          --no-fail-fast
           -p fs
           -p language
           -p worktree

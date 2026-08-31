@@ -38,11 +38,10 @@ use gpui::{
 
 use lsp::LanguageServerId;
 use parking_lot::Mutex;
-use settings::WorktreeId;
+use settings::{SettingsStore, WorktreeId};
 use smallvec::SmallVec;
 use std::{
     any::Any,
-    borrow::Cow,
     cell::Cell,
     cmp::{self, Ordering, Reverse},
     collections::{BTreeMap, BTreeSet},
@@ -146,6 +145,8 @@ pub struct Buffer {
     change_bits: Vec<rc::Weak<Cell<bool>>>,
     modeline: Option<Arc<ModelineSettings>>,
     _subscriptions: Vec<gpui::Subscription>,
+    resolved_settings: Option<Arc<LanguageSettings>>,
+    _settings_observer: Option<gpui::Subscription>,
     tree_sitter_data: Arc<TreeSitterData>,
     encoding: &'static Encoding,
     has_bom: bool,
@@ -202,6 +203,7 @@ pub struct BufferSnapshot {
     non_text_state_update_count: usize,
     pub capability: Capability,
     modeline: Option<Arc<ModelineSettings>>,
+    resolved_settings: Option<Arc<LanguageSettings>>,
 }
 
 /// The kind and amount of indentation in a particular line. For now,
@@ -344,6 +346,8 @@ pub enum BufferEvent {
     LanguageChanged(bool),
     /// The buffer's syntax trees were updated.
     Reparsed,
+    /// The buffer's resolved language settings were changed.
+    SettingsChanged,
     /// The buffer's diagnostics were updated.
     DiagnosticsUpdated,
     /// The buffer gained or lost editing capabilities.
@@ -1020,7 +1024,7 @@ pub enum AutoIndentExclusion {
 
 impl Buffer {
     /// Create a new buffer with the given base text.
-    pub fn local<T: Into<String>>(base_text: T, cx: &Context<Self>) -> Self {
+    pub fn local<T: Into<String>>(base_text: T, cx: &mut Context<Self>) -> Self {
         Self::build(
             TextBuffer::new(
                 ReplicaId::LOCAL,
@@ -1029,6 +1033,7 @@ impl Buffer {
             ),
             None,
             Capability::ReadWrite,
+            cx,
         )
     }
 
@@ -1036,7 +1041,7 @@ impl Buffer {
     pub fn local_normalized(
         base_text_normalized: Rope,
         line_ending: LineEnding,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
         Self::build(
             TextBuffer::new_normalized(
@@ -1047,6 +1052,7 @@ impl Buffer {
             ),
             None,
             Capability::ReadWrite,
+            cx,
         )
     }
 
@@ -1056,11 +1062,13 @@ impl Buffer {
         replica_id: ReplicaId,
         capability: Capability,
         base_text: impl Into<String>,
+        cx: &mut Context<Self>,
     ) -> Self {
         Self::build(
             TextBuffer::new(replica_id, remote_id, base_text.into()),
             None,
             capability,
+            cx,
         )
     }
 
@@ -1071,10 +1079,11 @@ impl Buffer {
         capability: Capability,
         message: proto::BufferState,
         file: Option<Arc<dyn File>>,
+        cx: &mut Context<Self>,
     ) -> Result<Self> {
         let buffer_id = BufferId::new(message.id).context("Could not deserialize buffer_id")?;
         let buffer = TextBuffer::new(replica_id, buffer_id, message.base_text);
-        let mut this = Self::build(buffer, file, capability);
+        let mut this = Self::build(buffer, file, capability, cx);
         this.text.set_line_ending(proto::deserialize_line_ending(
             rpc::proto::LineEnding::try_from(message.line_ending)
                 .ok()
@@ -1171,12 +1180,17 @@ impl Buffer {
     }
 
     /// Builds a [`Buffer`] with the given underlying [`TextBuffer`], diff base, [`File`] and [`Capability`].
-    pub fn build(buffer: TextBuffer, file: Option<Arc<dyn File>>, capability: Capability) -> Self {
+    pub fn build(
+        buffer: TextBuffer,
+        file: Option<Arc<dyn File>>,
+        capability: Capability,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let saved_mtime = file.as_ref().and_then(|file| file.disk_state().mtime());
         let snapshot = buffer.snapshot();
         let syntax_map = Mutex::new(SyntaxMap::new(&snapshot));
         let tree_sitter_data = TreeSitterData::new(snapshot);
-        Self {
+        let mut this = Self {
             saved_mtime,
             superseded_mtime: None,
             tree_sitter_data: Arc::new(tree_sitter_data),
@@ -1215,10 +1229,36 @@ impl Buffer {
             change_bits: Default::default(),
             modeline: None,
             _subscriptions: Vec::new(),
+            resolved_settings: None,
+            _settings_observer: Some(cx.observe_global::<SettingsStore>(|this, cx| {
+                this.refresh_resolved_settings(cx);
+            })),
             encoding: encoding_rs::UTF_8,
             has_bom: false,
             reload_with_encoding_txns: HashMap::default(),
+        };
+        this.resolved_settings = this.compute_resolved_settings(cx);
+        this
+    }
+
+    fn compute_resolved_settings(&self, cx: &App) -> Option<Arc<LanguageSettings>> {
+        cx.try_global::<SettingsStore>()?;
+        Some(LanguageSettings::resolve_uncached(self, None, cx))
+    }
+
+    fn refresh_resolved_settings(&mut self, cx: &mut Context<Self>) {
+        let resolved = self.compute_resolved_settings(cx);
+        if resolved.as_deref() != self.resolved_settings.as_deref() {
+            self.resolved_settings = resolved;
+            self.non_text_state_update_count += 1;
+            self.was_changed();
+            cx.emit(BufferEvent::SettingsChanged);
+            cx.notify();
         }
+    }
+
+    pub(crate) fn resolved_settings(&self) -> Option<&Arc<LanguageSettings>> {
+        self.resolved_settings.as_ref()
     }
 
     #[ztracing::instrument(skip_all)]
@@ -1252,6 +1292,7 @@ impl Buffer {
                 non_text_state_update_count: 0,
                 capability: Capability::ReadOnly,
                 modeline,
+                resolved_settings: None,
             }
         }
     }
@@ -1279,6 +1320,7 @@ impl Buffer {
             non_text_state_update_count: 0,
             capability: Capability::ReadOnly,
             modeline: None,
+            resolved_settings: None,
         }
     }
 
@@ -1310,6 +1352,7 @@ impl Buffer {
             non_text_state_update_count: 0,
             capability: Capability::ReadOnly,
             modeline: None,
+            resolved_settings: None,
         }
     }
 
@@ -1341,6 +1384,7 @@ impl Buffer {
             non_text_state_update_count: self.non_text_state_update_count,
             capability: self.capability,
             modeline: self.modeline.clone(),
+            resolved_settings: self.resolved_settings.clone(),
         }
     }
 
@@ -1357,7 +1401,7 @@ impl Buffer {
                 has_conflict: self.has_conflict,
                 has_unsaved_edits: Cell::new(self.has_unsaved_edits.get_mut().clone()),
                 _subscriptions: vec![cx.subscribe(&this, Self::on_base_buffer_event)],
-                ..Self::build(self.text.branch(), self.file.clone(), self.capability())
+                ..Self::build(self.text.branch(), self.file.clone(), self.capability(), cx)
             };
             if let Some(language_registry) = self.language_registry() {
                 branch.set_language_registry(language_registry);
@@ -1568,6 +1612,7 @@ impl Buffer {
         self.non_text_state_update_count += 1;
         self.syntax_map.lock().clear(&self.text);
         let old_language = std::mem::replace(&mut self.language, language);
+        self.refresh_resolved_settings(cx);
         self.was_changed();
         self.reparse(cx, may_block);
         let has_fresh_language =
@@ -1603,9 +1648,14 @@ impl Buffer {
     }
 
     /// Assign the buffer [`ModelineSettings`].
-    pub fn set_modeline(&mut self, modeline: Option<ModelineSettings>) -> bool {
+    pub fn set_modeline(
+        &mut self,
+        modeline: Option<ModelineSettings>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if modeline.as_ref() != self.modeline.as_deref() {
             self.modeline = modeline.map(Arc::new);
+            self.refresh_resolved_settings(cx);
             true
         } else {
             false
@@ -1799,6 +1849,7 @@ impl Buffer {
 
         self.file = Some(new_file);
         if file_changed {
+            self.refresh_resolved_settings(cx);
             self.was_changed();
             self.non_text_state_update_count += 1;
             if was_dirty != self.is_dirty() {
@@ -4260,6 +4311,10 @@ impl BufferSnapshot {
         self.modeline.as_ref()
     }
 
+    pub(crate) fn resolved_settings(&self) -> Option<&Arc<LanguageSettings>> {
+        self.resolved_settings.as_ref()
+    }
+
     /// Returns the main [`Language`].
     pub fn language(&self) -> Option<&Arc<Language>> {
         self.language.as_ref()
@@ -4277,7 +4332,7 @@ impl BufferSnapshot {
         &'a self,
         position: D,
         cx: &'a App,
-    ) -> Cow<'a, LanguageSettings> {
+    ) -> Arc<LanguageSettings> {
         LanguageSettings::for_buffer_snapshot(self, Some(position.to_offset(self)), cx)
     }
 
@@ -5513,6 +5568,7 @@ impl Clone for BufferSnapshot {
             non_text_state_update_count: self.non_text_state_update_count,
             capability: self.capability,
             modeline: self.modeline.clone(),
+            resolved_settings: self.resolved_settings.clone(),
         }
     }
 }
