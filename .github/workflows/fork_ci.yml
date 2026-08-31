@@ -2,8 +2,8 @@
 #
 # Distilled from upstream's run_tests.yml, which runs on Zed's namespace-*
 # and self-hosted runners that do not exist on this fork. This variant fits
-# GitHub-hosted runners by testing only the crates this fork actually
-# changes; the full workspace is covered by the release pipeline's builds.
+# GitHub-hosted runners by building the workspace's test archive once and
+# running it across eight shards.
 #
 # Guards every push and PR on master, including the PRs the upstream-sync
 # workflow opens.
@@ -101,6 +101,9 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
         with: { tool: nextest }
+      # The gpui_wgpu tests request a Vulkan adapter and the runner has no GPU.
+      - name: Install a software Vulkan driver
+        run: sudo apt-get install -y mesa-vulkan-drivers
       - name: Download the test archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with: { name: nextest-archive }

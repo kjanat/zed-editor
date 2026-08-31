@@ -25,6 +25,10 @@ filter       = "test(test_rainbow_bracket_highlights) or test(test_wrapped_invis
 slow-timeout = { period = "300s", terminate-after = 1 }
 
 [[profile.default.overrides]]
+filter       = "test(no_forbidden_dependencies_between_feature_crates) or test(test_peers_following_each_other) or test(bench_task_reports_long_task_without_window) or test(test_random_worktree_changes)"
+slow-timeout = { period = "300s", terminate-after = 1 }
+
+[[profile.default.overrides]]
 filter       = "package(extension_host) and test(test_extension_store_with_test_extension)"
 slow-timeout = { period = "300s", terminate-after = 1 }
 
