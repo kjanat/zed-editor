@@ -16,12 +16,10 @@ on:
 permissions: { contents: read }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
 env:
-  CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Keep debug test builds inside the runner's disk. Without this a debug
-  # build of these crates plus dependencies overflows ubuntu-latest.
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
 
 jobs:
   style:
@@ -40,10 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { shared-key: fork-ci-clippy, cache-on-failure: true }
-      - name: Install build dependencies
-        run: ./script/linux
+      - parallel:
+          - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+            with: { shared-key: fork-ci-clippy, cache-on-failure: true }
+          - name: Install build dependencies
+            run: ./script/linux
       - name: clippy
         run: ./script/clippy
       - name: Show disk usage
@@ -57,30 +56,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { shared-key: fork-ci-tests, cache-on-failure: true }
-      - name: Install build dependencies
-        run: ./script/linux
-      # Upstream's tests assume nextest's process-per-test isolation; under
-      # plain cargo test they share process globals and flake.
-      - name: Install nextest
-        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
-        with: { tool: nextest }
-      # The crates this fork's commits touch, in dependency order.
-      # The regression tests for the seventeen fixes all live here;
-      # if one of these goes red after an upstream merge, the merge broke a fix.
+      - parallel:
+          - name: Install build dependencies
+            run: ./script/linux
+          - name: Install nextest
+            uses: taiki-e/install-action@nextest
+          - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+            with: { shared-key: fork-ci-tests, cache-on-failure: true }
       - name: Test the crates this fork changes
-        run: >
-          cargo nextest run
-          --no-fail-fast
-          -p fs
-          -p language
-          -p worktree
-          -p project
-          -p lsp
-          -p language_tools
-          -p repl
-          -p auto_update
+        run: |
+          cargo nextest run --no-fail-fast \
+            -p fs -p language -p worktree -p project -p lsp \
+            -p language_tools -p repl -p auto_update
       - name: Show disk usage
         if: always()
         run: df -h /
