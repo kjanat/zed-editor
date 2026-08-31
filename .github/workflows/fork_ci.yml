@@ -50,7 +50,7 @@ jobs:
         if: always()
         run: df -h /
 
-  tests:
+  build_tests:
     if: github.repository == 'kjanat/zed-editor'
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -66,21 +66,51 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
         with: { tool: nextest }
-      # The crates this fork's commits touch, in dependency order.
-      # The regression tests for the seventeen fixes all live here;
-      # if one of these goes red after an upstream merge, the merge broke a fix.
-      - name: Test the crates this fork changes
+      - name: Build the test archive
+        run: >
+          cargo nextest archive
+          --workspace
+          --archive-file nextest-archive.tar.zst
+      - name: Upload the test archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: { name: nextest-archive, path: nextest-archive.tar.zst, retention-days: 1 }
+      - name: Show disk usage
+        if: always()
+        run: df -h /
+
+  tests:
+    if: github.repository == 'kjanat/zed-editor'
+    needs: build_tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: { shard: [1, 2, 3, 4, 5, 6, 7, 8] }
+    # The collab suite needs a live Postgres.
+    services:
+      postgres:
+        image: postgres:15@sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e
+        env: { POSTGRES_HOST_AUTH_METHOD: trust }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 500ms --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Install build dependencies
+        run: ./script/linux
+      - name: Install nextest
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+        with: { tool: nextest }
+      - name: Download the test archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with: { name: nextest-archive }
+      - name: Run the workspace tests (shard ${{ matrix.shard }} of 8)
         run: >
           cargo nextest run
+          --archive-file nextest-archive.tar.zst
+          --workspace-remap .
           --no-fail-fast
-          -p fs
-          -p language
-          -p worktree
-          -p project
-          -p lsp
-          -p language_tools
-          -p repl
-          -p auto_update
+          --partition 'count:${{ matrix.shard }}/8'
       - name: Show disk usage
         if: always()
         run: df -h /
