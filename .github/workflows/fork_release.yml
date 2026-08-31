@@ -96,11 +96,6 @@ jobs:
     permissions: { contents: write, id-token: write, attestations: write }
     env: { CC: "clang-18", CXX: "clang++-18", GH_REPO: "${{ github.repository }}" }
     steps:
-      - name: Reclaim runner disk space
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
-          df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -271,11 +266,6 @@ jobs:
     permissions: { contents: write, id-token: write, attestations: write }
     env: { GH_REPO: "${{ github.repository }}" }
     steps:
-      - name: Reclaim runner disk space
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
-          df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
