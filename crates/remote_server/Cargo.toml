@@ -24,7 +24,6 @@ async-channel.workspace           = true
 clap.workspace                    = true
 client.workspace                  = true
 collections.workspace             = true
-crashes.workspace                 = true
 dap_adapters.workspace            = true
 debug_adapter_extension.workspace = true
 env_logger.workspace              = true
@@ -98,6 +97,9 @@ zlog.workspace                  = true
 [build-dependencies]
 cargo_toml.workspace = true
 toml.workspace       = true
+
+[target.'cfg(not(target_os = "freebsd"))'.dependencies]
+crashes.workspace = true
 
 [target."cfg(windows)".dependencies]
 gpui              = { workspace = true, features = ["windows-manifest"] }

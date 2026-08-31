@@ -40,8 +40,9 @@ use reqwest_client::ReqwestClient;
 use rpc::proto::{self, Envelope, REMOTE_SERVER_PROJECT_ID};
 use rpc::{AnyProtoClient, TypedEnvelope};
 use settings::{Settings, SettingsStore, watch_config_file};
+#[cfg(not(target_os = "freebsd"))]
+use smol::Timer;
 use smol::{
-    Timer,
     channel::{Receiver, Sender},
     io::AsyncReadExt,
     stream::StreamExt as _,
@@ -569,10 +570,13 @@ pub fn execute_run(
     let startup_time = Instant::now();
     let app = gpui_platform::headless();
     let pid = std::process::id();
+    #[cfg(not(target_os = "freebsd"))]
     let id = pid.to_string();
+    #[cfg(not(target_os = "freebsd"))]
     let should_install_crash_handler =
         client::telemetry::should_install_crash_handler(*RELEASE_CHANNEL);
 
+    #[cfg(not(target_os = "freebsd"))]
     let crash_handler = if should_install_crash_handler {
         Some(app.background_executor().spawn(crashes::init(
             crashes::InitCrashHandler {
@@ -636,6 +640,7 @@ pub fn execute_run(
 
     let git_hosting_provider_registry = Arc::new(GitHostingProviderRegistry::new());
     let run = move |cx: &mut App| {
+        #[cfg(not(target_os = "freebsd"))]
         if let Some(crash_handler) = crash_handler {
             cx.spawn(async move |_cx| {
                 let _crash_handler = crash_handler.await;
@@ -847,10 +852,13 @@ pub(crate) fn execute_proxy(
 
     let server_paths = ServerPaths::new(&identifier)?;
 
+    #[cfg(not(target_os = "freebsd"))]
     let id = std::process::id().to_string();
+    #[cfg(not(target_os = "freebsd"))]
     let should_install_crash_handler =
         client::telemetry::should_install_crash_handler(*RELEASE_CHANNEL);
 
+    #[cfg(not(target_os = "freebsd"))]
     if should_install_crash_handler {
         smol::spawn(crashes::init(
             crashes::InitCrashHandler {
