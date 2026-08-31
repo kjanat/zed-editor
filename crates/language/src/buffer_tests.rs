@@ -1603,7 +1603,11 @@ fn test_bracket_colorization_indices_remain_stable_across_row_chunks(cx: &mut Ap
         "fixture should exceed the bounded tree-sitter query window"
     );
 
-    let buffer = cx.new(|cx| Buffer::local(text.clone(), cx).with_language(json_lang(), cx));
+    let buffer = cx.new(|cx| {
+        let mut buffer = Buffer::local(text.clone(), cx);
+        buffer.set_sync_parse_timeout(Some(Duration::from_secs(60)));
+        buffer.with_language(json_lang(), cx)
+    });
     let snapshot = buffer.update(cx, |buffer, _| buffer.snapshot());
 
     let late_open_offset = property_object_open_offsets[400];
