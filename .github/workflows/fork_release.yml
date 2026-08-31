@@ -278,6 +278,8 @@ jobs:
           df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { shared-key: remote-server-freebsd, cache-on-failure: true }
       - name: Build as the stable release channel
         run: echo stable > crates/zed/RELEASE_CHANNEL
       - name: Bake the release version from the tag
@@ -287,26 +289,23 @@ jobs:
             sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
             rm crates/zed/Cargo.toml.bak
           fi
-      # Built on 13.2, the oldest 13.x the VM images offer, so the binary runs on
-      # every 13.2+ host; a build on a newer minor is not guaranteed to run on older ones.
-      - name: Build in a FreeBSD VM
+      - name: Install build dependencies
+        run: sudo apt-get install -y clang lld llvm protobuf-compiler
+      - name: Cross-compile against the FreeBSD 13.2 sysroot
+        run: |
+          ./script/remote-server-freebsd
+          mv target/zed-remote-server-freebsd-x86_64.gz .
+      # The oldest release the fork supports, so a load failure on any 13.2+
+      # host shows up here.
+      - name: Smoke-test the binary in a FreeBSD VM
         uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1 # v1.5.5
         with:
           release: "13.2"
-          mem: 10240
-          cpu: 4
-          prepare: pkg install -y cmake git perl5 protobuf rustup-init
           run: |
             set -ex
-            rustup-init -y --profile minimal --default-toolchain none
-            export PATH="$HOME/.cargo/bin:$PATH"
-            export CARGO_TARGET_DIR=/root/target
-            cargo build --release --package remote_server
-            if ldd /root/target/release/remote_server | grep -q 'libcrypto\|libssl'; then
-              echo "remote_server depends on libssl or libcrypto" >&2
-              exit 1
-            fi
-            gzip -f --stdout --best /root/target/release/remote_server > zed-remote-server-freebsd-x86_64.gz
+            gzip -dk zed-remote-server-freebsd-x86_64.gz
+            chmod +x zed-remote-server-freebsd-x86_64
+            ./zed-remote-server-freebsd-x86_64 version
       - name: Attest build provenance
         if: github.event_name == 'push' || inputs.upload
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

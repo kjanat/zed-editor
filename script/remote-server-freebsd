@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Cross-compiles remote_server for FreeBSD from a Linux host, linking against a
+# FreeBSD 13.2 sysroot so the binary runs on every 13.2+ host. Building inside a
+# FreeBSD VM stopped being possible: rustup's prebuilt host tools need
+# __libc_start1, which 13.x libc does not export.
+
+target_triple=x86_64-unknown-freebsd
+freebsd_release=13.2
+target_dir="${CARGO_TARGET_DIR:-target}"
+sysroot="${target_dir}/freebsd-${freebsd_release}-sysroot"
+base_archive_url="http://ftp-archive.freebsd.org/pub/FreeBSD-Archive/old-releases/amd64/${freebsd_release}-RELEASE/base.txz"
+
+if [[ ! -e "${sysroot}/lib/libc.so.7" ]]; then
+    mkdir -p "${sysroot}"
+    curl --fail --location --retry 3 "${base_archive_url}" |
+        tar -xJ -C "${sysroot}" ./lib ./usr/lib ./usr/include
+fi
+
+rustup target add "${target_triple}"
+
+sysroot="$(realpath "${sysroot}")"
+target_c_flags="--target=${target_triple}${freebsd_release} --sysroot=${sysroot}"
+
+export CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=clang
+export CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_RUSTFLAGS="-C link-arg=--target=${target_triple}${freebsd_release} -C link-arg=--sysroot=${sysroot} -C link-arg=-fuse-ld=lld"
+export CC_x86_64_unknown_freebsd=clang
+export CXX_x86_64_unknown_freebsd=clang++
+export AR_x86_64_unknown_freebsd=llvm-ar
+export CFLAGS_x86_64_unknown_freebsd="${target_c_flags}"
+export CXXFLAGS_x86_64_unknown_freebsd="${target_c_flags}"
+export BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_freebsd="${target_c_flags}"
+
+cargo build --release --package remote_server --target "${target_triple}"
+
+binary="${target_dir}/${target_triple}/release/remote_server"
+
+if llvm-readelf --needed-libs "${binary}" | grep -q 'libcrypto\|libssl'; then
+    echo "remote_server depends on libssl or libcrypto" >&2
+    exit 1
+fi
+
+# The linked libc must satisfy every version the binary asks for, or a 13.2
+# host refuses to load it.
+needed_versions=$(llvm-readelf -V "${binary}")
+needed_versions=$(grep -o 'FBSD_[0-9.]*' <<< "${needed_versions}" | sort -u)
+provided_versions=$(llvm-readelf -V "${sysroot}/lib/libc.so.7")
+provided_versions=$(grep -o 'FBSD_[0-9.]*' <<< "${provided_versions}" | sort -u)
+unsatisfied=$(comm -23 <(printf '%s\n' "${needed_versions}") <(printf '%s\n' "${provided_versions}"))
+if [[ -n "${unsatisfied}" ]]; then
+    echo "remote_server needs libc versions ${unsatisfied} that FreeBSD ${freebsd_release} does not provide" >&2
+    exit 1
+fi
+
+gzip -f --stdout --best "${binary}" > "${target_dir}/zed-remote-server-freebsd-x86_64.gz"
+echo "${target_dir}/zed-remote-server-freebsd-x86_64.gz"
