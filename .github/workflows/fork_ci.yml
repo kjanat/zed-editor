@@ -16,12 +16,10 @@ on:
 permissions: { contents: read }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
 env:
-  CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Keep debug test builds inside the runner's disk. Without this a debug
-  # build of these crates plus dependencies overflows ubuntu-latest.
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
 
 jobs:
   style:
@@ -40,10 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { shared-key: fork-ci-clippy, cache-on-failure: true }
-      - name: Install build dependencies
-        run: ./script/linux
+      - parallel:
+          - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+            with: { shared-key: fork-ci-clippy, cache-on-failure: true }
+          - name: Install build dependencies
+            run: ./script/linux
       - name: clippy
         run: ./script/clippy
       - name: Show disk usage
