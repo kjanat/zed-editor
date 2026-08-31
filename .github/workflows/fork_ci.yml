@@ -58,13 +58,14 @@ jobs:
         with: { persist-credentials: false }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { shared-key: fork-ci-tests, cache-on-failure: true }
-      - name: Install build dependencies
-        run: ./script/linux
-      # Upstream's tests assume nextest's process-per-test isolation; under
-      # plain cargo test they share process globals and flake.
-      - name: Install nextest
-        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
-        with: { tool: nextest }
+      - parallel:
+          - name: Install build dependencies
+            run: ./script/linux
+          # Upstream's tests assume nextest's process-per-test isolation; under
+          # plain cargo test they share process globals and flake.
+          - name: Install nextest
+            uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+            with: { tool: nextest }
       - name: Build the test archive
         run: >
           cargo nextest archive
@@ -95,17 +96,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - name: Install build dependencies
-        run: ./script/linux
-      - name: Install nextest
-        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
-        with: { tool: nextest }
-      # The gpui_wgpu tests request a Vulkan adapter and the runner has no GPU.
-      - name: Install a software Vulkan driver
-        run: sudo apt-get install -y mesa-vulkan-drivers
-      - name: Download the test archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with: { name: nextest-archive }
+      - parallel:
+          # The gpui_wgpu tests request a Vulkan adapter and the runner has no GPU.
+          - name: Install build dependencies and a software Vulkan driver
+            run: |
+              ./script/linux
+              sudo apt-get install -y mesa-vulkan-drivers
+          - name: Install nextest
+            uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+            with: { tool: nextest }
+          - name: Download the test archive
+            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+            with: { name: nextest-archive }
       - name: Run the workspace tests (shard ${{ matrix.shard }} of 8)
         run: >
           cargo nextest run
