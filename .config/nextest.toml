@@ -25,8 +25,14 @@ filter       = "test(test_rainbow_bracket_highlights) or test(test_wrapped_invis
 slow-timeout = { period = "300s", terminate-after = 1 }
 
 [[profile.default.overrides]]
-filter       = "test(no_forbidden_dependencies_between_feature_crates) or test(test_peers_following_each_other) or test(bench_task_reports_long_task_without_window) or test(test_random_worktree_changes)"
+filter       = "test(no_forbidden_dependencies_between_feature_crates) or test(test_peers_following_each_other) or test(bench_task_reports_long_task_without_window) or test(test_random_worktree_changes) or test(test_random_multibuffer)"
 slow-timeout = { period = "300s", terminate-after = 1 }
+
+# The test shells out to cargo for a wasm build, which starves when the other
+# test threads keep the cores busy.
+[[profile.default.overrides]]
+filter           = "package(extension_host) and test(test_extension_store_with_test_extension)"
+threads-required = "num-cpus"
 
 [[profile.default.overrides]]
 filter       = "package(extension_host) and test(test_extension_store_with_test_extension)"
