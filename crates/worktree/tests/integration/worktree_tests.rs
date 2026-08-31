@@ -3762,6 +3762,83 @@ async fn test_single_file_worktree_sees_a_second_replacement_written_by_rename(
 }
 
 #[gpui::test]
+async fn test_single_file_worktree_survives_its_directory_being_recreated(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    init_test(cx);
+
+    let fs = Arc::new(RealFs::new(None, cx.executor()));
+    let temp_root = TempTree::new(json!({
+        "dir": {
+            "file.txt": "one",
+        },
+    }));
+    let dir_path = temp_root.path().join("dir");
+    let file_path = dir_path.join("file.txt");
+
+    let tree = Worktree::local(
+        file_path.as_path(),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+
+    let root_inode = |cx: &mut TestAppContext| {
+        tree.read_with(cx, |tree, _| {
+            tree.entry_for_path(rel_path("")).map(|entry| entry.inode)
+        })
+    };
+
+    // Deleting the directory takes the file with it, and the deletion of each watched
+    // inode is the last event either watch can deliver. Recovery has to go through the
+    // rearm poller, whose first tick is a poll interval away, so the waits here are
+    // sized in seconds rather than scheduler turns.
+    let await_inode_besides = async |cx: &mut TestAppContext, previous: Option<u64>| {
+        for _ in 0..300 {
+            cx.executor().run_until_parked();
+            let inode = root_inode(cx);
+            if inode.is_some() && inode != previous {
+                return inode;
+            }
+            cx.executor()
+                .timer(std::time::Duration::from_millis(50))
+                .await;
+        }
+        previous
+    };
+
+    let original = root_inode(cx);
+    assert!(original.is_some());
+
+    std::fs::remove_dir_all(&dir_path).unwrap();
+    std::fs::create_dir(&dir_path).unwrap();
+    std::fs::write(&file_path, "two").unwrap();
+
+    let recreated = await_inode_besides(cx, original).await;
+    assert_ne!(
+        recreated, original,
+        "the worktree never saw the file that replaced the deleted directory"
+    );
+
+    let replacement = dir_path.join("replacement");
+    std::fs::write(&replacement, "three").unwrap();
+    std::fs::rename(&replacement, &file_path).unwrap();
+
+    let replaced = await_inode_besides(cx, recreated).await;
+    assert_ne!(
+        replaced, recreated,
+        "the recovered worktree does not see an atomic save any more"
+    );
+}
+
+#[gpui::test]
 async fn test_private_single_file_worktree(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
