@@ -2332,6 +2332,9 @@ fn restore_serialized_buffer_contents(
     // the next edit will mark the buffer as dirty/conflicted.
     if mtime.is_some() {
         buffer.did_reload(buffer.version(), buffer.line_ending(), mtime, cx);
+        if buffer.file().and_then(|file| file.disk_state().mtime()) != mtime {
+            buffer.set_conflict();
+        }
     }
     buffer.set_text(contents, cx);
     if let Some(entry) = buffer.peek_undo_stack() {
