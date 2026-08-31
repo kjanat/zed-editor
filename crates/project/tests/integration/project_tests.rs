@@ -2491,6 +2491,9 @@ async fn test_reporting_fs_changes_to_language_servers(cx: &mut gpui::TestAppCon
         &[
             Path::new(path!("/the-root")),
             Path::new(path!("/the-registry/dep1/src/dep1.rs")),
+            // The dependency is opened on its own, so its worktree also watches the
+            // containing directory to survive the file being replaced by rename.
+            Path::new(path!("/the-registry/dep1/src")),
             Path::new(path!("/the/stdlib/src"))
         ]
     );

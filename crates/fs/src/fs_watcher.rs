@@ -6,7 +6,10 @@ use std::{
     fs,
     ops::DerefMut,
     path::Path,
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{
+        Arc, LazyLock, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use util::{ResultExt, paths::SanitizedPath};
@@ -26,6 +29,7 @@ pub struct FsWatcher {
     pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
     registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
     pending_registrations: Arc<Mutex<HashMap<Arc<std::path::Path>, Task<()>>>>,
+    dropped: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +50,7 @@ impl FsWatcher {
             pending_path_events,
             registrations: Default::default(),
             pending_registrations: Default::default(),
+            dropped: Default::default(),
         }
     }
 
@@ -61,6 +66,10 @@ impl FsWatcher {
             case_insensitive,
             self.tx.clone(),
             self.pending_path_events.clone(),
+            self.executor.clone(),
+            self.registrations.clone(),
+            self.pending_registrations.clone(),
+            self.dropped.clone(),
         )? {
             Some(registration) => {
                 self.registrations.lock().insert(key, registration);
@@ -89,6 +98,7 @@ impl FsWatcher {
             self.pending_path_events.clone(),
             self.registrations.clone(),
             self.pending_registrations.clone(),
+            self.dropped.clone(),
         ));
         pending_registrations.insert(path, task);
     }
@@ -96,6 +106,7 @@ impl FsWatcher {
 
 impl Drop for FsWatcher {
     fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
         self.pending_registrations.lock().clear();
 
         let mut registrations = HashMap::new();
@@ -141,6 +152,10 @@ impl Watcher for FsWatcher {
         self.add_existing_path(path)
     }
 
+    fn file_watch_follows_inode(&self, path: &Path) -> bool {
+        file_watch_follows_inode(path)
+    }
+
     fn remove(&self, path: &std::path::Path) -> anyhow::Result<()> {
         log::trace!("remove watched path: {path:?}");
         self.pending_registrations.lock().remove(path);
@@ -179,6 +194,17 @@ fn path_covered_by_recursive_registration(
     })
 }
 
+/// Whether a watch on this file would track the inode behind its path.
+///
+/// Linux inotify drops its own watch once the last link to the watched inode goes away,
+/// which is what renaming a replacement over the path does. The macOS and Windows
+/// backends match events by path instead, and a poll watch compares metadata by path, so
+/// neither loses the file. Both of those also register recursively, per `watch` above,
+/// which makes watching a parent directory there expensive as well as pointless.
+fn file_watch_follows_inode(path: &Path) -> bool {
+    !cfg!(any(target_os = "windows", target_os = "macos")) && !requires_poll_watcher(path)
+}
+
 /// Detect whether a path requires polling instead of native file watching.
 ///
 /// Returns `true` for filesystem types where inotify/FSEvents/ReadDirectoryChanges
@@ -215,6 +241,10 @@ fn register_existing_path(
     case_insensitive: bool,
     tx: async_channel::Sender<()>,
     pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
+    executor: BackgroundExecutor,
+    registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
+    pending_registrations: Arc<Mutex<HashMap<Arc<Path>, Task<()>>>>,
+    dropped: Arc<AtomicBool>,
 ) -> anyhow::Result<Option<FsWatcherRegistration>> {
     let mode = if requires_poll_watcher(path.as_ref()) {
         log::info!(
@@ -228,6 +258,17 @@ fn register_existing_path(
         WatcherMode::Native
     };
     let root_path = SanitizedPath::new_arc(path.as_ref());
+    let rearm = file_watch_follows_inode(path.as_ref()).then(|| WatchRearm {
+        key: WatchKey::for_registration(&root_path, case_insensitive),
+        path: path.clone(),
+        root_path: root_path.clone(),
+        executor,
+        tx: tx.clone(),
+        pending_path_events: pending_path_events.clone(),
+        registrations,
+        pending_registrations,
+        dropped,
+    });
     let path_for_callback = path.clone();
     let Some(registration_id) = global_watcher().add(
         path,
@@ -243,6 +284,11 @@ fn register_existing_path(
                 path_for_callback.as_ref(),
                 event,
             );
+            if let Some(rearm) = &rearm
+                && rearm.watch_dropped(event)
+            {
+                rearm.rearm();
+            }
         },
     )?
     else {
@@ -252,6 +298,70 @@ fn register_existing_path(
         id: registration_id,
         mode,
     }))
+}
+
+/// Re-establishes an inode-following watch whose backing OS watch has died.
+///
+/// inotify removes a watch by itself when the last link to the watched inode goes away,
+/// reporting one final `Remove` for the watched path. The registration bookkeeping still
+/// holds the path after that, so without repair a later `add` is deduplicated against a
+/// watch that no longer exists, and a path that is recreated is never watched again.
+struct WatchRearm {
+    key: WatchKey,
+    path: Arc<Path>,
+    root_path: Arc<SanitizedPath>,
+    executor: BackgroundExecutor,
+    tx: async_channel::Sender<()>,
+    pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
+    registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
+    pending_registrations: Arc<Mutex<HashMap<Arc<Path>, Task<()>>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl WatchRearm {
+    fn watch_dropped(&self, event: &notify::Event) -> bool {
+        matches!(event.kind, EventKind::Remove(_))
+            && event
+                .paths
+                .iter()
+                .any(|event_path| *SanitizedPath::new(event_path) == *self.root_path)
+    }
+
+    fn rearm(&self) {
+        if self.dropped.load(Ordering::SeqCst) {
+            return;
+        }
+        let registration = self.registrations.lock().remove(&self.key);
+        let Some(registration) = registration else {
+            return;
+        };
+        global_watcher().remove(registration.id);
+
+        {
+            let mut pending_registrations = self.pending_registrations.lock();
+            if pending_registrations.contains_key(self.path.as_ref()) {
+                return;
+            }
+            let task = self.executor.spawn(poll_path_until_created(
+                self.executor.clone(),
+                self.path.clone(),
+                self.tx.clone(),
+                self.pending_path_events.clone(),
+                self.registrations.clone(),
+                self.pending_registrations.clone(),
+                self.dropped.clone(),
+            ));
+            pending_registrations.insert(self.path.clone(), task);
+        }
+
+        // The owning `FsWatcher` may have dropped between the check above and the
+        // insert, in which case its cleanup ran against maps this entry was not in
+        // yet. Removing the entry cancels the poller before it can register a
+        // watch nothing would ever remove.
+        if self.dropped.load(Ordering::SeqCst) {
+            self.pending_registrations.lock().remove(self.path.as_ref());
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -486,6 +596,7 @@ async fn poll_path_until_created(
     pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
     registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
     pending_registrations: Arc<Mutex<HashMap<Arc<Path>, Task<()>>>>,
+    dropped: Arc<AtomicBool>,
 ) {
     loop {
         executor.timer(poll_interval()).await;
@@ -513,6 +624,10 @@ async fn poll_path_until_created(
             case_insensitive,
             tx.clone(),
             pending_path_events.clone(),
+            executor.clone(),
+            registrations.clone(),
+            pending_registrations.clone(),
+            dropped.clone(),
         ) {
             Ok(Some(registration)) => {
                 {
