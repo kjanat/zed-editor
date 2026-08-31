@@ -5505,16 +5505,13 @@ impl LspStore {
         let buffer = buffer_entity.read(cx);
         let buffer_file = buffer.file().cloned();
         let buffer_id = buffer.remote_id();
-        let mut detached_servers = Vec::new();
+        let old_language = buffer.language().cloned();
         if let Some(local_store) = self.as_local_mut()
             && local_store.registered_buffers.contains_key(&buffer_id)
             && let Some(abs_path) =
                 File::from_dyn(buffer_file.as_ref()).map(|file| file.abs_path(cx))
             && let Some(file_url) = file_path_to_lsp_url(&abs_path).log_err()
         {
-            detached_servers = buffer_entity.update(cx, |buffer, cx| {
-                local_store.language_server_ids_for_buffer(buffer, cx)
-            });
             local_store.unregister_buffer_from_language_servers(buffer_entity, &file_url, cx);
         }
         buffer_entity.update(cx, |buffer, cx| {
@@ -5548,24 +5545,10 @@ impl LspStore {
 
         // A server the buffer detached from stays behind with whatever it published, and
         // publishes are applied by path with no regard for registration, so its diagnostics
-        // cannot be dropped while it runs. Once no buffer is opened in it, stopping it
-        // clears them everywhere through the stop path.
-        if let Some(local) = self.as_local_mut() {
-            let orphaned_servers = detached_servers
-                .into_iter()
-                .filter(|server_id| {
-                    !local
-                        .buffers_opened_in_servers
-                        .values()
-                        .any(|open_servers| open_servers.contains(server_id))
-                })
-                .collect::<BTreeSet<_>>();
-            if !orphaned_servers.is_empty() {
-                local.lsp_tree.remove_nodes(&orphaned_servers);
-                for server_id in orphaned_servers {
-                    self.stop_local_language_server(server_id, cx).detach();
-                }
-            }
+        // cannot be dropped while it runs. Rebuilding the server tree stops every server no
+        // registered buffer maps to any more, and the stop path clears them everywhere.
+        if old_language.is_some_and(|old_language| !Arc::ptr_eq(&old_language, &new_language)) {
+            self.refresh_server_tree(cx);
         }
 
         if settings.prettier.allowed
