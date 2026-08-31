@@ -1,8 +1,21 @@
 ---
 name: fork_release
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0}{1}{2}{3}{4}{5}{6}{7}', inputs.tag || 'untagged', inputs.linux && ' linux' || '', inputs.mac && ' mac' || '', inputs.windows && ' windows' || '', inputs.freebsd && ' freebsd' || '', inputs.bwrap && ' bwrap' || '', inputs.pacman && ' pacman' || '', !inputs.upload && ' (dry run)' || '') || '' }}
 on:
   push: { tags: ["v*"] }
-  workflow_dispatch: { inputs: { tag: { description: Tag to publish the release under, required: false, type: string } } }
+  workflow_dispatch:
+    inputs:
+      tag: { description: Tag to publish the release under, required: false, type: string }
+      linux: { description: Build the Linux bundles, type: boolean, default: true }
+      mac: { description: Build the macOS bundles, type: boolean, default: true }
+      windows: { description: Build the Windows bundles, type: boolean, default: true }
+      freebsd: { description: Build the FreeBSD remote server, type: boolean, default: true }
+      bwrap: { description: Build static bubblewrap, type: boolean, default: true }
+      pacman: { description: Build the pacman packages and repository, type: boolean, default: true }
+      upload:
+        description: Upload onto the tag's release; off tests only whether the builds work
+        type: boolean
+        default: true
 permissions: { contents: read }
 env: { CARGO_TERM_COLOR: always, CARGO_INCREMENTAL: 0, RUST_BACKTRACE: 1 }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
@@ -30,6 +43,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false, fetch-depth: 0 }
       - name: Create the draft release
+        if: github.event_name == 'push' || inputs.upload
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           if gh release view "${tag}" >/dev/null 2>&1; then exit 0; fi
@@ -72,7 +86,7 @@ jobs:
             "${prerelease[@]}"
 
   bundle_linux:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.linux)
     needs: create_draft_release
     strategy:
       fail-fast: false
@@ -112,6 +126,7 @@ jobs:
       - name: Bundle
         run: ./script/bundle-linux
       - name: Attest build provenance
+        if: github.event_name == 'push' || inputs.upload
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -121,6 +136,7 @@ jobs:
         if: always()
         run: df -h /
       - name: Upload to the draft release
+        if: github.event_name == 'push' || inputs.upload
         env:
           GH_TOKEN: ${{ github.token }}
           tag: ${{ needs.create_draft_release.outputs.tag }}
@@ -131,7 +147,7 @@ jobs:
             "target/zed-remote-server-linux-${arch}.gz#Zed remote server for Linux (${arch})"
 
   bundle_mac:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.mac)
     needs: create_draft_release
     strategy:
       fail-fast: false
@@ -158,6 +174,7 @@ jobs:
         env: { target: "${{ matrix.target }}" }
         run: ./script/bundle-mac "${target}"
       - name: Attest build provenance
+        if: github.event_name == 'push' || inputs.upload
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -167,6 +184,7 @@ jobs:
         if: always()
         run: df -h /
       - name: Upload to the draft release
+        if: github.event_name == 'push' || inputs.upload
         env:
           GH_TOKEN: ${{ github.token }}
           tag: ${{ needs.create_draft_release.outputs.tag }}
@@ -178,7 +196,7 @@ jobs:
             "target/zed-remote-server-macos-${arch}.gz#Zed remote server for macOS (${arch})"
 
   bundle_windows:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.windows)
     needs: create_draft_release
     strategy: { fail-fast: false, matrix: { arch: [x86_64, aarch64] } }
     runs-on: windows-2022
@@ -223,6 +241,7 @@ jobs:
         env: { arch: "${{ matrix.arch }}" }
         run: script/bundle-windows.ps1 -Architecture $env:arch
       - name: Attest build provenance
+        if: github.event_name == 'push' || inputs.upload
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -233,6 +252,7 @@ jobs:
         shell: pwsh
         run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
       - name: Upload to the draft release
+        if: github.event_name == 'push' || inputs.upload
         env:
           GH_TOKEN: ${{ github.token }}
           arch: ${{ matrix.arch }}
@@ -243,7 +263,7 @@ jobs:
             "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})"
 
   remote_server_freebsd:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.freebsd)
     needs: create_draft_release
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -288,10 +308,12 @@ jobs:
             fi
             gzip -f --stdout --best /root/target/release/remote_server > zed-remote-server-freebsd-x86_64.gz
       - name: Attest build provenance
+        if: github.event_name == 'push' || inputs.upload
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: zed-remote-server-freebsd-x86_64.gz
       - name: Upload to the draft release
+        if: github.event_name == 'push' || inputs.upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ needs.create_draft_release.outputs.tag }}
@@ -300,7 +322,7 @@ jobs:
             "zed-remote-server-freebsd-x86_64.gz#Zed remote server for FreeBSD (x86_64)"
 
   bwrap_linux:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.bwrap)
     needs: create_draft_release
     strategy:
       fail-fast: false
@@ -320,10 +342,12 @@ jobs:
           chmod 755 "bwrap-linux-${arch}"
           gzip -f --stdout --best "bwrap-linux-${arch}" > "bwrap-linux-${arch}.gz"
       - name: Attest build provenance
+        if: github.event_name == 'push' || inputs.upload
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: bwrap-linux-${{ matrix.arch }}.gz
       - name: Upload to the draft release
+        if: github.event_name == 'push' || inputs.upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ needs.create_draft_release.outputs.tag }}
@@ -333,7 +357,7 @@ jobs:
             "bwrap-linux-${arch}.gz#Static bubblewrap (${arch})"
 
   pacman_repo:
-    if: github.repository == 'kjanat/zed-editor' && startsWith(needs.create_draft_release.outputs.tag, 'v')
+    if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && startsWith(needs.create_draft_release.outputs.tag, 'v') && (github.event_name == 'push' || inputs.pacman) && (github.event_name == 'push' || inputs.upload)
     needs: [create_draft_release, bundle_linux]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -379,6 +403,7 @@ jobs:
             cp "${target}" "${link}"
           done
       - name: Attest build provenance
+        if: github.event_name == 'push' || inputs.upload
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -388,6 +413,7 @@ jobs:
             zed-kjanat-aarch64.db
             zed-kjanat-aarch64.files
       - name: Upload to the draft release
+        if: github.event_name == 'push' || inputs.upload
         run: |
           version="${tag#v}"
           gh release upload "${tag}" --clobber \
@@ -399,7 +425,7 @@ jobs:
             "zed-kjanat-aarch64.files#Pacman repo file list (aarch64)"
 
   publish:
-    if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled()
+    if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && (github.event_name == 'push' || (inputs.linux && inputs.mac && inputs.windows && inputs.freebsd && inputs.bwrap && inputs.pacman)) && (github.event_name == 'push' || inputs.upload)
     needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, remote_server_freebsd, bwrap_linux, pacman_repo]
     runs-on: ubuntu-latest
     timeout-minutes: 10
