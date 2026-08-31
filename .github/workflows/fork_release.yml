@@ -2,7 +2,14 @@
 name: fork_release
 on:
   push: { tags: ["v*"] }
-  workflow_dispatch: { inputs: { tag: { description: Tag to publish the release under, required: false, type: string } } }
+  workflow_dispatch:
+    inputs:
+      tag: { description: Tag to publish the release under, required: false, type: string }
+      only:
+        description: Which build to run, uploading onto the tag's release; everything also publishes
+        type: choice
+        default: everything
+        options: [everything, linux, mac, windows, freebsd, bwrap, pacman]
 permissions: { contents: read }
 env: { CARGO_TERM_COLOR: always, CARGO_INCREMENTAL: 0, RUST_BACKTRACE: 1 }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
@@ -72,7 +79,7 @@ jobs:
             "${prerelease[@]}"
 
   bundle_linux:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.only == 'everything' || inputs.only == 'linux')
     needs: create_draft_release
     strategy:
       fail-fast: false
@@ -131,7 +138,7 @@ jobs:
             "target/zed-remote-server-linux-${arch}.gz#Zed remote server for Linux (${arch})"
 
   bundle_mac:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.only == 'everything' || inputs.only == 'mac')
     needs: create_draft_release
     strategy:
       fail-fast: false
@@ -178,7 +185,7 @@ jobs:
             "target/zed-remote-server-macos-${arch}.gz#Zed remote server for macOS (${arch})"
 
   bundle_windows:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.only == 'everything' || inputs.only == 'windows')
     needs: create_draft_release
     strategy: { fail-fast: false, matrix: { arch: [x86_64, aarch64] } }
     runs-on: windows-2022
@@ -243,7 +250,7 @@ jobs:
             "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})"
 
   remote_server_freebsd:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.only == 'everything' || inputs.only == 'freebsd')
     needs: create_draft_release
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -300,7 +307,7 @@ jobs:
             "zed-remote-server-freebsd-x86_64.gz#Zed remote server for FreeBSD (x86_64)"
 
   bwrap_linux:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.only == 'everything' || inputs.only == 'bwrap')
     needs: create_draft_release
     strategy:
       fail-fast: false
@@ -333,7 +340,7 @@ jobs:
             "bwrap-linux-${arch}.gz#Static bubblewrap (${arch})"
 
   pacman_repo:
-    if: github.repository == 'kjanat/zed-editor' && startsWith(needs.create_draft_release.outputs.tag, 'v')
+    if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && startsWith(needs.create_draft_release.outputs.tag, 'v') && (github.event_name == 'push' || contains(fromJSON('["everything","linux","pacman"]'), inputs.only))
     needs: [create_draft_release, bundle_linux]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -399,7 +406,7 @@ jobs:
             "zed-kjanat-aarch64.files#Pacman repo file list (aarch64)"
 
   publish:
-    if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled()
+    if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && (github.event_name == 'push' || inputs.only == 'everything')
     needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, remote_server_freebsd, bwrap_linux, pacman_repo]
     runs-on: ubuntu-latest
     timeout-minutes: 10
