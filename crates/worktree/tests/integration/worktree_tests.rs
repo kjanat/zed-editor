@@ -24,6 +24,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
+    time::{Duration, SystemTime},
 };
 use util::{
     ResultExt, path,
@@ -1695,6 +1696,102 @@ async fn test_deferred_watch_reconciles_files_created_before_watch(cx: &mut Test
             tree.entry_for_path(rel_path("dir")).unwrap().mtime,
             Some(dir_mtime_on_disk)
         );
+    });
+}
+
+#[gpui::test]
+async fn test_periodic_reconcile_picks_up_lost_event(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    fs.pause_events();
+    fs.insert_file("/root/dir/lost.txt", Vec::new()).await;
+    fs.remove_file(Path::new("/root/dir/existing.txt"), Default::default())
+        .await
+        .unwrap();
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+    cx.executor().run_until_parked();
+
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("dir/lost.txt")).is_none());
+        assert!(tree.entry_for_path(rel_path("dir/existing.txt")).is_some());
+    });
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entries(false, 0)
+                .map(|entry| entry.path.as_ref())
+                .collect::<Vec<_>>(),
+            vec![rel_path(""), rel_path("dir"), rel_path("dir/lost.txt")]
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    fs.set_next_mtime(SystemTime::now());
+    fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    let dir_mtime = fs
+        .metadata(Path::new("/root/dir"))
+        .await
+        .unwrap()
+        .unwrap()
+        .mtime;
+    fs.pause_events();
+    fs.insert_file("/root/dir/same-tick.txt", Vec::new()).await;
+    fs.set_mtime("/root/dir", dir_mtime).unwrap();
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("dir/same-tick.txt")).is_some());
     });
 }
 
