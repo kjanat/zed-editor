@@ -310,8 +310,9 @@ struct BackgroundScannerState {
     watched_dir_abs_paths_by_entry_id: HashMap<ProjectEntryId, Arc<Path>>,
     path_prefixes_to_scan: HashSet<Arc<RelPath>>,
     paths_to_scan: HashSet<Arc<RelPath>>,
-    unsettled_directories: HashSet<Arc<RelPath>>,
+    unsettled_directories: HashMap<Arc<RelPath>, Instant>,
     reconcile_cursor: Option<Arc<RelPath>>,
+    hot_reconcile_cursor: Option<Arc<RelPath>>,
     removed_entries: RemovedEntries,
     changed_paths: Vec<Arc<RelPath>>,
     prev_snapshot: Snapshot,
@@ -1443,6 +1444,7 @@ impl LocalWorktree {
                         paths_to_scan: Default::default(),
                         unsettled_directories: Default::default(),
                         reconcile_cursor: None,
+                        hot_reconcile_cursor: None,
                         removed_entries: RemovedEntries::default(),
                         changed_paths: Default::default(),
                     }),
@@ -2196,6 +2198,11 @@ impl LocalWorktree {
     /// Directories the user is looking at, checked against disk on every reconcile tick.
     pub fn set_hot_directories(&self, entry_ids: impl IntoIterator<Item = ProjectEntryId>) {
         *self.hot_directories.lock() = entry_ids.into_iter().collect();
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn hot_directories(&self) -> HashSet<ProjectEntryId> {
+        self.hot_directories.lock().clone()
     }
 
     pub fn add_path_prefix_to_scan(&self, path_prefix: Arc<RelPath>) -> barrier::Receiver {
@@ -3398,6 +3405,17 @@ impl BackgroundScannerState {
         self.snapshot.check_invariants(false);
 
         entry
+    }
+
+    fn note_directory_mtime(&mut self, entry: &Entry, now: SystemTime, observed_at: Instant) {
+        if entry.is_dir()
+            && entry
+                .mtime
+                .is_some_and(|mtime| mtime.may_still_be_current(now, RECONCILE_MTIME_GRANULARITY))
+        {
+            self.unsettled_directories
+                .insert(entry.path.clone(), observed_at);
+        }
     }
 
     fn populate_dir(
@@ -4660,6 +4678,15 @@ impl BackgroundScanner {
 
         loop {
             select_biased! {
+                // A tick is bounded to one batch, and a busy event stream would
+                // otherwise keep the timer from ever being polled.
+                _ = reconcile_timer => {
+                    let tick_duration = self.reconcile_directories_tick().await;
+                    reconcile_timer = Either::Left(
+                        self.executor.timer(reconcile_interval_after(tick_duration)).fuse(),
+                    );
+                }
+
                 // Process any path refresh requests from the worktree. Prioritize
                 // these before handling changes reported by the filesystem.
                 request = self.next_scan_request().fuse() => {
@@ -4711,13 +4738,6 @@ impl BackgroundScanner {
                     if let Some(path) = &global_gitignore_file {
                         self.update_global_gitignore(&path).await;
                     }
-                }
-
-                _ = reconcile_timer => {
-                    let tick_duration = self.reconcile_directories_tick().await;
-                    reconcile_timer = Either::Left(
-                        self.executor.timer(reconcile_interval_after(tick_duration)).fuse(),
-                    );
                 }
             }
         }
@@ -5482,22 +5502,70 @@ impl BackgroundScanner {
         let directories = {
             let mut state = self.state.lock().await;
             let cursor = state.reconcile_cursor.take();
-            let unsettled_directories = &state.unsettled_directories;
+            let hot_cursor = state.hot_reconcile_cursor.take();
+            let now = self.executor.now();
+            let mut directories = Vec::with_capacity(RECONCILE_BATCH_SIZE);
+            let mut taken_paths = HashSet::default();
+
+            let snapshot = &state.snapshot;
+            let mut due_paths = state
+                .unsettled_directories
+                .iter()
+                .filter(|(_, observed_at)| {
+                    now.duration_since(**observed_at) >= RECONCILE_MTIME_GRANULARITY
+                })
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            due_paths.sort_unstable();
+            let mut gone_paths = Vec::new();
+            for path in due_paths {
+                if directories.len() == RECONCILE_BATCH_SIZE {
+                    break;
+                }
+                match snapshot.entry_for_path(&path) {
+                    Some(entry) if is_reconcilable_directory(entry) => {
+                        taken_paths.insert(entry.path.clone());
+                        directories.push(ReconcileTarget::new(snapshot, entry));
+                    }
+                    _ => gone_paths.push(path),
+                }
+            }
+            for path in gone_paths {
+                state.unsettled_directories.remove(&path);
+            }
+
             let snapshot = &state.snapshot;
             let hot_directories = self.hot_directories.lock();
-            let mut directories = hot_directories
+            let mut hot_entries = hot_directories
                 .iter()
                 .filter_map(|entry_id| snapshot.entry_for_id(*entry_id))
-                .filter(|entry| !unsettled_directories.contains(&entry.path))
-                .chain(
-                    unsettled_directories
-                        .iter()
-                        .filter_map(|path| snapshot.entry_for_path(path)),
-                )
                 .filter(|entry| is_reconcilable_directory(entry))
-                .map(|entry| ReconcileTarget::new(snapshot, entry))
                 .collect::<Vec<_>>();
+            hot_entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+            let hot_start = hot_cursor.as_ref().map_or(0, |hot_cursor| {
+                hot_entries.partition_point(|entry| entry.path <= *hot_cursor)
+            });
+            let mut hot_taken = 0;
+            for entry in hot_entries.iter().skip(hot_start) {
+                if directories.len() == RECONCILE_BATCH_SIZE {
+                    break;
+                }
+                hot_taken += 1;
+                if taken_paths.insert(entry.path.clone()) {
+                    directories.push(ReconcileTarget::new(snapshot, entry));
+                }
+            }
+            let hot_end = hot_start + hot_taken;
+            state.hot_reconcile_cursor = if hot_end >= hot_entries.len() {
+                None
+            } else if hot_taken == 0 {
+                hot_cursor
+            } else {
+                hot_entries.get(hot_end - 1).map(|entry| entry.path.clone())
+            };
 
+            let snapshot = &state.snapshot;
+            let unsettled_directories = &state.unsettled_directories;
             let mut traversal = match &cursor {
                 Some(cursor) => {
                     let mut traversal = snapshot.traverse_from_path(false, true, true, cursor);
@@ -5508,24 +5576,29 @@ impl BackgroundScanner {
                 }
                 None => snapshot.directories(true, 0),
             };
-            let mut batch = Vec::with_capacity(RECONCILE_BATCH_SIZE);
-            while batch.len() < RECONCILE_BATCH_SIZE
+            let mut cold_count = 0;
+            while directories.len() < RECONCILE_BATCH_SIZE
                 && let Some(entry) = traversal.entry()
             {
                 if is_reconcilable_directory(entry)
-                    && !unsettled_directories.contains(&entry.path)
+                    && !unsettled_directories.contains_key(&entry.path)
                     && !hot_directories.contains(&entry.id)
                 {
-                    batch.push(ReconcileTarget::new(snapshot, entry));
+                    directories.push(ReconcileTarget::new(snapshot, entry));
+                    cold_count += 1;
                 }
                 traversal.advance();
             }
+            let exhausted = traversal.entry().is_none();
             drop(traversal);
             drop(hot_directories);
-            if batch.len() == RECONCILE_BATCH_SIZE {
-                state.reconcile_cursor = batch.last().map(|target| target.path.clone());
+            if !exhausted {
+                state.reconcile_cursor = if cold_count == 0 {
+                    cursor
+                } else {
+                    directories.last().map(|target| target.path.clone())
+                };
             }
-            directories.extend(batch);
             directories
         };
 
@@ -5539,6 +5612,7 @@ impl BackgroundScanner {
         mut events: Vec<PathEvent>,
     ) {
         let now = SystemTime::now();
+        let observed_at = self.executor.now();
         for ReconcileTarget {
             path,
             abs_path,
@@ -5560,18 +5634,15 @@ impl BackgroundScanner {
                     continue;
                 }
             };
-            let racy = metadata
-                .mtime
-                .may_still_be_current(now, RECONCILE_MTIME_GRANULARITY);
             if Some(metadata.mtime) == mtime {
                 let mut state = self.state.lock().await;
-                let was_unsettled = state.unsettled_directories.contains(&path);
-                if racy {
-                    state.unsettled_directories.insert(path.clone());
-                }
-                if !was_unsettled {
+                let due = state.unsettled_directories.get(&path).is_some_and(|since| {
+                    observed_at.duration_since(*since) >= RECONCILE_MTIME_GRANULARITY
+                });
+                if !due {
                     continue;
                 }
+                state.unsettled_directories.remove(&path);
             }
 
             let Some(child_paths) = self.fs.read_dir(&abs_path).await.log_err() else {
@@ -5592,10 +5663,12 @@ impl BackgroundScanner {
                     .child_entries(&path)
                     .filter_map(|entry| entry.path.file_name().map(OsString::from))
                     .collect::<HashSet<_>>();
+                state.unsettled_directories.remove(&path);
                 if let Some(mut entry) = state.snapshot.entry_for_path(&path).cloned()
                     && entry.mtime != Some(metadata.mtime)
                 {
                     entry.mtime = Some(metadata.mtime);
+                    state.note_directory_mtime(&entry, now, observed_at);
                     state.snapshot.insert_entry(entry, self.fs.as_ref()).await;
                     util::extend_sorted(
                         &mut state.changed_paths,
@@ -5603,11 +5676,6 @@ impl BackgroundScanner {
                         usize::MAX,
                         Ord::cmp,
                     );
-                }
-                if racy {
-                    state.unsettled_directories.insert(path.clone());
-                } else {
-                    state.unsettled_directories.remove(&path);
                 }
                 names_in_snapshot
             };
@@ -5886,6 +5954,9 @@ impl BackgroundScanner {
         }
 
         state.populate_dir(job.path.clone(), new_entries, new_ignore);
+        if let Some(entry) = state.snapshot.entry_for_path(&job.path).cloned() {
+            state.note_directory_mtime(&entry, SystemTime::now(), self.executor.now());
+        }
         // For external entries the canonical path is stored in both
         // `external_canonical_to_relative` (for translating canonical-path FS
         // events back to worktree-relative paths) and
@@ -5969,6 +6040,8 @@ impl BackgroundScanner {
 
         let mut state = self.state.lock().await;
         let doing_recursive_update = scan_queue_tx.is_some();
+        let now = SystemTime::now();
+        let observed_at = self.executor.now();
 
         // Remove any entries for paths that no longer exist or are being recursively
         // refreshed. Do this before adding any new entries, so that renames can be
@@ -6039,6 +6112,7 @@ impl BackgroundScanner {
                     state
                         .insert_entry(fs_entry.clone(), self.fs.as_ref(), self.watcher.as_ref())
                         .await;
+                    state.note_directory_mtime(&fs_entry, now, observed_at);
 
                     if path.is_empty()
                         && let Some((ignores, exclude, repo)) = new_ancestor_repo.take()

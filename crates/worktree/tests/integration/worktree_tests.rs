@@ -1656,6 +1656,21 @@ async fn test_deferred_watch_reconciles_files_created_before_watch(cx: &mut Test
         .await;
     cx.executor().run_until_parked();
 
+    let tree_updates = Arc::new(Mutex::new(Vec::new()));
+    tree.update(cx, |_, cx| {
+        let tree_updates = tree_updates.clone();
+        cx.subscribe(&tree, move |_, _, event, _| {
+            if let Event::UpdatedEntries(update) = event {
+                tree_updates.lock().extend(
+                    update
+                        .iter()
+                        .map(|(path, _, change)| (path.clone(), *change)),
+                );
+            }
+        })
+        .detach();
+    });
+
     fs.create_file_before_next_watch_add("/root", "/root/dir/nested.txt");
     fs.create_file_before_next_watch_add("/root", "/root/top-level.txt");
     tree.update(cx, |tree, cx| {
@@ -1697,6 +1712,17 @@ async fn test_deferred_watch_reconciles_files_created_before_watch(cx: &mut Test
             Some(dir_mtime_on_disk)
         );
     });
+
+    let tree_updates = mem::take(&mut *tree_updates.lock());
+    let dir_update = tree_updates
+        .iter()
+        .find(|(path, _)| path.as_ref() == rel_path("dir"))
+        .map(|(_, change)| *change);
+    assert_eq!(
+        dir_update,
+        Some(PathChange::Updated),
+        "all updates: {tree_updates:?}"
+    );
 }
 
 #[gpui::test]
@@ -1807,11 +1833,69 @@ async fn test_periodic_reconcile_checks_hot_directories_first(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+async fn test_periodic_reconcile_rotates_through_hot_directories(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    let mut tree_json = serde_json::Map::new();
+    for index in 0..100 {
+        tree_json.insert(format!("d{index:03}"), json!({ "file.txt": "" }));
+    }
+    tree_json.insert("zzz".into(), json!({ "file.txt": "" }));
+    fs.insert_tree("/root", serde_json::Value::Object(tree_json))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    fs.pause_events();
+    fs.insert_file("/root/d000/lost.txt", Vec::new()).await;
+    fs.insert_file("/root/zzz/lost.txt", Vec::new()).await;
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+
+    tree.read_with(cx, |tree, _| {
+        let every_directory = tree
+            .entries(true, 0)
+            .filter(|entry| entry.is_dir())
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(every_directory.len(), 102);
+        tree.set_hot_directories(every_directory);
+    });
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("d000/lost.txt")).is_some());
+        assert!(tree.entry_for_path(rel_path("zzz/lost.txt")).is_none());
+    });
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("zzz/lost.txt")).is_some());
+    });
+}
+
+#[gpui::test]
 async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
     fs.set_non_recursive_watches();
-    fs.set_next_mtime(SystemTime::now());
     fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
         .await;
 
@@ -1831,12 +1915,22 @@ async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppConte
         .await;
     cx.executor().run_until_parked();
 
+    fs.set_next_mtime(SystemTime::now());
+    fs.touch_path("/root/dir").await;
+    tree.flush_fs_events(cx).await;
     let dir_mtime = fs
         .metadata(Path::new("/root/dir"))
         .await
         .unwrap()
         .unwrap()
         .mtime;
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entry_for_path(rel_path("dir")).unwrap().mtime,
+            Some(dir_mtime)
+        );
+    });
+
     fs.pause_events();
     fs.insert_file("/root/dir/same-tick.txt", Vec::new()).await;
     fs.set_mtime("/root/dir", dir_mtime).unwrap();
@@ -1845,10 +1939,68 @@ async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppConte
 
     cx.executor().advance_clock(Duration::from_secs(1));
     cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("dir/same-tick.txt")).is_none());
+    });
 
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.executor().run_until_parked();
     tree.read_with(cx, |tree, _| {
         assert!(tree.entry_for_path(rel_path("dir/same-tick.txt")).is_some());
     });
+}
+
+#[gpui::test]
+async fn test_periodic_reconcile_reports_a_relisted_directory_as_updated(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    let tree_updates = Arc::new(Mutex::new(Vec::new()));
+    tree.update(cx, |_, cx| {
+        let tree_updates = tree_updates.clone();
+        cx.subscribe(&tree, move |_, _, event, _| {
+            if let Event::UpdatedEntries(update) = event {
+                tree_updates.lock().extend(
+                    update
+                        .iter()
+                        .map(|(path, _, change)| (path.clone(), *change)),
+                );
+            }
+        })
+        .detach();
+    });
+
+    fs.pause_events();
+    fs.touch_path("/root/dir").await;
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        mem::take(&mut *tree_updates.lock()),
+        [(rel_path("dir").into_arc(), PathChange::Updated)]
+    );
 }
 
 #[gpui::test]
