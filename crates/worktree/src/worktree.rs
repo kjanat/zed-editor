@@ -57,7 +57,7 @@ use std::{
     cmp::Ordering,
     collections::hash_map,
     convert::TryFrom,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt,
     future::Future,
     io::Read,
@@ -4593,6 +4593,8 @@ impl BackgroundScanner {
             .await;
         }
 
+        self.reconcile_directories().await;
+
         // Continue processing events until the worktree is dropped.
         self.phase = BackgroundScannerPhase::Events;
 
@@ -5378,6 +5380,93 @@ impl BackgroundScanner {
                 barrier,
             })
             .is_ok()
+    }
+
+    async fn reconcile_directories(&self) {
+        let (directories, mut events) = {
+            let state = self.state.lock().await;
+            let directories = state
+                .snapshot
+                .entries(true, 0)
+                .filter(|entry| {
+                    entry.kind == EntryKind::Dir
+                        && entry.canonical_path.is_none()
+                        && !entry.is_external
+                })
+                .map(|entry| {
+                    (
+                        entry.path.clone(),
+                        state.snapshot.absolutize(&entry.path),
+                        entry.mtime,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let git_dir_events = if self.defer_watch {
+                state
+                    .snapshot
+                    .git_repositories
+                    .values()
+                    .map(|repository| PathEvent {
+                        path: repository.dot_git_abs_path.to_path_buf(),
+                        kind: Some(PathEventKind::Changed),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (directories, git_dir_events)
+        };
+
+        for (path, abs_path, mtime) in directories {
+            let metadata = match self.fs.metadata(&abs_path).await {
+                Ok(Some(metadata)) if metadata.is_dir => metadata,
+                Ok(_) => {
+                    events.push(PathEvent {
+                        path: abs_path,
+                        kind: Some(PathEventKind::Changed),
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    log::error!("error reconciling directory {abs_path:?}: {error:#}");
+                    continue;
+                }
+            };
+            if Some(metadata.mtime) == mtime {
+                continue;
+            }
+
+            let Some(child_paths) = self.fs.read_dir(&abs_path).await.log_err() else {
+                continue;
+            };
+            let names_on_disk = child_paths
+                .filter_map(|child_path| async {
+                    child_path
+                        .log_err()
+                        .and_then(|child_path| child_path.file_name().map(OsStr::to_os_string))
+                })
+                .collect::<HashSet<_>>()
+                .await;
+            let names_in_snapshot = self
+                .state
+                .lock()
+                .await
+                .snapshot
+                .child_entries(&path)
+                .filter_map(|entry| entry.path.file_name().map(OsString::from))
+                .collect::<HashSet<_>>();
+            for name in names_on_disk.symmetric_difference(&names_in_snapshot) {
+                log::debug!("reconciling {name:?} in {abs_path:?}");
+                events.push(PathEvent {
+                    path: abs_path.join(name),
+                    kind: Some(PathEventKind::Changed),
+                });
+            }
+        }
+
+        if !events.is_empty() {
+            self.process_events(events).await;
+        }
     }
 
     async fn scan_dir(&self, job: &ScanJob) -> Result<()> {
