@@ -72,14 +72,20 @@ jobs:
         if: always()
         run: df -h /
 
-  windows-fs:
+  platform-fs:
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { shared-key: fork-ci-windows-fs, cache-on-failure: true }
-      - name: Test Windows filesystem behavior
+        with: { shared-key: "fork-ci-${{ matrix.os }}-fs", cache-on-failure: true }
+      - name: Test platform filesystem behavior
         run: cargo test -p fs
+      - name: Lint platform filesystem behavior
+        run: cargo clippy -p fs --all-targets --all-features -- --deny warnings
