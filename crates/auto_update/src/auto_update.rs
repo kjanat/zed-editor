@@ -1103,7 +1103,8 @@ async fn download_release(
         .parent()
         .context("download target has no parent directory")?;
     let temp = tempfile::Builder::new().tempfile_in(parent)?;
-    let mut target_file = File::create(temp.path()).await?;
+    let (temp_file, temp_path) = temp.into_parts();
+    let mut target_file = File::from(temp_file);
 
     let mut response = client.get(&release.url, Default::default(), true).await?;
     anyhow::ensure!(
@@ -1147,10 +1148,7 @@ async fn download_release(
     target_file.flush().await?;
     target_file.sync_all().await?;
     drop(target_file);
-    smol::fs::rename(temp.path(), &target_path).await?;
-    // `persist` is not used here: the file has already been renamed away, and dropping the
-    // handle afterwards must not try to remove the destination.
-    temp.keep()?;
+    smol::fs::rename(&temp_path, &target_path).await?;
 
     if total_bytes.is_some() && last_reported_percent != Some(100) {
         on_progress(Some(1.0));
