@@ -1588,6 +1588,50 @@ async fn test_root_rescan_does_not_miss_event_before_readding_root_watcher(
 }
 
 #[gpui::test]
+async fn test_initial_scan_does_not_miss_files_created_before_subdir_watch(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
+        .await;
+    fs.create_file_before_next_watch_add("/root/dir", "/root/dir/one.d.ts");
+    fs.create_file_before_next_watch_add("/root/dir", "/root/dir/two.d.ts");
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entries(false, 0)
+                .map(|entry| entry.path.as_ref())
+                .collect::<Vec<_>>(),
+            vec![
+                rel_path(""),
+                rel_path("dir"),
+                rel_path("dir/existing.txt"),
+                rel_path("dir/one.d.ts"),
+                rel_path("dir/two.d.ts"),
+            ]
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_subtree_rescan_reports_unchanged_descendants_as_updated(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());

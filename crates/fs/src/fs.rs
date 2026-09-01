@@ -1417,7 +1417,10 @@ struct FakeFsState {
     next_inode: u64,
     next_mtime: SystemTime,
     git_event_tx: async_channel::Sender<PathBuf>,
-    event_txs: Vec<(PathBuf, async_channel::Sender<Vec<PathEvent>>)>,
+    event_txs: Vec<(
+        Arc<Mutex<Vec<PathBuf>>>,
+        async_channel::Sender<Vec<PathEvent>>,
+    )>,
     events_paused: bool,
     buffered_events: Vec<PathEvent>,
     metadata_call_count: usize,
@@ -1426,40 +1429,48 @@ struct FakeFsState {
     moves: std::collections::HashMap<u64, PathBuf>,
     job_event_subscribers: Arc<Mutex<Vec<JobEventSender>>>,
     trash: Mutex<SlotMap<TrashId, (TrashedEntry, FakeFsEntry)>>,
-    file_to_create_before_watch_add: Option<(PathBuf, PathBuf)>,
+    files_to_create_before_watch_add: Vec<(PathBuf, PathBuf)>,
     remove_dir_errors: std::collections::HashMap<PathBuf, String>,
     case_sensitive: bool,
+    recursive_watches: bool,
 }
 
 #[cfg(feature = "test-support")]
 impl FakeFsState {
-    fn create_file_before_watch_add(&mut self, watch_path: &Path) -> Result<()> {
-        let Some((pending_watch_path, file_path)) = self.file_to_create_before_watch_add.take()
-        else {
-            return Ok(());
-        };
-        if pending_watch_path != watch_path {
-            self.file_to_create_before_watch_add = Some((pending_watch_path, file_path));
-            return Ok(());
-        }
+    fn create_files_before_watch_add(&mut self, watch_path: &Path) -> Result<()> {
+        let (matching, remaining) = std::mem::take(&mut self.files_to_create_before_watch_add)
+            .into_iter()
+            .partition::<Vec<_>, _>(|(pending_watch_path, _)| pending_watch_path == watch_path);
+        self.files_to_create_before_watch_add = remaining;
 
-        let inode = self.get_and_increment_inode();
-        let mtime = self.get_and_increment_mtime();
-        self.write_path(&file_path, |entry| {
-            let btree_map::Entry::Vacant(entry) = entry else {
-                anyhow::bail!("file already exists: {}", file_path.display());
-            };
-            entry.insert(FakeFsEntry::File {
-                inode,
-                mtime,
-                len: 0,
-                content: Vec::new(),
-                git_dir_path: None,
-            });
-            Ok(())
-        })?;
-        self.emit_event([(file_path, Some(PathEventKind::Created))]);
+        for (_, file_path) in matching {
+            let inode = self.get_and_increment_inode();
+            let mtime = self.get_and_increment_mtime();
+            self.write_path(&file_path, |entry| {
+                let btree_map::Entry::Vacant(entry) = entry else {
+                    anyhow::bail!("file already exists: {}", file_path.display());
+                };
+                entry.insert(FakeFsEntry::File {
+                    inode,
+                    mtime,
+                    len: 0,
+                    content: Vec::new(),
+                    git_dir_path: None,
+                });
+                Ok(())
+            })?;
+            self.emit_event([(file_path, Some(PathEventKind::Created))]);
+        }
         Ok(())
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn fake_watch_covers(recursive: bool, watched_path: &Path, event_path: &Path) -> bool {
+    if recursive {
+        event_path.starts_with(watched_path)
+    } else {
+        event_path == watched_path || event_path.parent() == Some(watched_path)
     }
 }
 
@@ -1717,8 +1728,17 @@ impl FakeFsState {
     fn flush_events(&mut self, mut count: usize) {
         count = count.min(self.buffered_events.len());
         let events = self.buffered_events.drain(0..count).collect::<Vec<_>>();
-        self.event_txs.retain(|(_, tx)| {
-            let _ = tx.try_send(events.clone());
+        let recursive = self.recursive_watches;
+        self.event_txs.retain(|(watched_paths, tx)| {
+            let covered = events.iter().any(|event| {
+                watched_paths
+                    .lock()
+                    .iter()
+                    .any(|watched_path| fake_watch_covers(recursive, watched_path, &event.path))
+            });
+            if covered {
+                let _ = tx.try_send(events.clone());
+            }
             !tx.is_closed()
         });
     }
@@ -1760,9 +1780,10 @@ impl FakeFs {
                 moves: Default::default(),
                 job_event_subscribers: Arc::new(Mutex::new(Vec::new())),
                 trash: Mutex::new(SlotMap::with_key()),
-                file_to_create_before_watch_add: None,
+                files_to_create_before_watch_add: Vec::new(),
                 remove_dir_errors: Default::default(),
                 case_sensitive: true,
+                recursive_watches: true,
             })),
         });
 
@@ -1962,10 +1983,16 @@ impl FakeFs {
         watch_path: impl AsRef<Path>,
         path: impl AsRef<Path>,
     ) {
-        self.state.lock().file_to_create_before_watch_add = Some((
+        self.state.lock().files_to_create_before_watch_add.push((
             normalize_path(watch_path.as_ref()),
             normalize_path(path.as_ref()),
         ));
+    }
+
+    /// Deliver events only for a watched path itself and its direct children,
+    /// matching inotify on Linux.
+    pub fn set_non_recursive_watches(&self) {
+        self.state.lock().recursive_watches = false;
     }
 
     pub fn flush_events(&self, count: usize) {
@@ -2650,7 +2677,8 @@ impl FakeFs {
         state
             .event_txs
             .iter()
-            .filter_map(|(path, tx)| (!tx.is_closed()).then_some(path.clone()))
+            .filter(|(_, tx)| !tx.is_closed())
+            .flat_map(|(watched_paths, _)| watched_paths.lock().clone())
             .collect()
     }
 
@@ -2804,31 +2832,26 @@ impl FakeFsEntry {
 
 #[cfg(feature = "test-support")]
 struct FakeWatcher {
-    tx: async_channel::Sender<Vec<PathEvent>>,
     fs_state: Arc<Mutex<FakeFsState>>,
-    prefixes: Mutex<Vec<PathBuf>>,
+    prefixes: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 #[cfg(feature = "test-support")]
 impl Watcher for FakeWatcher {
     fn add(&self, path: &Path) -> Result<()> {
         let path = normalize_path(path);
-        self.fs_state
-            .try_lock()
-            .unwrap()
-            .create_file_before_watch_add(&path)?;
+        let mut fs_state = self.fs_state.try_lock().unwrap();
+        fs_state.create_files_before_watch_add(&path)?;
 
         let mut prefixes = self.prefixes.lock();
-        if prefixes.iter().any(|prefix| path.starts_with(prefix)) {
-            return Ok(());
+        let already_watched = if fs_state.recursive_watches {
+            prefixes.iter().any(|prefix| path.starts_with(prefix))
+        } else {
+            prefixes.iter().any(|prefix| prefix == &path)
+        };
+        if !already_watched {
+            prefixes.push(path);
         }
-
-        self.fs_state
-            .try_lock()
-            .unwrap()
-            .event_txs
-            .push((path.clone(), self.tx.clone()));
-        prefixes.push(path);
         Ok(())
     }
 
@@ -2839,11 +2862,6 @@ impl Watcher for FakeWatcher {
     fn remove(&self, path: &Path) -> Result<()> {
         let path = normalize_path(path);
         self.prefixes.lock().retain(|prefix| prefix != &path);
-        self.fs_state
-            .try_lock()
-            .unwrap()
-            .event_txs
-            .retain(|(watched_path, _)| watched_path != &path);
         Ok(())
     }
 }
@@ -3327,30 +3345,19 @@ impl Fs for FakeFs {
     ) {
         self.simulate_random_delay().await;
         let (tx, rx) = async_channel::unbounded();
-        let path = path.to_path_buf();
-        self.state.lock().event_txs.push((path.clone(), tx.clone()));
+        let prefixes = Arc::new(Mutex::new(vec![path.to_path_buf()]));
+        self.state.lock().event_txs.push((prefixes.clone(), tx));
         let executor = self.executor.clone();
         let watcher = Arc::new(FakeWatcher {
-            tx,
             fs_state: self.state.clone(),
-            prefixes: Mutex::new(vec![path]),
+            prefixes,
         });
         (
-            Box::pin(futures::StreamExt::filter(rx, {
-                let watcher = watcher.clone();
-                move |events| {
-                    let result = events.iter().any(|evt_path| {
-                        watcher
-                            .prefixes
-                            .lock()
-                            .iter()
-                            .any(|prefix| evt_path.path.starts_with(prefix))
-                    });
-                    let executor = executor.clone();
-                    async move {
-                        executor.simulate_random_delay().await;
-                        result
-                    }
+            Box::pin(futures::StreamExt::then(rx, move |events| {
+                let executor = executor.clone();
+                async move {
+                    executor.simulate_random_delay().await;
+                    events
                 }
             })),
             watcher,
