@@ -5400,10 +5400,33 @@ impl BackgroundScanner {
         let mut root_canonical_path = None;
         let mut new_entries: Vec<Entry> = Vec::new();
         let mut new_jobs: Vec<Option<ScanJob>> = Vec::new();
-        let mut child_paths = self
-            .fs
-            .read_dir(&job.abs_path)
-            .await?
+
+        // inotify reports nothing for a file created before its directory watch exists.
+        let watched_abs_path: Option<Arc<Path>> = if job.is_external {
+            self.fs
+                .canonicalize(job.abs_path.as_ref())
+                .await
+                .ok()
+                .map(|canonical| {
+                    let canonical: Arc<Path> = canonical.into();
+                    self.watcher.add(&canonical).log_err();
+                    canonical
+                })
+        } else {
+            self.watcher.add(job.abs_path.as_ref()).log_err();
+            Some(job.abs_path.clone())
+        };
+
+        let child_paths = match self.fs.read_dir(&job.abs_path).await {
+            Ok(child_paths) => child_paths,
+            Err(error) => {
+                if let Some(watched_abs_path) = &watched_abs_path {
+                    self.watcher.remove(watched_abs_path).log_err();
+                }
+                return Err(error);
+            }
+        };
+        let mut child_paths = child_paths
             .filter_map(|entry| async {
                 match entry {
                     Ok(entry) => Some(entry),
@@ -5616,33 +5639,12 @@ impl BackgroundScanner {
         }
 
         state.populate_dir(job.path.clone(), new_entries, new_ignore);
-        // For external entries, watch the canonical (resolved) path so OS-level
-        // FS events on the real filesystem location are observed. The same
-        // canonical path is stored in both `external_canonical_to_relative`
-        // (for translating canonical-path FS events back to worktree-relative
-        // paths) and `watched_dir_abs_paths_by_entry_id` (used by `remove_path`
-        // to know which abs path to unwatch), so both cleanup paths agree on
-        // the path the watcher was actually registered on.
-        //
-        // `canonicalize` is an async filesystem operation that may suspend, so
-        // the lock must not be held across the await point below.
-        drop(state);
-        let watched_abs_path: Option<Arc<Path>> = if job.is_external {
-            self.fs
-                .canonicalize(job.abs_path.as_ref())
-                .await
-                .ok()
-                .map(|canonical| {
-                    let canonical: Arc<Path> = canonical.into();
-                    self.watcher.add(&canonical).log_err();
-                    canonical
-                })
-        } else {
-            self.watcher.add(job.abs_path.as_ref()).log_err();
-            Some(job.abs_path.clone())
-        };
-
-        let mut state = self.state.lock().await;
+        // For external entries the canonical path is stored in both
+        // `external_canonical_to_relative` (for translating canonical-path FS
+        // events back to worktree-relative paths) and
+        // `watched_dir_abs_paths_by_entry_id` (used by `remove_path` to know
+        // which abs path to unwatch), so both cleanup paths agree on the path
+        // the watcher was actually registered on.
         if let Some(watched_abs_path) = &watched_abs_path {
             if job.is_external {
                 state
