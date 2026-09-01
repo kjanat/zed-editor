@@ -99,6 +99,7 @@ impl FsWatcher {
             self.registrations.clone(),
             self.pending_registrations.clone(),
             self.dropped.clone(),
+            PathEventKind::Created,
         ));
         pending_registrations.insert(path, task);
     }
@@ -205,6 +206,12 @@ fn file_watch_follows_inode(path: &Path) -> bool {
     !cfg!(any(target_os = "windows", target_os = "macos")) && !requires_poll_watcher(path)
 }
 
+/// Whether removing the watched path can invalidate the native OS registration while leaving our
+/// registration bookkeeping populated.
+fn watch_needs_rearm(path: &Path, mode: WatcherMode) -> bool {
+    mode == WatcherMode::Native && (cfg!(target_os = "windows") || file_watch_follows_inode(path))
+}
+
 /// Detect whether a path requires polling instead of native file watching.
 ///
 /// Returns `true` for filesystem types where inotify/FSEvents/ReadDirectoryChanges
@@ -258,7 +265,7 @@ fn register_existing_path(
         WatcherMode::Native
     };
     let root_path = SanitizedPath::new_arc(path.as_ref());
-    let rearm = file_watch_follows_inode(path.as_ref()).then(|| WatchRearm {
+    let rearm = watch_needs_rearm(path.as_ref(), mode).then(|| WatchRearm {
         key: WatchKey::for_registration(&root_path, case_insensitive),
         path: path.clone(),
         root_path: root_path.clone(),
@@ -300,12 +307,12 @@ fn register_existing_path(
     }))
 }
 
-/// Re-establishes an inode-following watch whose backing OS watch has died.
+/// Re-establishes a native watch whose backing OS watch has died.
 ///
-/// inotify removes a watch by itself when the last link to the watched inode goes away,
-/// reporting one final `Remove` for the watched path. The registration bookkeeping still
-/// holds the path after that, so without repair a later `add` is deduplicated against a
-/// watch that no longer exists, and a path that is recreated is never watched again.
+/// inotify removes a watch when the watched inode disappears. Windows watches files through
+/// their parent directory, whose removal invalidates `ReadDirectoryChangesW`. Both report one
+/// final `Remove`, but our registration bookkeeping still holds the path. Without repair, a
+/// later `add` is deduplicated against a watch that no longer exists.
 struct WatchRearm {
     key: WatchKey,
     path: Arc<Path>,
@@ -350,6 +357,7 @@ impl WatchRearm {
                 self.registrations.clone(),
                 self.pending_registrations.clone(),
                 self.dropped.clone(),
+                PathEventKind::Rescan,
             ));
             pending_registrations.insert(self.path.clone(), task);
         }
@@ -597,15 +605,15 @@ async fn poll_path_until_created(
     registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
     pending_registrations: Arc<Mutex<HashMap<Arc<Path>, Task<()>>>>,
     dropped: Arc<AtomicBool>,
+    registered_path_event_kind: PathEventKind,
 ) {
     loop {
-        executor.timer(poll_interval()).await;
-
         if !pending_registrations.lock().contains_key(path.as_ref()) {
             return;
         }
 
         if smol::fs::symlink_metadata(path.as_ref()).await.is_err() {
+            executor.timer(poll_interval()).await;
             continue;
         }
 
@@ -641,16 +649,10 @@ async fn poll_path_until_created(
                 enqueue_path_events(
                     &tx,
                     &pending_path_events,
-                    vec![
-                        PathEvent {
-                            path: path.to_path_buf(),
-                            kind: Some(PathEventKind::Created),
-                        },
-                        PathEvent {
-                            path: path.to_path_buf(),
-                            kind: Some(PathEventKind::Rescan),
-                        },
-                    ],
+                    vec![PathEvent {
+                        path: path.to_path_buf(),
+                        kind: Some(registered_path_event_kind),
+                    }],
                 );
                 return;
             }
@@ -1410,8 +1412,6 @@ mod tests {
         let key = WatchKey::for_registration(SanitizedPath::new(&path), case_insensitive);
         assert!(watcher.registrations.lock().contains_key(&key));
 
-        // poll_path_until_created also enqueues a Rescan for the same path, but
-        // enqueue_path_events -> util::extend_sorted dedups by path, so only Created survives.
         assert_eq!(
             pending_path_events.lock().clone(),
             vec![PathEvent {

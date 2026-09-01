@@ -474,6 +474,309 @@ async fn test_realfs_save_replaces_contents(executor: BackgroundExecutor) {
     assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "Fresh");
 }
 
+#[test]
+fn test_durable_save_writer_failure_preserves_destination() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| {
+            file.write_all(b"partial")?;
+            Err(std::io::Error::other("injected writer failure"))
+        },
+        |_| Ok(()),
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+}
+
+#[test]
+fn test_durable_save_sync_failure_preserves_destination() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"new"),
+        |phase| {
+            if phase == DurableSavePhase::SyncContents {
+                anyhow::bail!("injected sync failure");
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+}
+
+#[test]
+fn test_durable_save_publish_failure_preserves_destination() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"new"),
+        |phase| {
+            if phase == DurableSavePhase::Publish {
+                anyhow::bail!("injected publish failure");
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+}
+
+#[test]
+fn test_durable_save_metadata_application_failure_preserves_destination() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"new"),
+        |phase| {
+            if phase == DurableSavePhase::ApplyMetadata {
+                anyhow::bail!("injected metadata application failure");
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+}
+
+#[test]
+fn test_durable_save_metadata_preparation_failure_does_not_write() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+    let writes = std::cell::Cell::new(0);
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| {
+            writes.set(writes.get() + 1);
+            file.write_all(b"new")
+        },
+        |phase| {
+            if phase == DurableSavePhase::PreserveMetadata {
+                anyhow::bail!("injected metadata failure");
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(writes.get(), 0);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_durable_save_unreadable_metadata_does_not_truncate() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
+    let writes = std::cell::Cell::new(0);
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| {
+            writes.set(writes.get() + 1);
+            file.write_all(b"partial")
+        },
+        |_| Ok(()),
+    );
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(result.is_err());
+    assert_eq!(writes.get(), 0);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
+}
+
+#[test]
+fn test_durable_save_new_file_does_not_clobber_concurrent_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::Publish {
+                std::fs::write(&path, "other")?;
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "other");
+}
+
+#[test]
+fn test_durable_save_does_not_replace_changed_destination() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::Publish {
+                std::fs::remove_file(&path)?;
+                std::fs::write(&path, "other")?;
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "other");
+}
+
+#[test]
+#[cfg(any(unix, windows))]
+fn test_durable_save_does_not_detach_new_hard_link() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    let hard_link = temp_dir.path().join("hard-link.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::Publish {
+                std::fs::hard_link(&path, &hard_link)?;
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
+    assert_eq!(std::fs::read_to_string(hard_link).unwrap(), "old");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_durable_save_in_place_does_not_follow_swapped_symlink() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    let hard_link = temp_dir.path().join("hard-link.txt");
+    let victim = temp_dir.path().join("victim.txt");
+    std::fs::write(&path, "old").unwrap();
+    std::fs::hard_link(&path, &hard_link).unwrap();
+    std::fs::write(&victim, "safe").unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::WriteContents {
+                std::fs::remove_file(&path)?;
+                std::os::unix::fs::symlink(&victim, &path)?;
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(victim).unwrap(), "safe");
+    assert_eq!(std::fs::read_to_string(hard_link).unwrap(), "old");
+}
+
+#[gpui::test]
+async fn test_realfs_save_creates_nested_parent_directories(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("one/two/file.txt");
+
+    gpui::block_on(fs.save(&path, &"new".into(), LineEnding::Unix)).unwrap();
+
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "new");
+}
+
+#[gpui::test]
+#[cfg(unix)]
+async fn test_realfs_save_new_file_uses_normal_creation_mode(executor: BackgroundExecutor) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let reference_path = temp_dir.path().join("reference.txt");
+    let saved_path = temp_dir.path().join("saved.txt");
+    std::fs::File::create(&reference_path).unwrap();
+
+    gpui::block_on(fs.save(&saved_path, &"new".into(), LineEnding::Unix)).unwrap();
+
+    let reference_mode = std::fs::metadata(reference_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    let saved_mode = std::fs::metadata(saved_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(saved_mode, reference_mode);
+}
+
+#[gpui::test]
+async fn test_realfs_save_bytes_replaces_contents(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    #[cfg(unix)]
+    let inode_before = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&path).unwrap().ino()
+    };
+
+    gpui::block_on(fs.save_bytes(&path, &[0xff, 0x00, 0xfe])).unwrap();
+
+    assert_eq!(std::fs::read(&path).unwrap(), [0xff, 0x00, 0xfe]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode_before);
+    }
+}
+
+#[gpui::test]
+#[cfg(any(unix, windows))]
+async fn test_realfs_save_bytes_preserves_hard_links(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    let link = temp_dir.path().join("link.txt");
+    std::fs::write(&path, "old").unwrap();
+    std::fs::hard_link(&path, &link).unwrap();
+
+    gpui::block_on(fs.save_bytes(&path, &[0xff, 0x00, 0xfe])).unwrap();
+
+    assert_eq!(std::fs::read(&path).unwrap(), [0xff, 0x00, 0xfe]);
+    assert_eq!(std::fs::read(&link).unwrap(), [0xff, 0x00, 0xfe]);
+}
+
 /// Replacing a file by renaming a temporary one over it would otherwise hand the destination
 /// the temp file's 0600 mode.
 #[gpui::test]
@@ -492,6 +795,100 @@ async fn test_realfs_save_preserves_permissions(executor: BackgroundExecutor) {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     let mode = std::fs::metadata(&path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o755);
+}
+
+#[gpui::test]
+async fn test_realfs_save_updates_modification_time(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+    let old_time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(old_time))
+        .unwrap();
+
+    gpui::block_on(fs.save(&path, &"new".into(), LineEnding::Unix)).unwrap();
+
+    assert!(std::fs::metadata(path).unwrap().modified().unwrap() > old_time);
+}
+
+#[gpui::test]
+#[cfg(windows)]
+async fn test_realfs_save_removes_windows_backup(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    gpui::block_on(fs.save(&path, &"new".into(), LineEnding::Unix)).unwrap();
+
+    let backup_exists = std::fs::read_dir(temp_dir.path()).unwrap().any(|entry| {
+        entry.is_ok_and(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".zed-save-backup-")
+        })
+    });
+    assert!(!backup_exists);
+}
+
+#[gpui::test]
+#[cfg(target_os = "linux")]
+async fn test_realfs_save_preserves_extended_attributes(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    let attribute = c"user.zed-test";
+    std::fs::write(&path, "old").unwrap();
+    rustix::fs::setxattr(&path, attribute, b"kept", rustix::fs::XattrFlags::empty()).unwrap();
+
+    gpui::block_on(fs.save(&path, &"new".into(), LineEnding::Unix)).unwrap();
+
+    let mut value = [0; 16];
+    let length = rustix::fs::getxattr(&path, attribute, &mut value).unwrap();
+    assert_eq!(&value[..length], b"kept");
+}
+
+#[gpui::test]
+#[cfg(target_os = "linux")]
+async fn test_realfs_save_removes_inherited_acl_absent_from_destination(
+    executor: BackgroundExecutor,
+) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    let mut default_acl = 2_u32.to_le_bytes().to_vec();
+    for (tag, permissions, identifier) in [
+        (0x01_u16, 0x07_u16, u32::MAX),
+        (0x02, 0x04, 65_534),
+        (0x04, 0x00, u32::MAX),
+        (0x10, 0x04, u32::MAX),
+        (0x20, 0x00, u32::MAX),
+    ] {
+        default_acl.extend_from_slice(&tag.to_le_bytes());
+        default_acl.extend_from_slice(&permissions.to_le_bytes());
+        default_acl.extend_from_slice(&identifier.to_le_bytes());
+    }
+    rustix::fs::setxattr(
+        temp_dir.path(),
+        c"system.posix_acl_default",
+        &default_acl,
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+
+    gpui::block_on(fs.save(&path, &"new".into(), LineEnding::Unix)).unwrap();
+
+    let mut value = Vec::<u8>::new();
+    let error = rustix::fs::getxattr(&path, c"system.posix_acl_access", &mut value).unwrap_err();
+    assert_eq!(error.raw_os_error(), libc::ENODATA);
 }
 
 /// A rename would detach the destination from its other links, so a linked file has to be
@@ -544,6 +941,49 @@ async fn test_realfs_save_writes_through_symlink(executor: BackgroundExecutor) {
     // Unlike a hard link, a symlink does not force the write in place: the target is replaced
     // by a rename, and the link keeps pointing at the path that now holds the new file.
     assert_ne!(std::fs::metadata(&target).unwrap().ino(), inode_before);
+}
+
+#[gpui::test]
+#[cfg(unix)]
+async fn test_realfs_save_writes_through_dangling_symlink(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let target = temp_dir.path().join("missing/target.txt");
+    let link = temp_dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    gpui::block_on(fs.save(&link, &"new".into(), LineEnding::Unix)).unwrap();
+
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "new");
+    assert!(
+        std::fs::symlink_metadata(link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_durable_save_dangling_symlink_does_not_clobber_concurrent_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let target = temp_dir.path().join("target.txt");
+    let link = temp_dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let result = save_durably_with_checkpoint_for_test(
+        &link,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::Publish {
+                std::fs::write(&target, "other")?;
+            }
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "other");
 }
 
 #[gpui::test]

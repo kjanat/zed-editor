@@ -139,6 +139,7 @@ pub trait Fs: Send + Sync {
     async fn load_bytes(&self, path: &Path) -> Result<Vec<u8>>;
     async fn atomic_write(&self, path: PathBuf, text: String) -> Result<()>;
     async fn save(&self, path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()>;
+    async fn save_bytes(&self, path: &Path, content: &[u8]) -> Result<()>;
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()>;
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
     async fn is_file(&self, path: &Path) -> bool;
@@ -959,26 +960,19 @@ impl Fs for RealFs {
     #[cfg(target_os = "windows")]
     async fn atomic_write(&self, path: PathBuf, data: String) -> Result<()> {
         smol::unblock(move || {
-            // If temp dir is set to a different drive than the destination,
-            // we receive error:
-            //
-            // failed to persist temporary file:
-            // The system cannot move the file to a different disk drive. (os error 17)
-            //
-            // This is because `ReplaceFileW` does not support cross volume moves.
-            // See the remark section: "The backup file, replaced file, and replacement file must all reside on the same volume."
-            // https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew#remarks
-            //
-            // So we use the directory of the destination as a temp dir to avoid it.
-            // https://github.com/zed-industries/zed/issues/16571
-            let temp_dir = TempDir::new_in(path.parent().unwrap_or(paths::temp_dir()))?;
-            let temp_file = {
-                let temp_file_path = temp_dir.path().join("temp_file");
-                let mut file = std::fs::File::create_new(&temp_file_path)?;
-                file.write_all(data.as_bytes())?;
-                temp_file_path
+            let destination_exists = match std::fs::symlink_metadata(&path) {
+                Ok(_) => true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error.into()),
             };
-            atomic_replace(path.as_path(), temp_file.as_path())?;
+            let mut temp_file = create_save_temp_file(&path, !destination_exists)?;
+            temp_file.write_all(data.as_bytes())?;
+            temp_file.as_file().sync_all()?;
+            if destination_exists {
+                publish_replacement(&path, temp_file)?;
+            } else {
+                publish_new_file(&path, temp_file)?;
+            }
             anyhow::Ok(())
         })
         .await?;
@@ -986,14 +980,16 @@ impl Fs for RealFs {
     }
 
     async fn save(&self, path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            self.create_dir(parent)
-                .await
-                .with_context(|| format!("Failed to create directory at {:?}", parent))?;
-        }
         let path = path.to_path_buf();
         let text = text.clone();
-        smol::unblock(move || save_durably(&path, &text, line_ending)).await
+        smol::unblock(move || save_durably(&path, |file| write_rope(file, &text, line_ending)))
+            .await
+    }
+
+    async fn save_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
+        let path = path.to_path_buf();
+        let content = content.to_owned();
+        smol::unblock(move || save_durably(&path, |file| file.write_all(&content))).await
     }
 
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
@@ -3196,6 +3192,16 @@ impl Fs for FakeFs {
         Ok(())
     }
 
+    async fn save_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
+        self.simulate_random_delay().await;
+        let path = normalize_path(path);
+        if let Some(path) = path.parent() {
+            self.create_dir(path).await?;
+        }
+        self.write_file_internal(path, content.to_vec(), false)?;
+        Ok(())
+    }
+
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
         self.simulate_random_delay().await;
         let path = normalize_path(path);
@@ -3564,7 +3570,7 @@ async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
     .await
 }
 
-/// Writes `text` to `path` so that neither a crash nor power loss can leave the destination
+/// Writes contents to `path` so that neither a crash nor power loss can leave the destination
 /// truncated, half-written, or holding contents Zed already reported as saved.
 ///
 /// `File::create` publishes an empty file before the new contents exist anywhere on disk, and
@@ -3574,56 +3580,1243 @@ async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
 /// file, syncing it, and renaming it over the destination keeps a complete version of the file
 /// visible at every instant.
 ///
-/// The rename is only used where it does not change what the destination *is*. A path that does
-/// not exist yet, a non-regular file (FIFO, device), a file with other hard links, and a file
-/// whose ownership we cannot reproduce are all written in place instead, since renaming would
-/// respectively apply the temp file's restrictive mode, replace a special file with a regular
-/// one, break the link, or silently change the owner. A symlink is not among them: it is
-/// resolved first and its target replaced, which leaves the link itself intact.
+/// The destination is classified before the writer runs. New files are published without
+/// clobbering a concurrent create. Existing regular files are replaced only when their metadata
+/// can be preserved; metadata preparation errors stop the save before writing. Any later staging,
+/// writing, syncing, or publication error leaves the old destination untouched. Symlinks are
+/// resolved first so their targets are replaced without removing the links themselves.
 ///
 /// Writing in place keeps the truncate window this function exists to close, and that is the
-/// cost of the guarantee those destinations need instead - a hard link that survives the save
-/// cannot also be replaced by a different file. The in-place writes are still synced, so they
-/// keep the second guarantee: a save that reports success has reached the disk. Only a file
-/// with other hard links, one whose ownership we cannot reproduce, and a symlink we could not
-/// resolve are exposed; a path that does not exist yet has no previous contents to lose.
-fn save_durably(path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()> {
-    let path = resolve_final_symlink(path);
+/// cost of preserving destinations such as hard-linked and non-regular files. Those writes are
+/// still synced, so a save that reports success has reached the disk.
+fn save_durably(
+    path: &Path,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> Result<()> {
+    save_durably_with_checkpoint(path, write_contents, |_| Ok(()))
+}
 
-    let replaceable = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata.is_file() && hard_link_count(&metadata) <= 1,
-        Err(_) => false,
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum DurableSavePhase {
+    ClassifyDestination,
+    CreateParents,
+    Stage,
+    PreserveMetadata,
+    WriteContents,
+    ApplyMetadata,
+    SyncContents,
+    Publish,
+    SyncParent,
+}
+
+#[cfg(not(feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DurableSavePhase {
+    ClassifyDestination,
+    CreateParents,
+    Stage,
+    PreserveMetadata,
+    WriteContents,
+    ApplyMetadata,
+    SyncContents,
+    Publish,
+    SyncParent,
+}
+
+#[derive(Debug)]
+enum SaveDestination {
+    New(PathBuf),
+    Replaceable {
+        path: PathBuf,
+        source: std::fs::File,
+        identity: FileIdentity,
+    },
+    MustWriteInPlace {
+        path: PathBuf,
+        reason: InPlaceReason,
+        identity: FileIdentity,
+        regular_file: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InPlaceReason {
+    HardLinks,
+    NonRegularFile,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    volume_serial_number: u32,
+    file_index: u64,
+}
+
+#[cfg(not(any(unix, windows)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity;
+
+enum ReplacementMetadata {
+    #[cfg(target_os = "linux")]
+    Linux {
+        mode: u32,
+        extended_attributes: Vec<(std::ffi::CString, Vec<u8>)>,
+        extended_attributes_to_remove: Vec<std::ffi::CString>,
+        file_flags: libc::c_long,
+    },
+    #[cfg(target_os = "macos")]
+    MacOs,
+    #[cfg(target_os = "freebsd")]
+    FreeBsd(freebsd_metadata::MetadataSnapshot),
+    #[cfg(windows)]
+    Windows,
+}
+
+fn save_durably_with_checkpoint(
+    path: &Path,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+    mut checkpoint: impl FnMut(DurableSavePhase) -> Result<()>,
+) -> Result<()> {
+    checkpoint(DurableSavePhase::ClassifyDestination)?;
+    let destination = classify_save_destination(path)?;
+    let destination_path = match &destination {
+        SaveDestination::New(path)
+        | SaveDestination::Replaceable { path, .. }
+        | SaveDestination::MustWriteInPlace { path, .. } => path,
     };
-    if replaceable && let Some(parent) = path.parent() {
-        match save_via_rename(&path, parent, text, line_ending) {
-            Ok(()) => return Ok(()),
-            // Nothing has touched the destination yet, so falling back is never worse than
-            // writing in place would have been to begin with.
-            Err(error) => log::warn!(
-                "failed to replace {path:?} via a temporary file ({error:#}), writing in place"
-            ),
+    checkpoint(DurableSavePhase::CreateParents)?;
+    let created_directories = create_parent_directories(destination_path)?;
+
+    match destination {
+        SaveDestination::New(path) => {
+            save_new_file(&path, write_contents, &created_directories, &mut checkpoint)
+        }
+        SaveDestination::Replaceable {
+            path,
+            source,
+            identity,
+        } => save_replaceable_file(
+            &path,
+            source,
+            identity,
+            write_contents,
+            &created_directories,
+            &mut checkpoint,
+        ),
+        SaveDestination::MustWriteInPlace {
+            path,
+            reason,
+            identity,
+            regular_file,
+        } => {
+            log::debug!("saving {path:?} in place because {reason:?}");
+            checkpoint(DurableSavePhase::WriteContents)?;
+            save_in_place(&path, identity, regular_file, write_contents)
+                .with_context(|| format!("Failed to write file at {path:?}"))
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn save_durably_with_checkpoint_for_test(
+    path: &Path,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+    checkpoint: impl FnMut(DurableSavePhase) -> Result<()>,
+) -> Result<()> {
+    save_durably_with_checkpoint(path, write_contents, checkpoint)
+}
+
+fn classify_save_destination(path: &Path) -> Result<SaveDestination> {
+    classify_save_destination_inner(path, 0)
+}
+
+fn classify_save_destination_inner(path: &Path, symlink_depth: usize) -> Result<SaveDestination> {
+    anyhow::ensure!(
+        symlink_depth < 40,
+        "too many symlinks while resolving {path:?}"
+    );
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(SaveDestination::New(path.to_path_buf()));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {path:?} before saving"));
+        }
+    };
+
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(path)
+            .with_context(|| format!("failed to resolve symlink {path:?} before saving"))?;
+        let target = if target.is_absolute() {
+            target
+        } else {
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                .join(target)
+        };
+        return classify_save_destination_inner(&target, symlink_depth + 1);
+    }
+
+    let identity = file_identity_for_path(path, &metadata)?;
+
+    if !metadata.is_file() {
+        return Ok(SaveDestination::MustWriteInPlace {
+            path: path.to_path_buf(),
+            reason: InPlaceReason::NonRegularFile,
+            identity,
+            regular_file: false,
+        });
+    }
+
+    match hard_link_count(path, &metadata) {
+        Ok(link_count) if link_count > 1 => {
+            return Ok(SaveDestination::MustWriteInPlace {
+                path: path.to_path_buf(),
+                reason: InPlaceReason::HardLinks,
+                identity,
+                regular_file: true,
+            });
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect hard-link count for {path:?}"));
+        }
+        _ => {}
+    }
+
+    if !replacement_preserves_metadata() {
+        anyhow::bail!("metadata-preserving replacement is unavailable for {path:?}");
+    }
+
+    let source = std::fs::File::open(path)
+        .with_context(|| format!("failed to open {path:?} for metadata preservation"))?;
+    anyhow::ensure!(
+        file_identity_for_file(&source)? == identity,
+        "destination changed while classifying {path:?}"
+    );
+    Ok(SaveDestination::Replaceable {
+        path: path.to_path_buf(),
+        source,
+        identity,
+    })
+}
+
+fn replacement_preserves_metadata() -> bool {
+    cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "windows"
+    ))
+}
+
+#[cfg(unix)]
+fn file_identity_for_path(_path: &Path, metadata: &std::fs::Metadata) -> Result<FileIdentity> {
+    Ok(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(unix)]
+fn file_identity_for_file(file: &std::fs::File) -> Result<FileIdentity> {
+    file_identity_for_path(Path::new(""), &file.metadata()?)
+}
+
+#[cfg(windows)]
+fn file_identity_for_path(path: &Path, metadata: &std::fs::Metadata) -> Result<FileIdentity> {
+    anyhow::ensure!(
+        !metadata.file_type().is_symlink(),
+        "destination changed to a symlink while saving {path:?}"
+    );
+    file_identity_for_file(&std::fs::File::open(path)?)
+}
+
+#[cfg(windows)]
+fn file_identity_for_file(file: &std::fs::File) -> Result<FileIdentity> {
+    Ok(windows_file_information(file)?.identity)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity_for_path(_path: &Path, _metadata: &std::fs::Metadata) -> Result<FileIdentity> {
+    Ok(FileIdentity)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity_for_file(_file: &std::fs::File) -> Result<FileIdentity> {
+    Ok(FileIdentity)
+}
+
+fn ensure_path_identity(path: &Path, expected: FileIdentity) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to verify destination {path:?}"))?;
+    anyhow::ensure!(
+        file_identity_for_path(path, &metadata)? == expected,
+        "destination changed while saving {path:?}"
+    );
+    Ok(())
+}
+
+fn save_new_file(
+    path: &Path,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+    created_directories: &[PathBuf],
+    checkpoint: &mut impl FnMut(DurableSavePhase) -> Result<()>,
+) -> Result<()> {
+    checkpoint(DurableSavePhase::Stage)?;
+    let mut temp_file = create_save_temp_file(path, true)?;
+
+    checkpoint(DurableSavePhase::WriteContents)?;
+    write_contents(temp_file.as_file_mut())
+        .with_context(|| format!("failed to write temporary file for {path:?}"))?;
+
+    checkpoint(DurableSavePhase::SyncContents)?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync temporary file for {path:?}"))?;
+
+    checkpoint(DurableSavePhase::Publish)?;
+    publish_new_file(path, temp_file)?;
+
+    checkpoint(DurableSavePhase::SyncParent)?;
+    sync_parent_directories(path, created_directories)
+}
+
+fn save_replaceable_file(
+    path: &Path,
+    source: std::fs::File,
+    identity: FileIdentity,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+    created_directories: &[PathBuf],
+    checkpoint: &mut impl FnMut(DurableSavePhase) -> Result<()>,
+) -> Result<()> {
+    checkpoint(DurableSavePhase::Stage)?;
+    let mut temp_file = create_save_temp_file(path, false)?;
+
+    let replacement_metadata = checkpoint(DurableSavePhase::PreserveMetadata)
+        .and_then(|()| prepare_replacement_metadata(path, &source, &temp_file))
+        .with_context(|| {
+            format!("failed to prepare metadata-preserving replacement for {path:?}")
+        })?;
+    checkpoint(DurableSavePhase::WriteContents)?;
+    write_contents(temp_file.as_file_mut())
+        .with_context(|| format!("failed to write temporary file for {path:?}"))?;
+
+    checkpoint(DurableSavePhase::ApplyMetadata)?;
+    apply_replacement_metadata(path, &temp_file, replacement_metadata)?;
+
+    checkpoint(DurableSavePhase::SyncContents)?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync temporary file for {path:?}"))?;
+
+    checkpoint(DurableSavePhase::Publish)?;
+    ensure_path_identity(path, identity)?;
+    anyhow::ensure!(
+        hard_link_count_for_file(&source)? == 1,
+        "destination gained a hard link while saving {path:?}"
+    );
+    publish_replacement(path, temp_file)?;
+
+    checkpoint(DurableSavePhase::SyncParent)?;
+    sync_parent_directories(path, created_directories)
+}
+
+fn save_in_place(
+    path: &Path,
+    identity: FileIdentity,
+    regular_file: bool,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    anyhow::ensure!(
+        file_identity_for_file(&file)? == identity,
+        "destination changed before writing {path:?}"
+    );
+    if regular_file {
+        file.set_len(0)?;
+    }
+    write_contents(&mut file)?;
+    file.sync_all()?;
+    ensure_path_identity(path, identity)?;
+    Ok(())
+}
+
+fn create_save_temp_file(path: &Path, new_file: bool) -> Result<tempfile::NamedTempFile> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".zed-save-");
+    #[cfg(unix)]
+    if new_file {
+        use std::os::unix::fs::PermissionsExt as _;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    #[cfg(not(unix))]
+    let _ = new_file;
+
+    builder
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create temporary file for {path:?}"))
+}
+
+fn create_parent_directories(path: &Path) -> Result<Vec<PathBuf>> {
+    let Some(parent) = path.parent() else {
+        return Ok(Vec::new());
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let mut missing_directories = Vec::new();
+    let mut candidate = parent;
+
+    loop {
+        match std::fs::symlink_metadata(candidate) {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing_directories.push(candidate.to_path_buf());
+                let Some(next_candidate) = candidate.parent() else {
+                    break;
+                };
+                candidate = if next_candidate.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    next_candidate
+                };
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect parent directory {candidate:?}"));
+            }
         }
     }
 
-    save_in_place(&path, text, line_ending)
-        .with_context(|| format!("Failed to write file at {:?}", path))
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create parent directory {parent:?}"))?;
+    Ok(missing_directories)
 }
 
-fn save_via_rename(path: &Path, parent: &Path, text: &Rope, line_ending: LineEnding) -> Result<()> {
-    let mut temp_file = tempfile::NamedTempFile::new_in(parent)?;
-    write_rope(temp_file.as_file_mut(), text, line_ending)?;
-    copy_permissions_from_destination(path, &temp_file)?;
-    temp_file.as_file().sync_all()?;
-    temp_file.persist(path)?;
-    fsync_parent_dir(path)?;
+#[cfg(unix)]
+fn sync_parent_directories(path: &Path, created_directories: &[PathBuf]) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    sync_directory(parent)?;
+
+    if let Some(oldest_created) = created_directories.last() {
+        for directory in created_directories.iter().skip(1) {
+            sync_directory(directory)?;
+        }
+        let existing_parent = oldest_created
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        sync_directory(existing_parent)?;
+    }
+
     Ok(())
 }
 
-fn save_in_place(path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()> {
-    let mut file = std::fs::File::create(path)?;
-    write_rope(&mut file, text, line_ending)?;
-    file.sync_all()?;
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<()> {
+    std::fs::File::open(path)
+        .with_context(|| format!("failed to open directory {path:?} for syncing"))?
+        .sync_all()
+        .with_context(|| format!("failed to sync directory {path:?}"))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directories(_path: &Path, _created_directories: &[PathBuf]) -> Result<()> {
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_replacement_metadata(
+    path: &Path,
+    source: &std::fs::File,
+    temp_file: &tempfile::NamedTempFile,
+) -> Result<ReplacementMetadata> {
+    use std::os::{fd::AsRawFd as _, unix::fs::MetadataExt as _};
+
+    const USER_MODIFIABLE_FLAGS: libc::c_long = 0x0003_80ff;
+    const NO_COPY_ON_WRITE_FLAG: libc::c_long = 0x0080_0000;
+    const VERITY_FLAG: libc::c_long = 0x0010_0000;
+    const DAX_FLAG: libc::c_long = 0x0200_0000;
+    const WRITE_RESTRICTING_FLAGS: libc::c_long = 0x10 | 0x20 | VERITY_FLAG | DAX_FLAG;
+
+    let source_metadata = source
+        .metadata()
+        .with_context(|| format!("failed to inspect metadata for {path:?}"))?;
+    let temp_metadata = temp_file
+        .as_file()
+        .metadata()
+        .with_context(|| format!("failed to inspect temporary file for {path:?}"))?;
+
+    if source_metadata.uid() != temp_metadata.uid() || source_metadata.gid() != temp_metadata.gid()
+    {
+        let result = unsafe {
+            libc::fchown(
+                temp_file.as_file().as_raw_fd(),
+                source_metadata.uid(),
+                source_metadata.gid(),
+            )
+        };
+        if result == -1 {
+            return Err(io::Error::last_os_error())
+                .with_context(|| format!("failed to preserve ownership for {path:?}"));
+        }
+    }
+
+    let mut source_flags = 0;
+    let result =
+        unsafe { libc::ioctl(source.as_raw_fd(), libc::FS_IOC_GETFLAGS, &mut source_flags) };
+    if result == -1 {
+        let error = io::Error::last_os_error();
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENOTTY | libc::EOPNOTSUPP | libc::ENOSYS)
+        ) {
+            return Err(error)
+                .with_context(|| format!("failed to inspect file flags for {path:?}"));
+        }
+        source_flags = 0;
+    }
+    anyhow::ensure!(
+        source_flags & WRITE_RESTRICTING_FLAGS == 0,
+        "file has flags that require writing in place"
+    );
+    let file_flags = source_flags & (USER_MODIFIABLE_FLAGS | NO_COPY_ON_WRITE_FLAG);
+    if file_flags & NO_COPY_ON_WRITE_FLAG != 0 {
+        let mut temporary_flags = NO_COPY_ON_WRITE_FLAG;
+        let result = unsafe {
+            libc::ioctl(
+                temp_file.as_file().as_raw_fd(),
+                libc::FS_IOC_SETFLAGS,
+                &mut temporary_flags,
+            )
+        };
+        if result == -1 {
+            return Err(io::Error::last_os_error())
+                .with_context(|| format!("failed to preserve copy-on-write policy for {path:?}"));
+        }
+    }
+
+    let source_names = list_linux_extended_attributes(source)
+        .with_context(|| format!("failed to list extended attributes for {path:?}"))?;
+    let temporary_names = list_linux_extended_attributes(temp_file.as_file())
+        .with_context(|| format!("failed to list temporary extended attributes for {path:?}"))?;
+    let extended_attributes_to_remove = temporary_names
+        .into_iter()
+        .filter(|temporary_name| {
+            !source_names
+                .iter()
+                .any(|source_name| source_name == temporary_name)
+        })
+        .collect();
+    let mut extended_attributes = Vec::new();
+    for name in source_names {
+        let value = read_linux_extended_attribute(source, &name)
+            .with_context(|| format!("failed to read extended attribute {name:?} from {path:?}"))?;
+        match read_linux_extended_attribute(temp_file.as_file(), &name) {
+            Ok(temporary_value) if temporary_value == value => continue,
+            Ok(_) => {}
+            Err(error) if error.raw_os_error() == libc::ENODATA => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect temporary extended attribute {name:?} for {path:?}")
+                });
+            }
+        }
+        extended_attributes.push((name, value));
+    }
+
+    Ok(ReplacementMetadata::Linux {
+        mode: source_metadata.mode(),
+        extended_attributes,
+        extended_attributes_to_remove,
+        file_flags,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn list_linux_extended_attributes(file: &std::fs::File) -> Result<Vec<std::ffi::CString>> {
+    let mut names = Vec::new();
+    let names_length = match rustix::fs::flistxattr(file, &mut names) {
+        Ok(length) => length,
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                libc::ENOTTY | libc::EOPNOTSUPP | libc::ENOSYS
+            ) =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if names_length == 0 {
+        return Ok(Vec::new());
+    }
+
+    names.resize(names_length, 0);
+    let names_length = rustix::fs::flistxattr(file, &mut names)?;
+    names.truncate(names_length);
+    names
+        .split_inclusive(|byte| *byte == 0)
+        .filter(|name| *name != [0])
+        .map(|name| {
+            let name = name
+                .strip_suffix(&[0])
+                .context("extended attribute name lacked a terminator")?;
+            Ok(std::ffi::CString::new(name)?)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_extended_attribute(
+    file: &std::fs::File,
+    name: &std::ffi::CStr,
+) -> rustix::io::Result<Vec<u8>> {
+    let mut value = Vec::new();
+    let value_length = rustix::fs::fgetxattr(file, name, &mut value)?;
+    value.resize(value_length, 0);
+    let value_length = rustix::fs::fgetxattr(file, name, &mut value)?;
+    value.truncate(value_length);
+    Ok(value)
+}
+
+#[cfg(target_os = "linux")]
+fn apply_replacement_metadata(
+    path: &Path,
+    temp_file: &tempfile::NamedTempFile,
+    metadata: ReplacementMetadata,
+) -> Result<()> {
+    use std::os::{fd::AsRawFd as _, unix::fs::PermissionsExt as _};
+
+    let ReplacementMetadata::Linux {
+        mode,
+        extended_attributes,
+        extended_attributes_to_remove,
+        mut file_flags,
+    } = metadata;
+
+    for name in extended_attributes_to_remove {
+        rustix::fs::fremovexattr(temp_file.as_file(), &name).with_context(|| {
+            format!("failed to remove inherited extended attribute {name:?} for {path:?}")
+        })?;
+    }
+    temp_file
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("failed to preserve permissions for {path:?}"))?;
+    for (name, value) in extended_attributes {
+        rustix::fs::fsetxattr(
+            temp_file.as_file(),
+            &name,
+            &value,
+            rustix::fs::XattrFlags::empty(),
+        )
+        .with_context(|| format!("failed to preserve extended attribute {name:?} for {path:?}"))?;
+    }
+
+    if file_flags != 0 {
+        let result = unsafe {
+            libc::ioctl(
+                temp_file.as_file().as_raw_fd(),
+                libc::FS_IOC_SETFLAGS,
+                &mut file_flags,
+            )
+        };
+        if result == -1 {
+            return Err(io::Error::last_os_error())
+                .with_context(|| format!("failed to preserve file flags for {path:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_replacement_metadata(
+    path: &Path,
+    source: &std::fs::File,
+    temp_file: &tempfile::NamedTempFile,
+) -> Result<ReplacementMetadata> {
+    use std::os::{fd::AsRawFd as _, macos::fs::MetadataExt as _};
+
+    let flags = source
+        .metadata()
+        .with_context(|| format!("failed to inspect metadata for {path:?}"))?
+        .st_flags();
+    anyhow::ensure!(
+        flags & (libc::UF_IMMUTABLE | libc::UF_APPEND | libc::SF_IMMUTABLE | libc::SF_APPEND) == 0,
+        "file has flags that require writing in place"
+    );
+    let result = unsafe {
+        libc::fcopyfile(
+            source.as_raw_fd(),
+            temp_file.as_file().as_raw_fd(),
+            std::ptr::null_mut(),
+            libc::COPYFILE_METADATA,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("failed to preserve metadata for {path:?}"));
+    }
+    Ok(ReplacementMetadata::MacOs)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_replacement_metadata(
+    _path: &Path,
+    _temp_file: &tempfile::NamedTempFile,
+    _metadata: ReplacementMetadata,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn prepare_replacement_metadata(
+    _path: &Path,
+    _source: &std::fs::File,
+    _temp_file: &tempfile::NamedTempFile,
+) -> Result<ReplacementMetadata> {
+    Ok(ReplacementMetadata::Windows)
+}
+
+#[cfg(target_os = "freebsd")]
+fn prepare_replacement_metadata(
+    path: &Path,
+    source: &std::fs::File,
+    _temp_file: &tempfile::NamedTempFile,
+) -> Result<ReplacementMetadata> {
+    Ok(ReplacementMetadata::FreeBsd(
+        freebsd_metadata::MetadataSnapshot::read(source)
+            .with_context(|| format!("failed to preserve metadata for {path:?}"))?,
+    ))
+}
+
+#[cfg(target_os = "freebsd")]
+fn apply_replacement_metadata(
+    path: &Path,
+    temp_file: &tempfile::NamedTempFile,
+    metadata: ReplacementMetadata,
+) -> Result<()> {
+    let ReplacementMetadata::FreeBsd(metadata) = metadata;
+    metadata
+        .apply_before_rename(temp_file.as_file())
+        .with_context(|| format!("failed to preserve metadata for {path:?}"))
+}
+
+#[cfg(windows)]
+fn apply_replacement_metadata(
+    _path: &Path,
+    _temp_file: &tempfile::NamedTempFile,
+    _metadata: ReplacementMetadata,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
+fn prepare_replacement_metadata(
+    _path: &Path,
+    _source: &std::fs::File,
+    _temp_file: &tempfile::NamedTempFile,
+) -> Result<ReplacementMetadata> {
+    anyhow::bail!("metadata-preserving replacement is unavailable on this platform")
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
+fn apply_replacement_metadata(
+    _path: &Path,
+    _temp_file: &tempfile::NamedTempFile,
+    metadata: ReplacementMetadata,
+) -> Result<()> {
+    match metadata {}
+}
+
+#[cfg(target_os = "freebsd")]
+mod freebsd_metadata {
+    use libc::{c_int, c_uint, c_ulong, c_void, size_t, ssize_t};
+    use std::{
+        ffi::CString,
+        fs::File,
+        io,
+        mem::MaybeUninit,
+        os::fd::{AsRawFd as _, RawFd},
+        ptr::{self, NonNull},
+    };
+
+    type AclType = c_uint;
+    type AclPointer = *mut c_void;
+
+    const ACL_TYPE_ACCESS: AclType = 2;
+    const ACL_TYPE_NFS4: AclType = 4;
+    const ACL_BRAND_POSIX: c_int = 1;
+    const ACL_BRAND_NFS4: c_int = 2;
+    const MODE_MASK: libc::mode_t = 0o7777;
+    const UF_IMMUTABLE: libc::fflags_t = 0x0000_0002;
+    const UF_APPEND: libc::fflags_t = 0x0000_0004;
+    const UF_NOUNLINK: libc::fflags_t = 0x0000_0010;
+    const SF_IMMUTABLE: libc::fflags_t = 0x0002_0000;
+    const SF_APPEND: libc::fflags_t = 0x0004_0000;
+    const SF_NOUNLINK: libc::fflags_t = 0x0010_0000;
+    const SF_SNAPSHOT: libc::fflags_t = 0x0020_0000;
+    const UNREPRODUCIBLE_FLAGS: libc::fflags_t = UF_IMMUTABLE
+        | UF_APPEND
+        | UF_NOUNLINK
+        | SF_IMMUTABLE
+        | SF_APPEND
+        | SF_NOUNLINK
+        | SF_SNAPSHOT;
+
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: c_int, acl_type: AclType) -> AclPointer;
+        fn acl_set_fd_np(fd: c_int, acl: AclPointer, acl_type: AclType) -> c_int;
+        fn acl_get_brand_np(acl: AclPointer, brand: *mut c_int) -> c_int;
+        fn acl_free(object: *mut c_void) -> c_int;
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum AclKind {
+        PosixAccess,
+        Nfs4,
+    }
+
+    impl AclKind {
+        fn raw(self) -> AclType {
+            match self {
+                Self::PosixAccess => ACL_TYPE_ACCESS,
+                Self::Nfs4 => ACL_TYPE_NFS4,
+            }
+        }
+
+        fn expected_brand(self) -> c_int {
+            match self {
+                Self::PosixAccess => ACL_BRAND_POSIX,
+                Self::Nfs4 => ACL_BRAND_NFS4,
+            }
+        }
+    }
+
+    struct OwnedAcl {
+        pointer: NonNull<c_void>,
+        kind: AclKind,
+    }
+
+    impl OwnedAcl {
+        fn read(fd: RawFd, kind: AclKind) -> io::Result<Self> {
+            // SAFETY: `fd` is open and FreeBSD owns the returned ACL allocation.
+            let pointer = unsafe { acl_get_fd_np(fd, kind.raw()) };
+            let pointer = NonNull::new(pointer).ok_or_else(io::Error::last_os_error)?;
+            let mut brand = 0;
+            // SAFETY: `pointer` is a live ACL and `brand` is writable.
+            check_zero(unsafe { acl_get_brand_np(pointer.as_ptr(), &raw mut brand) })?;
+            if brand != kind.expected_brand() {
+                // SAFETY: `pointer` came from `acl_get_fd_np` and is freed exactly once here.
+                unsafe { acl_free(pointer.as_ptr()) };
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "FreeBSD ACL brand does not match filesystem ACL type",
+                ));
+            }
+            Ok(Self { pointer, kind })
+        }
+
+        fn apply(&self, fd: RawFd) -> io::Result<()> {
+            // SAFETY: the ACL remains live for this call and `fd` is open.
+            check_zero(unsafe { acl_set_fd_np(fd, self.pointer.as_ptr(), self.kind.raw()) })
+        }
+    }
+
+    impl Drop for OwnedAcl {
+        fn drop(&mut self) {
+            // SAFETY: this allocation came from `acl_get_fd_np` and has not been freed.
+            unsafe { acl_free(self.pointer.as_ptr()) };
+        }
+    }
+
+    struct ExtendedAttribute {
+        namespace: c_int,
+        name: CString,
+        value: Vec<u8>,
+    }
+
+    pub struct MetadataSnapshot {
+        uid: libc::uid_t,
+        gid: libc::gid_t,
+        mode: libc::mode_t,
+        flags: libc::fflags_t,
+        acl: Option<OwnedAcl>,
+        extended_attributes: Vec<ExtendedAttribute>,
+    }
+
+    impl MetadataSnapshot {
+        pub fn read(source: &File) -> io::Result<Self> {
+            let fd = source.as_raw_fd();
+            let stat = stat_fd(fd)?;
+            ensure_reproducible_flags(stat.st_flags)?;
+            let acl = detect_acl_kind(fd)?
+                .map(|kind| OwnedAcl::read(fd, kind))
+                .transpose()?;
+            let mut extended_attributes = Vec::new();
+            for namespace in [libc::EXTATTR_NAMESPACE_USER, libc::EXTATTR_NAMESPACE_SYSTEM] {
+                for name in list_names_for_caller(fd, namespace)? {
+                    if is_acl_storage_attribute(namespace, &name) {
+                        continue;
+                    }
+                    let value = read_variable(|data, length| unsafe {
+                        libc::extattr_get_fd(fd, namespace, name.as_ptr(), data, length)
+                    })?;
+                    extended_attributes.push(ExtendedAttribute {
+                        namespace,
+                        name,
+                        value,
+                    });
+                }
+            }
+            Ok(Self {
+                uid: stat.st_uid,
+                gid: stat.st_gid,
+                mode: stat.st_mode & MODE_MASK,
+                flags: stat.st_flags,
+                acl,
+                extended_attributes,
+            })
+        }
+
+        pub fn apply_before_rename(&self, destination: &File) -> io::Result<()> {
+            ensure_reproducible_flags(self.flags)?;
+            let fd = destination.as_raw_fd();
+            if let Some(acl) = &self.acl
+                && detect_acl_kind(fd)? != Some(acl.kind)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "source and destination use different ACL models",
+                ));
+            }
+
+            // SAFETY: `fd` is open and uid/gid came from `fstat`.
+            check_zero(unsafe { libc::fchown(fd, self.uid, self.gid) })?;
+            reconcile_extended_attributes(fd, &self.extended_attributes)?;
+            // SAFETY: `fd` is open and mode is restricted to permission/special bits.
+            check_zero(unsafe { libc::fchmod(fd, self.mode) })?;
+            if let Some(acl) = &self.acl {
+                acl.apply(fd)?;
+            }
+
+            let actual = stat_fd(fd)?;
+            if actual.st_uid != self.uid
+                || actual.st_gid != self.gid
+                || actual.st_mode & MODE_MASK != self.mode
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "owner, group, mode, and ACL did not reproduce exactly",
+                ));
+            }
+
+            let flags = c_ulong::from(self.flags);
+            // SAFETY: `fd` is open and flags came from the source's `fstat`.
+            check_zero(unsafe { libc::fchflags(fd, flags) })?;
+            if stat_fd(fd)?.st_flags != self.flags {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "file flags did not reproduce exactly",
+                ));
+            }
+            destination.sync_all()
+        }
+    }
+
+    fn ensure_reproducible_flags(flags: libc::fflags_t) -> io::Result<()> {
+        if flags & UNREPRODUCIBLE_FLAGS == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "file flags require writing in place",
+            ))
+        }
+    }
+
+    fn detect_acl_kind(fd: RawFd) -> io::Result<Option<AclKind>> {
+        if pathconf_flag(fd, libc::_PC_ACL_NFS4)? {
+            return Ok(Some(AclKind::Nfs4));
+        }
+        if pathconf_flag(fd, libc::_PC_ACL_EXTENDED)? {
+            return Ok(Some(AclKind::PosixAccess));
+        }
+        Ok(None)
+    }
+
+    fn pathconf_flag(fd: RawFd, name: c_int) -> io::Result<bool> {
+        // SAFETY: FreeBSD exposes the calling thread's errno pointer.
+        unsafe { libc::__error().write(0) };
+        // SAFETY: `fd` is open and `name` is a supported pathconf selector.
+        let result = unsafe { libc::fpathconf(fd, name) };
+        if result >= 0 {
+            return Ok(result > 0);
+        }
+        // SAFETY: reading the thread-local errno value is valid after `fpathconf`.
+        let errno = unsafe { libc::__error().read() };
+        if errno == libc::EINVAL {
+            return Ok(false);
+        }
+        if errno == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fpathconf returned -1 without setting errno",
+            ));
+        }
+        Err(io::Error::from_raw_os_error(errno))
+    }
+
+    fn stat_fd(fd: RawFd) -> io::Result<libc::stat> {
+        let mut stat = MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: `stat` points to sufficient uninitialized storage and `fd` is open.
+        check_zero(unsafe { libc::fstat(fd, stat.as_mut_ptr()) })?;
+        // SAFETY: successful `fstat` initialized the full structure.
+        Ok(unsafe { stat.assume_init() })
+    }
+
+    fn list_names(fd: RawFd, namespace: c_int) -> io::Result<Vec<CString>> {
+        let encoded = read_variable(|data, length| unsafe {
+            libc::extattr_list_fd(fd, namespace, data, length)
+        })?;
+        let mut names = Vec::new();
+        let mut remaining = encoded.as_slice();
+        while !remaining.is_empty() {
+            let length = usize::from(remaining[0]);
+            remaining = &remaining[1..];
+            if length == 0 || remaining.len() < length {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "malformed FreeBSD extattr name list",
+                ));
+            }
+            let (name, tail) = remaining.split_at(length);
+            names.push(CString::new(name).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "extended attribute name contains NUL",
+                )
+            })?);
+            remaining = tail;
+        }
+        Ok(names)
+    }
+
+    fn list_names_for_caller(fd: RawFd, namespace: c_int) -> io::Result<Vec<CString>> {
+        match list_names(fd, namespace) {
+            Ok(names) => Ok(names),
+            Err(error)
+                if namespace == libc::EXTATTR_NAMESPACE_SYSTEM
+                    && matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES)) =>
+            {
+                // ACLs use their dedicated API; inaccessible kernel-managed attributes cannot
+                // be read or rewritten by this caller and retain filesystem policy defaults.
+                Ok(Vec::new())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read_variable(
+        mut operation: impl FnMut(*mut c_void, size_t) -> ssize_t,
+    ) -> io::Result<Vec<u8>> {
+        let estimate = checked_count(operation(ptr::null_mut(), 0))?;
+        let mut capacity = estimate
+            .checked_add(1)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        loop {
+            let mut buffer = vec![0_u8; capacity];
+            let count = checked_count(operation(buffer.as_mut_ptr().cast(), capacity))?;
+            if count < capacity {
+                buffer.truncate(count);
+                return Ok(buffer);
+            }
+            capacity = capacity
+                .checked_mul(2)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        }
+    }
+
+    fn reconcile_extended_attributes(fd: RawFd, expected: &[ExtendedAttribute]) -> io::Result<()> {
+        for namespace in [libc::EXTATTR_NAMESPACE_USER, libc::EXTATTR_NAMESPACE_SYSTEM] {
+            for name in list_names_for_caller(fd, namespace)? {
+                if is_acl_storage_attribute(namespace, &name) {
+                    continue;
+                }
+                if !expected
+                    .iter()
+                    .any(|attribute| attribute.namespace == namespace && attribute.name == name)
+                {
+                    // SAFETY: `fd` and name are valid for the selected namespace.
+                    check_zero(unsafe { libc::extattr_delete_fd(fd, namespace, name.as_ptr()) })?;
+                }
+            }
+        }
+        for attribute in expected {
+            // SAFETY: attribute buffers and the destination descriptor remain live for the call.
+            let written = checked_count(unsafe {
+                libc::extattr_set_fd(
+                    fd,
+                    attribute.namespace,
+                    attribute.name.as_ptr(),
+                    attribute.value.as_ptr().cast(),
+                    attribute.value.len(),
+                )
+            })?;
+            if written != attribute.value.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "short extended attribute write",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn is_acl_storage_attribute(namespace: c_int, name: &CString) -> bool {
+        namespace == libc::EXTATTR_NAMESPACE_SYSTEM
+            && matches!(
+                name.as_bytes(),
+                b"posix1e.acl_access" | b"posix1e.acl_default" | b"nfs4.acl"
+            )
+    }
+
+    fn checked_count(result: ssize_t) -> io::Result<usize> {
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        usize::try_from(result)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid byte count"))
+    }
+
+    fn check_zero(result: c_int) -> io::Result<()> {
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn publish_new_file(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<()> {
+    temp_file
+        .persist_noclobber(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to publish new file {path:?}"))
+}
+
+#[cfg(not(windows))]
+fn publish_replacement(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<()> {
+    temp_file
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to replace {path:?}"))
+}
+
+#[cfg(windows)]
+fn publish_new_file(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<()> {
+    let (file, temp_path) = temp_file.into_parts();
+    drop(file);
+    windows_make_temp_permanent(&temp_path)?;
+    windows_move_new_file(&temp_path, path)
+}
+
+#[cfg(windows)]
+fn publish_replacement(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<()> {
+    let (file, mut temp_path) = temp_file.into_parts();
+    drop(file);
+    windows_make_temp_permanent(&temp_path)?;
+    let mut backup_path = create_windows_backup_path(path)?;
+
+    match windows_replace_file(&temp_path, path, &backup_path) {
+        Ok(()) => {
+            if let Err(error) = sync_replaced_windows_file(path) {
+                backup_path.disable_cleanup(true);
+                return Err(error).with_context(|| {
+                    format!(
+                        "replacement was published but could not be flushed; original retained at {backup_path:?}"
+                    )
+                });
+            }
+            if let Err(error) = std::fs::remove_file(&backup_path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                log::warn!("failed to remove save backup {backup_path:?}: {error}");
+            }
+            Ok(())
+        }
+        Err(replace_error) => {
+            let destination_missing = matches!(
+                std::fs::symlink_metadata(path),
+                Err(error) if error.kind() == io::ErrorKind::NotFound
+            );
+            if destination_missing && std::fs::symlink_metadata(&backup_path).is_ok() {
+                match windows_move_new_file(&backup_path, path) {
+                    Ok(()) => {
+                        return Err(replace_error).with_context(|| {
+                            format!("failed to replace {path:?}; restored original")
+                        });
+                    }
+                    Err(restore_error) => {
+                        temp_path.disable_cleanup(true);
+                        backup_path.disable_cleanup(true);
+                        return Err(replace_error).with_context(|| {
+                            format!(
+                                "failed to replace {path:?}; recovery failed: {restore_error:#}; replacement retained at {temp_path:?}, original retained at {backup_path:?}"
+                            )
+                        });
+                    }
+                }
+            }
+
+            Err(replace_error).with_context(|| format!("failed to replace {path:?}"))
+        }
+    }
 }
 
 fn write_rope(file: &mut std::fs::File, text: &Rope, line_ending: LineEnding) -> io::Result<()> {
@@ -3635,25 +4828,12 @@ fn write_rope(file: &mut std::fs::File, text: &Rope, line_ending: LineEnding) ->
     writer.flush()
 }
 
-/// Resolves `path` when its final component is a symlink, so that the contents are written
-/// through to the link's target the way an in-place write would. Left as-is when the link
-/// cannot be resolved: the caller then writes in place, which follows the link itself.
-fn resolve_final_symlink(path: &Path) -> PathBuf {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => std::fs::canonicalize(path)
-            .unwrap_or_else(|error| {
-                log::warn!("failed to resolve symlink {path:?} ({error}), writing through it");
-                path.to_path_buf()
-            }),
-        _ => path.to_path_buf(),
-    }
-}
-
 /// Gives a temporary file the mode, and where it differs from ours the ownership, of the
 /// destination it is about to replace. `NamedTempFile` is created 0600 and `persist` keeps the
 /// temp file's own metadata, so without this a replaced file loses its permissions. Returns an
 /// error rather than proceeding when ownership cannot be reproduced, which sends the caller
 /// back to writing in place.
+#[cfg(not(windows))]
 fn copy_permissions_from_destination(
     path: &Path,
     temp_file: &tempfile::NamedTempFile,
@@ -3681,19 +4861,73 @@ fn copy_ownership_from_destination(metadata: &std::fs::Metadata, temp_path: &Pat
         .with_context(|| format!("Failed to preserve ownership of {:?}", temp_path))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn copy_ownership_from_destination(_: &std::fs::Metadata, _: &Path) -> Result<()> {
     Ok(())
 }
 
 #[cfg(unix)]
-fn hard_link_count(metadata: &std::fs::Metadata) -> u64 {
-    metadata.nlink()
+fn hard_link_count(_: &Path, metadata: &std::fs::Metadata) -> io::Result<u64> {
+    Ok(metadata.nlink())
 }
 
-#[cfg(not(unix))]
-fn hard_link_count(_: &std::fs::Metadata) -> u64 {
-    1
+#[cfg(unix)]
+fn hard_link_count_for_file(file: &std::fs::File) -> io::Result<u64> {
+    Ok(file.metadata()?.nlink())
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsFileInformation {
+    identity: FileIdentity,
+    hard_link_count: u64,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_file_information(file: &std::fs::File) -> Result<WindowsFileInformation> {
+    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle as _};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+    };
+
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), information.as_mut_ptr())? };
+    // SAFETY: `GetFileInformationByHandle` initialized the structure after succeeding.
+    let information = unsafe { information.assume_init() };
+    Ok(WindowsFileInformation {
+        identity: FileIdentity {
+            volume_serial_number: information.dwVolumeSerialNumber,
+            file_index: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+        },
+        hard_link_count: u64::from(information.nNumberOfLinks),
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn hard_link_count(path: &Path, _: &std::fs::Metadata) -> io::Result<u64> {
+    let file = std::fs::File::open(path)?;
+
+    windows_file_information(&file)
+        .map(|information| information.hard_link_count)
+        .map_err(io::Error::other)
+}
+
+#[cfg(target_os = "windows")]
+fn hard_link_count_for_file(file: &std::fs::File) -> io::Result<u64> {
+    windows_file_information(file)
+        .map(|information| information.hard_link_count)
+        .map_err(io::Error::other)
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn hard_link_count(_: &Path, _: &std::fs::Metadata) -> io::Result<u64> {
+    Ok(1)
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn hard_link_count_for_file(_file: &std::fs::File) -> io::Result<u64> {
+    Ok(1)
 }
 
 /// Flushes the directory entry produced by a rename. The rename itself is atomic, but until the
@@ -3708,34 +4942,77 @@ fn fsync_parent_dir(path: &Path) -> io::Result<()> {
     std::fs::File::open(parent)?.sync_all()
 }
 
-/// Windows has no handle for a directory's contents to sync, and `ReplaceFileW` already commits
-/// the replacement itself.
 #[cfg(target_os = "windows")]
-fn fsync_parent_dir(_path: &Path) -> io::Result<()> {
+fn windows_make_temp_permanent(path: &Path) -> Result<()> {
+    use windows::{
+        Win32::Storage::FileSystem::{FILE_ATTRIBUTE_NORMAL, SetFileAttributesW},
+        core::HSTRING,
+    };
+
+    unsafe { SetFileAttributesW(&HSTRING::from(path.as_os_str()), FILE_ATTRIBUTE_NORMAL)? };
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
-fn atomic_replace<P: AsRef<Path>>(
-    replaced_file: P,
-    replacement_file: P,
-) -> windows::core::Result<()> {
+fn windows_move_new_file(source: &Path, target: &Path) -> Result<()> {
+    use windows::{
+        Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW},
+        core::HSTRING,
+    };
+
+    unsafe {
+        MoveFileExW(
+            &HSTRING::from(source.as_os_str()),
+            &HSTRING::from(target.as_os_str()),
+            MOVEFILE_WRITE_THROUGH,
+        )?
+    };
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn create_windows_backup_path(destination: &Path) -> Result<tempfile::TempPath> {
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let backup = tempfile::Builder::new()
+        .prefix(".zed-save-backup-")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to reserve backup path for {destination:?}"))?;
+    let backup_path = backup.into_temp_path();
+    std::fs::remove_file(&backup_path)
+        .with_context(|| format!("failed to prepare backup path for {destination:?}"))?;
+    Ok(backup_path)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_replace_file(replacement: &Path, destination: &Path, backup: &Path) -> Result<()> {
     use windows::{
         Win32::Storage::FileSystem::{REPLACE_FILE_FLAGS, ReplaceFileW},
         core::HSTRING,
     };
 
-    // If the file does not exist, create it.
-    let _ = std::fs::File::create_new(replaced_file.as_ref());
-
     unsafe {
         ReplaceFileW(
-            &HSTRING::from(replaced_file.as_ref().to_string_lossy().into_owned()),
-            &HSTRING::from(replacement_file.as_ref().to_string_lossy().into_owned()),
-            None,
+            &HSTRING::from(destination.as_os_str()),
+            &HSTRING::from(replacement.as_os_str()),
+            &HSTRING::from(backup.as_os_str()),
             REPLACE_FILE_FLAGS::default(),
             None,
             None,
-        )
-    }
+        )?
+    };
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn sync_replaced_windows_file(path: &Path) -> Result<()> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("failed to reopen replaced file {path:?}"))?
+        .sync_all()
+        .with_context(|| format!("failed to flush replaced file {path:?}"))
 }

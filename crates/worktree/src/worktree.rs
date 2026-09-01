@@ -1885,7 +1885,7 @@ impl LocalWorktree {
                 };
 
                 let bytes = encode_text(normalized_text, encoding, has_bom);
-                fs.write(&abs_path, &bytes).await
+                fs.save_bytes(&abs_path, &bytes).await
             }
         });
 
