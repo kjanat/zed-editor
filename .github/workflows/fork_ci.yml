@@ -36,7 +36,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        include: [
+          { os: macos-latest, command: ./script/clippy, shell: bash },
+          { os: ubuntu-latest, command: ./script/clippy, shell: bash },
+          { os: windows-latest, command: ./script/clippy.ps1, shell: pwsh },
+        ]
+    defaults: { run: { shell: "${{ matrix.shell }}" } }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -49,11 +54,7 @@ jobs:
             if: runner.os == 'Linux'
             run: ./script/linux
       - name: clippy
-        if: runner.os != 'Windows'
-        run: ./script/clippy
-      - name: clippy
-        if: runner.os == 'Windows'
-        run: ./script/clippy.ps1
+        run: ${{ matrix.command }}
       - name: Show disk usage
         if: always() && runner.os != 'Windows'
         run: df -h /

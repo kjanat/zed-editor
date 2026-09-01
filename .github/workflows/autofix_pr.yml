@@ -5,30 +5,20 @@ run-name: "autofix PR #${{ inputs.pr_number }}"
 on:
   workflow_dispatch:
     inputs:
-      pr_number:
-        description: pr_number
-        required: true
-        type: string
-      run_clippy:
-        description: run_clippy
-        type: boolean
-        default: "false"
-permissions:
-  contents: read
+      pr_number: { description: pr_number, required: true, type: string }
+      run_clippy: { description: run_clippy, type: boolean, default: false }
+permissions: { contents: read }
+concurrency: { group: "${{ github.workflow }}-${{ inputs.pr_number }}", cancel-in-progress: true }
+defaults: { run: { shell: "bash -euxo pipefail {0}" } }
 jobs:
   run_autofix:
     runs-on: namespace-profile-16x32-ubuntu-2204
-    permissions:
-      contents: read
-      pull-requests: read
-    env:
-      CC: clang
-      CXX: clang++
+    permissions: { contents: read, pull-requests: read }
+    env: { CC: clang, CXX: clang++ }
     steps:
       - name: steps::checkout_repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          clean: false
+        with: { clean: false }
       - name: autofix_pr::run_autofix::checkout_pr
         run: gh pr checkout "$PR_NUMBER"
         env:
@@ -40,22 +30,18 @@ jobs:
           cp ./.cargo/ci-config.toml ./../.cargo/config.toml
       - name: steps::cache_rust_dependencies_namespace
         uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
-        with:
-          cache: rust
-          path: ~/.rustup
+        with: { cache: rust, path: ~/.rustup }
       - name: steps::setup_linux
         run: ./script/linux
       - name: steps::download_wasi_sdk
         run: ./script/download-wasi-sdk
       - name: steps::setup_pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: "9"
+        with: { version: "9" }
       - name: autofix_pr::run_autofix::install_cargo_shear
         if: inputs.run_clippy == true || inputs.run_clippy == 'true'
-        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
-        with:
-          tool: cargo-shear@1.13.4
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with: { tool: cargo-shear@1.13.4 }
       - name: autofix_pr::run_autofix::run_cargo_fix
         if: inputs.run_clippy == true || inputs.run_clippy == 'true'
         run: cargo fix --workspace --allow-dirty --allow-staged
@@ -81,20 +67,13 @@ jobs:
           fi
       - name: autofix_pr::upload_patch_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: autofix-patch
-          path: autofix.patch
-          if-no-files-found: ignore
-          retention-days: "1"
+        with: { name: autofix-patch, path: autofix.patch, if-no-files-found: ignore, retention-days: "1" }
       - name: steps::cleanup_cargo_config
         if: always()
-        run: |
-          rm -rf ./../.cargo
-    outputs:
-      has_changes: ${{ steps.create-patch.outputs.has_changes }}
+        run: rm -rf ./../.cargo
+    outputs: { has_changes: "${{ steps.create-patch.outputs.has_changes }}" }
   commit_changes:
-    needs:
-      - run_autofix
+    needs: run_autofix
     if: needs.run_autofix.outputs.has_changes == 'true'
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
@@ -110,33 +89,21 @@ jobs:
           permission-workflows: write
       - name: steps::checkout_repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          clean: false
-          token: ${{ steps.generate-token.outputs.token }}
+        with: { clean: false, token: "${{ steps.generate-token.outputs.token }}" }
       - name: autofix_pr::commit_changes::checkout_pr
         run: gh pr checkout "$PR_NUMBER"
         env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+          { PR_NUMBER: "${{ inputs.pr_number }}", GITHUB_TOKEN: "${{ steps.generate-token.outputs.token }}" }
       - name: autofix_pr::download_patch_artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: autofix-patch
+        with: { name: autofix-patch }
       - name: autofix_pr::commit_changes::apply_patch
         run: git apply autofix.patch
       - name: autofix_pr::commit_changes::commit_and_push
-        run: |
-          git commit -am "Autofix"
-          git push
+        run: git commit -am "Autofix"; git push
         env:
           GIT_AUTHOR_NAME: zed-zippy[bot]
           GIT_AUTHOR_EMAIL: 234243425+zed-zippy[bot]@users.noreply.github.com
           GIT_COMMITTER_NAME: zed-zippy[bot]
           GIT_COMMITTER_EMAIL: 234243425+zed-zippy[bot]@users.noreply.github.com
           GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
-concurrency:
-  group: ${{ github.workflow }}-${{ inputs.pr_number }}
-  cancel-in-progress: true
-defaults:
-  run:
-    shell: bash -euxo pipefail {0}
