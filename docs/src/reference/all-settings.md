@@ -539,7 +539,10 @@ their tab title.
 
 ## Close Panel on Toggle
 
-- Description: Whether invoking a panel's `ToggleFocus` action while the panel is already focused closes the panel, instead of just moving focus back to the editor. This only applies to a panel's focus-toggle action, not to its regular visibility-toggle action.
+- Description: Whether invoking a panel's `ToggleFocus` action while the panel
+  is already focused closes the panel, instead of just moving focus back to the
+  editor. This only applies to a panel's focus-toggle action, not to its regular
+  visibility-toggle action.
 - Setting: `close_panel_on_toggle`
 - Default: `false`
 
