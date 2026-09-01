@@ -537,6 +537,19 @@ their tab title.
 > closed even when this setting is enabled, ensuring you don't lose unsaved
 > work.
 
+## Close Panel on Toggle
+
+- Description: Whether invoking a panel's `ToggleFocus` action while the panel
+  is already focused closes the panel, instead of just moving focus back to the
+  editor. This only applies to a panel's focus-toggle action, not to its regular
+  visibility-toggle action.
+- Setting: `close_panel_on_toggle`
+- Default: `false`
+
+**Options**
+
+`boolean` values
+
 ## Code Lens
 
 - Description: Whether and how to display code lenses from language servers.
