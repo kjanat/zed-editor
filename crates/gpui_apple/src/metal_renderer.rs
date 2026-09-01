@@ -3,6 +3,7 @@ use anyhow::{Context as _, Result};
 use block::ConcreteBlock;
 use cocoa::{
     base::{NO, YES},
+    foundation::{NSSize, NSUInteger},
     quartzcore::AutoresizingMask,
 };
 use gpui::{
@@ -20,7 +21,6 @@ use core_video::{
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
     CAMetalLayer, CommandQueue, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, NSRange,
-    NSUInteger,
 };
 use objc::{self, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
@@ -381,10 +381,16 @@ impl MetalRenderer {
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         if let Some(layer) = &self.layer {
-            let mut drawable_size = layer.drawable_size();
-            drawable_size.width = size.width.0 as f64;
-            drawable_size.height = size.height.0 as f64;
-            layer.set_drawable_size(drawable_size);
+            let ns_size = NSSize {
+                width: size.width.0 as f64,
+                height: size.height.0 as f64,
+            };
+            unsafe {
+                let _: () = msg_send![
+                    layer.as_ref(),
+                    setDrawableSize: ns_size
+                ];
+            }
         }
         self.update_path_intermediate_textures(size);
     }

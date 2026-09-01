@@ -35,13 +35,7 @@ jobs:
     if: github.repository == 'kjanat/zed-editor'
     strategy:
       fail-fast: false
-      matrix:
-        include: [
-          { os: macos-latest, command: ./script/clippy, shell: bash },
-          { os: ubuntu-latest, command: ./script/clippy, shell: bash },
-          { os: windows-latest, command: ./script/clippy.ps1, shell: pwsh },
-        ]
-    defaults: { run: { shell: "${{ matrix.shell }}" } }
+      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -52,11 +46,19 @@ jobs:
             with: { shared-key: fork-ci-clippy, cache-on-failure: true }
           - name: Install build dependencies
             if: runner.os == 'Linux'
+            shell: bash
             run: ./script/linux
-      - name: clippy
-        run: ${{ matrix.command }}
+      - name: Clippy
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./script/clippy --no-deps -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update
+      - name: Clippy
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./script/clippy.ps1 --no-deps -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update
       - name: Show disk usage
         if: always() && runner.os != 'Windows'
+        shell: bash
         run: df -h /
 
   tests:

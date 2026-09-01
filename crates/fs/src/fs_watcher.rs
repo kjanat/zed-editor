@@ -99,6 +99,7 @@ impl FsWatcher {
             self.registrations.clone(),
             self.pending_registrations.clone(),
             self.dropped.clone(),
+            PathEventKind::Created,
         ));
         pending_registrations.insert(path, task);
     }
@@ -356,6 +357,7 @@ impl WatchRearm {
                 self.registrations.clone(),
                 self.pending_registrations.clone(),
                 self.dropped.clone(),
+                PathEventKind::Rescan,
             ));
             pending_registrations.insert(self.path.clone(), task);
         }
@@ -603,6 +605,7 @@ async fn poll_path_until_created(
     registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
     pending_registrations: Arc<Mutex<HashMap<Arc<Path>, Task<()>>>>,
     dropped: Arc<AtomicBool>,
+    registered_path_event_kind: PathEventKind,
 ) {
     loop {
         if !pending_registrations.lock().contains_key(path.as_ref()) {
@@ -646,16 +649,10 @@ async fn poll_path_until_created(
                 enqueue_path_events(
                     &tx,
                     &pending_path_events,
-                    vec![
-                        PathEvent {
-                            path: path.to_path_buf(),
-                            kind: Some(PathEventKind::Created),
-                        },
-                        PathEvent {
-                            path: path.to_path_buf(),
-                            kind: Some(PathEventKind::Rescan),
-                        },
-                    ],
+                    vec![PathEvent {
+                        path: path.to_path_buf(),
+                        kind: Some(registered_path_event_kind),
+                    }],
                 );
                 return;
             }
@@ -1415,8 +1412,6 @@ mod tests {
         let key = WatchKey::for_registration(SanitizedPath::new(&path), case_insensitive);
         assert!(watcher.registrations.lock().contains_key(&key));
 
-        // poll_path_until_created also enqueues a Rescan for the same path, but
-        // enqueue_path_events -> util::extend_sorted dedups by path, so only Created survives.
         assert_eq!(
             pending_path_events.lock().clone(),
             vec![PathEvent {
