@@ -697,12 +697,15 @@ num-format                    = "0.4.4"
 objc                          = "0.2"
 objc2                         = "0.6"
 objc2-app-kit                 = { version = "0.3.2", default-features = false, features = [
+  "NSAlert",
+  "NSApplication",
   "NSButton",
   "NSControl",
   "NSGraphics",
   "NSResponder",
   "NSView",
   "NSWindow",
+  "block2",
   "objc2-core-foundation",
 ] }
 objc2-foundation              = { version = "=0.3.2", default-features = false, features = [
@@ -1046,6 +1049,18 @@ notify-types         = { git = "https://github.com/zed-industries/notify", rev =
 tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "43623ec9bf0eaaf7113285c46e8a09018f181b18" }
 webrtc-sys           = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "0a1c519cfce9b365229026b55de9b9dbdb6fed3c" }
 windows-capture      = { git = "https://github.com/zed-industries/windows-capture.git", rev = "f0d6c1b6691db75461b732f6d5ff56eed002eeb9" }
+
+# corgi runs build.rs/proc-macros in a sandbox with no write access outside the
+# action's own OUT_DIR. Upstream `scratch` bakes its build-time OUT_DIR in via
+# `env!` and hands every crate one shared directory, which the sandbox can't
+# grant and a content-addressed build can't share. This patch reads OUT_DIR at
+# runtime, so each build script gets a private, writable dir in its own entry —
+# where cxx-build writes its shared cxxbridge headers. Kept local rather than a
+# cxx git fork so Windows cargo builds are unaffected (a git checkout of cxx
+# needs symlink support that Windows CI lacks). webrtc-sys is self-contained, so
+# per-crate scratch dirs are sufficient. Upstream issue:
+# https://github.com/dtolnay/cxx/issues/1752
+scratch = { path = "corgi-patches/scratch" }
 
 [profile.dev]
 debug           = "limited"

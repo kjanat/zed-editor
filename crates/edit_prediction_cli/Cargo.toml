@@ -55,7 +55,6 @@ prompt_store.workspace            = true
 rand.workspace                    = true
 release_channel.workspace         = true
 reqwest_client.workspace          = true
-rust-embed.workspace              = true
 serde.workspace                   = true
 serde_json.workspace              = true
 settings.workspace                = true

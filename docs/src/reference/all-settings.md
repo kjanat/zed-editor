@@ -6237,7 +6237,8 @@ top of user settings.
 		},
 		"scrollbar": {
 			"show": null
-		}
+		},
+		"multi_buffer_hide_symbols": false
 	}
 }
 ```

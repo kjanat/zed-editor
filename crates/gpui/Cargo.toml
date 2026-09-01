@@ -210,6 +210,7 @@ uuid      = { workspace = true, features = ["js"] }
 
 [target.'cfg(target_family = "wasm")'.dev-dependencies]
 wasm-bindgen = { workspace = true }
+web-sys      = { version = "0.3", features = ["console"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video.workspace = true
