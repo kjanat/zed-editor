@@ -33,7 +33,11 @@ jobs:
 
   clippy:
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,50 +46,40 @@ jobs:
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
             with: { shared-key: fork-ci-clippy, cache-on-failure: true }
           - name: Install build dependencies
+            if: runner.os == 'Linux'
             run: ./script/linux
       - name: clippy
+        if: runner.os != 'Windows'
         run: ./script/clippy
+      - name: clippy
+        if: runner.os == 'Windows'
+        run: ./script/clippy.ps1
       - name: Show disk usage
-        if: always()
+        if: always() && runner.os != 'Windows'
         run: df -h /
 
   tests:
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: "24", check-latest: true, package-manager-cache: false }
       - parallel:
           - name: Install build dependencies
+            if: runner.os == 'Linux'
             run: ./script/linux
           - name: Install nextest
             uses: taiki-e/install-action@nextest
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
             with: { shared-key: fork-ci-tests, cache-on-failure: true }
       - name: Test the crates this fork changes
-        run: |
-          cargo nextest run --no-fail-fast \
-            -p fs -p language -p worktree -p project -p lsp \
-            -p language_tools -p repl -p auto_update
+        run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update
       - name: Show disk usage
-        if: always()
+        if: always() && runner.os != 'Windows'
         run: df -h /
-
-  platform-fs:
-    if: github.repository == 'kjanat/zed-editor'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { shared-key: "fork-ci-${{ matrix.os }}-fs", cache-on-failure: true }
-      - name: Test platform filesystem behavior
-        run: cargo test -p fs
-      - name: Lint platform filesystem behavior
-        run: cargo clippy -p fs --all-targets --all-features -- --deny warnings
