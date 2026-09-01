@@ -1781,7 +1781,6 @@ async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppConte
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
     fs.set_non_recursive_watches();
-    fs.set_next_mtime(SystemTime::now());
     fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
         .await;
 
@@ -1801,12 +1800,22 @@ async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppConte
         .await;
     cx.executor().run_until_parked();
 
+    fs.set_next_mtime(SystemTime::now());
+    fs.touch_path("/root/dir").await;
+    tree.flush_fs_events(cx).await;
     let dir_mtime = fs
         .metadata(Path::new("/root/dir"))
         .await
         .unwrap()
         .unwrap()
         .mtime;
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entry_for_path(rel_path("dir")).unwrap().mtime,
+            Some(dir_mtime)
+        );
+    });
+
     fs.pause_events();
     fs.insert_file("/root/dir/same-tick.txt", Vec::new()).await;
     fs.set_mtime("/root/dir", dir_mtime).unwrap();
@@ -1815,10 +1824,68 @@ async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppConte
 
     cx.executor().advance_clock(Duration::from_secs(1));
     cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("dir/same-tick.txt")).is_none());
+    });
 
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.executor().run_until_parked();
     tree.read_with(cx, |tree, _| {
         assert!(tree.entry_for_path(rel_path("dir/same-tick.txt")).is_some());
     });
+}
+
+#[gpui::test]
+async fn test_periodic_reconcile_reports_a_relisted_directory_as_updated(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    let tree_updates = Arc::new(Mutex::new(Vec::new()));
+    tree.update(cx, |_, cx| {
+        let tree_updates = tree_updates.clone();
+        cx.subscribe(&tree, move |_, _, event, _| {
+            if let Event::UpdatedEntries(update) = event {
+                tree_updates.lock().extend(
+                    update
+                        .iter()
+                        .map(|(path, _, change)| (path.clone(), *change)),
+                );
+            }
+        })
+        .detach();
+    });
+
+    fs.pause_events();
+    fs.touch_path("/root/dir").await;
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        mem::take(&mut *tree_updates.lock()),
+        [(rel_path("dir").into_arc(), PathChange::Updated)]
+    );
 }
 
 #[gpui::test]
