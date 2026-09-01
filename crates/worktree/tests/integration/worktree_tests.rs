@@ -1655,6 +1655,21 @@ async fn test_deferred_watch_reconciles_files_created_before_watch(cx: &mut Test
         .await;
     cx.executor().run_until_parked();
 
+    let tree_updates = Arc::new(Mutex::new(Vec::new()));
+    tree.update(cx, |_, cx| {
+        let tree_updates = tree_updates.clone();
+        cx.subscribe(&tree, move |_, _, event, _| {
+            if let Event::UpdatedEntries(update) = event {
+                tree_updates.lock().extend(
+                    update
+                        .iter()
+                        .map(|(path, _, change)| (path.clone(), *change)),
+                );
+            }
+        })
+        .detach();
+    });
+
     fs.create_file_before_next_watch_add("/root", "/root/dir/nested.txt");
     fs.create_file_before_next_watch_add("/root", "/root/top-level.txt");
     tree.update(cx, |tree, cx| {
@@ -1696,6 +1711,17 @@ async fn test_deferred_watch_reconciles_files_created_before_watch(cx: &mut Test
             Some(dir_mtime_on_disk)
         );
     });
+
+    let tree_updates = mem::take(&mut *tree_updates.lock());
+    let dir_update = tree_updates
+        .iter()
+        .find(|(path, _)| path.as_ref() == rel_path("dir"))
+        .map(|(_, change)| *change);
+    assert_eq!(
+        dir_update,
+        Some(PathChange::Updated),
+        "all updates: {tree_updates:?}"
+    );
 }
 
 #[gpui::test]
