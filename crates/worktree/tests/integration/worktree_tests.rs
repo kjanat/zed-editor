@@ -1632,6 +1632,60 @@ async fn test_initial_scan_does_not_miss_files_created_before_subdir_watch(
 }
 
 #[gpui::test]
+async fn test_deferred_watch_reconciles_files_created_before_watch(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    fs.insert_tree("/root", json!({ "dir": { "existing.txt": "" } }))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    fs.create_file_before_next_watch_add("/root", "/root/dir/nested.txt");
+    fs.create_file_before_next_watch_add("/root", "/root/top-level.txt");
+    tree.update(cx, |tree, cx| {
+        tree.as_local_mut().unwrap().set_defer_watch(true, cx);
+    });
+
+    wait_for_condition(cx, |cx| {
+        tree.read_with(cx, |tree, _| {
+            tree.entry_for_path(rel_path("dir/nested.txt")).is_some()
+                && tree.entry_for_path(rel_path("top-level.txt")).is_some()
+        })
+    })
+    .await;
+
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entries(false, 0)
+                .map(|entry| entry.path.as_ref())
+                .collect::<Vec<_>>(),
+            vec![
+                rel_path(""),
+                rel_path("dir"),
+                rel_path("dir/existing.txt"),
+                rel_path("dir/nested.txt"),
+                rel_path("top-level.txt"),
+            ]
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_subtree_rescan_reports_unchanged_descendants_as_updated(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
