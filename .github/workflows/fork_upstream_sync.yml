@@ -128,32 +128,166 @@ jobs:
             gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --body-file /tmp/attention-body.md
           fi
 
-      - name: Attempt the merge
-        id: merge
-        if: steps.drift.outputs.behind != '0' && steps.open_pr.outputs.foreign == ''
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "${SYNC_BRANCH}"
-          if git merge --no-edit upstream/main; then
-            echo "result=clean"    >> "${GITHUB_OUTPUT}"
-          else
-            echo "result=conflict" >> "${GITHUB_OUTPUT}"
-            git diff --name-only --diff-filter=U | tee /tmp/conflicts.txt | tee -a "${GITHUB_STEP_SUMMARY}"
-            git merge --abort
-          fi
-
-      # Upstream does not run this fork's dprint config, so a clean merge still
-      # arrives unformatted and fork_ci's style job fails on files nobody here
-      # wrote. Reformat on the branch instead of leaving it for a human.
       - name: Install dprint
-        if: steps.merge.outputs.result == 'clean'
+        if: steps.drift.outputs.behind != '0' && steps.open_pr.outputs.foreign == ''
         uses: kjanat/dprint-check@v3
         with: { install-only: "true" }
 
-      - name: Format the merge
-        if: steps.merge.outputs.result == 'clean'
+      - name: Attempt and resolve the merge
+        id: merge
+        if: steps.drift.outputs.behind != '0' && steps.open_pr.outputs.foreign == ''
         run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${SYNC_BRANCH}"
+
+          BASE="$(git merge-base master upstream/main)"
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          : > /tmp/formatting-only.txt
+          : > /tmp/lockfiles.txt
+          : > /tmp/human.txt
+
+          if git merge --no-ff --no-commit upstream/main; then
+            git commit --message "Merge upstream main"
+            echo "result=clean" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git diff --name-only --diff-filter=U -z > /tmp/conflicts.zlist
+          mapfile -d '' CONFLICTS < /tmp/conflicts.zlist
+          printf '%s\n' "${CONFLICTS[@]}" | tee -a "${GITHUB_STEP_SUMMARY}"
+
+          for FILE in "${CONFLICTS[@]}"; do
+            if [[ "${FILE}" == "Cargo.lock" ]]; then
+              git checkout --ours -- "${FILE}"
+              printf '%s\n' "${FILE}" >> /tmp/lockfiles.txt
+              continue
+            fi
+
+            BASE_FORMATTED="$(mktemp)"
+            MASTER_FILE="$(mktemp)"
+            if git show "${BASE}:${FILE}" | dprint fmt --stdin "${FILE}" > "${BASE_FORMATTED}" \
+              && git show "master:${FILE}" > "${MASTER_FILE}" \
+              && cmp -s "${BASE_FORMATTED}" "${MASTER_FILE}"; then
+              if git checkout --theirs -- "${FILE}" && dprint fmt "${FILE}" && dprint check "${FILE}"; then
+                git add "${FILE}"
+                printf '%s\n' "${FILE}" >> /tmp/formatting-only.txt
+              else
+                git checkout --conflict=merge -- "${FILE}"
+                printf '%s\n' "${FILE}" >> /tmp/human.txt
+              fi
+            else
+              printf '%s\n' "${FILE}" >> /tmp/human.txt
+            fi
+            rm -f "${BASE_FORMATTED}" "${MASTER_FILE}"
+          done
+
+          if [[ ! -s /tmp/human.txt && -s /tmp/lockfiles.txt ]]; then
+            OURS_LOCK="$(mktemp)"
+            if cargo metadata --format-version 1 -q > /dev/null; then
+              cp Cargo.lock "${OURS_LOCK}"
+              git checkout --theirs -- Cargo.lock
+              if cargo metadata --format-version 1 -q > /dev/null && cmp -s "${OURS_LOCK}" Cargo.lock; then
+                cp "${OURS_LOCK}" Cargo.lock
+                git add Cargo.lock
+              else
+                git checkout --conflict=merge -- Cargo.lock
+                : > /tmp/lockfiles.txt
+                printf 'Cargo.lock\n' >> /tmp/human.txt
+              fi
+            else
+              git checkout --conflict=merge -- Cargo.lock
+              : > /tmp/lockfiles.txt
+              printf 'Cargo.lock\n' >> /tmp/human.txt
+            fi
+            rm -f "${OURS_LOCK}"
+          fi
+
+          if [[ ! -s /tmp/human.txt ]]; then
+            if [[ -s /tmp/formatting-only.txt ]]; then
+              mapfile -t FORMATTED_FILES < /tmp/formatting-only.txt
+              dprint check "${FORMATTED_FILES[@]}"
+            fi
+            {
+              printf 'Merge upstream with automatic conflict resolution\n\n'
+              printf 'Formatting-only:\n'
+              while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/formatting-only.txt
+              printf '\nLockfile:\n'
+              while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/lockfiles.txt
+            } > /tmp/merge-message.txt
+            git commit --file /tmp/merge-message.txt
+            echo "result=resolved" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          DATE="$(date -u +%Y-%m-%d)"
+          BEHIND="$(git rev-list --count master..upstream/main)"
+          SHORT_BASE="$(git rev-parse --short "${BASE}")"
+          SHORT_UPSTREAM="$(git rev-parse --short "${UPSTREAM_SHA}")"
+          HUMAN_COUNT="$(wc -l < /tmp/human.txt)"
+          {
+            printf '## Upstream sync conflict, %s\n\n' "${DATE}"
+            printf "Upstream is %s commits ahead (\`%s..%s\`, [compare](https://github.com/zed-industries/zed/compare/%s...%s)).\n\n" \
+              "${BEHIND}" "${SHORT_BASE}" "${SHORT_UPSTREAM}" "${BASE}" "${UPSTREAM_SHA}"
+            printf '### Resolved automatically (verify, do not resolve)\n'
+            if [[ -s /tmp/formatting-only.txt ]]; then
+              while IFS= read -r FILE; do
+                printf -- "- \`%s\`: formatting-only, upstream taken and reformatted\n" "${FILE}"
+              done < /tmp/formatting-only.txt
+            fi
+            if [[ -s /tmp/lockfiles.txt ]]; then
+              printf -- "- \`Cargo.lock\`: fork side is the candidate; verify cargo converges from both sides after human files are resolved\n"
+            fi
+            printf '\n### Needs a human (%s files)\n' "${HUMAN_COUNT}"
+            while IFS= read -r FILE; do
+              HUNKS="$(grep -c '^<<<<<<< ' "${FILE}" || true)"
+              FORK_LOG="$(git log --oneline -5 "${BASE}..master" -- "${FILE}")"
+              UPSTREAM_LOG="$(git log --oneline -5 "master..upstream/main" -- "${FILE}")"
+              FORK_LOG="${FORK_LOG//$'\n'/; }"
+              UPSTREAM_LOG="${UPSTREAM_LOG//$'\n'/; }"
+              printf "**\`%s\`**, %s hunk(s)\n" "${FILE}" "${HUNKS}"
+              printf -- '- fork: %s\n' "${FORK_LOG:-none}"
+              printf -- '- upstream: %s\n' "${UPSTREAM_LOG:-none}"
+              printf '<details><summary>conflict hunks</summary>\n\n```\n'
+              awk '
+                /^<<<<<<< / { capture = 1 }
+                capture && lines < 200 { print; lines++ }
+                /^>>>>>>> / { capture = 0 }
+              ' "${FILE}"
+              printf '```\n</details>\n\n'
+            done < /tmp/human.txt
+            printf '### Resolve\n```\n'
+            printf 'git fetch upstream main && git merge --no-commit upstream/main\n'
+            while IFS= read -r FILE; do
+              printf 'git checkout --theirs -- %q && dprint fmt %q && git add %q\n' "${FILE}" "${FILE}" "${FILE}"
+            done < /tmp/formatting-only.txt
+            if [[ -s /tmp/lockfiles.txt ]]; then
+              printf 'git checkout --ours -- Cargo.lock\n'
+            fi
+            printf '# resolve the files above, then:\n'
+            if [[ -s /tmp/lockfiles.txt ]]; then
+              printf 'cargo metadata --format-version 1 -q > /dev/null && cp Cargo.lock /tmp/Cargo.lock.ours\n'
+              printf 'git checkout --theirs -- Cargo.lock && cargo metadata --format-version 1 -q > /dev/null\n'
+              printf 'cmp -s /tmp/Cargo.lock.ours Cargo.lock && cp /tmp/Cargo.lock.ours Cargo.lock && git add Cargo.lock\n'
+              printf 'dprint check && git commit\n'
+            else
+              printf 'dprint check && git commit\n'
+            fi
+            printf '```\n'
+          } > /tmp/issue-body.md
+
+          git merge --abort
+          echo "result=conflict" >> "${GITHUB_OUTPUT}"
+
+      # Upstream does not run this fork's dprint config, so a merge still
+      # arrives unformatted and fork_ci's style job fails on files nobody here
+      # wrote. Reformat on the branch instead of leaving it for a human.
+
+      - name: Format the merge
+        if: steps.merge.outputs.result == 'clean' || steps.merge.outputs.result == 'resolved'
+        run: |
+          set -euo pipefail
           dprint fmt
           if git diff --quiet; then
             echo "Upstream needed no reformatting." | tee -a "${GITHUB_STEP_SUMMARY}"
@@ -163,46 +297,48 @@ jobs:
           fi
 
       - name: Push the sync branch and open or update the PR
-        if: steps.merge.outputs.result == 'clean'
+        if: steps.merge.outputs.result == 'clean' || steps.merge.outputs.result == 'resolved'
         run: |
+          set -euo pipefail
           git push --force origin "${SYNC_BRANCH}"
           EXISTING=$(gh pr list --repo "${GITHUB_REPOSITORY}" \
             --head "${SYNC_BRANCH}" --base master --state open \
             --json number --jq '.[0].number // empty')
           BEHIND="${{ steps.drift.outputs.behind }}"
+          {
+            printf 'Automated upstream sync: merges zed-industries/zed main into master.\n\n'
+            printf 'Merging this through the normal flow keeps every upstream sync gated by fork_ci, the same gate as local work. If fork_ci did not start on this PR, start it manually or configure SYNC_TOKEN.\n'
+            if [[ "${{ steps.merge.outputs.result }}" == "resolved" ]]; then
+              printf '\n## Resolved automatically (verify, do not resolve)\n'
+              if [[ -s /tmp/formatting-only.txt ]]; then
+                printf '\n### Formatting-only\n'
+                while IFS= read -r FILE; do printf -- "- \`%s\`: upstream taken and reformatted\n" "${FILE}"; done < /tmp/formatting-only.txt
+              fi
+              if [[ -s /tmp/lockfiles.txt ]]; then
+                printf '\n### Lockfile\n'
+                printf -- "- \`Cargo.lock\`: fork side kept and reconciled by cargo\n"
+              fi
+            fi
+          } > /tmp/pr-body.md
           if [[ -n "${EXISTING}" ]]; then
+            gh pr edit "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/pr-body.md
             gh pr comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" \
               --body "Updated: upstream is now ${BEHIND} commits ahead; the branch has been re-merged and force-pushed."
           else
             gh pr create --repo "${GITHUB_REPOSITORY}" \
               --head "${SYNC_BRANCH}" --base master \
               --title "Merge upstream (${BEHIND} commits)" \
-              --body "$(printf 'Automated weekly sync: merges zed-industries/zed main into master.\n\nMerging this through the normal flow keeps every upstream sync gated by fork_ci, the same gate as local work. If fork_ci did not start on this PR, the run was created with the default token; start it manually or configure SYNC_TOKEN.')"
+              --body-file /tmp/pr-body.md
           fi
 
       - name: Open a conflict issue
         if: steps.merge.outputs.result == 'conflict'
         run: |
+          set -euo pipefail
           TITLE="Upstream sync conflict ($(date -u +%Y-%m-%d))"
           EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" \
             --state open --search "Upstream sync conflict in:title" \
             --json number --jq '.[0].number // empty')
-          CONFLICTS="$(cat /tmp/conflicts.txt)"
-          cat > /tmp/issue-body.md <<EOF
-          Merging upstream main into master hits conflicts in:
-
-          \`\`\`
-          ${CONFLICTS}
-          \`\`\`
-
-          Resolve locally:
-
-          \`\`\`
-          git fetch upstream main
-          git merge upstream/main
-          # resolve, test, push
-          \`\`\`
-          EOF
           if [[ -n "${EXISTING}" ]]; then
             gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/issue-body.md
           else
