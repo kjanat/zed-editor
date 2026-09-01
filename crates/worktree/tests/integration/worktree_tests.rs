@@ -5960,6 +5960,80 @@ async fn test_write_file_encoding(cx: &mut gpui::TestAppContext) {
     }
 }
 
+#[cfg(unix)]
+#[gpui::test]
+async fn test_write_file_encoding_replaces_existing_file(cx: &mut gpui::TestAppContext) {
+    use std::os::unix::fs::MetadataExt as _;
+
+    cx.executor().allow_parking();
+    init_test(cx);
+    let temp_root = TempTree::new(json!({
+        "utf8_bom.txt": "old",
+        "shift_jis.txt": "old",
+    }));
+    let root_path = temp_root.path();
+    let fs = Arc::new(RealFs::new(None, cx.executor()));
+    let worktree = Worktree::local(
+        root_path,
+        true,
+        fs,
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| worktree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+
+    let cases = [
+        (
+            "utf8_bom.txt",
+            "AB",
+            encoding_rs::UTF_8,
+            true,
+            &[0xef, 0xbb, 0xbf, 0x41, 0x42][..],
+        ),
+        (
+            "shift_jis.txt",
+            "こんにちは",
+            encoding_rs::SHIFT_JIS,
+            false,
+            &[0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd][..],
+        ),
+    ];
+
+    for (file_name, text, encoding, has_bom, expected_bytes) in cases {
+        let file_path = root_path.join(file_name);
+        let inode_before = std::fs::metadata(&file_path).unwrap().ino();
+        let relative_path = RelPath::new(Path::new(file_name), PathStyle::local())
+            .unwrap()
+            .into_arc();
+
+        worktree
+            .update(cx, |worktree, cx| {
+                worktree.write_file(
+                    relative_path,
+                    text.into(),
+                    text::LineEnding::Unix,
+                    encoding,
+                    has_bom,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&file_path).unwrap(), expected_bytes);
+        assert_ne!(
+            std::fs::metadata(&file_path).unwrap().ino(),
+            inode_before,
+            "{file_name} was written in place"
+        );
+    }
+}
+
 #[gpui::test]
 async fn test_refresh_entries_for_paths_creates_ancestors(cx: &mut TestAppContext) {
     init_test(cx);

@@ -474,6 +474,45 @@ async fn test_realfs_save_replaces_contents(executor: BackgroundExecutor) {
     assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "Fresh");
 }
 
+#[gpui::test]
+async fn test_realfs_save_bytes_replaces_contents(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    std::fs::write(&path, "old").unwrap();
+
+    #[cfg(unix)]
+    let inode_before = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&path).unwrap().ino()
+    };
+
+    gpui::block_on(fs.save_bytes(&path, &[0xff, 0x00, 0xfe])).unwrap();
+
+    assert_eq!(std::fs::read(&path).unwrap(), [0xff, 0x00, 0xfe]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode_before);
+    }
+}
+
+#[gpui::test]
+#[cfg(any(unix, windows))]
+async fn test_realfs_save_bytes_preserves_hard_links(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("file.txt");
+    let link = temp_dir.path().join("link.txt");
+    std::fs::write(&path, "old").unwrap();
+    std::fs::hard_link(&path, &link).unwrap();
+
+    gpui::block_on(fs.save_bytes(&path, &[0xff, 0x00, 0xfe])).unwrap();
+
+    assert_eq!(std::fs::read(&path).unwrap(), [0xff, 0x00, 0xfe]);
+    assert_eq!(std::fs::read(&link).unwrap(), [0xff, 0x00, 0xfe]);
+}
+
 /// Replacing a file by renaming a temporary one over it would otherwise hand the destination
 /// the temp file's 0600 mode.
 #[gpui::test]

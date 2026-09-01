@@ -28,7 +28,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "windows"))]
 use std::mem::MaybeUninit;
 
 use async_tar::Archive;
@@ -139,6 +139,7 @@ pub trait Fs: Send + Sync {
     async fn load_bytes(&self, path: &Path) -> Result<Vec<u8>>;
     async fn atomic_write(&self, path: PathBuf, text: String) -> Result<()>;
     async fn save(&self, path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()>;
+    async fn save_bytes(&self, path: &Path, content: &[u8]) -> Result<()>;
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()>;
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
     async fn is_file(&self, path: &Path) -> bool;
@@ -993,7 +994,19 @@ impl Fs for RealFs {
         }
         let path = path.to_path_buf();
         let text = text.clone();
-        smol::unblock(move || save_durably(&path, &text, line_ending)).await
+        smol::unblock(move || save_durably(&path, |file| write_rope(file, &text, line_ending)))
+            .await
+    }
+
+    async fn save_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            self.create_dir(parent)
+                .await
+                .with_context(|| format!("Failed to create directory at {:?}", parent))?;
+        }
+        let path = path.to_path_buf();
+        let content = content.to_owned();
+        smol::unblock(move || save_durably(&path, |file| file.write_all(&content))).await
     }
 
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
@@ -3196,6 +3209,16 @@ impl Fs for FakeFs {
         Ok(())
     }
 
+    async fn save_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
+        self.simulate_random_delay().await;
+        let path = normalize_path(path);
+        if let Some(path) = path.parent() {
+            self.create_dir(path).await?;
+        }
+        self.write_file_internal(path, content.to_vec(), false)?;
+        Ok(())
+    }
+
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
         self.simulate_random_delay().await;
         let path = normalize_path(path);
@@ -3564,7 +3587,7 @@ async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
     .await
 }
 
-/// Writes `text` to `path` so that neither a crash nor power loss can leave the destination
+/// Writes contents to `path` so that neither a crash nor power loss can leave the destination
 /// truncated, half-written, or holding contents Zed already reported as saved.
 ///
 /// `File::create` publishes an empty file before the new contents exist anywhere on disk, and
@@ -3587,15 +3610,18 @@ async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
 /// keep the second guarantee: a save that reports success has reached the disk. Only a file
 /// with other hard links, one whose ownership we cannot reproduce, and a symlink we could not
 /// resolve are exposed; a path that does not exist yet has no previous contents to lose.
-fn save_durably(path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()> {
+fn save_durably(
+    path: &Path,
+    write_contents: impl Fn(&mut std::fs::File) -> io::Result<()>,
+) -> Result<()> {
     let path = resolve_final_symlink(path);
 
     let replaceable = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata.is_file() && hard_link_count(&metadata) <= 1,
+        Ok(metadata) => metadata.is_file() && hard_link_count(&path, &metadata) <= 1,
         Err(_) => false,
     };
     if replaceable && let Some(parent) = path.parent() {
-        match save_via_rename(&path, parent, text, line_ending) {
+        match save_via_rename(&path, parent, &write_contents) {
             Ok(()) => return Ok(()),
             // Nothing has touched the destination yet, so falling back is never worse than
             // writing in place would have been to begin with.
@@ -3605,13 +3631,17 @@ fn save_durably(path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()>
         }
     }
 
-    save_in_place(&path, text, line_ending)
+    save_in_place(&path, &write_contents)
         .with_context(|| format!("Failed to write file at {:?}", path))
 }
 
-fn save_via_rename(path: &Path, parent: &Path, text: &Rope, line_ending: LineEnding) -> Result<()> {
+fn save_via_rename(
+    path: &Path,
+    parent: &Path,
+    write_contents: &impl Fn(&mut std::fs::File) -> io::Result<()>,
+) -> Result<()> {
     let mut temp_file = tempfile::NamedTempFile::new_in(parent)?;
-    write_rope(temp_file.as_file_mut(), text, line_ending)?;
+    write_contents(temp_file.as_file_mut())?;
     copy_permissions_from_destination(path, &temp_file)?;
     temp_file.as_file().sync_all()?;
     temp_file.persist(path)?;
@@ -3619,9 +3649,12 @@ fn save_via_rename(path: &Path, parent: &Path, text: &Rope, line_ending: LineEnd
     Ok(())
 }
 
-fn save_in_place(path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()> {
+fn save_in_place(
+    path: &Path,
+    write_contents: &impl Fn(&mut std::fs::File) -> io::Result<()>,
+) -> Result<()> {
     let mut file = std::fs::File::create(path)?;
-    write_rope(&mut file, text, line_ending)?;
+    write_contents(&mut file)?;
     file.sync_all()?;
     Ok(())
 }
@@ -3687,12 +3720,36 @@ fn copy_ownership_from_destination(_: &std::fs::Metadata, _: &Path) -> Result<()
 }
 
 #[cfg(unix)]
-fn hard_link_count(metadata: &std::fs::Metadata) -> u64 {
+fn hard_link_count(_: &Path, metadata: &std::fs::Metadata) -> u64 {
     metadata.nlink()
 }
 
-#[cfg(not(unix))]
-fn hard_link_count(_: &std::fs::Metadata) -> u64 {
+#[cfg(target_os = "windows")]
+fn hard_link_count(path: &Path, _: &std::fs::Metadata) -> u64 {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+    };
+
+    let result = (|| -> Result<u64> {
+        let file = std::fs::File::open(path)?;
+        let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        unsafe {
+            GetFileInformationByHandle(HANDLE(file.as_raw_handle() as _), info.as_mut_ptr())?
+        };
+        // SAFETY: GetFileInformationByHandle initialized `info` after returning successfully.
+        Ok(u64::from(unsafe { info.assume_init() }.nNumberOfLinks))
+    })();
+
+    result.unwrap_or_else(|error| {
+        log::warn!("failed to count hard links for {path:?} ({error:#}), writing in place");
+        u64::MAX
+    })
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn hard_link_count(_: &Path, _: &std::fs::Metadata) -> u64 {
     1
 }
 
