@@ -4357,6 +4357,22 @@ impl ProjectPanel {
         let hide_gitignore = settings.hide_gitignore;
         let sort_mode = settings.sort_mode;
         let sort_order = settings.sort_order;
+        for worktree in self
+            .project
+            .read(cx)
+            .visible_worktrees(cx)
+            .collect::<Vec<_>>()
+        {
+            let worktree = worktree.read(cx);
+            let expanded_dir_ids = self
+                .state
+                .expanded_dir_ids
+                .get(&worktree.id())
+                .into_iter()
+                .flatten()
+                .copied();
+            worktree.set_hot_directories(expanded_dir_ids);
+        }
         let project = self.project.read(cx);
         let repo_snapshots = project.git_store().read(cx).display_repo_snapshots(cx);
 

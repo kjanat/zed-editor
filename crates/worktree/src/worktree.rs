@@ -181,6 +181,7 @@ pub struct LocalWorktree {
     share_private_files: bool,
     scanning_enabled: bool,
     force_defer_watch: bool,
+    hot_directories: Arc<Mutex<HashSet<ProjectEntryId>>>,
 }
 
 pub struct PathPrefixScanRequest {
@@ -640,6 +641,7 @@ impl Worktree {
                 settings,
                 scanning_enabled,
                 force_defer_watch: false,
+                hot_directories: Default::default(),
             };
             worktree.start_background_scanner(scan_requests_rx, path_prefixes_to_scan_rx, cx);
             Worktree::Local(worktree)
@@ -1117,6 +1119,12 @@ impl Worktree {
         }
     }
 
+    pub fn set_hot_directories(&self, entry_ids: impl IntoIterator<Item = ProjectEntryId>) {
+        if let Worktree::Local(this) = self {
+            this.set_hot_directories(entry_ids);
+        }
+    }
+
     pub fn expand_entry(
         &mut self,
         entry_id: ProjectEntryId,
@@ -1386,6 +1394,7 @@ impl LocalWorktree {
         let force_defer_watch = self.force_defer_watch;
         let track_git_repositories = self.visible;
         let settings = self.settings.clone();
+        let hot_directories = self.hot_directories.clone();
         let (scan_states_tx, mut scan_states_rx) = mpsc::unbounded();
         let background_scanner = cx.background_spawn({
             let abs_path = snapshot.abs_path.as_path().to_path_buf();
@@ -1444,6 +1453,7 @@ impl LocalWorktree {
                     track_git_repositories,
                     is_single_file,
                     defer_watch,
+                    hot_directories,
                 };
 
                 scanner.run(events).await;
@@ -2181,6 +2191,11 @@ impl LocalWorktree {
         paths: Vec<Arc<RelPath>>,
     ) -> barrier::Receiver {
         self.refresh_entries_for_paths(paths)
+    }
+
+    /// Directories the user is looking at, checked against disk on every reconcile tick.
+    pub fn set_hot_directories(&self, entry_ids: impl IntoIterator<Item = ProjectEntryId>) {
+        *self.hot_directories.lock() = entry_ids.into_iter().collect();
     }
 
     pub fn add_path_prefix_to_scan(&self, path_prefix: Arc<RelPath>) -> barrier::Receiver {
@@ -4416,6 +4431,7 @@ struct BackgroundScanner {
     /// Used to determine if we should give up after repeated canonicalization failures.
     is_single_file: bool,
     defer_watch: bool,
+    hot_directories: Arc<Mutex<HashSet<ProjectEntryId>>>,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -5468,9 +5484,16 @@ impl BackgroundScanner {
             let cursor = state.reconcile_cursor.take();
             let unsettled_directories = &state.unsettled_directories;
             let snapshot = &state.snapshot;
-            let mut directories = unsettled_directories
+            let hot_directories = self.hot_directories.lock();
+            let mut directories = hot_directories
                 .iter()
-                .filter_map(|path| snapshot.entry_for_path(path))
+                .filter_map(|entry_id| snapshot.entry_for_id(*entry_id))
+                .filter(|entry| !unsettled_directories.contains(&entry.path))
+                .chain(
+                    unsettled_directories
+                        .iter()
+                        .filter_map(|path| snapshot.entry_for_path(path)),
+                )
                 .filter(|entry| is_reconcilable_directory(entry))
                 .map(|entry| ReconcileTarget::new(snapshot, entry))
                 .collect::<Vec<_>>();
@@ -5489,13 +5512,16 @@ impl BackgroundScanner {
             while batch.len() < RECONCILE_BATCH_SIZE
                 && let Some(entry) = traversal.entry()
             {
-                if is_reconcilable_directory(entry) && !unsettled_directories.contains(&entry.path)
+                if is_reconcilable_directory(entry)
+                    && !unsettled_directories.contains(&entry.path)
+                    && !hot_directories.contains(&entry.id)
                 {
                     batch.push(ReconcileTarget::new(snapshot, entry));
                 }
                 traversal.advance();
             }
             drop(traversal);
+            drop(hot_directories);
             if batch.len() == RECONCILE_BATCH_SIZE {
                 state.reconcile_cursor = batch.last().map(|target| target.path.clone());
             }

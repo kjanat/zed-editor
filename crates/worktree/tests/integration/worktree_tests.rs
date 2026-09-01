@@ -1751,6 +1751,62 @@ async fn test_periodic_reconcile_picks_up_lost_event(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_periodic_reconcile_checks_hot_directories_first(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.set_non_recursive_watches();
+    let mut tree_json = serde_json::Map::new();
+    for index in 0..100 {
+        tree_json.insert(format!("d{index:03}"), json!({ "file.txt": "" }));
+    }
+    tree_json.insert("zzz".into(), json!({ "file.txt": "" }));
+    fs.insert_tree("/root", serde_json::Value::Object(tree_json))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    cx.executor().run_until_parked();
+
+    fs.pause_events();
+    fs.insert_file("/root/d099/lost.txt", Vec::new()).await;
+    fs.insert_file("/root/zzz/lost.txt", Vec::new()).await;
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+
+    tree.read_with(cx, |tree, _| {
+        let hot_entry_id = tree.entry_for_path(rel_path("zzz")).unwrap().id;
+        tree.set_hot_directories([hot_entry_id]);
+    });
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("zzz/lost.txt")).is_some());
+        assert!(tree.entry_for_path(rel_path("d099/lost.txt")).is_none());
+    });
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.entry_for_path(rel_path("d099/lost.txt")).is_some());
+    });
+}
+
+#[gpui::test]
 async fn test_periodic_reconcile_distrusts_a_current_mtime(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
