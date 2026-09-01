@@ -635,10 +635,8 @@ pub fn asset_str<A: rust_embed::RustEmbed>(path: &str) -> Cow<'static, str> {
 }
 
 /// The checkout that produced this binary, resolved at runtime by walking up to
-/// the first ancestor that contains a `.git` entry (a directory in a normal
-/// clone, a file in a git worktree or submodule). Cargo and corgi both place
-/// built binaries under `<repo>/target/<profile>/`, so the repository root is
-/// always an ancestor of the executable.
+/// the first ancestor that contains both a `.git` entry (a directory in a normal
+/// clone, a file in a git worktree or submodule) and Zed's source and assets.
 ///
 /// Dev-only affordances use this instead of baking a build-time path into the
 /// artifact: such a path points at the wrong checkout from any other worktree
@@ -660,16 +658,22 @@ pub fn dev_repo_root() -> Option<&'static std::path::Path> {
             exe.and_then(|exe| exe.canonicalize().ok()),
             std::env::current_dir().ok(),
         ];
-        candidates.into_iter().flatten().find_map(|start| {
-            Some(
-                start
-                    .ancestors()
-                    .find(|dir| dir.join(".git").exists())?
-                    .to_path_buf(),
-            )
-        })
+        find_dev_repo_root(candidates.into_iter().flatten())
     })
     .as_deref()
+}
+
+fn find_dev_repo_root(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find_map(|start| {
+        start
+            .ancestors()
+            .find(|dir| {
+                dir.join(".git").exists()
+                    && dir.join("crates/zed/Cargo.toml").is_file()
+                    && dir.join("assets/settings/default.json").is_file()
+            })
+            .map(PathBuf::from)
+    })
 }
 
 /// Re-exports that back [`fs_embed!`] so a caller only needs to depend on `util`,
@@ -984,6 +988,35 @@ impl<O> From<anyhow::Result<O>> for ConnectionResult<O> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_find_dev_repo_root_skips_unrelated_repository() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp directory");
+        let unrelated_root = temp_dir.path().join("unrelated");
+        let executable = unrelated_root.join("target/debug/zed");
+        std::fs::create_dir_all(executable.parent().expect("executable must have a parent"))
+            .expect("failed to create executable directory");
+        std::fs::create_dir(unrelated_root.join(".git"))
+            .expect("failed to create unrelated repository marker");
+
+        let zed_root = temp_dir.path().join("zed");
+        let working_directory = zed_root.join("crates/util");
+        std::fs::create_dir_all(&working_directory).expect("failed to create working directory");
+        std::fs::create_dir(zed_root.join(".git")).expect("failed to create Zed repository marker");
+        std::fs::create_dir_all(zed_root.join("crates/zed"))
+            .expect("failed to create Zed crate directory");
+        std::fs::write(zed_root.join("crates/zed/Cargo.toml"), "")
+            .expect("failed to create Zed crate manifest");
+        std::fs::create_dir_all(zed_root.join("assets/settings"))
+            .expect("failed to create settings asset directory");
+        std::fs::write(zed_root.join("assets/settings/default.json"), "")
+            .expect("failed to create default settings asset");
+
+        assert_eq!(
+            find_dev_repo_root([executable, working_directory]),
+            Some(zed_root)
+        );
+    }
 
     #[test]
     fn test_parse_os_release() {
