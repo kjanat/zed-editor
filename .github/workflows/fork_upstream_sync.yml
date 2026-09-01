@@ -145,6 +145,7 @@ jobs:
           BASE="$(git merge-base master upstream/main)"
           UPSTREAM_SHA="$(git rev-parse upstream/main)"
           : > /tmp/formatting-only.txt
+          : > /tmp/formatted-three-way.txt
           : > /tmp/lockfiles.txt
           : > /tmp/human.txt
 
@@ -167,12 +168,30 @@ jobs:
 
             BASE_FORMATTED="$(mktemp)"
             MASTER_FILE="$(mktemp)"
+            MASTER_FORMATTED="$(mktemp)"
+            UPSTREAM_FORMATTED="$(mktemp)"
+            MERGED_FILE="$(mktemp)"
             if git show "${BASE}:${FILE}" | dprint fmt --stdin "${FILE}" > "${BASE_FORMATTED}" \
-              && git show "master:${FILE}" > "${MASTER_FILE}" \
-              && cmp -s "${BASE_FORMATTED}" "${MASTER_FILE}"; then
-              if git checkout --theirs -- "${FILE}" && dprint fmt "${FILE}" && dprint check "${FILE}"; then
-                git add "${FILE}"
-                printf '%s\n' "${FILE}" >> /tmp/formatting-only.txt
+              && git show "master:${FILE}" > "${MASTER_FILE}"; then
+              if cmp -s "${BASE_FORMATTED}" "${MASTER_FILE}"; then
+                if git checkout --theirs -- "${FILE}" && dprint fmt "${FILE}" && dprint check "${FILE}"; then
+                  git add "${FILE}"
+                  printf '%s\n' "${FILE}" >> /tmp/formatting-only.txt
+                else
+                  git checkout --conflict=merge -- "${FILE}"
+                  printf '%s\n' "${FILE}" >> /tmp/human.txt
+                fi
+              elif git show "master:${FILE}" | dprint fmt --stdin "${FILE}" > "${MASTER_FORMATTED}" \
+                && git show "upstream/main:${FILE}" | dprint fmt --stdin "${FILE}" > "${UPSTREAM_FORMATTED}" \
+                && git merge-file -p "${MASTER_FORMATTED}" "${BASE_FORMATTED}" "${UPSTREAM_FORMATTED}" > "${MERGED_FILE}"; then
+                cp "${MERGED_FILE}" "${FILE}"
+                if dprint fmt "${FILE}" && dprint check "${FILE}"; then
+                  git add "${FILE}"
+                  printf '%s\n' "${FILE}" >> /tmp/formatted-three-way.txt
+                else
+                  git checkout --conflict=merge -- "${FILE}"
+                  printf '%s\n' "${FILE}" >> /tmp/human.txt
+                fi
               else
                 git checkout --conflict=merge -- "${FILE}"
                 printf '%s\n' "${FILE}" >> /tmp/human.txt
@@ -180,39 +199,38 @@ jobs:
             else
               printf '%s\n' "${FILE}" >> /tmp/human.txt
             fi
-            rm -f "${BASE_FORMATTED}" "${MASTER_FILE}"
+            rm -f "${BASE_FORMATTED}" "${MASTER_FILE}" "${MASTER_FORMATTED}" "${UPSTREAM_FORMATTED}" "${MERGED_FILE}"
           done
 
           if [[ ! -s /tmp/human.txt && -s /tmp/lockfiles.txt ]]; then
-            OURS_LOCK="$(mktemp)"
             if cargo metadata --format-version 1 -q > /dev/null; then
-              cp Cargo.lock "${OURS_LOCK}"
-              git checkout --theirs -- Cargo.lock
-              if cargo metadata --format-version 1 -q > /dev/null && cmp -s "${OURS_LOCK}" Cargo.lock; then
-                cp "${OURS_LOCK}" Cargo.lock
-                git add Cargo.lock
-              else
-                git checkout --conflict=merge -- Cargo.lock
-                : > /tmp/lockfiles.txt
-                printf 'Cargo.lock\n' >> /tmp/human.txt
-              fi
+              git add Cargo.lock
             else
               git checkout --conflict=merge -- Cargo.lock
               : > /tmp/lockfiles.txt
               printf 'Cargo.lock\n' >> /tmp/human.txt
             fi
-            rm -f "${OURS_LOCK}"
           fi
 
           if [[ ! -s /tmp/human.txt ]]; then
+            CHECK_FILES=()
             if [[ -s /tmp/formatting-only.txt ]]; then
-              mapfile -t FORMATTED_FILES < /tmp/formatting-only.txt
-              dprint check "${FORMATTED_FILES[@]}"
+              mapfile -t FORMATTING_ONLY_FILES < /tmp/formatting-only.txt
+              CHECK_FILES+=("${FORMATTING_ONLY_FILES[@]}")
+            fi
+            if [[ -s /tmp/formatted-three-way.txt ]]; then
+              mapfile -t THREE_WAY_FILES < /tmp/formatted-three-way.txt
+              CHECK_FILES+=("${THREE_WAY_FILES[@]}")
+            fi
+            if [[ "${#CHECK_FILES[@]}" -gt 0 ]]; then
+              dprint check "${CHECK_FILES[@]}"
             fi
             {
               printf 'Merge upstream with automatic conflict resolution\n\n'
               printf 'Formatting-only:\n'
               while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/formatting-only.txt
+              printf '\nFormatted three-way:\n'
+              while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/formatted-three-way.txt
               printf '\nLockfile:\n'
               while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/lockfiles.txt
             } > /tmp/merge-message.txt
@@ -236,8 +254,13 @@ jobs:
                 printf -- "- \`%s\`: formatting-only, upstream taken and reformatted\n" "${FILE}"
               done < /tmp/formatting-only.txt
             fi
+            if [[ -s /tmp/formatted-three-way.txt ]]; then
+              while IFS= read -r FILE; do
+                printf -- "- \`%s\`: formatted three-way, fork and upstream changes retained\n" "${FILE}"
+              done < /tmp/formatted-three-way.txt
+            fi
             if [[ -s /tmp/lockfiles.txt ]]; then
-              printf -- "- \`Cargo.lock\`: fork side is the candidate; verify cargo converges from both sides after human files are resolved\n"
+              printf -- "- \`Cargo.lock\`: fork side kept; cargo reconciles it after human files are resolved\n"
             fi
             printf '\n### Needs a human (%s files)\n' "${HUMAN_COUNT}"
             while IFS= read -r FILE; do
@@ -259,18 +282,38 @@ jobs:
             done < /tmp/human.txt
             printf '### Resolve\n```\n'
             printf 'git fetch upstream main && git merge --no-commit upstream/main\n'
+            printf "BASE=\"\$(git merge-base master upstream/main)\"\n"
             while IFS= read -r FILE; do
               printf 'git checkout --theirs -- %q && dprint fmt %q && git add %q\n' "${FILE}" "${FILE}" "${FILE}"
             done < /tmp/formatting-only.txt
+            if [[ -s /tmp/formatted-three-way.txt ]]; then
+              printf 'set -euo pipefail\n'
+              printf 'resolve_formatted_three_way() {\n'
+              printf "  local file=\"\$1\" base_formatted master_formatted upstream_formatted merged_file\n"
+              printf "  base_formatted=\"\$(mktemp)\"\n"
+              printf "  master_formatted=\"\$(mktemp)\"\n"
+              printf "  upstream_formatted=\"\$(mktemp)\"\n"
+              printf "  merged_file=\"\$(mktemp)\"\n"
+              printf "  trap 'rm -f \"\${base_formatted}\" \"\${master_formatted}\" \"\${upstream_formatted}\" \"\${merged_file}\"' EXIT\n"
+              printf "  git show \"\${BASE}:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${base_formatted}\"\n"
+              printf "  git show \"master:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${master_formatted}\"\n"
+              printf "  git show \"upstream/main:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${upstream_formatted}\"\n"
+              printf "  git merge-file -p \"\${master_formatted}\" \"\${base_formatted}\" \"\${upstream_formatted}\" > \"\${merged_file}\"\n"
+              printf "  cp \"\${merged_file}\" \"\${file}\"\n"
+              printf "  dprint fmt \"\${file}\" && git add \"\${file}\"\n"
+              printf "  rm -f \"\${base_formatted}\" \"\${master_formatted}\" \"\${upstream_formatted}\" \"\${merged_file}\"\n"
+              printf '  trap - EXIT\n'
+              printf '}\n'
+              while IFS= read -r FILE; do
+                printf 'resolve_formatted_three_way %q\n' "${FILE}"
+              done < /tmp/formatted-three-way.txt
+            fi
             if [[ -s /tmp/lockfiles.txt ]]; then
               printf 'git checkout --ours -- Cargo.lock\n'
             fi
             printf '# resolve the files above, then:\n'
             if [[ -s /tmp/lockfiles.txt ]]; then
-              printf 'cargo metadata --format-version 1 -q > /dev/null && cp Cargo.lock /tmp/Cargo.lock.ours\n'
-              printf 'git checkout --theirs -- Cargo.lock && cargo metadata --format-version 1 -q > /dev/null\n'
-              printf 'cmp -s /tmp/Cargo.lock.ours Cargo.lock && cp /tmp/Cargo.lock.ours Cargo.lock && git add Cargo.lock\n'
-              printf 'dprint check && git commit\n'
+              printf 'dprint check && cargo metadata --format-version 1 -q > /dev/null && git add Cargo.lock && git commit\n'
             else
               printf 'dprint check && git commit\n'
             fi
@@ -313,6 +356,10 @@ jobs:
               if [[ -s /tmp/formatting-only.txt ]]; then
                 printf '\n### Formatting-only\n'
                 while IFS= read -r FILE; do printf -- "- \`%s\`: upstream taken and reformatted\n" "${FILE}"; done < /tmp/formatting-only.txt
+              fi
+              if [[ -s /tmp/formatted-three-way.txt ]]; then
+                printf '\n### Formatted three-way\n'
+                while IFS= read -r FILE; do printf -- "- \`%s\`: fork and upstream changes retained\n" "${FILE}"; done < /tmp/formatted-three-way.txt
               fi
               if [[ -s /tmp/lockfiles.txt ]]; then
                 printf '\n### Lockfile\n'
