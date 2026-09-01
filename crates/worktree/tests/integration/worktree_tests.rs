@@ -1683,6 +1683,19 @@ async fn test_deferred_watch_reconciles_files_created_before_watch(cx: &mut Test
             ]
         );
     });
+
+    let dir_mtime_on_disk = fs
+        .metadata(Path::new("/root/dir"))
+        .await
+        .unwrap()
+        .unwrap()
+        .mtime;
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entry_for_path(rel_path("dir")).unwrap().mtime,
+            Some(dir_mtime_on_disk)
+        );
+    });
 }
 
 #[gpui::test]
