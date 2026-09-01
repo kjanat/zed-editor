@@ -72,8 +72,10 @@ Thread Init Command" field.
 ## Terminal Thread Titles {#terminal-thread-titles}
 
 The terminal title in the toolbar updates automatically to reflect the running
-shell or process. You can also set a custom name by clicking the title or the
-pencil icon that appears on hover.
+shell or process. You can set a custom name by clicking the title or the pencil
+icon that appears on hover. In the Threads Sidebar, right-click a Terminal
+Thread and select **Rename Title**, or select it and press {#kb
+agent::RenameSelectedThread}.
 
 ## Notifications {#terminal-thread-notifications}
 
