@@ -21,11 +21,11 @@
 # so nothing shells out to a protoc binary.
 
 [tools.cmake]
-version = "4.1.2"
-url = "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-macos-universal.tar.gz"
-sha256 = "3be85f5b999e327b1ac7d804cbc9acd767059e9f603c42ec2765f6ab68fbd367"
-bin = "cmake-4.1.2-macos-universal/CMake.app/Contents/bin/cmake"
-env = "CMAKE"
+version  = "4.1.2"
+url      = "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-macos-universal.tar.gz"
+sha256   = "3be85f5b999e327b1ac7d804cbc9acd767059e9f603c42ec2765f6ab68fbd367"
+bin      = "cmake-4.1.2-macos-universal/CMake.app/Contents/bin/cmake"
+env      = "CMAKE"
 packages = ["webrtc-sys", "wasmtime-c-api-impl"]
 
 # Prebuilt libwebrtc, so webrtc-sys-build does not have to download it over the
@@ -33,11 +33,11 @@ packages = ["webrtc-sys", "wasmtime-c-api-impl"]
 # pinned livekit-rust-sdks revision; webrtc-sys-build reads LK_CUSTOM_WEBRTC and
 # skips the download when it is set.
 [tools.webrtc-prebuilt]
-version = "0001d84-4"
-url = "https://github.com/zed-industries/livekit-rust-sdks/releases/download/webrtc-0001d84-4/webrtc-mac-arm64-release.zip"
-sha256 = "09ba71bfbc15c6aacced7fe20451a9648dfe648c24295f28d75fc386dbd7281a"
-path = "mac-arm64-release"
-env = "LK_CUSTOM_WEBRTC"
+version  = "0001d84-4"
+url      = "https://github.com/zed-industries/livekit-rust-sdks/releases/download/webrtc-0001d84-4/webrtc-mac-arm64-release.zip"
+sha256   = "09ba71bfbc15c6aacced7fe20451a9648dfe648c24295f28d75fc386dbd7281a"
+path     = "mac-arm64-release"
+env      = "LK_CUSTOM_WEBRTC"
 packages = ["webrtc-sys"]
 
 # Plan-time probe: the git SHA is read here (outside the sandbox) and frozen
@@ -46,7 +46,7 @@ packages = ["webrtc-sys"]
 # reads it via option_env!). cli/remote_server build.rs run git directly rather
 # than reading this var, so they are not listed here.
 [env.ZED_COMMIT_SHA]
-command = "git rev-parse HEAD"
+command  = "git rev-parse HEAD"
 packages = ["zed"]
 profiles = ["release"]
 
@@ -57,26 +57,26 @@ profiles = ["release"]
 # root and are granted and hashed as inputs.
 [extra-inputs]
 # Own non-.rs files read at build time (protobufs, bindgen headers, doc/data).
-proto = ["proto"]
-livekit_api = ["vendored/protocol"]
-media = ["src/bindings.h"]
-gpui = ["README.md"]
-git = ["src/checkpoint.gitignore"]
-git_ui = ["src/commit_message_prompt.txt"]
-editor = ["../grammars/src"]
-edit_prediction = ["license_patterns"]
-agent_skills = ["builtin"]
-agent_settings = ["src/prompts"]
-json_schema_store = ["src/schemas"]
-prettier = ["src/prettier_server.js"]
-zed = ["resources"]
+proto               = ["proto"]
+livekit_api         = ["vendored/protocol"]
+media               = ["src/bindings.h"]
+gpui                = ["README.md"]
+git                 = ["src/checkpoint.gitignore"]
+git_ui              = ["src/commit_message_prompt.txt"]
+editor              = ["../grammars/src"]
+edit_prediction     = ["license_patterns"]
+agent_skills        = ["builtin"]
+agent_settings      = ["src/prompts"]
+json_schema_store   = ["src/schemas"]
+prettier            = ["src/prettier_server.js"]
+zed                 = ["resources"]
 # Cross-package reads (and, for gpui_apple, its own metal shader source).
-extension_host = ["../extension_api/wit"]
-gpui_apple = ["../gpui/src", "src/shaders.metal"]
-prompt_store = ["../git_ui/src/commit_message_prompt.txt"]
-release_channel = ["../zed/RELEASE_CHANNEL"]
-cli = ["../../script/uninstall.sh"]
-remote_server = ["../zed/Cargo.toml"]
+extension_host      = ["../extension_api/wit"]
+gpui_apple          = ["../gpui/src", "src/shaders.metal"]
+prompt_store        = ["../git_ui/src/commit_message_prompt.txt"]
+release_channel     = ["../zed/RELEASE_CHANNEL"]
+cli                 = ["../../script/uninstall.sh"]
+remote_server       = ["../zed/Cargo.toml"]
 # `../zed/Cargo.toml`: build.rs reads it for ZED_PKG_VERSION. `../grammars/src`
 # and `src/prompts` are embedded in release builds; dev builds read them at
 # runtime via fs_embed.
