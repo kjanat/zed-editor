@@ -1702,11 +1702,21 @@ impl FakeFsState {
         let filename = path.file_name().context("cannot overwrite the root")?;
         let parent_path = path.parent().unwrap();
 
-        let parent = self.entry(parent_path)?;
-        let new_entry = parent
-            .dir_entries(parent_path)?
-            .entry(filename.to_str().unwrap().into());
-        callback(new_entry)
+        let entries = self.entry(parent_path)?.dir_entries(parent_path)?;
+        let entry_count = entries.len();
+        let result = callback(entries.entry(filename.to_str().unwrap().into()));
+        if entries.len() != entry_count {
+            self.mark_dir_modified(parent_path)?;
+        }
+        result
+    }
+
+    fn mark_dir_modified(&mut self, dir_path: &Path) -> Result<()> {
+        let new_mtime = self.get_and_increment_mtime();
+        if let FakeFsEntry::Dir { mtime, .. } = self.entry(dir_path)? {
+            *mtime = new_mtime;
+        }
+        Ok(())
     }
 
     fn emit_event<I, T>(&mut self, paths: I)
@@ -2751,6 +2761,9 @@ impl FakeFs {
             }
         };
 
+        if removed.is_some() {
+            state.mark_dir_modified(parent_path)?;
+        }
         state.emit_event([(path, Some(PathEventKind::Removed))]);
         Ok(removed)
     }
@@ -2784,6 +2797,9 @@ impl FakeFs {
             }
         };
 
+        if removed.is_some() {
+            state.mark_dir_modified(parent_path)?;
+        }
         state.emit_event([(path, Some(PathEventKind::Removed))]);
         Ok(removed)
     }
@@ -3345,8 +3361,15 @@ impl Fs for FakeFs {
     ) {
         self.simulate_random_delay().await;
         let (tx, rx) = async_channel::unbounded();
-        let prefixes = Arc::new(Mutex::new(vec![path.to_path_buf()]));
-        self.state.lock().event_txs.push((prefixes.clone(), tx));
+        let path = normalize_path(path);
+        let prefixes = Arc::new(Mutex::new(vec![path.clone()]));
+        {
+            let mut state = self.state.lock();
+            state
+                .create_files_before_watch_add(&path)
+                .expect("pending file for watch must be creatable");
+            state.event_txs.push((prefixes.clone(), tx));
+        }
         let executor = self.executor.clone();
         let watcher = Arc::new(FakeWatcher {
             fs_state: self.state.clone(),
