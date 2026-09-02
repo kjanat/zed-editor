@@ -5475,7 +5475,7 @@ impl BackgroundScanner {
     }
 
     async fn reconcile_directories_tick(&self) -> Duration {
-        let started_at = Instant::now();
+        let started_at = self.executor.now();
         let directories = {
             let mut state = self.state.lock().await;
             let cursor = state.reconcile_cursor.take();
@@ -5545,7 +5545,7 @@ impl BackgroundScanner {
         };
 
         self.reconcile_directories(directories, Vec::new()).await;
-        started_at.elapsed()
+        self.executor.now().duration_since(started_at)
     }
 
     async fn reconcile_directories(
