@@ -14,7 +14,7 @@ path    = "src/media.rs"
 anyhow.workspace = true
 
 [build-dependencies]
-bindgen = "0.71"
+bindgen = "0.72"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation.workspace = true

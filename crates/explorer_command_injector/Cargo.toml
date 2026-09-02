@@ -13,9 +13,9 @@ path       = "src/explorer_command_injector.rs"
 [dependencies]
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows.workspace      = true
-windows-core.workspace = true
-windows-registry       = "0.5"
+windows.workspace          = true
+windows-core.workspace     = true
+windows-registry.workspace = true
 
 [features]
 default = ["nightly"]

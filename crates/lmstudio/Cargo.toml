@@ -9,12 +9,13 @@ publish.workspace = true
 path = "src/lmstudio.rs"
 
 [dependencies]
-anyhow.workspace      = true
-futures.workspace     = true
-http_client.workspace = true
-schemars              = { workspace = true, optional = true }
-serde.workspace       = true
-serde_json.workspace  = true
+anyhow.workspace              = true
+futures.workspace             = true
+http_client.workspace         = true
+language_model_core.workspace = true
+schemars                      = { workspace = true, optional = true }
+serde.workspace               = true
+serde_json.workspace          = true
 
 [features]
 default  = []
