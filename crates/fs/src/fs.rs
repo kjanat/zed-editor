@@ -393,6 +393,12 @@ impl MTime {
     pub fn bad_is_greater_than(self, other: MTime) -> bool {
         self.0 > other.0
     }
+
+    /// A filesystem clock coarser than `granularity` can still stamp a later change with this same value.
+    pub fn may_still_be_current(self, now: SystemTime, granularity: Duration) -> bool {
+        now.duration_since(self.0)
+            .map_or(true, |age| age < granularity)
+    }
 }
 
 impl From<proto::Timestamp> for MTime {
@@ -1826,6 +1832,16 @@ impl FakeFs {
     pub fn get_and_increment_mtime(&self) -> MTime {
         let mut state = self.state.lock();
         state.get_and_increment_mtime()
+    }
+
+    /// Stamps `path` with `mtime` without reporting an event, as a coarse filesystem clock would.
+    pub fn set_mtime(&self, path: impl AsRef<Path>, new_mtime: MTime) -> Result<()> {
+        let mut state = self.state.lock();
+        match state.entry(path.as_ref())? {
+            FakeFsEntry::File { mtime, .. } | FakeFsEntry::Dir { mtime, .. } => *mtime = new_mtime,
+            FakeFsEntry::Symlink { .. } => anyhow::bail!("cannot set the mtime of a symlink"),
+        }
+        Ok(())
     }
 
     pub async fn touch_path(&self, path: impl AsRef<Path>) {
