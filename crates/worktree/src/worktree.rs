@@ -5447,14 +5447,25 @@ impl BackgroundScanner {
                 })
                 .collect::<HashSet<_>>()
                 .await;
-            let names_in_snapshot = self
-                .state
-                .lock()
-                .await
-                .snapshot
-                .child_entries(&path)
-                .filter_map(|entry| entry.path.file_name().map(OsString::from))
-                .collect::<HashSet<_>>();
+            let names_in_snapshot = {
+                let mut state = self.state.lock().await;
+                let names_in_snapshot = state
+                    .snapshot
+                    .child_entries(&path)
+                    .filter_map(|entry| entry.path.file_name().map(OsString::from))
+                    .collect::<HashSet<_>>();
+                if let Some(mut entry) = state.snapshot.entry_for_path(&path).cloned() {
+                    entry.mtime = Some(metadata.mtime);
+                    state.snapshot.insert_entry(entry, self.fs.as_ref()).await;
+                    util::extend_sorted(
+                        &mut state.changed_paths,
+                        [path.clone()],
+                        usize::MAX,
+                        Ord::cmp,
+                    );
+                }
+                names_in_snapshot
+            };
             for name in names_on_disk.symmetric_difference(&names_in_snapshot) {
                 log::debug!("reconciling {name:?} in {abs_path:?}");
                 events.push(PathEvent {
@@ -5466,6 +5477,8 @@ impl BackgroundScanner {
 
         if !events.is_empty() {
             self.process_events(events).await;
+        } else if !self.state.lock().await.changed_paths.is_empty() {
+            self.send_status_update(false, SmallVec::new(), &[]).await;
         }
     }
 
