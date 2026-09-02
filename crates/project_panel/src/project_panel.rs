@@ -4343,6 +4343,28 @@ impl ProjectPanel {
         }
     }
 
+    fn publish_hot_directories(&self, cx: &App) {
+        let project = self.project.read(cx);
+        for visible_entries in &self.state.visible_entries {
+            let Some(worktree) = project.worktree_for_id(visible_entries.worktree_id, cx) else {
+                continue;
+            };
+            let expanded_dir_ids = self
+                .state
+                .expanded_dir_ids
+                .get(&visible_entries.worktree_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let hot_directories = visible_entries
+                .entries
+                .iter()
+                .filter(|entry| entry.is_dir())
+                .map(|entry| entry.id)
+                .filter(|entry_id| expanded_dir_ids.binary_search(entry_id).is_ok());
+            worktree.read(cx).set_hot_directories(hot_directories);
+        }
+    }
+
     fn update_visible_entries(
         &mut self,
         new_selected_entry: Option<(WorktreeId, ProjectEntryId)>,
@@ -4626,6 +4648,7 @@ impl ProjectPanel {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.state = new_state;
+                this.publish_hot_directories(cx);
                 if let Some((worktree_id, entry_id)) = new_selected_entry {
                     this.selection = Some(SelectedEntry {
                         worktree_id,

@@ -7800,6 +7800,84 @@ pub(crate) fn toggle_expand_dir(
 }
 
 #[gpui::test]
+async fn test_hot_directories_follow_visible_expanded_dirs(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "a": {
+                "nested": { "deep.txt": "" },
+                "a.txt": "",
+            },
+            "b": { "b.txt": "" },
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, ProjectPanel::new);
+    cx.run_until_parked();
+
+    let worktree = project.read_with(cx, |project, cx| project.worktrees(cx).next().unwrap());
+    let entry_id = |path: &str, cx: &mut VisualTestContext| {
+        worktree.read_with(cx, |worktree, _| {
+            worktree.entry_for_path(rel_path(path)).unwrap().id
+        })
+    };
+    let hot_directories = |cx: &mut VisualTestContext| {
+        let mut hot = worktree
+            .read_with(cx, |worktree, _| {
+                worktree.as_local().unwrap().hot_directories()
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        hot.sort();
+        hot
+    };
+
+    let root = entry_id("", cx);
+    let a = entry_id("a", cx);
+    let nested = entry_id("a/nested", cx);
+    let b = entry_id("b", cx);
+
+    assert_eq!(hot_directories(cx), vec![root]);
+
+    toggle_expand_dir(&panel, "root/a", cx);
+    let mut expected = vec![root, a];
+    expected.sort();
+    assert_eq!(hot_directories(cx), expected);
+
+    toggle_expand_dir(&panel, "root/a/nested", cx);
+    let mut expected = vec![root, a, nested];
+    expected.sort();
+    assert_eq!(hot_directories(cx), expected);
+
+    toggle_expand_dir(&panel, "root/a", cx);
+    assert_eq!(hot_directories(cx), vec![root]);
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.expand_all_entries(&ExpandAllEntries, window, cx)
+    });
+    cx.run_until_parked();
+    let mut expected = vec![root, a, nested, b];
+    expected.sort();
+    assert_eq!(hot_directories(cx), expected);
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.collapse_all_entries(&CollapseAllEntries, window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(hot_directories(cx), vec![root]);
+}
+
+#[gpui::test]
 async fn test_expand_all_for_entry(cx: &mut gpui::TestAppContext) {
     init_test_with_editor(cx);
 
