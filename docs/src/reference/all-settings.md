@@ -2152,10 +2152,10 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-  "focus_follows_mouse": {
-    "enabled": false,
-    "debounce_ms": 250
-  }
+	"focus_follows_mouse": {
+		"enabled": false,
+		"debounce_ms": 250
+	}
 }
 ```
 
@@ -2171,7 +2171,8 @@ While other options may be changed at a runtime and should be placed under
 
 ### Debounce
 
-- Description: How long the mouse must hover over a panel before it is focused, in milliseconds.
+- Description: How long the mouse must hover over a panel before it is focused,
+  in milliseconds.
 - Setting: `debounce_ms`
 - Default: `250`
 
@@ -3735,7 +3736,7 @@ for more.
 
 ```json [settings]
 {
-  "on_new_window": "empty_tab"
+	"on_new_window": "empty_tab"
 }
 ```
 
@@ -3743,7 +3744,7 @@ for more.
 
 ```json [settings]
 {
-  "on_new_window": "launchpad"
+	"on_new_window": "launchpad"
 }
 ```
 
