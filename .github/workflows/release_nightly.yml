@@ -57,8 +57,6 @@ jobs:
           path: ~/.rustup
       - name: steps::setup_linux
         run: ./script/linux
-      - name: steps::download_wasi_sdk
-        run: ./script/download-wasi-sdk
       - name: steps::setup_node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -71,6 +69,8 @@ jobs:
           tool: nextest
       - name: steps::clear_target_dir_if_large
         run: ./script/clear-target-dir-if-larger-than 350 200
+      - name: steps::download_wasi_sdk
+        run: ./script/download-wasi-sdk
       - name: steps::setup_sccache
         run: ./script/setup-sccache
         env:
