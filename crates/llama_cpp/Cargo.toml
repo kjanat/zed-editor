@@ -9,13 +9,14 @@ publish.workspace = true
 path = "src/llama_cpp.rs"
 
 [dependencies]
-anyhow.workspace      = true
-futures.workspace     = true
-http_client.workspace = true
-schemars              = { workspace = true, optional = true }
-serde.workspace       = true
-serde_json.workspace  = true
-url.workspace         = true
+anyhow.workspace              = true
+futures.workspace             = true
+http_client.workspace         = true
+language_model_core.workspace = true
+schemars                      = { workspace = true, optional = true }
+serde.workspace               = true
+serde_json.workspace          = true
+url.workspace                 = true
 
 [features]
 default  = []

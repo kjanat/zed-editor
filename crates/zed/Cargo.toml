@@ -1,6 +1,6 @@
 [package]
 name              = "zed"
-version           = "1.19.0"
+version           = "1.20.0"
 authors           = ["Zed Team <hi@zed.dev>"]
 edition.workspace = true
 description       = "The fast, collaborative code editor."
