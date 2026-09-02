@@ -33,6 +33,7 @@ jobs:
       GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
       UPSTREAM: https://github.com/zed-industries/zed.git
       SYNC_BRANCH: sync/upstream
+      CONFLICT_LABEL: upstream-sync-conflict
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { ref: master, fetch-depth: 0, token: "${{ secrets.SYNC_TOKEN || github.token }}" }
@@ -241,13 +242,11 @@ jobs:
 
           DATE="$(date -u +%Y-%m-%d)"
           BEHIND="$(git rev-list --count master..upstream/main)"
-          SHORT_BASE="$(git rev-parse --short "${BASE}")"
-          SHORT_UPSTREAM="$(git rev-parse --short "${UPSTREAM_SHA}")"
           HUMAN_COUNT="$(wc -l < /tmp/human.txt)"
           {
             printf '## Upstream sync conflict, %s\n\n' "${DATE}"
-            printf "Upstream is %s commits ahead (\`%s..%s\`, [compare](https://github.com/zed-industries/zed/compare/%s...%s)).\n\n" \
-              "${BEHIND}" "${SHORT_BASE}" "${SHORT_UPSTREAM}" "${BASE}" "${UPSTREAM_SHA}"
+            printf "Upstream is %s commits ahead (https://github.com/zed-industries/zed/compare/%s...%s).\n\n" \
+              "${BEHIND}" "${BASE}" "${UPSTREAM_SHA}"
             printf '### Resolved automatically (verify, do not resolve)\n'
             if [[ -s /tmp/formatting-only.txt ]]; then
               while IFS= read -r FILE; do
@@ -265,22 +264,31 @@ jobs:
             printf '\n### Needs a human (%s files)\n' "${HUMAN_COUNT}"
             while IFS= read -r FILE; do
               HUNKS="$(grep -c '^<<<<<<< ' "${FILE}" || true)"
-              FORK_LOG="$(git log --oneline -5 "${BASE}..master" -- "${FILE}")"
-              UPSTREAM_LOG="$(git log --oneline -5 "master..upstream/main" -- "${FILE}")"
-              FORK_LOG="${FORK_LOG//$'\n'/; }"
-              UPSTREAM_LOG="${UPSTREAM_LOG//$'\n'/; }"
-              printf "**\`%s\`**, %s hunk(s)\n" "${FILE}" "${HUNKS}"
-              printf -- '- fork: %s\n' "${FORK_LOG:-none}"
-              printf -- '- upstream: %s\n' "${UPSTREAM_LOG:-none}"
-              printf '<details><summary>conflict hunks</summary>\n\n```\n'
-              awk '
-                /^<<<<<<< / { capture = 1 }
-                capture && lines < 200 { print; lines++ }
-                /^>>>>>>> / { capture = 0 }
-              ' "${FILE}"
+              FORK_LOG="$(git log --format="- \`%h\` %s" -5 "${BASE}..master" -- "${FILE}")"
+              UPSTREAM_LOG="$(git log --format="- \`%h\` %s" -5 "master..upstream/main" -- "${FILE}")"
+              DIFF_LINES="$(git diff --cc -- "${FILE}" | wc -l)"
+              if [[ "${HUNKS}" == "1" ]]; then
+                HUNK_LABEL="hunk"
+              else
+                HUNK_LABEL="hunks"
+              fi
+              printf "#### \`%s\` - %s conflict %s\n\n" "${FILE}" "${HUNKS}" "${HUNK_LABEL}"
+              printf '<details><summary>Relevant commits</summary>\n\n'
+              printf '**Fork**\n\n'
+              if [[ -n "${FORK_LOG}" ]]; then printf '%s\n' "${FORK_LOG}"; else printf '_None._\n'; fi
+              printf '\n**Upstream**\n\n'
+              if [[ -n "${UPSTREAM_LOG}" ]]; then printf '%s\n' "${UPSTREAM_LOG}"; else printf '_None._\n'; fi
+              printf '\n</details>\n\n'
+              if (( DIFF_LINES > 200 )); then
+                printf '<details><summary>Conflict diff (first 200 of %s lines)</summary>\n\n' "${DIFF_LINES}"
+              else
+                printf '<details><summary>Conflict diff</summary>\n\n'
+              fi
+              printf '```diff\n'
+              git diff --cc -- "${FILE}" | awk 'NR <= 200 { print }'
               printf '```\n</details>\n\n'
             done < /tmp/human.txt
-            printf '### Resolve\n```\n'
+            printf '### Resolve\n```sh\n'
             printf 'git fetch upstream main && git merge --no-commit upstream/main\n'
             printf "BASE=\"\$(git merge-base master upstream/main)\"\n"
             while IFS= read -r FILE; do
@@ -347,6 +355,9 @@ jobs:
           EXISTING=$(gh pr list --repo "${GITHUB_REPOSITORY}" \
             --head "${SYNC_BRANCH}" --base master --state open \
             --json number --jq '.[0].number // empty')
+          CONFLICT_ISSUES="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
+            --state open --label "${CONFLICT_LABEL}" --limit 100 \
+            --json number --jq '.[].number')"
           BEHIND="${{ steps.drift.outputs.behind }}"
           {
             printf 'Automated upstream sync: merges zed-industries/zed main into master.\n\n'
@@ -365,6 +376,12 @@ jobs:
                 printf '\n### Lockfile\n'
                 printf -- "- \`Cargo.lock\`: fork side kept and reconciled by cargo\n"
               fi
+            fi
+            if [[ -n "${CONFLICT_ISSUES}" ]]; then
+              printf '\n'
+              while IFS= read -r ISSUE; do
+                if [[ -n "${ISSUE}" ]]; then printf 'Closes #%s.\n' "${ISSUE}"; fi
+              done <<< "${CONFLICT_ISSUES}"
             fi
           } > /tmp/pr-body.md
           if [[ -n "${EXISTING}" ]]; then
@@ -387,9 +404,11 @@ jobs:
             --state open --search "Upstream sync conflict in:title" \
             --json number --jq '.[0].number // empty')
           if [[ -n "${EXISTING}" ]]; then
+            gh issue edit "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --add-label "${CONFLICT_LABEL}"
             gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/issue-body.md
           else
-            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --body-file /tmp/issue-body.md
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" --body-file /tmp/issue-body.md --label "${CONFLICT_LABEL}"
           fi
 
       - name: Nothing to do
