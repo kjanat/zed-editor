@@ -535,12 +535,14 @@ impl AutoUpdater {
     }
 
     fn restart_after_wake(&mut self, cx: &mut Context<Self>) {
-        // Only network phases can be safely restarted. `Installing` is a local
-        // operation (mounting a dmg, rsync, etc.) that must not be interrupted.
-        if !matches!(
-            self.status,
-            AutoUpdateStatus::Checking | AutoUpdateStatus::Downloading { .. }
-        ) {
+        // Only bundled updater network phases can be safely restarted. `Installing`
+        // is a local operation (mounting a dmg, rsync, etc.) that must not be interrupted.
+        if self.pending_poll.is_none()
+            || !matches!(
+                self.status,
+                AutoUpdateStatus::Checking | AutoUpdateStatus::Downloading { .. }
+            )
+        {
             return;
         }
 
@@ -1751,6 +1753,68 @@ mod tests {
 
         assert_eq!(outcome.message(), "Could not check for updates.");
         assert_eq!(outcome.detail().as_deref(), Some("network is unreachable"));
+    }
+
+    #[gpui::test]
+    async fn test_wake_during_package_manager_check_does_not_start_bundled_update(
+        cx: &mut TestAppContext,
+    ) {
+        cx.background_executor.allow_parking();
+
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let release_rx = Arc::new(parking_lot::Mutex::new(Some(release_rx)));
+        let auto_updater = cx.update(|cx| {
+            settings::init(cx);
+            let current_version = semver::Version::new(0, 100, 0);
+            release_channel::init_test(current_version.clone(), ReleaseChannel::Stable, cx);
+
+            let fake_client_http = FakeHttpClient::create(move |_request| {
+                let release_rx = release_rx.clone();
+                async move {
+                    let release_rx = release_rx
+                        .lock()
+                        .take()
+                        .expect("release request should only be made once");
+                    release_rx
+                        .await
+                        .expect("release request should be allowed to finish");
+                    Ok(Response::builder()
+                        .status(200)
+                        .body(r#"{"tag_name":"v0.100.0","assets":[]}"#.into())
+                        .unwrap())
+                }
+            });
+            let client = Client::new(Arc::new(FakeSystemClock::new()), fake_client_http, cx);
+            let auto_updater = cx.new(|cx| AutoUpdater::new(current_version, client.clone(), cx));
+            cx.set_global(GlobalAutoUpdate(Some(auto_updater.clone())));
+            auto_updater
+        });
+
+        let package_manager_check = cx
+            .update(package_manager_update_check)
+            .expect("package manager check should start");
+        cx.run_until_parked();
+
+        auto_updater.read_with(cx, |auto_updater, _| {
+            assert_eq!(auto_updater.status, AutoUpdateStatus::Checking);
+            assert!(auto_updater.pending_poll.is_none());
+        });
+
+        auto_updater.update(cx, |auto_updater, cx| auto_updater.restart_after_wake(cx));
+
+        auto_updater.read_with(cx, |auto_updater, _| {
+            assert_eq!(auto_updater.status, AutoUpdateStatus::Checking);
+            assert!(auto_updater.pending_poll.is_none());
+        });
+
+        release_tx
+            .send(())
+            .expect("release request should still be active");
+        assert!(matches!(
+            package_manager_check.await,
+            PackageManagerCheck::UpToDate { installed }
+                if installed == semver::Version::new(0, 100, 0)
+        ));
     }
 
     #[test]
