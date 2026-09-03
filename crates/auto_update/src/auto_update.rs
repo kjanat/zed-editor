@@ -4,7 +4,7 @@ use db::kvp::KeyValueStore;
 use futures_lite::StreamExt;
 use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, Global, Task, TaskExt,
-    Window, actions,
+    actions,
 };
 use http_client::{HttpClient, HttpClientWithUrl};
 use paths::remote_servers_dir;
@@ -278,8 +278,6 @@ impl Global for GlobalAutoUpdate {}
 
 pub fn init(client: Arc<Client>, cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
-        workspace.register_action(|_, action, window, cx| check(action, window, cx));
-
         workspace.register_action(|_, action, _, cx| {
             view_release_notes(action, cx);
         });
@@ -316,13 +314,21 @@ pub fn init(client: Arc<Client>, cx: &mut App) {
     cx.set_global(GlobalAutoUpdate(Some(auto_updater)));
 }
 
-fn update_explanation() -> Option<String> {
+pub fn update_explanation() -> Option<String> {
     option_env!("ZED_UPDATE_EXPLANATION")
         .map(ToOwned::to_owned)
         .or_else(|| env::var("ZED_UPDATE_EXPLANATION").ok())
 }
 
-enum PackageManagerCheck {
+/// The shell command that updates this installation, for packagers whose
+/// update path is a single command the user can run.
+pub fn update_command() -> Option<String> {
+    option_env!("ZED_UPDATE_COMMAND")
+        .map(ToOwned::to_owned)
+        .or_else(|| env::var("ZED_UPDATE_COMMAND").ok())
+}
+
+pub enum PackageManagerCheck {
     UpToDate {
         installed: Version,
     },
@@ -336,7 +342,7 @@ enum PackageManagerCheck {
 }
 
 impl PackageManagerCheck {
-    fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             Self::UpToDate { installed } => format!("Zed {installed} is up to date."),
             Self::UpdateAvailable { available, .. } => format!("Zed {available} is available."),
@@ -344,29 +350,19 @@ impl PackageManagerCheck {
         }
     }
 
-    fn detail(&self, explanation: &str) -> String {
+    pub fn detail(&self) -> Option<String> {
         match self {
-            Self::UpToDate { .. } => explanation.to_string(),
+            Self::UpToDate { .. } => None,
             Self::UpdateAvailable { installed, .. } => {
-                format!("You are running {installed}. {explanation}")
+                Some(format!("You are running {installed}."))
             }
-            Self::Failed { error } => format!("{error}\n\n{explanation}"),
+            Self::Failed { error } => Some(error.clone()),
         }
     }
 }
 
-fn check_with_package_manager(explanation: String, window: &mut Window, cx: &mut App) {
-    let Some(updater) = AutoUpdater::get(cx) else {
-        drop(window.prompt(
-            gpui::PromptLevel::Info,
-            "Zed was installed via a package manager.",
-            Some(&explanation),
-            &["OK"],
-            cx,
-        ));
-        return;
-    };
-
+pub fn package_manager_update_check(cx: &mut App) -> Option<Task<PackageManagerCheck>> {
+    let updater = AutoUpdater::get(cx)?;
     let release_channel = ReleaseChannel::try_global(cx).unwrap_or(ReleaseChannel::Stable);
     let app_commit_sha = AppCommitSha::try_global(cx).map(|sha| sha.full());
     let installed_version = updater.read(cx).current_version.clone();
@@ -378,73 +374,40 @@ fn check_with_package_manager(explanation: String, window: &mut Window, cx: &mut
         }
     });
 
-    window
-        .spawn(cx, async move |cx| {
-            let outcome = match AutoUpdater::latest_release_version(&updater, cx).await {
-                Ok(fetched_version) => match AutoUpdater::check_if_fetched_version_is_newer(
-                    release_channel,
-                    Ok(app_commit_sha),
-                    installed_version.clone(),
-                    fetched_version,
-                    AutoUpdateStatus::Idle,
-                ) {
-                    Ok(Some(available)) => PackageManagerCheck::UpdateAvailable {
-                        installed: installed_version,
-                        available,
-                    },
-                    Ok(None) => PackageManagerCheck::UpToDate {
-                        installed: installed_version,
-                    },
-                    Err(error) => PackageManagerCheck::Failed {
-                        error: format!("{error:#}"),
-                    },
+    Some(cx.spawn(async move |cx| {
+        let outcome = match AutoUpdater::latest_release_version(&updater, cx).await {
+            Ok(fetched_version) => match AutoUpdater::check_if_fetched_version_is_newer(
+                release_channel,
+                Ok(app_commit_sha),
+                installed_version.clone(),
+                fetched_version,
+                AutoUpdateStatus::Idle,
+            ) {
+                Ok(Some(available)) => PackageManagerCheck::UpdateAvailable {
+                    installed: installed_version,
+                    available,
+                },
+                Ok(None) => PackageManagerCheck::UpToDate {
+                    installed: installed_version,
                 },
                 Err(error) => PackageManagerCheck::Failed {
                     error: format!("{error:#}"),
                 },
-            };
+            },
+            Err(error) => PackageManagerCheck::Failed {
+                error: format!("{error:#}"),
+            },
+        };
 
-            updater.update(cx, |updater, cx| {
-                if matches!(updater.status, AutoUpdateStatus::Checking) {
-                    updater.status = AutoUpdateStatus::Idle;
-                    cx.notify();
-                }
-            });
+        updater.update(cx, |updater, cx| {
+            if matches!(updater.status, AutoUpdateStatus::Checking) {
+                updater.status = AutoUpdateStatus::Idle;
+                cx.notify();
+            }
+        });
 
-            drop(cx.prompt(
-                gpui::PromptLevel::Info,
-                &outcome.message(),
-                Some(&outcome.detail(&explanation)),
-                &["OK"],
-            ));
-        })
-        .detach();
-}
-
-pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
-    if let Some(explanation) = update_explanation() {
-        check_with_package_manager(explanation, window, cx);
-        return;
-    }
-
-    if !ReleaseChannel::try_global(cx)
-        .map(|channel| channel.poll_for_updates())
-        .unwrap_or(false)
-    {
-        return;
-    }
-
-    if let Some(updater) = AutoUpdater::get(cx) {
-        updater.update(cx, |updater, cx| updater.poll(UpdateCheckType::Manual, cx));
-    } else {
-        drop(window.prompt(
-            gpui::PromptLevel::Info,
-            "Could not check for updates",
-            Some("Auto-updates disabled for non-bundled app."),
-            &["OK"],
-            cx,
-        ));
-    }
+        outcome
+    }))
 }
 
 pub fn release_notes_url(cx: &mut App) -> Option<String> {
@@ -1767,10 +1730,7 @@ mod tests {
         };
 
         assert_eq!(outcome.message(), "Zed 1.21.0 is available.");
-        assert_eq!(
-            outcome.detail("Zed was installed via pacman; update with 'pacman -Syu'."),
-            "You are running 1.20.0. Zed was installed via pacman; update with 'pacman -Syu'."
-        );
+        assert_eq!(outcome.detail().as_deref(), Some("You are running 1.20.0."));
     }
 
     #[test]
@@ -1780,22 +1740,17 @@ mod tests {
         };
 
         assert_eq!(outcome.message(), "Zed 1.21.0 is up to date.");
-        assert_eq!(
-            outcome.detail("Zed was installed via pacman; update with 'pacman -Syu'."),
-            "Zed was installed via pacman; update with 'pacman -Syu'."
-        );
+        assert_eq!(outcome.detail(), None);
     }
 
     #[test]
-    fn test_package_manager_check_keeps_the_explanation_when_the_check_fails() {
+    fn test_package_manager_check_surfaces_the_error_when_the_check_fails() {
         let outcome = PackageManagerCheck::Failed {
             error: "network is unreachable".to_string(),
         };
 
         assert_eq!(outcome.message(), "Could not check for updates.");
-        let detail = outcome.detail("Zed was installed via pacman; update with 'pacman -Syu'.");
-        assert!(detail.contains("network is unreachable"));
-        assert!(detail.contains("pacman -Syu"));
+        assert_eq!(outcome.detail().as_deref(), Some("network is unreachable"));
     }
 
     #[test]

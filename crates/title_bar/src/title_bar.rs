@@ -1186,7 +1186,7 @@ impl TitleBar {
                                 workspace::reload(cx);
                                 return;
                             }
-                            auto_update::check(&Default::default(), window, cx);
+                            window.dispatch_action(auto_update::Check.boxed_clone(), cx);
                         })
                         .into_any_element(),
                 )
