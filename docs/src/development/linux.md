@@ -94,7 +94,12 @@ Zed has two main binaries:
 - You can disable Zed's auto updates and provide instructions for users who try
   to update Zed manually by building (or running) Zed with the environment
   variable `ZED_UPDATE_EXPLANATION`. For example:
-  `ZED_UPDATE_EXPLANATION="Please use flatpak to update zed."`.
+  `ZED_UPDATE_EXPLANATION="Please use flatpak to update zed."`. Check for
+  Updates still reports whether a newer release exists and shows this text
+  alongside the answer.
+- If a single shell command updates your package, set `ZED_UPDATE_COMMAND` to it
+  as well, for example `ZED_UPDATE_COMMAND="flatpak update dev.zed.Zed"`. Check
+  for Updates then offers it as a copyable command.
 - Make sure to update the contents of the `crates/zed/RELEASE_CHANNEL` file to
   'nightly', 'preview', or 'stable', with no newline. This will cause Zed to use
   the credentials manager to remember a user's login.

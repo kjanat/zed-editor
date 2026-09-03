@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use agent_skills::GLOBAL_SKILLS_DIR_DISPLAY;
-use auto_update::{AutoUpdater, release_notes_url};
+use auto_update::{AutoUpdater, Check, PackageManagerCheck, UpdateCheckType, release_notes_url};
 use client::zed_urls;
 use db::kvp::Dismissable;
 use editor::{Editor, MultiBuffer};
@@ -15,7 +15,7 @@ use release_channel::{AppVersion, ReleaseChannel};
 use semver::Version;
 use serde::Deserialize;
 use smol::io::AsyncReadExt;
-use ui::{AnnouncementToast, ListBulletItem, SkillsIllustration, prelude::*};
+use ui::{AnnouncementToast, CopyButton, ListBulletItem, SkillsIllustration, prelude::*};
 use util::{ResultExt as _, maybe};
 use workspace::{
     Workspace,
@@ -38,6 +38,8 @@ actions!(
 pub fn init(cx: &mut App) {
     notify_if_app_was_updated(cx);
     cx.observe_new(|workspace: &mut Workspace, _window, cx| {
+        workspace.register_action(|_, action, window, cx| check(action, window, cx));
+
         workspace.register_action(|workspace, _: &ViewReleaseNotesLocally, window, cx| {
             view_release_notes_locally(workspace, window, cx);
         });
@@ -52,6 +54,120 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+}
+
+pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
+    if let Some(explanation) = auto_update::update_explanation() {
+        check_with_package_manager(explanation, window, cx);
+        return;
+    }
+
+    if !ReleaseChannel::try_global(cx)
+        .map(|channel| channel.poll_for_updates())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    if let Some(updater) = AutoUpdater::get(cx) {
+        updater.update(cx, |updater, cx| updater.poll(UpdateCheckType::Manual, cx));
+    } else {
+        drop(window.prompt(
+            gpui::PromptLevel::Info,
+            "Could not check for updates",
+            Some("Auto-updates disabled for non-bundled app."),
+            &["OK"],
+            cx,
+        ));
+    }
+}
+
+fn check_with_package_manager(explanation: String, window: &mut Window, cx: &mut App) {
+    let Some(check) = auto_update::package_manager_update_check(cx) else {
+        drop(window.prompt(
+            gpui::PromptLevel::Info,
+            "Zed was installed via a package manager.",
+            Some(&explanation),
+            &["OK"],
+            cx,
+        ));
+        return;
+    };
+
+    let command = auto_update::update_command();
+    cx.spawn(async move |cx| {
+        let outcome = check.await;
+        cx.update(|cx| show_package_manager_update_notification(outcome, explanation, command, cx));
+    })
+    .detach();
+}
+
+struct PackageManagerUpdateNotification;
+
+fn show_package_manager_update_notification(
+    outcome: PackageManagerCheck,
+    explanation: String,
+    command: Option<String>,
+    cx: &mut App,
+) {
+    let title: SharedString = outcome.message().into();
+    let detail: Option<SharedString> = outcome.detail().map(Into::into);
+    let explanation: SharedString = explanation.into();
+    let command: Option<SharedString> = command.map(Into::into);
+
+    show_app_notification(
+        NotificationId::unique::<PackageManagerUpdateNotification>(),
+        cx,
+        move |cx| {
+            let title = title.clone();
+            let detail = detail.clone();
+            let explanation = explanation.clone();
+            let command = command.clone();
+            cx.new(move |cx| {
+                MessageNotification::new_from_builder(cx, move |_window, cx| {
+                    v_flex()
+                        .gap_1()
+                        .when_some(detail.clone(), |this, detail| {
+                            this.child(
+                                Label::new(detail)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                        })
+                        .child(
+                            Label::new(explanation.clone())
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .when_some(command.clone(), |this, command| {
+                            this.child(update_command_block(command, cx))
+                        })
+                        .into_any_element()
+                })
+                .with_title(title)
+                .show_suppress_button(false)
+            })
+        },
+    );
+}
+
+fn update_command_block(command: SharedString, cx: &App) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .gap_1()
+        .px_1p5()
+        .py_0p5()
+        .justify_between()
+        .rounded_sm()
+        .bg(cx.theme().colors().editor_background)
+        .border_1()
+        .border_color(cx.theme().colors().border_variant)
+        .child(
+            Label::new(command.clone())
+                .buffer_font(cx)
+                .size(LabelSize::Small),
+        )
+        .child(CopyButton::new("copy-update-command", command).tooltip_label("Copy Command"))
 }
 
 #[derive(Deserialize)]

@@ -4,7 +4,7 @@ use db::kvp::KeyValueStore;
 use futures_lite::StreamExt;
 use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, Global, Task, TaskExt,
-    Window, actions,
+    actions,
 };
 use http_client::{HttpClient, HttpClientWithUrl};
 use paths::remote_servers_dir;
@@ -278,8 +278,6 @@ impl Global for GlobalAutoUpdate {}
 
 pub fn init(client: Arc<Client>, cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
-        workspace.register_action(|_, action, window, cx| check(action, window, cx));
-
         workspace.register_action(|_, action, _, cx| {
             view_release_notes(action, cx);
         });
@@ -294,10 +292,7 @@ pub fn init(client: Arc<Client>, cx: &mut App) {
             .map(|channel| channel.poll_for_updates())
             .unwrap_or(false);
 
-        if option_env!("ZED_UPDATE_EXPLANATION").is_none()
-            && env::var("ZED_UPDATE_EXPLANATION").is_err()
-            && poll_for_updates
-        {
+        if update_explanation().is_none() && poll_for_updates {
             let mut update_subscription = AutoUpdateSetting::get_global(cx)
                 .0
                 .then(|| updater.start_polling(cx));
@@ -319,39 +314,100 @@ pub fn init(client: Arc<Client>, cx: &mut App) {
     cx.set_global(GlobalAutoUpdate(Some(auto_updater)));
 }
 
-pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
-    if let Some(message) = option_env!("ZED_UPDATE_EXPLANATION")
+pub fn update_explanation() -> Option<String> {
+    option_env!("ZED_UPDATE_EXPLANATION")
         .map(ToOwned::to_owned)
         .or_else(|| env::var("ZED_UPDATE_EXPLANATION").ok())
-    {
-        drop(window.prompt(
-            gpui::PromptLevel::Info,
-            "Zed was installed via a package manager.",
-            Some(&message),
-            &["OK"],
-            cx,
-        ));
-        return;
+}
+
+/// The shell command that updates this installation, for packagers whose
+/// update path is a single command the user can run.
+pub fn update_command() -> Option<String> {
+    option_env!("ZED_UPDATE_COMMAND")
+        .map(ToOwned::to_owned)
+        .or_else(|| env::var("ZED_UPDATE_COMMAND").ok())
+}
+
+pub enum PackageManagerCheck {
+    UpToDate {
+        installed: Version,
+    },
+    UpdateAvailable {
+        installed: Version,
+        available: Version,
+    },
+    Failed {
+        error: String,
+    },
+}
+
+impl PackageManagerCheck {
+    pub fn message(&self) -> String {
+        match self {
+            Self::UpToDate { installed } => format!("Zed {installed} is up to date."),
+            Self::UpdateAvailable { available, .. } => format!("Zed {available} is available."),
+            Self::Failed { .. } => "Could not check for updates.".to_string(),
+        }
     }
 
-    if !ReleaseChannel::try_global(cx)
-        .map(|channel| channel.poll_for_updates())
-        .unwrap_or(false)
-    {
-        return;
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::UpToDate { .. } => None,
+            Self::UpdateAvailable { installed, .. } => {
+                Some(format!("You are running {installed}."))
+            }
+            Self::Failed { error } => Some(error.clone()),
+        }
     }
+}
 
-    if let Some(updater) = AutoUpdater::get(cx) {
-        updater.update(cx, |updater, cx| updater.poll(UpdateCheckType::Manual, cx));
-    } else {
-        drop(window.prompt(
-            gpui::PromptLevel::Info,
-            "Could not check for updates",
-            Some("Auto-updates disabled for non-bundled app."),
-            &["OK"],
-            cx,
-        ));
-    }
+pub fn package_manager_update_check(cx: &mut App) -> Option<Task<PackageManagerCheck>> {
+    let updater = AutoUpdater::get(cx)?;
+    let release_channel = ReleaseChannel::try_global(cx).unwrap_or(ReleaseChannel::Stable);
+    let app_commit_sha = AppCommitSha::try_global(cx).map(|sha| sha.full());
+    let installed_version = updater.read(cx).current_version.clone();
+
+    updater.update(cx, |updater, cx| {
+        if matches!(updater.status, AutoUpdateStatus::Idle) {
+            updater.status = AutoUpdateStatus::Checking;
+            cx.notify();
+        }
+    });
+
+    Some(cx.spawn(async move |cx| {
+        let outcome = match AutoUpdater::latest_release_version(&updater, cx).await {
+            Ok(fetched_version) => match AutoUpdater::check_if_fetched_version_is_newer(
+                release_channel,
+                Ok(app_commit_sha),
+                installed_version.clone(),
+                fetched_version,
+                AutoUpdateStatus::Idle,
+            ) {
+                Ok(Some(available)) => PackageManagerCheck::UpdateAvailable {
+                    installed: installed_version,
+                    available,
+                },
+                Ok(None) => PackageManagerCheck::UpToDate {
+                    installed: installed_version,
+                },
+                Err(error) => PackageManagerCheck::Failed {
+                    error: format!("{error:#}"),
+                },
+            },
+            Err(error) => PackageManagerCheck::Failed {
+                error: format!("{error:#}"),
+            },
+        };
+
+        updater.update(cx, |updater, cx| {
+            if matches!(updater.status, AutoUpdateStatus::Checking) {
+                updater.status = AutoUpdateStatus::Idle;
+                cx.notify();
+            }
+        });
+
+        outcome
+    }))
 }
 
 pub fn release_notes_url(cx: &mut App) -> Option<String> {
@@ -479,12 +535,14 @@ impl AutoUpdater {
     }
 
     fn restart_after_wake(&mut self, cx: &mut Context<Self>) {
-        // Only network phases can be safely restarted. `Installing` is a local
-        // operation (mounting a dmg, rsync, etc.) that must not be interrupted.
-        if !matches!(
-            self.status,
-            AutoUpdateStatus::Checking | AutoUpdateStatus::Downloading { .. }
-        ) {
+        // Only bundled updater network phases can be safely restarted. `Installing`
+        // is a local operation (mounting a dmg, rsync, etc.) that must not be interrupted.
+        if self.pending_poll.is_none()
+            || !matches!(
+                self.status,
+                AutoUpdateStatus::Checking | AutoUpdateStatus::Downloading { .. }
+            )
+        {
             return;
         }
 
@@ -681,15 +739,11 @@ impl AutoUpdater {
         Ok(Some(release.url))
     }
 
-    async fn get_release_asset(
+    async fn fetch_release(
         this: &Entity<Self>,
-        _release_channel: ReleaseChannel,
         version: Option<Version>,
-        asset: &str,
-        os: &str,
-        arch: &str,
         cx: &mut AsyncApp,
-    ) -> Result<ReleaseAsset> {
+    ) -> Result<GithubRelease> {
         let http_client = this.read_with(cx, |this, _| this.client.http_client());
 
         let url = if let Some(mut version) = version {
@@ -710,13 +764,38 @@ impl AutoUpdater {
             String::from_utf8_lossy(&body),
         );
 
-        let release: GithubRelease =
-            serde_json::from_slice(body.as_slice()).with_context(|| {
-                format!(
-                    "error deserializing release {:?}",
-                    String::from_utf8_lossy(&body),
-                )
-            })?;
+        serde_json::from_slice(body.as_slice()).with_context(|| {
+            format!(
+                "error deserializing release {:?}",
+                String::from_utf8_lossy(&body),
+            )
+        })
+    }
+
+    fn release_version(release: &GithubRelease) -> String {
+        release
+            .tag_name
+            .strip_prefix('v')
+            .unwrap_or(&release.tag_name)
+            .to_string()
+    }
+
+    async fn latest_release_version(this: &Entity<Self>, cx: &mut AsyncApp) -> Result<String> {
+        let release = Self::fetch_release(this, None, cx).await?;
+        Ok(Self::release_version(&release))
+    }
+
+    async fn get_release_asset(
+        this: &Entity<Self>,
+        _release_channel: ReleaseChannel,
+        version: Option<Version>,
+        asset: &str,
+        os: &str,
+        arch: &str,
+        cx: &mut AsyncApp,
+    ) -> Result<ReleaseAsset> {
+        let release = Self::fetch_release(this, version, cx).await?;
+        let version = Self::release_version(&release);
 
         let asset_name = release_asset_name(asset, os, arch)?;
         let github_asset = release
@@ -724,12 +803,6 @@ impl AutoUpdater {
             .into_iter()
             .find(|github_asset| github_asset.name == asset_name)
             .with_context(|| format!("release {} has no asset {asset_name}", release.tag_name))?;
-
-        let version = release
-            .tag_name
-            .strip_prefix('v')
-            .unwrap_or(&release.tag_name)
-            .to_string();
 
         Ok(ReleaseAsset {
             version,
@@ -1649,6 +1722,99 @@ mod tests {
 
         let downloaded_len = std::fs::metadata(&target_path).unwrap().len();
         assert_eq!(downloaded_len, content_length as u64);
+    }
+
+    #[test]
+    fn test_package_manager_check_names_the_available_version() {
+        let outcome = PackageManagerCheck::UpdateAvailable {
+            installed: semver::Version::new(1, 20, 0),
+            available: semver::Version::new(1, 21, 0),
+        };
+
+        assert_eq!(outcome.message(), "Zed 1.21.0 is available.");
+        assert_eq!(outcome.detail().as_deref(), Some("You are running 1.20.0."));
+    }
+
+    #[test]
+    fn test_package_manager_check_names_the_installed_version_when_up_to_date() {
+        let outcome = PackageManagerCheck::UpToDate {
+            installed: semver::Version::new(1, 21, 0),
+        };
+
+        assert_eq!(outcome.message(), "Zed 1.21.0 is up to date.");
+        assert_eq!(outcome.detail(), None);
+    }
+
+    #[test]
+    fn test_package_manager_check_surfaces_the_error_when_the_check_fails() {
+        let outcome = PackageManagerCheck::Failed {
+            error: "network is unreachable".to_string(),
+        };
+
+        assert_eq!(outcome.message(), "Could not check for updates.");
+        assert_eq!(outcome.detail().as_deref(), Some("network is unreachable"));
+    }
+
+    #[gpui::test]
+    async fn test_wake_during_package_manager_check_does_not_start_bundled_update(
+        cx: &mut TestAppContext,
+    ) {
+        cx.background_executor.allow_parking();
+
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let release_rx = Arc::new(parking_lot::Mutex::new(Some(release_rx)));
+        let auto_updater = cx.update(|cx| {
+            settings::init(cx);
+            let current_version = semver::Version::new(0, 100, 0);
+            release_channel::init_test(current_version.clone(), ReleaseChannel::Stable, cx);
+
+            let fake_client_http = FakeHttpClient::create(move |_request| {
+                let release_rx = release_rx.clone();
+                async move {
+                    let release_rx = release_rx
+                        .lock()
+                        .take()
+                        .expect("release request should only be made once");
+                    release_rx
+                        .await
+                        .expect("release request should be allowed to finish");
+                    Ok(Response::builder()
+                        .status(200)
+                        .body(r#"{"tag_name":"v0.100.0","assets":[]}"#.into())
+                        .unwrap())
+                }
+            });
+            let client = Client::new(Arc::new(FakeSystemClock::new()), fake_client_http, cx);
+            let auto_updater = cx.new(|cx| AutoUpdater::new(current_version, client.clone(), cx));
+            cx.set_global(GlobalAutoUpdate(Some(auto_updater.clone())));
+            auto_updater
+        });
+
+        let package_manager_check = cx
+            .update(package_manager_update_check)
+            .expect("package manager check should start");
+        cx.run_until_parked();
+
+        auto_updater.read_with(cx, |auto_updater, _| {
+            assert_eq!(auto_updater.status, AutoUpdateStatus::Checking);
+            assert!(auto_updater.pending_poll.is_none());
+        });
+
+        auto_updater.update(cx, |auto_updater, cx| auto_updater.restart_after_wake(cx));
+
+        auto_updater.read_with(cx, |auto_updater, _| {
+            assert_eq!(auto_updater.status, AutoUpdateStatus::Checking);
+            assert!(auto_updater.pending_poll.is_none());
+        });
+
+        release_tx
+            .send(())
+            .expect("release request should still be active");
+        assert!(matches!(
+            package_manager_check.await,
+            PackageManagerCheck::UpToDate { installed }
+                if installed == semver::Version::new(0, 100, 0)
+        ));
     }
 
     #[test]
