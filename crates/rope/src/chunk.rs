@@ -737,9 +737,8 @@ fn nth_set_bit(v: u128, n: usize) -> usize {
 fn panic_char_boundary(text: &str, offset: usize) -> ! {
     if offset > text.len() {
         panic!(
-            "byte index {} is out of bounds of `{:?}` (length: {})",
+            "byte index {} is out of bounds (length: {})",
             offset,
-            text,
             text.len()
         );
     }
@@ -749,8 +748,8 @@ fn panic_char_boundary(text: &str, offset: usize) -> ! {
     let ch = text.get(char_start..).unwrap().chars().next().unwrap();
     let char_range = char_start..char_start + ch.len_utf8();
     panic!(
-        "byte index {} is not a char boundary; it is inside {:?} (bytes {:?})",
-        offset, ch, char_range,
+        "byte index {} is not a char boundary (bytes {:?})",
+        offset, char_range,
     );
 }
 
@@ -760,9 +759,8 @@ fn panic_char_boundary(text: &str, offset: usize) -> ! {
 fn log_err_char_boundary(text: &str, offset: usize) {
     if offset >= text.len() {
         log::error!(
-            "byte index {} is out of bounds of `{:?}` (length: {})",
+            "byte index {} is out of bounds (length: {})",
             offset,
-            text,
             text.len()
         );
         return;
@@ -773,9 +771,8 @@ fn log_err_char_boundary(text: &str, offset: usize) {
     let ch = text.get(char_start..).unwrap().chars().next().unwrap();
     let char_range = char_start..char_start + ch.len_utf8();
     log::error!(
-        "byte index {} is not a char boundary; it is inside {:?} (bytes {:?})",
+        "byte index {} is not a char boundary (bytes {:?})",
         offset,
-        ch,
         char_range,
     );
 }
@@ -823,6 +820,24 @@ mod tests {
     use super::*;
     use rand::prelude::*;
     use util::RandomCharIter;
+
+    #[test]
+    fn char_boundary_panics_do_not_disclose_text() {
+        let text = "🔒private";
+        for (offset, expected) in [
+            (1, "byte index 1 is not a char boundary (bytes 0..4)"),
+            (12, "byte index 12 is out of bounds (length: 11)"),
+        ] {
+            let panic = std::panic::catch_unwind(|| panic_char_boundary(text, offset))
+                .expect_err("invalid offset should panic");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .expect("panic should have a message");
+            assert_eq!(message, expected);
+        }
+    }
 
     #[gpui::test(iterations = 100)]
     fn test_random_chunks(mut rng: StdRng) {

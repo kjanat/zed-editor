@@ -2116,13 +2116,7 @@ impl Terminal {
             ..
         } = &self.terminal_type
         {
-            if log::log_enabled!(log::Level::Debug) {
-                if let Ok(str) = str::from_utf8(&input) {
-                    log::debug!("Writing to PTY: {:?}", str);
-                } else {
-                    log::debug!("Writing to PTY: {:?}", input);
-                }
-            }
+            log::debug!("Writing {} bytes to PTY", input.len());
             pty_tx.notify(input);
         }
     }

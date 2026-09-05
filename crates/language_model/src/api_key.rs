@@ -76,21 +76,13 @@ impl ApiKeyState {
         };
         if url == self.url.as_str() {
             Some(api_key.key.clone())
-        } else if let ApiKeySource::EnvVar(var_name) = &api_key.source {
-            log::warn!(
-                "{} is now being used with URL {}, when initially it was used with URL {}",
-                var_name,
-                url,
-                self.url
-            );
+        } else if let ApiKeySource::EnvVar(_) = &api_key.source {
+            // Endpoints can contain credentials in userinfo, paths, or query parameters.
+            log::warn!("Environment API key is being used with a different provider URL");
             Some(api_key.key.clone())
         } else {
             // bug case because load_if_needed should be called whenever the url may have changed
-            log::error!(
-                "bug: Attempted to use API key associated with URL {} instead with URL {}",
-                self.url,
-                url
-            );
+            log::error!("bug: Attempted to use stored API key with a different provider URL");
             None
         }
     }
@@ -293,6 +285,45 @@ impl Display for ApiKeySource {
         match self {
             ApiKeySource::EnvVar(var) => write!(f, "environment variable {}", var),
             ApiKeySource::SystemKeychain => write!(f, "system keychain"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_mismatch_preserves_api_key_source_policy() {
+        let original_url = "https://user:password@example.com/private-key?token=secret#fragment";
+        for source in [
+            ApiKeySource::EnvVar("TEST_API_KEY".into()),
+            ApiKeySource::SystemKeychain,
+        ] {
+            let from_environment = matches!(&source, ApiKeySource::EnvVar(_));
+            let mut state = ApiKeyState::new(
+                original_url.into(),
+                EnvVar {
+                    name: "TEST_API_KEY".into(),
+                    value: None,
+                },
+            );
+            state.load_status = LoadStatus::Loaded(ApiKey {
+                source,
+                key: "test-key".into(),
+            });
+
+            assert_eq!(state.key(original_url).as_deref(), Some("test-key"));
+            for different_url in [
+                "https://other:password@other.example.com/token?key=secret",
+                "invalid URL containing secret",
+            ] {
+                assert_eq!(
+                    state.key(different_url).as_deref(),
+                    from_environment.then_some("test-key")
+                );
+            }
+            assert_eq!(state.key(original_url).as_deref(), Some("test-key"));
         }
     }
 }
