@@ -104,7 +104,7 @@ impl Github {
 
     pub fn from_remote_url(remote_url: &str) -> Result<Self> {
         let host = get_host_from_git_remote_url(remote_url)?;
-        if host == "github.com" {
+        if host == "github.com" || host == "gist.github.com" {
             bail!("the GitHub instance is not self-hosted");
         }
 
@@ -329,6 +329,21 @@ mod tests {
         let remote_url = "git@github.com:zed-industries/zed.git";
         let github = Github::from_remote_url(remote_url);
         assert!(github.is_err());
+    }
+
+    #[test]
+    fn test_gist_is_not_self_hosted_github() {
+        for remote_url in [
+            "https://gist.github.com/123456.git",
+            "git@gist.github.com:123456.git",
+        ] {
+            assert!(Github::from_remote_url(remote_url).is_err());
+            assert!(
+                Github::public_instance()
+                    .parse_remote_url(remote_url)
+                    .is_none()
+            );
+        }
     }
 
     #[test]

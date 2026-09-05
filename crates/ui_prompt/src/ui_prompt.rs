@@ -3,7 +3,7 @@ use gpui::{
     PromptLevel, PromptResponse, RenderablePromptHandle, SharedString, TextStyleRefinement, Window,
     div, prelude::*,
 };
-use markdown::{Markdown, MarkdownElement, MarkdownStyle};
+use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use settings::{Settings, SettingsStore};
 use theme::ClientDecorationsExt;
 use theme_settings::ThemeSettings;
@@ -201,6 +201,8 @@ fn markdown_style(main_message: bool, window: &Window, cx: &App) -> MarkdownStyl
     MarkdownStyle {
         base_text_style,
         selection_background_color: cx.theme().colors().element_selection_background,
+        code_block: MarkdownStyle::themed(MarkdownFont::Editor, window, cx).code_block,
+        code_block_overflow_x_scroll: true,
         ..Default::default()
     }
 }

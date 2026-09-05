@@ -15,8 +15,8 @@ use release_channel::{AppVersion, ReleaseChannel};
 use semver::Version;
 use serde::Deserialize;
 use smol::io::AsyncReadExt;
-use ui::{AnnouncementToast, CopyButton, ListBulletItem, SkillsIllustration, prelude::*};
-use util::{ResultExt as _, maybe};
+use ui::{AnnouncementToast, ListBulletItem, SkillsIllustration, prelude::*};
+use util::{ResultExt as _, markdown::MarkdownCodeBlock, maybe};
 use workspace::{
     Workspace,
     notifications::{
@@ -95,79 +95,51 @@ fn check_with_package_manager(explanation: String, window: &mut Window, cx: &mut
     };
 
     let command = auto_update::update_command();
-    cx.spawn(async move |cx| {
-        let outcome = check.await;
-        cx.update(|cx| show_package_manager_update_notification(outcome, explanation, command, cx));
-    })
-    .detach();
-}
-
-struct PackageManagerUpdateNotification;
-
-fn show_package_manager_update_notification(
-    outcome: PackageManagerCheck,
-    explanation: String,
-    command: Option<String>,
-    cx: &mut App,
-) {
-    let title: SharedString = outcome.message().into();
-    let detail: Option<SharedString> = outcome.detail().map(Into::into);
-    let explanation: SharedString = explanation.into();
-    let command: Option<SharedString> = command.map(Into::into);
-
-    show_app_notification(
-        NotificationId::unique::<PackageManagerUpdateNotification>(),
-        cx,
-        move |cx| {
-            let title = title.clone();
-            let detail = detail.clone();
-            let explanation = explanation.clone();
-            let command = command.clone();
-            cx.new(move |cx| {
-                MessageNotification::new_from_builder(cx, move |_window, cx| {
-                    v_flex()
-                        .gap_1()
-                        .when_some(detail.clone(), |this, detail| {
-                            this.child(
-                                Label::new(detail)
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
-                            )
-                        })
-                        .child(
-                            Label::new(explanation.clone())
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        )
-                        .when_some(command.clone(), |this, command| {
-                            this.child(update_command_block(command, cx))
-                        })
-                        .into_any_element()
-                })
-                .with_title(title)
-                .show_suppress_button(false)
+    window
+        .spawn(cx, async move |cx| {
+            let outcome = check.await;
+            let detail = package_manager_prompt_detail(&outcome, &explanation, command.as_deref());
+            cx.update(|window, cx| {
+                drop(window.prompt(
+                    gpui::PromptLevel::Info,
+                    &outcome.message(),
+                    detail.as_deref(),
+                    &["OK"],
+                    cx,
+                ));
             })
-        },
-    );
+            .log_err();
+        })
+        .detach();
 }
 
-fn update_command_block(command: SharedString, cx: &App) -> impl IntoElement {
-    h_flex()
-        .w_full()
-        .gap_1()
-        .px_1p5()
-        .py_0p5()
-        .justify_between()
-        .rounded_sm()
-        .bg(cx.theme().colors().editor_background)
-        .border_1()
-        .border_color(cx.theme().colors().border_variant)
-        .child(
-            Label::new(command.clone())
-                .buffer_font(cx)
-                .size(LabelSize::Small),
-        )
-        .child(CopyButton::new("copy-update-command", command).tooltip_label("Copy Command"))
+fn package_manager_prompt_detail(
+    outcome: &PackageManagerCheck,
+    explanation: &str,
+    command: Option<&str>,
+) -> Option<String> {
+    match outcome {
+        PackageManagerCheck::UpToDate { .. } => None,
+        PackageManagerCheck::Failed { .. } => outcome.detail(),
+        PackageManagerCheck::UpdateAvailable { .. } => {
+            let mut detail = outcome.detail().unwrap_or_default();
+            if !explanation.trim().is_empty() {
+                detail.push_str("\n\n");
+                detail.push_str(explanation);
+            }
+            if let Some(command) = command.filter(|command| !command.trim().is_empty()) {
+                detail.push_str("\n\nTo update, run:\n\n");
+                detail.push_str(
+                    &MarkdownCodeBlock {
+                        tag: "sh",
+                        text: command,
+                    }
+                    .to_string(),
+                );
+            }
+            Some(detail)
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -512,4 +484,53 @@ pub fn notify_if_app_was_updated(cx: &mut App) {
         anyhow::Ok(())
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_manager_prompt_only_offers_a_command_for_an_update() {
+        let installed = Version::new(1, 3, 7);
+        let explanation = "Zed was installed via pacman.";
+        let command = Some("pacman -Syu");
+        assert_eq!(
+            package_manager_prompt_detail(
+                &PackageManagerCheck::UpToDate {
+                    installed: installed.clone()
+                },
+                explanation,
+                command
+            ),
+            None
+        );
+        assert_eq!(
+            package_manager_prompt_detail(
+                &PackageManagerCheck::Failed {
+                    error: "Network is unreachable".into()
+                },
+                explanation,
+                command
+            )
+            .as_deref(),
+            Some("Network is unreachable")
+        );
+        let outcome = PackageManagerCheck::UpdateAvailable {
+            installed,
+            available: Version::new(1, 3, 8),
+        };
+        assert_eq!(
+            package_manager_prompt_detail(&outcome, explanation, command).as_deref(),
+            Some(
+                "You are running 1.3.7.\n\nZed was installed via pacman.\n\nTo update, run:\n\n```sh\npacman -Syu\n```\n"
+            )
+        );
+        for command in [None, Some("   ")] {
+            assert_eq!(
+                package_manager_prompt_detail(&outcome, explanation, command).as_deref(),
+                Some("You are running 1.3.7.\n\nZed was installed via pacman.")
+            );
+        }
+    }
 }
