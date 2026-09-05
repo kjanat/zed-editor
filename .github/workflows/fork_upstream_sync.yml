@@ -161,6 +161,12 @@ jobs:
           printf '%s\n' "${CONFLICTS[@]}" | tee -a "${GITHUB_STEP_SUMMARY}"
 
           for FILE in "${CONFLICTS[@]}"; do
+            # Modify/delete conflicts cannot be checked out or restored as a three-way merge.
+            if ! git cat-file -e ":2:${FILE}" || ! git cat-file -e ":3:${FILE}"; then
+              printf '%s\n' "${FILE}" >> /tmp/human.txt
+              continue
+            fi
+
             if [[ "${FILE}" == "Cargo.lock" ]]; then
               git checkout --ours -- "${FILE}"
               printf '%s\n' "${FILE}" >> /tmp/lockfiles.txt
