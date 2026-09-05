@@ -342,10 +342,20 @@ pub enum PackageManagerCheck {
 }
 
 impl PackageManagerCheck {
+    fn display_version(version: &Version) -> Version {
+        let mut version = version.clone();
+        version.build = semver::BuildMetadata::EMPTY;
+        version
+    }
+
     pub fn message(&self) -> String {
         match self {
-            Self::UpToDate { installed } => format!("Zed {installed} is up to date."),
-            Self::UpdateAvailable { available, .. } => format!("Zed {available} is available."),
+            Self::UpToDate { installed } => {
+                format!("Zed {} is up to date.", Self::display_version(installed))
+            }
+            Self::UpdateAvailable { available, .. } => {
+                format!("Zed {} is available.", Self::display_version(available))
+            }
             Self::Failed { .. } => "Could not check for updates.".to_string(),
         }
     }
@@ -353,9 +363,10 @@ impl PackageManagerCheck {
     pub fn detail(&self) -> Option<String> {
         match self {
             Self::UpToDate { .. } => None,
-            Self::UpdateAvailable { installed, .. } => {
-                Some(format!("You are running {installed}."))
-            }
+            Self::UpdateAvailable { installed, .. } => Some(format!(
+                "You are running {}.",
+                Self::display_version(installed)
+            )),
             Self::Failed { error } => Some(error.clone()),
         }
     }
@@ -1743,6 +1754,23 @@ mod tests {
 
         assert_eq!(outcome.message(), "Zed 1.21.0 is up to date.");
         assert_eq!(outcome.detail(), None);
+    }
+
+    #[test]
+    fn test_package_manager_check_hides_build_metadata() {
+        let installed = Version::parse("1.3.7+stable.23.3b69a767e10de6f8edba9ff102be9114d8442461")
+            .expect("valid installed version");
+        let outcome = PackageManagerCheck::UpToDate {
+            installed: installed.clone(),
+        };
+        assert_eq!(outcome.message(), "Zed 1.3.7 is up to date.");
+        let outcome = PackageManagerCheck::UpdateAvailable {
+            installed,
+            available: Version::parse("1.3.8-beta.1+preview.24.abcdef")
+                .expect("valid available version"),
+        };
+        assert_eq!(outcome.message(), "Zed 1.3.8-beta.1 is available.");
+        assert_eq!(outcome.detail().as_deref(), Some("You are running 1.3.7."));
     }
 
     #[test]
