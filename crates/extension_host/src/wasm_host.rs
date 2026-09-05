@@ -109,7 +109,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn language_server_initialization_options(
@@ -135,7 +135,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn language_server_workspace_configuration(
@@ -159,7 +159,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn language_server_initialization_options_schema(
@@ -178,11 +178,11 @@ impl extension::Extension for WasmExtension {
                         resource,
                     )
                     .await
+                    .map_err(anyhow::Error::from)
             }
             .boxed()
         })
-        .await?
-        .map_err(anyhow::Error::from)
+        .await
     }
 
     async fn language_server_workspace_configuration_schema(
@@ -201,11 +201,11 @@ impl extension::Extension for WasmExtension {
                         resource,
                     )
                     .await
+                    .map_err(anyhow::Error::from)
             }
             .boxed()
         })
-        .await?
-        .map_err(anyhow::Error::from)
+        .await
     }
 
     async fn language_server_additional_initialization_options(
@@ -231,7 +231,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn language_server_additional_workspace_configuration(
@@ -257,7 +257,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn labels_for_completions(
@@ -283,7 +283,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn labels_for_symbols(
@@ -309,7 +309,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn complete_slash_command_argument(
@@ -328,7 +328,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn run_slash_command(
@@ -354,7 +354,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn context_server_command(
@@ -373,7 +373,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn context_server_configuration(
@@ -400,7 +400,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn suggest_docs_packages(&self, provider: Arc<str>) -> Result<Vec<String>> {
@@ -415,7 +415,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn index_docs(
@@ -441,7 +441,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn get_dap_binary(
@@ -463,7 +463,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
     async fn dap_request_kind(
         &self,
@@ -480,7 +480,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn dap_config_to_scenario(&self, config: ZedDebugConfig) -> Result<DebugScenario> {
@@ -494,7 +494,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 
     async fn dap_locator_create_scenario(
@@ -515,11 +515,11 @@ impl extension::Extension for WasmExtension {
                         debug_adapter_name,
                     )
                     .await
+                    .map_err(anyhow::Error::from)
             }
             .boxed()
         })
-        .await?
-        .map_err(anyhow::Error::from)
+        .await
     }
     async fn run_dap_locator(
         &self,
@@ -535,7 +535,7 @@ impl extension::Extension for WasmExtension {
             }
             .boxed()
         })
-        .await?
+        .await
     }
 }
 
@@ -550,9 +550,73 @@ pub struct WasmState {
 
 type MainThreadCall = Box<dyn Send + for<'a> FnOnce(&'a mut AsyncApp) -> LocalBoxFuture<'a, ()>>;
 
-type ExtensionCall = Box<
-    dyn Send + for<'a> FnOnce(&'a mut Extension, &'a mut Store<WasmState>) -> BoxFuture<'a, ()>,
->;
+type ExtensionCall<E = Extension, S = WasmState> =
+    Box<dyn Send + for<'a> FnOnce(Result<(&'a mut E, &'a mut Store<S>)>) -> BoxFuture<'a, bool>>;
+
+async fn run_extension_calls<E, S, Instantiate, Instantiation>(
+    mut rx: mpsc::UnboundedReceiver<ExtensionCall<E, S>>,
+    initial_instance: (E, Store<S>),
+    mut instantiate: Instantiate,
+) where
+    Instantiate: FnMut() -> Instantiation,
+    Instantiation: Future<Output = Result<(E, Store<S>)>>,
+{
+    let mut instance = Some(initial_instance);
+    while let Some(call) = rx.next().await {
+        if instance.is_none() {
+            match instantiate().await {
+                Ok(replacement) => instance = Some(replacement),
+                Err(error) => {
+                    call(Err(error.context("failed to reinitialize wasm extension"))).await;
+                    continue;
+                }
+            }
+        }
+        if let Some((extension, store)) = instance.as_mut()
+            && call(Ok((extension, store))).await
+        {
+            // A trap poisons the whole store. Drop it before initializing the next instance.
+            instance = None;
+        }
+    }
+}
+
+async fn call_extension<E, S, T, F>(
+    tx: &UnboundedSender<ExtensionCall<E, S>>,
+    extension_id: Arc<str>,
+    f: F,
+) -> Result<T>
+where
+    E: 'static + Send,
+    S: 'static + Send,
+    T: 'static + Send,
+    F: 'static + Send + for<'a> FnOnce(&'a mut E, &'a mut Store<S>) -> BoxFuture<'a, Result<T>>,
+{
+    let (return_tx, return_rx) = oneshot::channel();
+    tx.unbounded_send(Box::new(move |instance| {
+        async move {
+            let result = match instance {
+                Ok((extension, store)) => f(extension, store).await,
+                Err(error) => Err(error),
+            };
+            let trapped = result.as_ref().err().is_some_and(|error| {
+                let trapped = error.is::<wasmtime::Trap>();
+                if trapped {
+                    log::error!("wasm extension {extension_id} trapped: {error:#}");
+                }
+                trapped
+            });
+            // The caller may have gone away, but the invocation must finish before the next call.
+            return_tx.send(result).ok();
+            trapped
+        }
+        .boxed()
+    }))
+    .map_err(|_| anyhow!("wasm extension channel closed"))?;
+    return_rx
+        .await
+        .context("wasm extension response channel closed")?
+}
 
 fn wasm_engine(executor: &BackgroundExecutor) -> wasmtime::Engine {
     static WASM_ENGINE: OnceLock<wasmtime::Engine> = OnceLock::new();
@@ -666,47 +730,31 @@ impl WasmHost {
             })
         };
 
-        let load_extension = |zed_api_version: Version, component| async move {
-            let wasi_ctx = this.build_wasi_ctx(&manifest).await?;
-            let mut store = wasmtime::Store::new(
-                &this.engine,
-                WasmState {
-                    ctx: wasi_ctx,
-                    manifest: manifest.clone(),
-                    table: ResourceTable::new(),
-                    host: this.clone(),
-                    capability_granter: CapabilityGranter::new(
-                        this.granted_capabilities.clone(),
-                        manifest.clone(),
-                    ),
-                    language_server_status_source: None,
-                },
-            );
-            // Store will yield after 1 tick, and get a new deadline of 1 tick after each yield.
-            store.set_epoch_deadline(1);
-            store.epoch_deadline_async_yield_and_update(1);
-
-            let mut extension = Extension::instantiate_async(
-                &executor,
-                &mut store,
-                this.release_channel,
-                zed_api_version.clone(),
-                &component,
-            )
-            .await?;
-
-            extension
-                .call_init_extension(&mut store)
-                .await
-                .map_err(anyhow::Error::from)
-                .context("failed to initialize wasm extension")?;
-
-            let (tx, mut rx) = mpsc::unbounded::<ExtensionCall>();
-            let extension_task = async move {
-                while let Some(call) = rx.next().await {
-                    (call)(&mut extension, &mut store).await;
+        let load_extension = |zed_api_version: Version, component: Component| async move {
+            let instantiate = {
+                let this = this.clone();
+                let manifest = manifest.clone();
+                let zed_api_version = zed_api_version.clone();
+                move || {
+                    let this = this.clone();
+                    let manifest = manifest.clone();
+                    let executor = executor.clone();
+                    let zed_api_version = zed_api_version.clone();
+                    let component = component.clone();
+                    async move {
+                        this.instantiate_extension(
+                            &executor,
+                            &manifest,
+                            zed_api_version,
+                            &component,
+                        )
+                        .await
+                    }
                 }
             };
+            let initial_instance = instantiate().await?;
+            let (tx, rx) = mpsc::unbounded::<ExtensionCall>();
+            let extension_task = run_extension_calls(rx, initial_instance, instantiate);
 
             anyhow::Ok((
                 extension_task,
@@ -737,6 +785,48 @@ impl WasmHost {
                 _task: task,
             })
         })
+    }
+
+    async fn instantiate_extension(
+        self: &Arc<Self>,
+        executor: &BackgroundExecutor,
+        manifest: &Arc<ExtensionManifest>,
+        zed_api_version: Version,
+        component: &Component,
+    ) -> Result<(Extension, Store<WasmState>)> {
+        let wasi_ctx = self.build_wasi_ctx(manifest).await?;
+        let mut store = Store::new(
+            &self.engine,
+            WasmState {
+                ctx: wasi_ctx,
+                manifest: manifest.clone(),
+                table: ResourceTable::new(),
+                host: self.clone(),
+                capability_granter: CapabilityGranter::new(
+                    self.granted_capabilities.clone(),
+                    manifest.clone(),
+                ),
+                language_server_status_source: None,
+            },
+        );
+        // Store will yield after 1 tick, and get a new deadline of 1 tick after each yield.
+        store.set_epoch_deadline(1);
+        store.epoch_deadline_async_yield_and_update(1);
+
+        let extension = Extension::instantiate_async(
+            executor,
+            &mut store,
+            self.release_channel,
+            zed_api_version,
+            component,
+        )
+        .await?;
+        extension
+            .call_init_extension(&mut store)
+            .await
+            .map_err(anyhow::Error::from)
+            .context("failed to initialize wasm extension")?;
+        Ok((extension, store))
     }
 
     async fn build_wasi_ctx(&self, manifest: &Arc<ExtensionManifest>) -> Result<WasiCtx> {
@@ -890,7 +980,7 @@ impl WasmExtension {
         T: 'static + Send,
         Fn: 'static
             + Send
-            + for<'a> FnOnce(&'a mut Extension, &'a mut Store<WasmState>) -> BoxFuture<'a, T>,
+            + for<'a> FnOnce(&'a mut Extension, &'a mut Store<WasmState>) -> BoxFuture<'a, Result<T>>,
     {
         self.call(move |extension, store| {
             async move {
@@ -914,30 +1004,16 @@ impl WasmExtension {
         T: 'static + Send,
         Fn: 'static
             + Send
-            + for<'a> FnOnce(&'a mut Extension, &'a mut Store<WasmState>) -> BoxFuture<'a, T>,
+            + for<'a> FnOnce(&'a mut Extension, &'a mut Store<WasmState>) -> BoxFuture<'a, Result<T>>,
     {
-        let (return_tx, return_rx) = oneshot::channel();
-        self.tx
-            .unbounded_send(Box::new(move |extension, store| {
-                async {
-                    let result = f(extension, store).await;
-                    return_tx.send(result).ok();
-                }
-                .boxed()
-            }))
-            .map_err(|_| {
-                anyhow!(
-                    "wasm extension channel should not be closed yet, extension {} (id {})",
-                    self.manifest.name,
-                    self.manifest.id,
+        call_extension(&self.tx, self.manifest.id.clone(), f)
+            .await
+            .with_context(|| {
+                format!(
+                    "wasm extension {} (id {})",
+                    self.manifest.name, self.manifest.id,
                 )
-            })?;
-        return_rx.await.with_context(|| {
-            format!(
-                "wasm extension channel, extension {} (id {})",
-                self.manifest.name, self.manifest.id,
-            )
-        })
+            })
     }
 }
 
@@ -1043,6 +1119,253 @@ mod tests {
     use node_runtime::NodeRuntime;
     use serde_json::json;
     use settings::SettingsStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wasmtime::component::{Instance, Linker};
+
+    fn test_component(engine: &Engine) -> Result<Component> {
+        use wasm_encoder::{
+            CodeSection, ComponentBuilder, ComponentExportKind, ConstExpr, ExportKind,
+            ExportSection, Function, FunctionSection, GlobalSection, GlobalType, Instruction,
+            Module, PrimitiveValType, TypeSection, ValType,
+        };
+
+        let mut module = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function([], [ValType::I32]);
+        types.ty().function([], []);
+        module.section(&types);
+        let mut functions = FunctionSection::new();
+        functions.function(0).function(1);
+        module.section(&functions);
+        let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
+        );
+        module.section(&globals);
+        let mut exports = ExportSection::new();
+        exports
+            .export("run", ExportKind::Func, 0)
+            .export("trap", ExportKind::Func, 1);
+        module.section(&exports);
+        let mut code = CodeSection::new();
+        let mut run = Function::new([]);
+        for instruction in [
+            Instruction::GlobalGet(0),
+            Instruction::I32Const(1),
+            Instruction::I32Add,
+            Instruction::GlobalSet(0),
+            Instruction::GlobalGet(0),
+            Instruction::End,
+        ] {
+            run.instruction(&instruction);
+        }
+        code.function(&run);
+        let mut trap = Function::new([]);
+        trap.instruction(&Instruction::Unreachable)
+            .instruction(&Instruction::End);
+        code.function(&trap);
+        module.section(&code);
+
+        let mut component = ComponentBuilder::default();
+        let module_index = component.core_module(None, &module);
+        let instance = component.core_instantiate(None, module_index, []);
+        for (name, result) in [("run", Some(PrimitiveValType::U32.into())), ("trap", None)] {
+            let function = component.core_alias_export(None, instance, name, ExportKind::Func);
+            let (type_index, mut function_type) = component.type_function(None);
+            function_type
+                .params::<_, wasm_encoder::ComponentValType>([])
+                .result(result);
+            let lifted = component.lift_func(None, function, type_index, []);
+            component.export(name, ComponentExportKind::Func, lifted, None);
+        }
+        Component::from_binary(engine, &component.finish()).map_err(anyhow::Error::from)
+    }
+
+    type TestExtensionWorker = (
+        UnboundedSender<ExtensionCall<Instance, ()>>,
+        Task<()>,
+        Arc<AtomicUsize>,
+    );
+
+    async fn test_extension_worker(
+        cx: &TestAppContext,
+        fail_first_recovery: bool,
+    ) -> Result<TestExtensionWorker> {
+        let engine = Engine::default();
+        let component = test_component(&engine)?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let instantiate = {
+            let attempts = attempts.clone();
+            move || {
+                let engine = engine.clone();
+                let component = component.clone();
+                let attempts = attempts.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    if fail_first_recovery && attempt == 1 {
+                        bail!("initialization failed");
+                    }
+                    let mut store = Store::new(&engine, ());
+                    let instance = Linker::new(&engine)
+                        .instantiate_async(&mut store, &component)
+                        .await?;
+                    // Model initialization that must run again on a replacement instance.
+                    instance
+                        .get_typed_func::<(), (u32,)>(&mut store, "run")?
+                        .call_async(&mut store, ())
+                        .await?;
+                    Ok((instance, store))
+                }
+            }
+        };
+        let initial_instance = instantiate().await?;
+        let (tx, rx) = mpsc::unbounded();
+        let worker = cx
+            .executor()
+            .spawn(run_extension_calls(rx, initial_instance, instantiate));
+        Ok((tx, worker, attempts))
+    }
+
+    async fn test_run(tx: &UnboundedSender<ExtensionCall<Instance, ()>>) -> Result<u32> {
+        call_extension(tx, "test-extension".into(), |instance, store| {
+            async move {
+                let function = instance.get_typed_func::<(), (u32,)>(&mut *store, "run")?;
+                Ok(function.call_async(store, ()).await?.0)
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn test_trap(tx: &UnboundedSender<ExtensionCall<Instance, ()>>) -> Result<()> {
+        call_extension(tx, "test-extension".into(), |instance, store| {
+            async move {
+                let function = instance.get_typed_func::<(), ()>(&mut *store, "trap")?;
+                function
+                    .call_async(store, ())
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .context("test invocation")
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    #[gpui::test]
+    async fn test_extension_recovers_after_trap(cx: &mut TestAppContext) {
+        async {
+            let (tx, worker, attempts) = test_extension_worker(cx, false).await?;
+            assert_eq!(test_run(&tx).await?, 2);
+            assert_eq!(test_run(&tx).await?, 3);
+
+            let (trapped, next) = futures::join!(test_trap(&tx), test_run(&tx));
+            let error = trapped.expect_err("guest must trap");
+            assert_eq!(
+                error.downcast_ref::<wasmtime::Trap>(),
+                Some(&wasmtime::Trap::UnreachableCodeReached)
+            );
+            assert_eq!(next?, 2);
+            assert_eq!(test_run(&tx).await?, 3);
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            drop(tx);
+            worker.await;
+            anyhow::Ok(())
+        }
+        .await
+        .expect("extension worker test failed");
+    }
+
+    #[gpui::test]
+    async fn test_extension_preserves_instance_after_ordinary_error(cx: &mut TestAppContext) {
+        async {
+            let (tx, worker, attempts) = test_extension_worker(cx, false).await?;
+            assert_eq!(test_run(&tx).await?, 2);
+            let error = call_extension(&tx, "test-extension".into(), |_, _| {
+                async { Err::<(), _>(anyhow!("language server not installed")) }.boxed()
+            })
+            .await
+            .expect_err("ordinary extension error");
+            assert_eq!(error.to_string(), "language server not installed");
+            assert_eq!(test_run(&tx).await?, 3);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            drop(tx);
+            worker.await;
+            anyhow::Ok(())
+        }
+        .await
+        .expect("extension worker test failed");
+    }
+
+    #[gpui::test]
+    async fn test_extension_surfaces_recovery_failure(cx: &mut TestAppContext) {
+        async {
+            let (tx, worker, attempts) = test_extension_worker(cx, true).await?;
+            assert!(
+                test_trap(&tx)
+                    .await
+                    .expect_err("guest must trap")
+                    .is::<wasmtime::Trap>()
+            );
+            let error = test_run(&tx).await.expect_err("reinitialization must fail");
+            assert_eq!(
+                format!("{error:#}"),
+                "failed to reinitialize wasm extension: initialization failed"
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(test_run(&tx).await?, 2);
+            assert_eq!(attempts.load(Ordering::SeqCst), 3);
+            drop(tx);
+            worker.await;
+            anyhow::Ok(())
+        }
+        .await
+        .expect("extension worker test failed");
+    }
+
+    #[gpui::test]
+    async fn test_extension_finishes_call_after_caller_cancellation(cx: &mut TestAppContext) {
+        async {
+            let (tx, worker, attempts) = test_extension_worker(cx, false).await?;
+            let (started_tx, started_rx) = oneshot::channel();
+            let (resume_tx, resume_rx) = oneshot::channel();
+            let caller = cx.executor().spawn({
+                let tx = tx.clone();
+                async move {
+                    call_extension(&tx, "test-extension".into(), |instance, store| {
+                        async move {
+                            started_tx.send(()).expect("start receiver");
+                            resume_rx.await?;
+                            let function =
+                                instance.get_typed_func::<(), ()>(&mut *store, "trap")?;
+                            function
+                                .call_async(store, ())
+                                .await
+                                .map_err(anyhow::Error::from)
+                        }
+                        .boxed()
+                    })
+                    .await
+                }
+            });
+            started_rx.await?;
+            drop(caller);
+            cx.run_until_parked();
+            resume_tx.send(()).expect("invocation must still be alive");
+            assert_eq!(test_run(&tx).await?, 2);
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            drop(tx);
+            worker.await;
+            anyhow::Ok(())
+        }
+        .await
+        .expect("extension worker test failed");
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {

@@ -71,6 +71,7 @@ reqwest_client.workspace     = true
 theme                        = { workspace = true, features = ["test-support"] }
 theme_extension.workspace    = true
 theme_settings.workspace     = true
+wasm-encoder.workspace       = true
 zlog.workspace               = true
 
 [features]

@@ -6347,6 +6347,7 @@ dependencies = [
  "tracing",
  "url",
  "util",
+ "wasm-encoder 0.254.0",
  "wasmparser 0.254.0",
  "wasmtime",
  "wasmtime-wasi",
