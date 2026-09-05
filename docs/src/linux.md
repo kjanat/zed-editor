@@ -204,7 +204,7 @@ try to troubleshoot where the issue is coming from like so:
 vkcube
 ```
 
-> _**Note**_: Try running in both X11 and wayland modes by running `vkcube -m
+> ***Note***: Try running in both X11 and wayland modes by running `vkcube -m
 > [x11|wayland]`. Some versions of `vkcube` use `vkcube` to run in X11 and
 > `vkcube-wayland` to run in wayland.
 
@@ -326,7 +326,7 @@ ZED_LOG=wgpu=info /path/to/zed/cli --foreground .
 It is also highly recommended when pasting the log into a github issue, to do so
 with the following template:
 
-> _**Note**_: The whitespace in the template is important, and will cause
+> ***Note***: The whitespace in the template is important, and will cause
 > incorrect formatting if not preserved.
 
 ````
