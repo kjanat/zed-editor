@@ -79,5 +79,8 @@ language_model             = { workspace = true, features = ["test-support"] }
 parking_lot.workspace      = true
 settings                   = { workspace = true, features = ["test-support"] }
 
+[features]
+test-support = []
+
 [lints]
 workspace = true
