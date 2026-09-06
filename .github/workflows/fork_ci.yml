@@ -73,12 +73,13 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with: { node-version: "24", check-latest: true, package-manager-cache: false }
+      # Concurrent action startup can lock the runner's event.json on Windows.
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
       - parallel:
           - name: Install build dependencies
             if: runner.os == 'Linux'
             run: ./script/linux
-          - name: Install nextest
-            uses: taiki-e/install-action@nextest
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
             with: { shared-key: fork-ci-tests, cache-on-failure: false }
       - name: Test the crates this fork changes
