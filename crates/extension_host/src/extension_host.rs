@@ -1,6 +1,7 @@
 mod capability_granter;
 pub mod extension_settings;
 pub mod headless_host;
+mod language_collisions;
 pub mod wasm_host;
 
 #[cfg(test)]
@@ -72,6 +73,8 @@ pub use extension::{
     ExtensionLibraryKind, GrammarManifestEntry, OldExtensionManifest, SchemaVersion,
 };
 pub use extension_settings::ExtensionSettings;
+pub use language_collisions::LanguageCollision;
+use language_collisions::LanguageCollisions;
 
 use crate::headless_host::hash_directory_contents;
 
@@ -161,6 +164,9 @@ pub struct ExtensionStore {
     pub proxy: Arc<ExtensionHostProxy>,
     pub builder: Arc<ExtensionBuilder>,
     pub extension_index: ExtensionIndex,
+    language_collisions: LanguageCollisions,
+    registered_languages: BTreeMap<LanguageName, Arc<str>>,
+    grammar_providers: BTreeMap<Arc<str>, Arc<str>>,
     pub fs: Arc<dyn Fs>,
     pub http_client: Arc<HttpClientWithUrl>,
     pub telemetry: Option<Arc<Telemetry>>,
@@ -219,6 +225,8 @@ pub struct ExtensionIndex {
     #[serde(default)]
     pub icon_themes: BTreeMap<Arc<str>, ExtensionIndexIconThemeEntry>,
     pub languages: BTreeMap<LanguageName, ExtensionIndexLanguageEntry>,
+    // Required on disk so older indexes that discarded shadowed providers get rebuilt.
+    pub language_providers: BTreeMap<LanguageName, BTreeSet<Arc<str>>>,
 }
 
 impl ExtensionIndex {
@@ -351,6 +359,10 @@ pub fn init(
 }
 
 impl ExtensionStore {
+    pub fn take_language_collision_warnings(&mut self) -> Vec<LanguageCollision> {
+        self.language_collisions.take_warnings()
+    }
+
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
         cx.try_global::<GlobalExtensionStore>()
             .map(|store| store.0.clone())
@@ -381,6 +393,9 @@ impl ExtensionStore {
         let mut this = Self {
             proxy: extension_host_proxy.clone(),
             extension_index: Default::default(),
+            language_collisions: Default::default(),
+            registered_languages: Default::default(),
+            grammar_providers: Default::default(),
             installed_dir,
             staging_dir,
             index_path,
@@ -1294,6 +1309,14 @@ impl ExtensionStore {
             };
 
         if extensions_to_load.is_empty() && extensions_to_unload.is_empty() {
+            self.language_collisions.update(
+                &new_index,
+                &self.registered_languages,
+                &self.grammar_providers,
+                &self.proxy,
+            );
+            self.extension_index.language_providers = new_index.language_providers;
+            cx.notify();
             self.reload_complete_senders.clear();
             trigger_suppressed_extension_removal(self, cx);
             return Task::ready(());
@@ -1401,6 +1424,12 @@ impl ExtensionStore {
         self.proxy.remove_icon_themes(icon_themes_to_remove);
         self.proxy
             .remove_languages(&languages_to_remove, &grammars_to_remove);
+        for name in &languages_to_remove {
+            self.registered_languages.remove(name);
+        }
+        for name in &grammars_to_remove {
+            self.grammar_providers.remove(name);
+        }
 
         // Remove semantic token rules for languages being unloaded.
         let semantic_token_rules_to_remove = languages_to_remove
@@ -1426,6 +1455,8 @@ impl ExtensionStore {
             };
 
             grammars_to_add.extend(extension.manifest.grammars.keys().map(|grammar_name| {
+                self.grammar_providers
+                    .insert(grammar_name.clone(), extension_id.clone());
                 let mut grammar_path = self.installed_dir.clone();
                 grammar_path.extend([extension_id.as_ref(), "grammars"]);
                 grammar_path.push(grammar_name.as_ref());
@@ -1487,7 +1518,31 @@ impl ExtensionStore {
             grammar_path.extend([owner.as_ref(), "grammars"]);
             grammar_path.push(grammar_name.as_ref());
             grammar_path.set_extension("wasm");
+            self.grammar_providers
+                .insert(grammar_name.clone(), owner.clone());
             grammars_to_add.push((grammar_name, grammar_path));
+        }
+
+        // Unloading an extension removes grammars by name, including grammars
+        // still supplied by another installed extension.
+        for name in &grammars_to_remove {
+            if self.grammar_providers.contains_key(name) {
+                continue;
+            }
+            if let Some((owner, _)) = new_index
+                .extensions
+                .iter()
+                .find(|(_, entry)| entry.manifest.grammars.contains_key(name))
+            {
+                let mut path = self
+                    .installed_dir
+                    .join(owner.as_ref())
+                    .join("grammars")
+                    .join(name.as_ref());
+                path.set_extension("wasm");
+                grammars_to_add.push((name.clone(), path));
+                self.grammar_providers.insert(name.clone(), owner.clone());
+            }
         }
 
         self.proxy.register_grammars(grammars_to_add);
@@ -1527,6 +1582,9 @@ impl ExtensionStore {
                 continue;
             }
 
+            self.registered_languages
+                .insert(language_name.clone(), language.extension.clone());
+
             semantic_token_rules_paths.push((language_name, rules_path));
         }
 
@@ -1539,6 +1597,12 @@ impl ExtensionStore {
             .filter_map(|name| new_index.extensions.get(name).cloned())
             .collect::<Vec<_>>();
         self.extension_index = new_index;
+        self.language_collisions.update(
+            &self.extension_index,
+            &self.registered_languages,
+            &self.grammar_providers,
+            &self.proxy,
+        );
         cx.notify();
         cx.emit(Event::ExtensionsUpdated);
         if remote_sync_changed {
@@ -1823,6 +1887,11 @@ impl ExtensionStore {
                         query_files,
                     },
                 );
+                index
+                    .language_providers
+                    .entry(config.name)
+                    .or_default()
+                    .insert(extension_id.clone());
             }
         }
 

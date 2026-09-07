@@ -9,6 +9,7 @@ use crate::{
     },
     load_plugin_queries, remote_sync_retry_delay,
 };
+use anyhow::Context as _;
 use async_compression::futures::bufread::GzipEncoder;
 use async_trait::async_trait;
 use client::{AnyProtoClient, TypedEnvelope, proto};
@@ -166,6 +167,7 @@ fn remote_sync_includes_language_dependencies() {
         .collect(),
         themes: BTreeMap::default(),
         icon_themes: BTreeMap::default(),
+        language_providers: BTreeMap::default(),
     };
 
     assert_eq!(
@@ -213,6 +215,7 @@ fn remote_sync_keeps_shared_language_dependency_once() {
         .collect(),
         themes: BTreeMap::default(),
         icon_themes: BTreeMap::default(),
+        language_providers: BTreeMap::default(),
     };
 
     assert_eq!(
@@ -239,6 +242,7 @@ fn remote_sync_keeps_remote_loadable_extensions_without_language_dependency() {
         languages: BTreeMap::default(),
         themes: BTreeMap::default(),
         icon_themes: BTreeMap::default(),
+        language_providers: BTreeMap::default(),
     };
 
     assert_eq!(remote_sync_extension_ids(&index), ["foo"]);
@@ -261,6 +265,7 @@ fn remote_sync_keeps_debug_adapters() {
         languages: BTreeMap::default(),
         themes: BTreeMap::default(),
         icon_themes: BTreeMap::default(),
+        language_providers: BTreeMap::default(),
     };
 
     assert_eq!(remote_sync_extension_ids(&index), ["foo"]);
@@ -508,6 +513,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         .into_iter()
         .collect(),
         icon_themes: BTreeMap::default(),
+        language_providers: BTreeMap::default(),
     };
 
     let proxy = Arc::new(ExtensionHostProxy::new());
@@ -4076,6 +4082,248 @@ async fn insert_language_extension(fs: &Arc<FakeFs>, id: &str, language: &str, s
         }),
     )
     .await;
+}
+
+async fn insert_collision_extension(fs: &Arc<FakeFs>, id: &str, language: &str) {
+    insert_language_extension(fs, id, language, "collision").await;
+    fs.insert_tree(
+        format!("/extensions/installed/{id}"),
+        json!({
+            "extension.toml": format!(
+                "id = \"{id}\"\nname = \"{id}\"\nversion = \"1.0.0\"\nschema_version = 1\n[grammars.shared]\nrepository = \"https://example.com/grammar\"\nrev = \"same-revision\"\n"
+            ),
+            "grammars": {"shared.wasm": ""},
+        }),
+    ).await;
+}
+
+#[gpui::test]
+async fn test_language_collision_startup_and_cached_index(cx: &mut TestAppContext) {
+    let result: anyhow::Result<()> = async {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let proxy = Arc::new(ExtensionHostProxy::new());
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        language_extension::init(LspAccess::Noop, proxy.clone(), registry);
+        insert_collision_extension(&fs, "alpha", "Shared").await;
+        insert_collision_extension(&fs, "beta", "Shared").await;
+        let store = create_extension_store_with(fs.clone(), proxy.clone(), cx);
+        let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
+        assert_eq!(warnings.len(), 1);
+        let warning = warnings.first().context("missing collision")?;
+        assert_eq!(
+            warning.providers,
+            ("alpha (alpha, v1.0.0)".into(), "beta (beta, v1.0.0)".into())
+        );
+        assert_eq!(warning.resources.len(), 2);
+        assert!(
+            warning
+                .resources
+                .iter()
+                .any(|resource| resource.contains("language \"Shared\""))
+        );
+        assert!(
+            warning
+                .resources
+                .iter()
+                .any(|resource| resource.contains("grammar \"shared\""))
+        );
+        assert!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .is_empty()
+        );
+        let reads = fs.read_dir_call_count();
+        drop(store);
+
+        let store = create_extension_store_with(fs.clone(), proxy.clone(), cx);
+        assert_eq!(
+            fs.read_dir_call_count(),
+            reads,
+            "startup should use the cached provider declarations"
+        );
+        assert_eq!(
+            store.update(cx, |store, _| store.take_language_collision_warnings()),
+            warnings
+        );
+        drop(store);
+
+        let mut old_index: serde_json::Value =
+            serde_json::from_str(&fs.load(Path::new("/extensions/index.json")).await?)?;
+        old_index
+            .as_object_mut()
+            .context("expected index object")?
+            .remove("language_providers");
+        let content = serde_json::to_string(&old_index)?;
+        fs.save(
+            Path::new("/extensions/index.json"),
+            &content.as_str().into(),
+            Default::default(),
+        )
+        .await?;
+        let store = create_extension_store_with(fs.clone(), proxy, cx);
+        assert!(
+            fs.read_dir_call_count() > reads,
+            "legacy indexes must be rebuilt to recover shadowed providers"
+        );
+        assert_eq!(
+            store.update(cx, |store, _| store.take_language_collision_warnings()),
+            warnings
+        );
+        Ok(())
+    }
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[gpui::test]
+async fn test_language_collision_install_reload_and_uninstall(cx: &mut TestAppContext) {
+    let result: anyhow::Result<()> = async {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let proxy = Arc::new(ExtensionHostProxy::new());
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        language_extension::init(LspAccess::Noop, proxy.clone(), registry.clone());
+        insert_collision_extension(&fs, "alpha", "Shared").await;
+        let store = create_extension_store_with(fs.clone(), proxy, cx);
+        store
+            .update(cx, |store, cx| store.reload(Some("alpha".into()), cx))
+            .await;
+        assert!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .is_empty()
+        );
+
+        insert_collision_extension(&fs, "beta", "Shared").await;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert_eq!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .len(),
+            1
+        );
+
+        // Reload the earlier provider so the grammar's registration order reverses.
+        store
+            .update(cx, |store, cx| store.reload(Some("alpha".into()), cx))
+            .await;
+        assert_eq!(
+            store.read_with(cx, |store, _| store
+                .grammar_providers
+                .get("shared")
+                .cloned()),
+            Some("alpha".into())
+        );
+        assert!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .is_empty()
+        );
+
+        fs.remove_dir(
+            Path::new("/extensions/installed/alpha"),
+            RemoveOptions {
+                recursive: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert_eq!(
+            store.read_with(cx, |store, _| store
+                .grammar_providers
+                .get("shared")
+                .cloned()),
+            Some("beta".into())
+        );
+        assert!(
+            registry
+                .grammar_names()
+                .iter()
+                .any(|name| name.as_ref() == "shared")
+        );
+        assert!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .is_empty()
+        );
+
+        insert_collision_extension(&fs, "alpha", "Shared").await;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .is_empty()
+        );
+        insert_collision_extension(&fs, "gamma", "Shared").await;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert_eq!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .len(),
+            2
+        );
+        Ok(())
+    }
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[gpui::test]
+async fn test_language_collision_native_and_pending_warning_removal(cx: &mut TestAppContext) {
+    let result: anyhow::Result<()> = async {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let proxy = Arc::new(ExtensionHostProxy::new());
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        let language = language::json_lang();
+        registry.register_native_grammars([(
+            "shared",
+            language
+                .grammar()
+                .context("missing JSON grammar")?
+                .ts_language
+                .clone(),
+        )]);
+        language_extension::init(LspAccess::Noop, proxy.clone(), registry.clone());
+        insert_collision_extension(&fs, "alpha", "Plain Text").await;
+        let store = create_extension_store_with(fs.clone(), proxy, cx);
+        let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
+        assert_eq!(warnings.len(), 1);
+        let warning = warnings.first().context("missing native collision")?;
+        assert_eq!(warning.resources.len(), 2);
+        assert!(
+            warning
+                .resources
+                .iter()
+                .all(|resource| resource.contains("active provider: Zed built-in support"))
+        );
+        assert!(registry.is_native_language(&"Plain Text".into()));
+        assert!(registry.is_native_grammar("shared"));
+
+        insert_collision_extension(&fs, "beta", "Plain Text").await;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        fs.remove_dir(
+            Path::new("/extensions/installed/beta"),
+            RemoveOptions {
+                recursive: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert!(
+            store
+                .update(cx, |store, _| store.take_language_collision_warnings())
+                .is_empty(),
+            "removed providers must not produce stale pending notifications"
+        );
+        assert!(registry.is_native_grammar("shared"));
+        Ok(())
+    }
+    .await;
+    assert!(result.is_ok(), "{result:?}");
 }
 
 struct FakeExtension;

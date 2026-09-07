@@ -472,6 +472,21 @@ impl LanguageRegistry {
         );
     }
 
+    pub fn is_native_grammar(&self, name: &str) -> bool {
+        matches!(
+            self.state.read().grammars.get(name),
+            Some(AvailableGrammar::Native(_))
+        )
+    }
+
+    pub fn is_native_language(&self, name: &LanguageName) -> bool {
+        self.state
+            .read()
+            .available_languages
+            .find_by_exact_name(name.as_ref())
+            .is_some_and(|language| language.origin == LanguageOrigin::Native)
+    }
+
     /// Adds paths to WASM grammar files, which can be loaded if needed.
     pub fn register_wasm_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>) {
         if grammars.is_empty() {

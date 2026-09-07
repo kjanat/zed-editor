@@ -11,7 +11,7 @@ use cloud_api_types::{ExtensionMetadata, ExtensionProvides};
 use collections::{BTreeMap, BTreeSet};
 use command_palette_hooks::CommandPaletteFilter;
 use editor::{Editor, EditorElement, EditorStyle};
-use extension_host::{ExtensionManifest, ExtensionStore};
+use extension_host::{ExtensionManifest, ExtensionStore, LanguageCollision};
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
 use git::{GitHostingProviderRegistry, parse_git_remote_url};
 use gpui::{
@@ -38,6 +38,7 @@ use vim_mode_setting::VimModeSetting;
 use workspace::{
     Workspace,
     item::{Item, ItemEvent},
+    notifications::{NotificationId, simple_message_notification::MessageNotification},
     workspace_error::{ErrorAction, ErrorSeverity, WorkspaceError},
 };
 use zed_actions::ExtensionCategoryFilter;
@@ -70,6 +71,62 @@ pub struct RebuildDevExtension {
 #[derive(Default)]
 struct DevExtensionNotInstalledError {
     extension_id: Option<SharedString>,
+}
+
+struct LanguageCollisionWarning(LanguageCollision);
+
+impl WorkspaceError for LanguageCollisionWarning {
+    fn primary_message(&self) -> SharedString {
+        "Extensions have conflicting languages or grammars".into()
+    }
+
+    fn secondary_message(&self) -> Option<SharedString> {
+        let collision = &self.0;
+        let details = format!(
+            "{} and {}: {}",
+            collision.providers.0,
+            collision.providers.1,
+            collision.resources.join("; ")
+        );
+        Some(
+            format!("{details}\nThese conflicts can break highlighting or language loading.")
+                .into(),
+        )
+    }
+
+    fn primary_action(&self) -> ErrorAction {
+        ErrorAction::new("Manage Extensions", zed_actions::Extensions::default())
+    }
+
+    fn secondary_action(&self) -> Option<ErrorAction> {
+        Some(ErrorAction::new("Open Log", workspace::OpenLog))
+    }
+
+    fn severity(&self) -> ErrorSeverity {
+        ErrorSeverity::Warning
+    }
+}
+
+fn show_language_collision_warnings(
+    workspace: &mut Workspace,
+    store: &Entity<ExtensionStore>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if !window.is_window_active() {
+        return;
+    }
+    let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
+    for warning in warnings {
+        let id = NotificationId::composite::<LanguageCollisionWarning>(SharedString::from(
+            format!("{:?}", warning.providers),
+        ));
+        workspace.show_notification(id, cx, |cx| {
+            cx.new(|cx| {
+                MessageNotification::from_workspace_error(LanguageCollisionWarning(warning), cx)
+            })
+        });
+    }
 }
 
 impl WorkspaceError for DevExtensionNotInstalledError {
@@ -114,6 +171,22 @@ pub fn init(cx: &mut App) {
         let Some(window) = window else {
             return;
         };
+        cx.observe_in(&store, window, |workspace, store, window, cx| {
+            show_language_collision_warnings(workspace, &store, window, cx);
+        })
+        .detach();
+        cx.observe_window_activation(window, {
+            let store = store.clone();
+            move |workspace, window, cx| {
+                show_language_collision_warnings(workspace, &store, window, cx)
+            }
+        })
+        .detach();
+        let store = store.clone();
+        // Cached extensions may have loaded before the first workspace existed.
+        cx.defer_in(window, move |workspace, window, cx| {
+            show_language_collision_warnings(workspace, &store, window, cx)
+        });
         workspace
             .register_action(
                 move |workspace, action: &zed_actions::Extensions, window, cx| {
