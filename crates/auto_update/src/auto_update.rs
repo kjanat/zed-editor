@@ -421,6 +421,16 @@ pub fn package_manager_update_check(cx: &mut App) -> Option<Task<PackageManagerC
     }))
 }
 
+pub fn release_notes_asset_url(version: Option<Version>) -> String {
+    if let Some(mut version) = version {
+        version.pre = semver::Prerelease::EMPTY;
+        version.build = semver::BuildMetadata::EMPTY;
+        format!("https://github.com/{FORK_RELEASES_REPO}/releases/download/v{version}/notes.json")
+    } else {
+        format!("https://github.com/{FORK_RELEASES_REPO}/releases/latest/download/notes.json")
+    }
+}
+
 pub fn release_notes_url(cx: &mut App) -> Option<String> {
     let release_channel = ReleaseChannel::try_global(cx)?;
     let url = match release_channel {
@@ -1498,6 +1508,25 @@ mod tests {
 
     pub(super) struct InstallOverride(pub Rc<dyn Fn(&Path, &AsyncApp) -> Result<Option<PathBuf>>>);
     impl Global for InstallOverride {}
+
+    #[test]
+    fn release_notes_assets_use_fork_tags_without_build_metadata() -> Result<()> {
+        for version in [
+            "1.3.10",
+            "1.3.10-stable.350+abcdef",
+            "1.3.10-preview.350+abcdef",
+        ] {
+            assert_eq!(
+                release_notes_asset_url(Some(version.parse()?)),
+                "https://github.com/kjanat/zed-editor/releases/download/v1.3.10/notes.json"
+            );
+        }
+        assert_eq!(
+            release_notes_asset_url(None),
+            "https://github.com/kjanat/zed-editor/releases/latest/download/notes.json"
+        );
+        Ok(())
+    }
 
     #[gpui::test]
     fn test_auto_update_defaults_to_true(cx: &mut TestAppContext) {

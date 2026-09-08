@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use agent_skills::GLOBAL_SKILLS_DIR_DISPLAY;
-use auto_update::{AutoUpdater, Check, PackageManagerCheck, UpdateCheckType, release_notes_url};
+use auto_update::{
+    AutoUpdater, Check, PackageManagerCheck, UpdateCheckType, release_notes_asset_url,
+    release_notes_url,
+};
 use client::zed_urls;
 use db::kvp::Dismissable;
 use editor::{Editor, MultiBuffer};
@@ -194,14 +197,8 @@ fn view_release_notes_locally(
         return;
     }
 
-    let version = AppVersion::global(cx).to_string();
-
     let client = client::Client::global(cx).http_client();
-    let url = client.build_url(&format!(
-        "/api/release_notes/v2/{}/{}",
-        release_channel.dev_name(),
-        version
-    ));
+    let url = release_notes_asset_url(Some(AppVersion::global(cx)));
 
     let markdown = workspace
         .app_state()
@@ -218,13 +215,20 @@ fn view_release_notes_locally(
             return;
         };
 
-        let mut body = Vec::new();
-        response.body_mut().read_to_end(&mut body).await.ok();
-
-        let body: serde_json::Result<ReleaseNotesBody> = serde_json::from_slice(body.as_slice());
+        let body: anyhow::Result<ReleaseNotesBody> = async {
+            anyhow::ensure!(
+                response.status().is_success(),
+                "Failed to load fork release notes: HTTP {}",
+                response.status()
+            );
+            let mut body = Vec::new();
+            response.body_mut().read_to_end(&mut body).await?;
+            Ok(serde_json::from_slice(&body)?)
+        }
+        .await;
 
         let res: Option<()> = maybe!(async {
-            let body = body.ok()?;
+            let body = body.log_err()?;
             let project = workspace
                 .read_with(cx, |workspace, _| workspace.project().clone())
                 .ok()?;
