@@ -1712,7 +1712,7 @@ fn test_bracket_ranges_do_not_repair_unbalanced_error_nodes(cx: &mut App) {
 // This test passes without the error recovery too: it pins the retention of
 // cross-chunk pairs, which the chunk-local repair can neither see nor verify.
 #[gpui::test]
-fn test_bracket_ranges_keep_chunk_spanning_pairs_amid_errors(cx: &mut App) {
+fn test_bracket_ranges_keep_chunk_spanning_pairs_amid_errors(cx: &mut gpui::TestAppContext) {
     let mut text = String::from("void outer(void) {\n");
     for index in 0..60 {
         text.push_str(&format!("  int before_{index:02} = 0;\n"));
@@ -1733,7 +1733,8 @@ fn test_bracket_ranges_keep_chunk_spanning_pairs_amid_errors(cx: &mut App) {
     text.push_str("}\n");
 
     let buffer = cx.new(|cx| Buffer::local(text.clone(), cx).with_language(c_lang(), cx));
-    let snapshot = buffer.read(cx).snapshot();
+    cx.executor().run_until_parked();
+    let snapshot = buffer.update(cx, |buffer, _| buffer.snapshot());
     assert_has_syntax_errors(&snapshot);
 
     let open_offset = text.find('{').unwrap();

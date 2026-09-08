@@ -107,7 +107,7 @@ windows.workspace = true
 
 [features]
 default      = []
-debug-embed  = ["dep:rust-embed"]
+debug-embed  = ["dep:rust-embed", "util/debug-embed"]
 test-support = ["fs/test-support"]
 
 [lints]
