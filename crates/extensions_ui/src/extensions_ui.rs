@@ -147,10 +147,9 @@ fn reconcile_language_collision_warnings(
     active: &BTreeMap<LanguageCollisionKey, LanguageCollision>,
     cx: &mut Context<Workspace>,
 ) {
-    let visible = workspace.notification_ids();
     displayed.retain(|key, previous| {
         let id = collision_notification_id(key);
-        if !visible.contains(&id) {
+        if !workspace.has_notification(&id) {
             return false;
         }
         let Some(current) = active.get(key) else {

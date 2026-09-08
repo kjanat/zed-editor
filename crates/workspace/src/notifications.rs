@@ -71,6 +71,12 @@ pub trait Notification:
 pub struct SuppressEvent;
 
 impl Workspace {
+    pub fn has_notification(&self, id: &NotificationId) -> bool {
+        self.notifications
+            .iter()
+            .any(|(existing_id, _)| existing_id == id)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn notification_ids(&self) -> Vec<NotificationId> {
         self.notifications
