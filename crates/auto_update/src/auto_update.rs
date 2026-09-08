@@ -421,11 +421,15 @@ pub fn package_manager_update_check(cx: &mut App) -> Option<Task<PackageManagerC
     }))
 }
 
+fn release_tag(mut version: Version) -> String {
+    version.build = semver::BuildMetadata::EMPTY;
+    format!("v{version}")
+}
+
 pub fn release_notes_asset_url(version: Option<Version>) -> String {
-    if let Some(mut version) = version {
-        version.pre = semver::Prerelease::EMPTY;
-        version.build = semver::BuildMetadata::EMPTY;
-        format!("https://github.com/{FORK_RELEASES_REPO}/releases/download/v{version}/notes.json")
+    if let Some(version) = version {
+        let tag = release_tag(version);
+        format!("https://github.com/{FORK_RELEASES_REPO}/releases/download/{tag}/notes.json")
     } else {
         format!("https://github.com/{FORK_RELEASES_REPO}/releases/latest/download/notes.json")
     }
@@ -437,10 +441,8 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
         ReleaseChannel::Stable | ReleaseChannel::Preview => {
             let auto_updater = AutoUpdater::get(cx)?;
             let auto_updater = auto_updater.read(cx);
-            let mut current_version = auto_updater.current_version.clone();
-            current_version.pre = semver::Prerelease::EMPTY;
-            current_version.build = semver::BuildMetadata::EMPTY;
-            format!("https://github.com/{FORK_RELEASES_REPO}/releases/tag/v{current_version}")
+            let tag = release_tag(auto_updater.current_version.clone());
+            format!("https://github.com/{FORK_RELEASES_REPO}/releases/tag/{tag}")
         }
         ReleaseChannel::Nightly | ReleaseChannel::Dev => {
             format!("https://github.com/{FORK_RELEASES_REPO}/commits/master/")
@@ -1513,8 +1515,8 @@ mod tests {
     fn release_notes_assets_use_fork_tags_without_build_metadata() -> Result<()> {
         for version in [
             "1.3.10",
-            "1.3.10-stable.350+abcdef",
-            "1.3.10-preview.350+abcdef",
+            "1.3.10+stable.350.abcdef",
+            "1.3.10+preview.350.abcdef",
         ] {
             assert_eq!(
                 release_notes_asset_url(Some(version.parse()?)),
@@ -1525,6 +1527,18 @@ mod tests {
             release_notes_asset_url(None),
             "https://github.com/kjanat/zed-editor/releases/latest/download/notes.json"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn release_notes_assets_preserve_prerelease_tags() -> Result<()> {
+        for version in ["1.3.10-pre", "1.3.10-pre+preview.350.abcdef"] {
+            assert_eq!(release_tag(version.parse()?), "v1.3.10-pre");
+            assert_eq!(
+                release_notes_asset_url(Some(version.parse()?)),
+                "https://github.com/kjanat/zed-editor/releases/download/v1.3.10-pre/notes.json"
+            );
+        }
         Ok(())
     }
 

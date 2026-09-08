@@ -151,32 +151,31 @@ struct ReleaseNotesBody {
     release_notes: String,
 }
 
+struct ReleaseNotesError {
+    url: Option<String>,
+}
+
+impl WorkspaceError for ReleaseNotesError {
+    fn primary_message(&self) -> SharedString {
+        "Couldn't load release notes".into()
+    }
+    fn severity(&self) -> ErrorSeverity {
+        ErrorSeverity::Error
+    }
+    fn primary_action(&self) -> ErrorAction {
+        self.url
+            .clone()
+            .map(|url| ErrorAction::link("View in Browser", url))
+            .unwrap_or_else(ErrorAction::dismiss)
+    }
+}
+
 fn notify_release_notes_failed_to_show(
     workspace: &mut Workspace,
     _window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     let url = release_notes_url(cx);
-
-    struct ReleaseNotesError {
-        url: Option<String>,
-    }
-
-    impl WorkspaceError for ReleaseNotesError {
-        fn primary_message(&self) -> SharedString {
-            "Couldn't load release notes".into()
-        }
-        fn severity(&self) -> ErrorSeverity {
-            ErrorSeverity::Error
-        }
-        fn primary_action(&self) -> ErrorAction {
-            self.url
-                .clone()
-                .map(|url| ErrorAction::link("View in Browser", url))
-                .unwrap_or_else(ErrorAction::dismiss)
-        }
-    }
-
     workspace.show_error(ReleaseNotesError { url }, cx);
 }
 
@@ -493,6 +492,87 @@ pub fn notify_if_app_was_updated(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::TestAppContext;
+    use http_client::{AsyncBody, HttpClient, Response};
+    use project::Project;
+    use std::{pin::Pin, task::Poll};
+
+    struct FailingReader;
+
+    impl smol::io::AsyncRead for FailingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buffer: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Err(std::io::Error::other("response body interrupted")))
+        }
+    }
+
+    async fn assert_release_notes_failure(status: u16, body: AsyncBody, cx: &mut TestAppContext) {
+        let app_state = cx.update(|cx| {
+            cx.set_global(db::AppDatabase::test_new());
+            release_channel::init_test(Version::new(1, 3, 10), ReleaseChannel::Stable, cx);
+            let app_state = workspace::AppState::test(cx);
+            client::Client::set_global(app_state.client.clone(), cx);
+            app_state
+        });
+        let response = std::sync::Mutex::new(Some(body));
+        app_state
+            .client
+            .http_client()
+            .as_fake()
+            .replace_handler(move |_, request| {
+                assert_eq!(
+                    request.uri().to_string(),
+                    "https://github.com/kjanat/zed-editor/releases/download/v1.3.10/notes.json"
+                );
+                let body = response
+                    .lock()
+                    .expect("response lock poisoned")
+                    .take()
+                    .expect("release notes requested more than once");
+                async move { Ok(Response::builder().status(status).body(body)?) }
+            });
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        cx.run_until_parked();
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.notification_ids().is_empty());
+            view_release_notes_locally(workspace, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(
+                workspace.notification_ids(),
+                vec![NotificationId::unique::<ReleaseNotesError>()]
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn release_notes_missing_asset_shows_error(cx: &mut TestAppContext) {
+        assert_release_notes_failure(
+            404,
+            r#"{"title":"Release notes","release_notes":"Changes"}"#.into(),
+            cx,
+        )
+        .await;
+    }
+
+    #[gpui::test]
+    async fn release_notes_body_read_failure_shows_error(cx: &mut TestAppContext) {
+        let reader =
+            smol::io::Cursor::new(br#"{"title":"Release notes","release_notes":"Changes"}"#)
+                .chain(FailingReader);
+        assert_release_notes_failure(200, AsyncBody::from_reader(reader), cx).await;
+    }
+
+    #[gpui::test]
+    async fn release_notes_malformed_json_shows_error(cx: &mut TestAppContext) {
+        assert_release_notes_failure(200, "{".into(), cx).await;
+    }
 
     #[test]
     fn package_manager_prompt_only_offers_a_command_for_an_update() {
