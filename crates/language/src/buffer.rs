@@ -105,14 +105,11 @@ pub struct Buffer {
     file: Option<Arc<dyn File>>,
     /// The known disk state when this buffer was last loaded from or saved to disk.
     saved_disk_state: Option<DiskState>,
-    /// The disk state the file observation held when the last save or reload
-    /// receipt arrived. That save or reload replaced the disk state it
-    /// describes, so an observation still carrying it is behind the receipt,
-    /// not evidence of a foreign change. Observations can lag receipts on
-    /// every path: locally the worktree scan lands after `did_save`, and for
-    /// a guest the `UpdateBufferFile` message lands after the save response.
-    /// This exemption expires when the observation catches up to the receipt.
-    superseded_disk_state: Option<DiskState>,
+    /// Observations replaced by save or reload receipts that the file watcher
+    /// has not yet caught up with. Keep recent outstanding receipts because several
+    /// saves can complete before an intermediate file observation arrives.
+    /// All exemptions expire when the latest receipt is observed.
+    superseded_disk_states: SmallVec<[DiskState; 2]>,
     /// The version vector when this buffer was last loaded from
     /// or saved to disk.
     saved_version: clock::Global,
@@ -160,6 +157,9 @@ pub struct TreeSitterData {
 }
 
 const MAX_ROWS_IN_A_CHUNK: u32 = 50;
+// Bound retained history if the watcher never catches up. Evicted observations
+// may report a conflict rather than keeping an indefinitely growing exemption.
+const MAX_SUPERSEDED_DISK_STATES: usize = 16;
 
 impl TreeSitterData {
     fn clear(&mut self, snapshot: &text::BufferSnapshot) {
@@ -464,6 +464,23 @@ impl DiskState {
             }
             _ => self != other,
         }
+    }
+
+    fn merge_observation(&mut self, observation: Self) -> bool {
+        if self.differs_from(observation) {
+            return false;
+        }
+        if let Self::Present { size, inode, .. } = self
+            && let Self::Present {
+                size: observed_size,
+                inode: observed_inode,
+                ..
+            } = observation
+        {
+            *size = size.or(observed_size);
+            *inode = inode.or(observed_inode);
+        }
+        true
     }
 
     /// Returns the file's last known modification time on disk.
@@ -1195,7 +1212,7 @@ impl Buffer {
         let tree_sitter_data = TreeSitterData::new(snapshot);
         let mut this = Self {
             saved_disk_state,
-            superseded_disk_state: None,
+            superseded_disk_states: SmallVec::new(),
             tree_sitter_data: Arc::new(tree_sitter_data),
             saved_version: buffer.version(),
             preview_version: buffer.version(),
@@ -1692,6 +1709,29 @@ impl Buffer {
         });
     }
 
+    fn record_saved_mtime(&mut self, mtime: Option<MTime>) {
+        let observation = self.file.as_ref().map(|file| file.disk_state());
+        if mtime.is_none() || observation.and_then(DiskState::mtime) == mtime {
+            self.superseded_disk_states.clear();
+        } else {
+            for state in self.saved_disk_state.into_iter().chain(observation) {
+                if state.mtime().is_some()
+                    && state.mtime() != mtime
+                    && !self
+                        .superseded_disk_states
+                        .iter_mut()
+                        .any(|candidate| candidate.merge_observation(state))
+                {
+                    self.superseded_disk_states.push(state);
+                    if self.superseded_disk_states.len() > MAX_SUPERSEDED_DISK_STATES {
+                        self.superseded_disk_states.remove(0);
+                    }
+                }
+            }
+        }
+        self.set_saved_mtime(mtime);
+    }
+
     /// This method is called to signal that the buffer has been saved.
     pub fn did_save(
         &mut self,
@@ -1702,12 +1742,7 @@ impl Buffer {
         self.saved_version = version.clone();
         self.has_unsaved_edits.set((version, false));
         self.has_conflict = false;
-        self.superseded_disk_state = self
-            .file
-            .as_ref()
-            .map(|file| file.disk_state())
-            .filter(|state| state.mtime().is_some() && state.mtime() != mtime);
-        self.set_saved_mtime(mtime);
+        self.record_saved_mtime(mtime);
         self.was_changed();
         cx.emit(BufferEvent::Saved);
         cx.notify();
@@ -1833,12 +1868,7 @@ impl Buffer {
         self.has_unsaved_edits
             .set((self.saved_version.clone(), false));
         self.text.set_line_ending(line_ending);
-        self.superseded_disk_state = self
-            .file
-            .as_ref()
-            .map(|file| file.disk_state())
-            .filter(|state| state.mtime().is_some() && state.mtime() != mtime);
-        self.set_saved_mtime(mtime);
+        self.record_saved_mtime(mtime);
         cx.emit(BufferEvent::Reloaded);
         cx.notify();
     }
@@ -1869,22 +1899,16 @@ impl Buffer {
         if new_file.disk_state().mtime().is_some()
             && new_file.disk_state().mtime() == self.saved_mtime()
         {
-            self.superseded_disk_state = None;
-            // Receipts may only contain a timestamp. Fill missing metadata as the
-            // observation catches up, but never replace known saved identity with
-            // a later external change (or erase it with a partial observation).
-            if let Some(saved_state) = self.saved_disk_state.as_mut()
-                && !saved_state.differs_from(new_file.disk_state())
-                && let DiskState::Present { size, inode, .. } = saved_state
-                && let DiskState::Present {
-                    size: new_size,
-                    inode: new_inode,
-                    ..
-                } = new_file.disk_state()
-            {
-                *size = size.or(new_size);
-                *inode = inode.or(new_inode);
-            }
+            self.superseded_disk_states.clear();
+        }
+        // Receipts may only contain a timestamp. Learn missing metadata without
+        // replacing known identity or erasing it with a partial observation.
+        for state in self
+            .saved_disk_state
+            .iter_mut()
+            .chain(self.superseded_disk_states.iter_mut())
+        {
+            state.merge_observation(new_file.disk_state());
         }
         self.file = Some(new_file);
         if file_changed {
@@ -2634,8 +2658,9 @@ impl Buffer {
                 Some(saved_state) => {
                     saved_state.differs_from(file.disk_state())
                         && self
-                            .superseded_disk_state
-                            .is_none_or(|state| state.differs_from(file.disk_state()))
+                            .superseded_disk_states
+                            .iter()
+                            .all(|state| state.differs_from(file.disk_state()))
                         && self.has_unsaved_edits()
                 }
                 None => true,
@@ -3194,8 +3219,9 @@ impl Buffer {
                         .saved_disk_state
                         .is_none_or(|state| state.differs_from(file.disk_state()))
                     && self
-                        .superseded_disk_state
-                        .is_none_or(|state| state.differs_from(file.disk_state()))
+                        .superseded_disk_states
+                        .iter()
+                        .all(|state| state.differs_from(file.disk_state()))
                 {
                     cx.emit(BufferEvent::ReloadNeeded);
                 }

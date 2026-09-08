@@ -5561,21 +5561,22 @@ struct ObservedFile {
     state: DiskState,
 }
 
+fn observed_file(mtime: MTime, size: Option<u64>, inode: Option<u64>) -> Arc<dyn File> {
+    Arc::new(ObservedFile {
+        file: TestFile {
+            path: rel_path("file.txt").into(),
+            root_name: "root".into(),
+            local_root: None,
+        },
+        state: DiskState::Present { mtime, size, inode },
+    })
+}
+
 #[gpui::test]
 fn test_saved_observation_detects_identity_changes(cx: &mut App) {
     init_settings(cx, |_| {});
     let old_mtime = MTime::from_seconds_and_nanos(100, 0);
     let saved_mtime = MTime::from_seconds_and_nanos(200, 0);
-    let observed = |mtime, size, inode| -> Arc<dyn File> {
-        Arc::new(ObservedFile {
-            file: TestFile {
-                path: rel_path("file.txt").into(),
-                root_name: "root".into(),
-                local_root: None,
-            },
-            state: DiskState::Present { mtime, size, inode },
-        })
-    };
 
     for reload in [false, true] {
         for catch_up_before_receipt in [false, true] {
@@ -5587,9 +5588,9 @@ fn test_saved_observation_detects_identity_changes(cx: &mut App) {
             ] {
                 let buffer = cx.new(|cx| Buffer::local("old", cx));
                 buffer.update(cx, |buffer, cx| {
-                    buffer.file_updated(observed(old_mtime, Some(3), Some(1)), cx);
+                    buffer.file_updated(observed_file(old_mtime, Some(3), Some(1)), cx);
                     if catch_up_before_receipt {
-                        buffer.file_updated(observed(saved_mtime, Some(3), Some(2)), cx);
+                        buffer.file_updated(observed_file(saved_mtime, Some(3), Some(2)), cx);
                     }
                     let version = buffer.version();
                     if reload {
@@ -5599,17 +5600,17 @@ fn test_saved_observation_detects_identity_changes(cx: &mut App) {
                     }
                     buffer.edit([(0..0, "edit")], None, cx);
                     assert!(!buffer.has_conflict());
-                    buffer.file_updated(observed(saved_mtime, Some(3), Some(2)), cx);
+                    buffer.file_updated(observed_file(saved_mtime, Some(3), Some(2)), cx);
                     assert!(!buffer.has_conflict());
-                    buffer.file_updated(observed(saved_mtime, size, inode), cx);
+                    buffer.file_updated(observed_file(saved_mtime, size, inode), cx);
                     assert_eq!(
                         buffer.has_conflict(),
                         conflict,
                         "same-mtime identity change"
                     );
-                    buffer.file_updated(observed(saved_mtime, None, None), cx);
+                    buffer.file_updated(observed_file(saved_mtime, None, None), cx);
                     assert!(!buffer.has_conflict());
-                    buffer.file_updated(observed(saved_mtime, Some(3), Some(3)), cx);
+                    buffer.file_updated(observed_file(saved_mtime, Some(3), Some(3)), cx);
                     assert!(
                         buffer.has_conflict(),
                         "partial observations must not erase identity"
@@ -5627,20 +5628,20 @@ fn test_saved_observation_detects_identity_changes(cx: &mut App) {
                     cx.entity_id().as_non_zero_u64().into(),
                     "old",
                 ),
-                Some(observed(saved_mtime, initial_size, initial_inode)),
+                Some(observed_file(saved_mtime, initial_size, initial_inode)),
                 Capability::ReadWrite,
                 cx,
             )
         });
         buffer.update(cx, |buffer, cx| {
             buffer.edit([(0..0, "edit")], None, cx);
-            buffer.file_updated(observed(saved_mtime, Some(3), None), cx);
+            buffer.file_updated(observed_file(saved_mtime, Some(3), None), cx);
             assert!(!buffer.has_conflict());
-            buffer.file_updated(observed(saved_mtime, None, Some(2)), cx);
+            buffer.file_updated(observed_file(saved_mtime, None, Some(2)), cx);
             assert!(!buffer.has_conflict());
-            buffer.file_updated(observed(saved_mtime, Some(4), None), cx);
+            buffer.file_updated(observed_file(saved_mtime, Some(4), None), cx);
             assert!(buffer.has_conflict(), "retain separately observed size");
-            buffer.file_updated(observed(saved_mtime, Some(3), Some(3)), cx);
+            buffer.file_updated(observed_file(saved_mtime, Some(3), Some(3)), cx);
             assert!(buffer.has_conflict(), "retain separately observed inode");
         });
 
@@ -5693,28 +5694,111 @@ impl File for ObservedFile {
 }
 
 #[gpui::test]
-fn test_superseded_observation_expires(cx: &mut App) {
+fn test_consecutive_receipts_accept_intermediate_observations(cx: &mut App) {
     init_settings(cx, |_| {});
-    let old_mtime = MTime::from_seconds_and_nanos(100, 0);
-    let saved_mtime = MTime::from_seconds_and_nanos(200, 0);
-    let observed = |mtime, size, inode| -> Arc<dyn File> {
-        Arc::new(ObservedFile {
-            file: TestFile {
-                path: rel_path("file.txt").into(),
-                root_name: "root".into(),
-                local_root: None,
-            },
-            state: DiskState::Present { mtime, size, inode },
-        })
-    };
+    let observed =
+        |seconds, inode| observed_file(MTime::from_seconds_and_nanos(seconds, 0), Some(3), inode);
 
     for reload in [false, true] {
         for catch_up_before_receipt in [false, true] {
             let buffer = cx.new(|cx| Buffer::local("old", cx));
             buffer.update(cx, |buffer, cx| {
-                buffer.file_updated(observed(old_mtime, Some(3), Some(1)), cx);
+                buffer.file_updated(observed(100, Some(1)), cx);
+                for seconds in [200, 300, 400] {
+                    if catch_up_before_receipt && seconds == 400 {
+                        buffer.file_updated(observed(seconds, Some(4)), cx);
+                    }
+                    let version = buffer.version();
+                    let mtime = Some(MTime::from_seconds_and_nanos(seconds, 0));
+                    if reload {
+                        buffer.did_reload(version, buffer.line_ending(), mtime, cx);
+                    } else {
+                        buffer.did_save(version, mtime, cx);
+                    }
+                }
+                buffer.edit([(0..0, "edit")], None, cx);
+                assert!(!buffer.has_conflict());
+                for (seconds, inode) in [(200, 2), (300, 3)] {
+                    buffer.file_updated(observed(seconds, Some(inode)), cx);
+                    assert_eq!(
+                        buffer.has_conflict(),
+                        catch_up_before_receipt,
+                        "intermediate receipts stay exempt only until catch-up"
+                    );
+                    if !catch_up_before_receipt {
+                        buffer.file_updated(observed(seconds, Some(99)), cx);
+                        assert!(buffer.has_conflict(), "learn intermediate receipt identity");
+                        buffer.file_updated(observed(seconds, None), cx);
+                        assert!(!buffer.has_conflict());
+                        let version = buffer.saved_version().clone();
+                        let mtime = Some(MTime::from_seconds_and_nanos(400, 0));
+                        if reload {
+                            buffer.did_reload(version, buffer.line_ending(), mtime, cx);
+                        } else {
+                            buffer.did_save(version, mtime, cx);
+                        }
+                        buffer.file_updated(observed(seconds, Some(99)), cx);
+                        assert!(
+                            buffer.has_conflict(),
+                            "another receipt must not exempt a partial observation over known identity"
+                        );
+                    }
+                }
+                buffer.file_updated(observed(400, Some(4)), cx);
+                assert!(!buffer.has_conflict());
+                for (seconds, inode) in [(100, 1), (200, 2), (300, 3)] {
+                    buffer.file_updated(observed(seconds, Some(inode)), cx);
+                    assert!(buffer.has_conflict(), "all exemptions expire on catch-up");
+                }
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn test_superseded_observations_evict_oldest(cx: &mut App) {
+    init_settings(cx, |_| {});
+    for reload in [false, true] {
+        let buffer = cx.new(|cx| Buffer::local("old", cx));
+        buffer.update(cx, |buffer, cx| {
+            for seconds in 1..=19 {
+                let version = buffer.version();
+                let mtime = Some(MTime::from_seconds_and_nanos(seconds, 0));
+                if reload {
+                    buffer.did_reload(version, buffer.line_ending(), mtime, cx);
+                } else {
+                    buffer.did_save(version, mtime, cx);
+                }
+            }
+            buffer.edit([(0..0, "edit")], None, cx);
+            for seconds in 1..=18 {
+                buffer.file_updated(
+                    observed_file(MTime::from_seconds_and_nanos(seconds, 0), Some(3), Some(1)),
+                    cx,
+                );
+                assert_eq!(
+                    buffer.has_conflict(),
+                    seconds <= 2,
+                    "oldest receipts must be evicted first"
+                );
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn test_superseded_observation_expires(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let old_mtime = MTime::from_seconds_and_nanos(100, 0);
+    let saved_mtime = MTime::from_seconds_and_nanos(200, 0);
+
+    for reload in [false, true] {
+        for catch_up_before_receipt in [false, true] {
+            let buffer = cx.new(|cx| Buffer::local("old", cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer.file_updated(observed_file(old_mtime, Some(3), Some(1)), cx);
                 if catch_up_before_receipt {
-                    buffer.file_updated(observed(saved_mtime, Some(3), Some(2)), cx);
+                    buffer.file_updated(observed_file(saved_mtime, Some(3), Some(2)), cx);
                 }
                 let version = buffer.version();
                 if reload {
@@ -5727,9 +5811,9 @@ fn test_superseded_observation_expires(cx: &mut App) {
                     !buffer.has_conflict(),
                     "receipt must tolerate a lagging observation"
                 );
-                buffer.file_updated(observed(saved_mtime, Some(3), Some(2)), cx);
+                buffer.file_updated(observed_file(saved_mtime, Some(3), Some(2)), cx);
                 assert!(!buffer.has_conflict());
-                buffer.file_updated(observed(old_mtime, Some(3), Some(1)), cx);
+                buffer.file_updated(observed_file(old_mtime, Some(3), Some(1)), cx);
                 assert!(
                     buffer.has_conflict(),
                     "the old observation must not remain exempt after catch-up"
@@ -5744,7 +5828,7 @@ fn test_superseded_observation_expires(cx: &mut App) {
         ] {
             let buffer = cx.new(|cx| Buffer::local("old", cx));
             buffer.update(cx, |buffer, cx| {
-                buffer.file_updated(observed(old_mtime, Some(3), Some(1)), cx);
+                buffer.file_updated(observed_file(old_mtime, Some(3), Some(1)), cx);
                 let version = buffer.version();
                 if reload {
                     buffer.did_reload(version, buffer.line_ending(), Some(saved_mtime), cx);
@@ -5752,7 +5836,7 @@ fn test_superseded_observation_expires(cx: &mut App) {
                     buffer.did_save(version, Some(saved_mtime), cx);
                 }
                 buffer.edit([(0..0, "edit")], None, cx);
-                buffer.file_updated(observed(old_mtime, size, inode), cx);
+                buffer.file_updated(observed_file(old_mtime, size, inode), cx);
                 assert_eq!(
                     buffer.has_conflict(),
                     conflict,
