@@ -106,13 +106,14 @@ pub struct Buffer {
     /// The mtime of the file when this buffer was last loaded from
     /// or saved to disk.
     saved_mtime: Option<MTime>,
-    /// The mtime the file observation held when the last save or reload
+    /// The disk state the file observation held when the last save or reload
     /// receipt arrived. That save or reload replaced the disk state it
     /// describes, so an observation still carrying it is behind the receipt,
     /// not evidence of a foreign change. Observations can lag receipts on
     /// every path: locally the worktree scan lands after `did_save`, and for
     /// a guest the `UpdateBufferFile` message lands after the save response.
-    superseded_mtime: Option<MTime>,
+    /// This exemption expires when the observation catches up to the receipt.
+    superseded_disk_state: Option<DiskState>,
     /// The version vector when this buffer was last loaded from
     /// or saved to disk.
     saved_version: clock::Global,
@@ -1192,7 +1193,7 @@ impl Buffer {
         let tree_sitter_data = TreeSitterData::new(snapshot);
         let mut this = Self {
             saved_mtime,
-            superseded_mtime: None,
+            superseded_disk_state: None,
             tree_sitter_data: Arc::new(tree_sitter_data),
             saved_version: buffer.version(),
             preview_version: buffer.version(),
@@ -1685,10 +1686,11 @@ impl Buffer {
         self.saved_version = version.clone();
         self.has_unsaved_edits.set((version, false));
         self.has_conflict = false;
-        self.superseded_mtime = self
+        self.superseded_disk_state = self
             .file
             .as_ref()
-            .and_then(|file| file.disk_state().mtime());
+            .map(|file| file.disk_state())
+            .filter(|state| state.mtime().is_some() && state.mtime() != mtime);
         self.saved_mtime = mtime;
         self.was_changed();
         cx.emit(BufferEvent::Saved);
@@ -1815,10 +1817,11 @@ impl Buffer {
         self.has_unsaved_edits
             .set((self.saved_version.clone(), false));
         self.text.set_line_ending(line_ending);
-        self.superseded_mtime = self
+        self.superseded_disk_state = self
             .file
             .as_ref()
-            .and_then(|file| file.disk_state().mtime());
+            .map(|file| file.disk_state())
+            .filter(|state| state.mtime().is_some() && state.mtime() != mtime);
         self.saved_mtime = mtime;
         cx.emit(BufferEvent::Reloaded);
         cx.notify();
@@ -1847,6 +1850,11 @@ impl Buffer {
             file_changed = true;
         };
 
+        if new_file.disk_state().mtime().is_some()
+            && new_file.disk_state().mtime() == self.saved_mtime
+        {
+            self.superseded_disk_state = None;
+        }
         self.file = Some(new_file);
         if file_changed {
             self.refresh_resolved_settings(cx);
@@ -2595,7 +2603,7 @@ impl Buffer {
             // adjustments, restored backups, and tools that preserve timestamps (`cp -p`,
             // `rsync -t`, `touch -r`) - and this check is the only thing standing between a
             // save and silently overwriting newer contents on disk.
-            // An observation still carrying the mtime the file held when the last
+            // An observation still matching the disk state held when the last
             // save or reload receipt landed is exempt from that rule: the save or
             // reload replaced exactly that disk state, so the observation is behind
             // the receipt rather than evidence of a foreign change, and treating it
@@ -2605,7 +2613,9 @@ impl Buffer {
             DiskState::Present { mtime, .. } => match self.saved_mtime {
                 Some(saved_mtime) => {
                     mtime != saved_mtime
-                        && Some(mtime) != self.superseded_mtime
+                        && self
+                            .superseded_disk_state
+                            .is_none_or(|state| state.differs_from(file.disk_state()))
                         && self.has_unsaved_edits()
                 }
                 None => true,
@@ -3161,7 +3171,9 @@ impl Buffer {
             if let Some(file) = self.file.as_ref() {
                 if matches!(file.disk_state(), DiskState::Present { .. })
                     && file.disk_state().mtime() != self.saved_mtime
-                    && file.disk_state().mtime() != self.superseded_mtime
+                    && self
+                        .superseded_disk_state
+                        .is_none_or(|state| state.differs_from(file.disk_state()))
                 {
                     cx.emit(BufferEvent::ReloadNeeded);
                 }

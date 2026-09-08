@@ -5555,3 +5555,109 @@ fn test_disk_state_differs_from() {
     assert!(DiskState::New.differs_from(partial(mtime, None, None)));
     assert!(!DiskState::Deleted.differs_from(DiskState::Deleted));
 }
+
+struct ObservedFile {
+    file: TestFile,
+    state: DiskState,
+}
+
+impl File for ObservedFile {
+    fn as_local(&self) -> Option<&dyn LocalFile> {
+        None
+    }
+    fn disk_state(&self) -> DiskState {
+        self.state
+    }
+    fn path(&self) -> &Arc<RelPath> {
+        self.file.path()
+    }
+    fn full_path(&self, cx: &App) -> PathBuf {
+        self.file.full_path(cx)
+    }
+    fn path_style(&self, cx: &App) -> util::paths::PathStyle {
+        self.file.path_style(cx)
+    }
+    fn file_name<'a>(&'a self, cx: &'a App) -> &'a str {
+        self.file.file_name(cx)
+    }
+    fn worktree_id(&self, cx: &App) -> WorktreeId {
+        self.file.worktree_id(cx)
+    }
+    fn to_proto(&self, cx: &App) -> rpc::proto::File {
+        self.file.to_proto(cx)
+    }
+    fn is_private(&self) -> bool {
+        false
+    }
+}
+
+#[gpui::test]
+fn test_superseded_observation_expires(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let old_mtime = MTime::from_seconds_and_nanos(100, 0);
+    let saved_mtime = MTime::from_seconds_and_nanos(200, 0);
+    let observed = |mtime, size, inode| -> Arc<dyn File> {
+        Arc::new(ObservedFile {
+            file: TestFile {
+                path: rel_path("file.txt").into(),
+                root_name: "root".into(),
+                local_root: None,
+            },
+            state: DiskState::Present { mtime, size, inode },
+        })
+    };
+
+    for reload in [false, true] {
+        for catch_up_before_receipt in [false, true] {
+            let buffer = cx.new(|cx| Buffer::local("old", cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer.file_updated(observed(old_mtime, Some(3), Some(1)), cx);
+                if catch_up_before_receipt {
+                    buffer.file_updated(observed(saved_mtime, Some(3), Some(2)), cx);
+                }
+                let version = buffer.version();
+                if reload {
+                    buffer.did_reload(version, buffer.line_ending(), Some(saved_mtime), cx);
+                } else {
+                    buffer.did_save(version, Some(saved_mtime), cx);
+                }
+                buffer.edit([(0..0, "edit")], None, cx);
+                assert!(
+                    !buffer.has_conflict(),
+                    "receipt must tolerate a lagging observation"
+                );
+                buffer.file_updated(observed(saved_mtime, Some(3), Some(2)), cx);
+                assert!(!buffer.has_conflict());
+                buffer.file_updated(observed(old_mtime, Some(3), Some(1)), cx);
+                assert!(
+                    buffer.has_conflict(),
+                    "the old observation must not remain exempt after catch-up"
+                );
+            });
+        }
+        for (size, inode, conflict) in [
+            (Some(3), Some(1), false),
+            (None, None, false),
+            (Some(4), Some(1), true),
+            (Some(3), Some(2), true),
+        ] {
+            let buffer = cx.new(|cx| Buffer::local("old", cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer.file_updated(observed(old_mtime, Some(3), Some(1)), cx);
+                let version = buffer.version();
+                if reload {
+                    buffer.did_reload(version, buffer.line_ending(), Some(saved_mtime), cx);
+                } else {
+                    buffer.did_save(version, Some(saved_mtime), cx);
+                }
+                buffer.edit([(0..0, "edit")], None, cx);
+                buffer.file_updated(observed(old_mtime, size, inode), cx);
+                assert_eq!(
+                    buffer.has_conflict(),
+                    conflict,
+                    "known identity changes must not be exempt"
+                );
+            });
+        }
+    }
+}
