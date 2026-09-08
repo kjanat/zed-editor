@@ -106,7 +106,7 @@ pub struct Buffer {
     /// The known disk state when this buffer was last loaded from or saved to disk.
     saved_disk_state: Option<DiskState>,
     /// Observations replaced by save or reload receipts that the file watcher
-    /// has not yet caught up with. Keep every outstanding receipt because several
+    /// has not yet caught up with. Keep recent outstanding receipts because several
     /// saves can complete before an intermediate file observation arrives.
     /// All exemptions expire when the latest receipt is observed.
     superseded_disk_states: SmallVec<[DiskState; 2]>,
@@ -157,6 +157,9 @@ pub struct TreeSitterData {
 }
 
 const MAX_ROWS_IN_A_CHUNK: u32 = 50;
+// Bound retained history if the watcher never catches up. Evicted observations
+// may report a conflict rather than keeping an indefinitely growing exemption.
+const MAX_SUPERSEDED_DISK_STATES: usize = 16;
 
 impl TreeSitterData {
     fn clear(&mut self, snapshot: &text::BufferSnapshot) {
@@ -1720,6 +1723,9 @@ impl Buffer {
                         .any(|candidate| candidate.merge_observation(state))
                 {
                     self.superseded_disk_states.push(state);
+                    if self.superseded_disk_states.len() > MAX_SUPERSEDED_DISK_STATES {
+                        self.superseded_disk_states.remove(0);
+                    }
                 }
             }
         }
