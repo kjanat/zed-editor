@@ -6384,6 +6384,7 @@ dependencies = [
  "settings",
  "strum 0.28.0",
  "telemetry",
+ "theme",
  "theme_settings",
  "ui",
  "util",

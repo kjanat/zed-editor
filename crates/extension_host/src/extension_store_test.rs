@@ -4115,18 +4115,12 @@ async fn test_language_collision_startup_and_cached_index(cx: &mut TestAppContex
             warning.providers,
             ("alpha (alpha, v1.0.0)".into(), "beta (beta, v1.0.0)".into())
         );
-        assert_eq!(warning.resources.len(), 2);
+        assert_eq!(warning.resources.len(), 1);
         assert!(
             warning
                 .resources
                 .iter()
                 .any(|resource| resource.contains("language \"Shared\""))
-        );
-        assert!(
-            warning
-                .resources
-                .iter()
-                .any(|resource| resource.contains("grammar \"shared\""))
         );
         assert!(
             store
@@ -4323,6 +4317,65 @@ async fn test_language_collision_native_and_pending_warning_removal(cx: &mut Tes
         Ok(())
     }
     .await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[gpui::test]
+async fn test_grammar_collision_sources(cx: &mut TestAppContext) {
+    use crate::LanguageCollisionKey;
+    use collections::BTreeSet;
+    let result: anyhow::Result<()> = async {
+        init_test(cx);
+        for different_source in [
+            "repository = \"https://example.com/other\"\nrev = \"same-revision\"",
+            "repository = \"https://example.com/grammar\"\nrev = \"other-revision\"",
+            "repository = \"https://example.com/grammar\"\nrev = \"same-revision\"\npath = \"subdirectory\"",
+        ] {
+            let fs = FakeFs::new(cx.executor());
+            let proxy = Arc::new(ExtensionHostProxy::new());
+            let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+            language_extension::init(LspAccess::Noop, proxy.clone(), registry);
+            insert_collision_extension(&fs, "alpha", "Alpha").await;
+            insert_collision_extension(&fs, "beta", "Beta").await;
+            let store = create_extension_store_with(fs.clone(), proxy.clone(), cx);
+            assert!(store.update(cx, |store, _| store.take_language_collision_warnings()).is_empty());
+            drop(store);
+            let store = create_extension_store_with(fs.clone(), proxy, cx);
+            assert!(store.update(cx, |store, _| store.take_language_collision_warnings()).is_empty(), "cached identical sources must not warn");
+
+            for id in ["gamma", "delta"] {
+                insert_collision_extension(&fs, id, id).await;
+                fs.insert_file(format!("/extensions/installed/{id}/extension.toml"), format!(
+                    "id = \"{id}\"\nname = \"{id}\"\nversion = \"1.0.0\"\nschema_version = 1\n[grammars.shared]\n{different_source}\n"
+                ).into_bytes()).await;
+            }
+            store.update(cx, |store, cx| store.reload(None, cx)).await;
+            let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
+            let pairs: BTreeSet<_> = warnings.iter().map(|warning| warning.key.clone()).collect();
+            assert_eq!(pairs, BTreeSet::from_iter([
+                LanguageCollisionKey::Extensions("alpha".into(), "delta".into()),
+                LanguageCollisionKey::Extensions("alpha".into(), "gamma".into()),
+                LanguageCollisionKey::Extensions("beta".into(), "delta".into()),
+                LanguageCollisionKey::Extensions("beta".into(), "gamma".into()),
+            ]));
+            assert!(warnings.iter().all(|warning| warning.resources.len() == 1 && warning.resources.iter().all(|resource| resource.contains("grammar"))));
+
+            for id in ["gamma", "delta"] {
+                insert_collision_extension(&fs, id, id).await;
+            }
+            store.update(cx, |store, cx| store.reload(None, cx)).await;
+            assert!(store.read_with(cx, |store, _| store.active_language_collision_warnings().is_empty()), "matching sources must resolve delivered warnings");
+            assert!(store.update(cx, |store, _| store.take_language_collision_warnings()).is_empty());
+            fs.insert_file("/extensions/installed/gamma/extension.toml", format!(
+                "id = \"gamma\"\nname = \"gamma\"\nversion = \"1.0.0\"\nschema_version = 1\n[grammars.shared]\n{different_source}\n"
+            ).into_bytes()).await;
+            store.update(cx, |store, cx| store.reload(None, cx)).await;
+            let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
+            assert_eq!(warnings.len(), 1, "only the previously identical pair should warn for the first time");
+            assert_eq!(warnings.first().context("missing new conflict")?.key, LanguageCollisionKey::Extensions("delta".into(), "gamma".into()));
+        }
+        Ok(())
+    }.await;
     assert!(result.is_ok(), "{result:?}");
 }
 

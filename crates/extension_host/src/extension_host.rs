@@ -73,8 +73,8 @@ pub use extension::{
     ExtensionLibraryKind, GrammarManifestEntry, OldExtensionManifest, SchemaVersion,
 };
 pub use extension_settings::ExtensionSettings;
-pub use language_collisions::LanguageCollision;
 use language_collisions::LanguageCollisions;
+pub use language_collisions::{LanguageCollision, LanguageCollisionKey};
 
 use crate::headless_host::hash_directory_contents;
 
@@ -359,6 +359,12 @@ pub fn init(
 }
 
 impl ExtensionStore {
+    pub fn active_language_collision_warnings(
+        &self,
+    ) -> &BTreeMap<LanguageCollisionKey, LanguageCollision> {
+        self.language_collisions.active_warnings()
+    }
+
     pub fn take_language_collision_warnings(&mut self) -> Vec<LanguageCollision> {
         self.language_collisions.take_warnings()
     }

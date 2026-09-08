@@ -2,16 +2,16 @@ mod components;
 mod extension_suggest;
 mod extension_version_selector;
 
-use std::sync::OnceLock;
 use std::time::Duration;
 use std::{any::TypeId, ops::Range, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::OnceLock};
 
 use anyhow::Context as _;
 use cloud_api_types::{ExtensionMetadata, ExtensionProvides};
 use collections::{BTreeMap, BTreeSet};
 use command_palette_hooks::CommandPaletteFilter;
 use editor::{Editor, EditorElement, EditorStyle};
-use extension_host::{ExtensionManifest, ExtensionStore, LanguageCollision};
+use extension_host::{ExtensionManifest, ExtensionStore, LanguageCollision, LanguageCollisionKey};
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
 use git::{GitHostingProviderRegistry, parse_git_remote_url};
 use gpui::{
@@ -110,23 +110,59 @@ impl WorkspaceError for LanguageCollisionWarning {
 fn show_language_collision_warnings(
     workspace: &mut Workspace,
     store: &Entity<ExtensionStore>,
+    displayed: &mut BTreeMap<LanguageCollisionKey, LanguageCollision>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    if !window.is_window_active() {
-        return;
+    let active = store.read(cx).active_language_collision_warnings().clone();
+    reconcile_language_collision_warnings(workspace, displayed, &active, cx);
+    if window.is_window_active() {
+        let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
+        for warning in warnings {
+            show_language_collision_warning(workspace, &warning, cx);
+            displayed.insert(warning.key.clone(), warning);
+        }
     }
-    let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
-    for warning in warnings {
-        let id = NotificationId::composite::<LanguageCollisionWarning>(SharedString::from(
-            format!("{:?}", warning.providers),
-        ));
-        workspace.show_notification(id, cx, |cx| {
-            cx.new(|cx| {
-                MessageNotification::from_workspace_error(LanguageCollisionWarning(warning), cx)
-            })
-        });
-    }
+}
+
+fn collision_notification_id(key: &LanguageCollisionKey) -> NotificationId {
+    NotificationId::composite::<LanguageCollisionWarning>(SharedString::from(format!("{key:?}")))
+}
+
+fn show_language_collision_warning(
+    workspace: &mut Workspace,
+    warning: &LanguageCollision,
+    cx: &mut Context<Workspace>,
+) {
+    workspace.show_notification(collision_notification_id(&warning.key), cx, |cx| {
+        cx.new(|cx| {
+            MessageNotification::from_workspace_error(LanguageCollisionWarning(warning.clone()), cx)
+        })
+    });
+}
+
+fn reconcile_language_collision_warnings(
+    workspace: &mut Workspace,
+    displayed: &mut BTreeMap<LanguageCollisionKey, LanguageCollision>,
+    active: &BTreeMap<LanguageCollisionKey, LanguageCollision>,
+    cx: &mut Context<Workspace>,
+) {
+    let visible = workspace.notification_ids();
+    displayed.retain(|key, previous| {
+        let id = collision_notification_id(key);
+        if !visible.contains(&id) {
+            return false;
+        }
+        let Some(current) = active.get(key) else {
+            workspace.dismiss_notification(&id, cx);
+            return false;
+        };
+        if previous != current {
+            show_language_collision_warning(workspace, current, cx);
+            *previous = current.clone();
+        }
+        true
+    });
 }
 
 impl WorkspaceError for DevExtensionNotInstalledError {
@@ -171,21 +207,44 @@ pub fn init(cx: &mut App) {
         let Some(window) = window else {
             return;
         };
-        cx.observe_in(&store, window, |workspace, store, window, cx| {
-            show_language_collision_warnings(workspace, &store, window, cx);
+        let displayed = Rc::new(RefCell::new(BTreeMap::new()));
+        cx.observe_in(&store, window, {
+            let displayed = displayed.clone();
+            move |workspace, store, window, cx| {
+                show_language_collision_warnings(
+                    workspace,
+                    &store,
+                    &mut displayed.borrow_mut(),
+                    window,
+                    cx,
+                );
+            }
         })
         .detach();
         cx.observe_window_activation(window, {
             let store = store.clone();
+            let displayed = displayed.clone();
             move |workspace, window, cx| {
-                show_language_collision_warnings(workspace, &store, window, cx)
+                show_language_collision_warnings(
+                    workspace,
+                    &store,
+                    &mut displayed.borrow_mut(),
+                    window,
+                    cx,
+                )
             }
         })
         .detach();
         let store = store.clone();
         // Cached extensions may have loaded before the first workspace existed.
         cx.defer_in(window, move |workspace, window, cx| {
-            show_language_collision_warnings(workspace, &store, window, cx)
+            show_language_collision_warnings(
+                workspace,
+                &store,
+                &mut displayed.borrow_mut(),
+                window,
+                cx,
+            )
         });
         workspace
             .register_action(
@@ -1631,5 +1690,69 @@ impl Item for ExtensionsPage {
 
     fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(workspace::item::ItemEvent)) {
         f(*event)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fs::FakeFs;
+    use gpui::TestAppContext;
+    use project::Project;
+
+    #[gpui::test]
+    async fn test_language_collision_notification_lifecycle(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        cx.deactivate_window();
+        cx.run_until_parked();
+        let key = LanguageCollisionKey::Extensions("alpha".into(), "beta".into());
+        let mut warning = LanguageCollision {
+            key: key.clone(),
+            providers: ("Alpha (alpha, v1.0.0)".into(), "Beta (beta, v1.0.0)".into()),
+            resources: vec!["grammar shared (active provider: Beta)".into()],
+        };
+        let id = collision_notification_id(&key);
+        let mut displayed = BTreeMap::from_iter([(key.clone(), warning.clone())]);
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(
+                !window.is_window_active(),
+                "reconcile warnings in inactive windows too"
+            );
+            show_language_collision_warning(workspace, &warning, cx);
+            assert_eq!(workspace.notification_ids(), vec![id.clone()]);
+
+            warning.providers.1 = "Renamed Beta (beta, v2.0.0)".into();
+            warning.resources = vec!["grammar shared (active provider: Alpha)".into()];
+            let active = BTreeMap::from_iter([(key.clone(), warning.clone())]);
+            reconcile_language_collision_warnings(workspace, &mut displayed, &active, cx);
+            assert_eq!(
+                workspace.notification_ids(),
+                vec![id.clone()],
+                "metadata changes must preserve notification identity"
+            );
+            assert_eq!(displayed.get(&key), Some(&warning));
+
+            reconcile_language_collision_warnings(workspace, &mut displayed, &BTreeMap::new(), cx);
+            assert!(workspace.notification_ids().is_empty());
+            assert!(displayed.is_empty());
+
+            show_language_collision_warning(workspace, &warning, cx);
+            displayed.insert(key.clone(), warning.clone());
+            workspace.dismiss_notification(&id, cx);
+            reconcile_language_collision_warnings(workspace, &mut displayed, &active, cx);
+            assert!(
+                workspace.notification_ids().is_empty(),
+                "dismissed warnings must not reappear during reconciliation"
+            );
+            assert!(displayed.is_empty());
+        });
     }
 }
