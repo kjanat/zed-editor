@@ -5693,6 +5693,80 @@ impl File for ObservedFile {
 }
 
 #[gpui::test]
+fn test_consecutive_receipts_accept_intermediate_observations(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let observed = |seconds, inode| -> Arc<dyn File> {
+        Arc::new(ObservedFile {
+            file: TestFile {
+                path: rel_path("file.txt").into(),
+                root_name: "root".into(),
+                local_root: None,
+            },
+            state: DiskState::Present {
+                mtime: MTime::from_seconds_and_nanos(seconds, 0),
+                size: Some(3),
+                inode,
+            },
+        })
+    };
+
+    for reload in [false, true] {
+        for catch_up_before_receipt in [false, true] {
+            let buffer = cx.new(|cx| Buffer::local("old", cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer.file_updated(observed(100, Some(1)), cx);
+                for seconds in [200, 300, 400] {
+                    if catch_up_before_receipt && seconds == 400 {
+                        buffer.file_updated(observed(seconds, Some(4)), cx);
+                    }
+                    let version = buffer.version();
+                    let mtime = Some(MTime::from_seconds_and_nanos(seconds, 0));
+                    if reload {
+                        buffer.did_reload(version, buffer.line_ending(), mtime, cx);
+                    } else {
+                        buffer.did_save(version, mtime, cx);
+                    }
+                }
+                buffer.edit([(0..0, "edit")], None, cx);
+                assert!(!buffer.has_conflict());
+                for (seconds, inode) in [(200, 2), (300, 3)] {
+                    buffer.file_updated(observed(seconds, Some(inode)), cx);
+                    assert_eq!(
+                        buffer.has_conflict(),
+                        catch_up_before_receipt,
+                        "intermediate receipts stay exempt only until catch-up"
+                    );
+                    if !catch_up_before_receipt {
+                        buffer.file_updated(observed(seconds, Some(99)), cx);
+                        assert!(buffer.has_conflict(), "learn intermediate receipt identity");
+                        buffer.file_updated(observed(seconds, None), cx);
+                        assert!(!buffer.has_conflict());
+                        let version = buffer.saved_version().clone();
+                        let mtime = Some(MTime::from_seconds_and_nanos(400, 0));
+                        if reload {
+                            buffer.did_reload(version, buffer.line_ending(), mtime, cx);
+                        } else {
+                            buffer.did_save(version, mtime, cx);
+                        }
+                        buffer.file_updated(observed(seconds, Some(99)), cx);
+                        assert!(
+                            buffer.has_conflict(),
+                            "another receipt must not exempt a partial observation over known identity"
+                        );
+                    }
+                }
+                buffer.file_updated(observed(400, Some(4)), cx);
+                assert!(!buffer.has_conflict());
+                for (seconds, inode) in [(100, 1), (200, 2), (300, 3)] {
+                    buffer.file_updated(observed(seconds, Some(inode)), cx);
+                    assert!(buffer.has_conflict(), "all exemptions expire on catch-up");
+                }
+            });
+        }
+    }
+}
+
+#[gpui::test]
 fn test_superseded_observation_expires(cx: &mut App) {
     init_settings(cx, |_| {});
     let old_mtime = MTime::from_seconds_and_nanos(100, 0);
