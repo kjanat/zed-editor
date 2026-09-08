@@ -5365,8 +5365,11 @@ impl BackgroundScanner {
             let root_path = state.snapshot.abs_path.clone();
             for path in paths {
                 for ancestor in path.ancestors() {
+                    // A recursive rescan can leave an ancestor pending while a write
+                    // requests a refresh. Load it before deriving the child's ignore
+                    // status or the refresh can outrun the ancestor's .gitignore.
                     if let Some(entry) = state.snapshot.entry_for_path(ancestor)
-                        && entry.kind == EntryKind::UnloadedDir
+                        && matches!(entry.kind, EntryKind::UnloadedDir | EntryKind::PendingDir)
                     {
                         let abs_path = if entry.is_external {
                             entry
