@@ -214,9 +214,17 @@ impl ExtensionThemeProxy for ExtensionHostProxy {
 
 pub trait ExtensionGrammarProxy: Send + Sync + 'static {
     fn register_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>);
+    fn is_native_grammar(&self, name: &str) -> bool;
 }
 
 impl ExtensionGrammarProxy for ExtensionHostProxy {
+    fn is_native_grammar(&self, name: &str) -> bool {
+        self.grammar_proxy
+            .read()
+            .as_ref()
+            .is_some_and(|proxy| proxy.is_native_grammar(name))
+    }
+
     #[ztracing::instrument(skip_all)]
     fn register_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>) {
         let Some(proxy) = self.grammar_proxy.read().clone() else {
@@ -238,6 +246,7 @@ pub trait ExtensionLanguageProxy: Send + Sync + 'static {
     ) -> bool;
 
     fn is_language_registered(&self, language: &LanguageName) -> bool;
+    fn is_native_language(&self, language: &LanguageName) -> bool;
 
     fn remove_languages(
         &self,
@@ -247,6 +256,13 @@ pub trait ExtensionLanguageProxy: Send + Sync + 'static {
 }
 
 impl ExtensionLanguageProxy for ExtensionHostProxy {
+    fn is_native_language(&self, language: &LanguageName) -> bool {
+        self.language_proxy
+            .read()
+            .as_ref()
+            .is_some_and(|proxy| proxy.is_native_language(language))
+    }
+
     #[ztracing::instrument(skip_all, fields(lang = language.0.as_str()))]
     fn register_language(
         &self,

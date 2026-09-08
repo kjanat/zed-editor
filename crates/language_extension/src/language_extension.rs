@@ -37,6 +37,10 @@ struct LanguageServerRegistryProxy {
 }
 
 impl ExtensionGrammarProxy for LanguageServerRegistryProxy {
+    fn is_native_grammar(&self, name: &str) -> bool {
+        self.language_registry.is_native_grammar(name)
+    }
+
     #[ztracing::instrument(skip_all)]
     fn register_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>) {
         self.language_registry.register_wasm_grammars(grammars)
@@ -44,6 +48,10 @@ impl ExtensionGrammarProxy for LanguageServerRegistryProxy {
 }
 
 impl ExtensionLanguageProxy for LanguageServerRegistryProxy {
+    fn is_native_language(&self, language: &LanguageName) -> bool {
+        self.language_registry.is_native_language(language)
+    }
+
     fn register_language(
         &self,
         language: LanguageName,
