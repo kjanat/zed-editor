@@ -2440,6 +2440,84 @@ async fn test_write_file(cx: &mut TestAppContext) {
         })
         .await
         .unwrap();
+    // A targeted refresh can publish a snapshot while a recursive watcher scan
+    // is still rebuilding another subtree. The write receipt only covers its path.
+    cx.read(|cx| worktree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    worktree.read_with(cx, |tree, _| {
+        let tracked = tree
+            .entry_for_path(rel_path("tracked-dir/file.txt"))
+            .unwrap();
+        let ignored = tree
+            .entry_for_path(rel_path("ignored-dir/file.txt"))
+            .unwrap();
+        assert!(!tracked.is_ignored);
+        assert!(ignored.is_ignored);
+    });
+}
+
+#[gpui::test(iterations = 20)]
+async fn test_write_file_during_rescan(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            ".git": {},
+            ".gitignore": "ignored-dir\n",
+            "tracked-dir": {},
+            "ignored-dir": {}
+        }),
+    )
+    .await;
+
+    let worktree = Worktree::local(
+        Path::new(path!("/root")),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+
+    cx.read(|cx| worktree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    worktree.flush_fs_events(cx).await;
+
+    worktree
+        .update(cx, |tree, cx| {
+            tree.write_file(
+                rel_path("tracked-dir/file.txt").into(),
+                "hello".into(),
+                Default::default(),
+                encoding_rs::UTF_8,
+                false,
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    fs.emit_fs_event(path!("/root"), Some(PathEventKind::Rescan));
+    worktree
+        .update(cx, |tree, cx| {
+            tree.write_file(
+                rel_path("ignored-dir/file.txt").into(),
+                "world".into(),
+                Default::default(),
+                encoding_rs::UTF_8,
+                false,
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    // A targeted refresh can publish a snapshot while a recursive watcher scan
+    // is still rebuilding another subtree. The write receipt only covers its path.
+    cx.read(|cx| worktree.read(cx).as_local().unwrap().scan_complete())
+        .await;
     worktree.read_with(cx, |tree, _| {
         let tracked = tree
             .entry_for_path(rel_path("tracked-dir/file.txt"))
