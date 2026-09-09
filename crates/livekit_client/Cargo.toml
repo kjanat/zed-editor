@@ -63,11 +63,9 @@ tokio                = { workspace = true, features = ["time"] }
 webrtc-sys.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cocoa.workspace           = true
 core-foundation.workspace = true
 core-video.workspace      = true
 coreaudio-rs              = "0.12.1"
-objc.workspace            = true
 
 [features]
 test-support = ["collections/test-support", "gpui/test-support", "livekit_api/test-support"]

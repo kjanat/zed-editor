@@ -86,6 +86,14 @@ impl Workspace {
             .collect()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn notification_views(&self) -> Vec<AnyView> {
+        self.notifications
+            .iter()
+            .map(|(_, view)| view.clone())
+            .collect()
+    }
+
     pub fn show_notification<V: Notification>(
         &mut self,
         id: NotificationId,
