@@ -9606,6 +9606,9 @@ impl LspStore {
         let language_servers = buffer.update(cx, |buffer, cx| {
             local.language_server_ids_for_buffer(buffer, cx)
         });
+        let opened_in_servers = local
+            .buffers_opened_in_servers
+            .get(&buffer.read(cx).remote_id());
         let language = buffer.read(cx).language().map(|language| language.name());
         for server in local.language_servers_for_worktree(worktree_id) {
             let associated = language_servers.contains(&server.server_id());
@@ -9613,14 +9616,15 @@ impl LspStore {
                 self.language_server_adapter_for_id(server.server_id())
                     .map(|adapter| adapter.language_id(language))
             });
-            let mut include_text = associated
-                .then(|| {
-                    local
-                        .initial_server_capabilities
-                        .get(&server.server_id())
-                        .and_then(save_include_text)
-                })
-                .flatten();
+            let mut include_text = (associated
+                && opened_in_servers.is_some_and(|servers| servers.contains(&server.server_id())))
+            .then(|| {
+                local
+                    .initial_server_capabilities
+                    .get(&server.server_id())
+                    .and_then(save_include_text)
+            })
+            .flatten();
             if let Some(registrations) = local
                 .language_server_dynamic_registrations
                 .get(&server.server_id())

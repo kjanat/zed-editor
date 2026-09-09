@@ -1938,6 +1938,40 @@ async fn test_managing_language_servers(cx: &mut gpui::TestAppContext) {
             .is_none()
     );
 
+    let unopened_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/dir/unopened.rs"), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    project.read_with(cx, |project, cx| {
+        let buffer = unopened_buffer.read(cx);
+        assert_eq!(
+            buffer.language().map(|language| language.name()),
+            Some("Rust".into())
+        );
+        assert!(
+            project
+                .lsp_store()
+                .read(cx)
+                .language_server_ids_for_opened_buffer(buffer.remote_id())
+                .is_none()
+        );
+    });
+    project
+        .update(cx, |project, cx| project.save_buffer(unopened_buffer, cx))
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        fake_rust_server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .now_or_never()
+            .is_none(),
+        "static save subscriptions must not notify a server that has not opened the buffer"
+    );
+
     // Explicit save registrations can include files outside the server's language.
     fake_rust_server
         .request::<lsp::request::RegisterCapability>(
@@ -1982,6 +2016,22 @@ async fn test_managing_language_servers(cx: &mut gpui::TestAppContext) {
     assert_eq!(
         notification.text,
         Some(toml_buffer.read_with(cx, |buffer, _| buffer.text()))
+    );
+
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer(rust_buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        fake_rust_server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .await
+            .text_document
+            .uri,
+        lsp::Uri::from_file_path(path!("/dir/test.rs")).unwrap(),
+        "a manifest registration must not disable the static source subscription"
     );
 
     fake_rust_server
