@@ -1573,6 +1573,130 @@ async fn test_running_multiple_instances_of_a_single_server_in_one_worktree(
 }
 
 #[gpui::test]
+async fn test_dynamic_save_registration(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({"a.rs": "fn main() {}"}))
+        .await;
+    let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                text_document_sync: Some(lsp::TextDocumentSyncCapability::Kind(
+                    lsp::TextDocumentSyncKind::FULL,
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    for registered in [false, true, false] {
+        if registered {
+            server
+                .request::<lsp::request::RegisterCapability>(
+                    lsp::RegistrationParams {
+                        registrations: vec![lsp::Registration {
+                            id: "save".into(),
+                            method: "textDocument/didSave".into(),
+                            register_options: Some(json!({"documentSelector": null})),
+                        }],
+                    },
+                    DEFAULT_LSP_REQUEST_TIMEOUT,
+                )
+                .await
+                .into_response()
+                .unwrap();
+        } else {
+            server
+                .request::<lsp::request::UnregisterCapability>(
+                    lsp::UnregistrationParams {
+                        unregisterations: vec![lsp::Unregistration {
+                            id: "save".into(),
+                            method: "textDocument/didSave".into(),
+                        }],
+                    },
+                    DEFAULT_LSP_REQUEST_TIMEOUT,
+                )
+                .await
+                .into_response()
+                .unwrap();
+        }
+        project
+            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        let notification = server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .now_or_never();
+        if registered {
+            let notification =
+                notification.expect("dynamic save registration must enable notifications");
+            assert_eq!(
+                notification.text_document.uri,
+                lsp::Uri::from_file_path(path!("/dir/a.rs")).unwrap()
+            );
+            assert_eq!(notification.text, None);
+        } else {
+            assert!(notification.is_none());
+        }
+    }
+    for (selector, expected) in [
+        (json!(null), true),
+        (json!([]), false),
+        (json!([{"language": "rust"}]), true),
+        (json!([{"language": "json"}]), false),
+        (json!([{"scheme": "untitled"}]), false),
+        (json!([{"scheme": "file", "pattern": "**/*.rs"}]), true),
+        (json!([{"pattern": "**/*.toml"}]), false),
+        (json!([{"pattern": "*.rs"}]), false),
+        (json!([{"pattern": "["}]), false),
+        (json!([{"language": "json"}, {"pattern": "**/*.rs"}]), true),
+    ] {
+        server
+            .request::<lsp::request::RegisterCapability>(
+                lsp::RegistrationParams {
+                    registrations: vec![lsp::Registration {
+                        id: "selector-save".into(),
+                        method: "textDocument/didSave".into(),
+                        register_options: Some(json!({"documentSelector": selector})),
+                    }],
+                },
+                DEFAULT_LSP_REQUEST_TIMEOUT,
+            )
+            .await
+            .into_response()
+            .unwrap();
+        project
+            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            server
+                .receive_notification::<lsp::notification::DidSaveTextDocument>()
+                .now_or_never()
+                .is_some(),
+            expected,
+            "{selector}"
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_managing_language_servers(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 
@@ -1774,28 +1898,206 @@ async fn test_managing_language_servers(cx: &mut gpui::TestAppContext) {
         )
     );
 
-    // Save notifications are reported to all servers.
+    assert!(toml_buffer.read_with(cx, |buffer, _| buffer.language().is_none()));
     project
-        .update(cx, |project, cx| project.save_buffer(toml_buffer, cx))
+        .update(cx, |project, cx| {
+            project.save_buffer(toml_buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    for server in [&mut fake_rust_server, &mut fake_json_server] {
+        assert!(
+            server
+                .receive_notification::<lsp::notification::DidSaveTextDocument>()
+                .now_or_never()
+                .is_none(),
+            "saving an unknown-language file must not notify unrelated servers"
+        );
+    }
+
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer(rust_buffer.clone(), cx)
+        })
         .await
         .unwrap();
     assert_eq!(
         fake_rust_server
             .receive_notification::<lsp::notification::DidSaveTextDocument>()
             .await
-            .text_document,
-        lsp::TextDocumentIdentifier::new(
-            lsp::Uri::from_file_path(path!("/dir/Cargo.toml")).unwrap()
-        )
+            .text_document
+            .uri,
+        lsp::Uri::from_file_path(path!("/dir/test.rs")).unwrap(),
     );
-    assert_eq!(
+    cx.run_until_parked();
+    assert!(
         fake_json_server
             .receive_notification::<lsp::notification::DidSaveTextDocument>()
-            .await
-            .text_document,
-        lsp::TextDocumentIdentifier::new(
-            lsp::Uri::from_file_path(path!("/dir/Cargo.toml")).unwrap()
+            .now_or_never()
+            .is_none()
+    );
+
+    let unopened_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/dir/unopened.rs"), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    project.read_with(cx, |project, cx| {
+        let buffer = unopened_buffer.read(cx);
+        assert_eq!(
+            buffer.language().map(|language| language.name()),
+            Some("Rust".into())
+        );
+        assert!(
+            project
+                .lsp_store()
+                .read(cx)
+                .language_server_ids_for_opened_buffer(buffer.remote_id())
+                .is_none()
+        );
+    });
+    project
+        .update(cx, |project, cx| project.save_buffer(unopened_buffer, cx))
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        fake_rust_server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .now_or_never()
+            .is_none(),
+        "static save subscriptions must not notify a server that has not opened the buffer"
+    );
+
+    // Explicit save registrations can include files outside the server's language.
+    fake_rust_server
+        .request::<lsp::request::RegisterCapability>(
+            lsp::RegistrationParams {
+                registrations: vec![
+                    lsp::Registration {
+                        id: "manifest-save".into(),
+                        method: "textDocument/didSave".into(),
+                        register_options: Some(json!({
+                            "documentSelector": [{"scheme": "file", "pattern": "**/Cargo.toml"}],
+                            "includeText": true,
+                        })),
+                    },
+                    lsp::Registration {
+                        id: "manifest-without-text".into(),
+                        method: "textDocument/didSave".into(),
+                        register_options: Some(json!({
+                            "documentSelector": [{"pattern": "**/Cargo.toml"}],
+                            "includeText": false,
+                        })),
+                    },
+                ],
+            },
+            DEFAULT_LSP_REQUEST_TIMEOUT,
         )
+        .await
+        .into_response()
+        .unwrap();
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer(toml_buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    let notification = fake_rust_server
+        .receive_notification::<lsp::notification::DidSaveTextDocument>()
+        .await;
+    assert_eq!(
+        notification.text_document.uri,
+        lsp::Uri::from_file_path(path!("/dir/Cargo.toml")).unwrap()
+    );
+    assert_eq!(
+        notification.text,
+        Some(toml_buffer.read_with(cx, |buffer, _| buffer.text()))
+    );
+
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer(rust_buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        fake_rust_server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .await
+            .text_document
+            .uri,
+        lsp::Uri::from_file_path(path!("/dir/test.rs")).unwrap(),
+        "a manifest registration must not disable the static source subscription"
+    );
+
+    fake_rust_server
+        .request::<lsp::request::UnregisterCapability>(
+            lsp::UnregistrationParams {
+                unregisterations: vec![lsp::Unregistration {
+                    id: "manifest-without-text".into(),
+                    method: "textDocument/didSave".into(),
+                }],
+            },
+            DEFAULT_LSP_REQUEST_TIMEOUT,
+        )
+        .await
+        .into_response()
+        .unwrap();
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer(toml_buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    assert!(
+        fake_rust_server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .await
+            .text
+            .is_some()
+    );
+
+    fake_rust_server
+        .request::<lsp::request::UnregisterCapability>(
+            lsp::UnregistrationParams {
+                unregisterations: vec![lsp::Unregistration {
+                    id: "manifest-save".into(),
+                    method: "textDocument/didSave".into(),
+                }],
+            },
+            DEFAULT_LSP_REQUEST_TIMEOUT,
+        )
+        .await
+        .into_response()
+        .unwrap();
+    project
+        .update(cx, |project, cx| project.save_buffer(toml_buffer, cx))
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        fake_rust_server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .now_or_never()
+            .is_none()
+    );
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer(rust_buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        fake_rust_server
+            .receive_notification::<lsp::notification::DidSaveTextDocument>()
+            .await
+            .text_document
+            .uri,
+        lsp::Uri::from_file_path(path!("/dir/test.rs")).unwrap()
     );
 
     // Renames are reported only to servers matching the buffer's language.

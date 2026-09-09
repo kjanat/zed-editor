@@ -65,6 +65,7 @@ pub(super) type TextDocumentRegistrations =
 #[derive(Default, Debug)]
 pub(super) struct DynamicRegistrations {
     pub(super) did_change_watched_files: HashSet<String>,
+    pub(super) did_save: IndexMap<String, lsp::TextDocumentSaveRegistrationOptions>,
     pub(super) text_documents: TextDocumentRegistrations,
     workspace_folders: CapabilityRegistrations<lsp::WorkspaceFoldersServerCapabilities>,
     workspace_symbol: CapabilityRegistrations<OneOf<bool, lsp::WorkspaceSymbolOptions>>,
@@ -73,6 +74,41 @@ pub(super) struct DynamicRegistrations {
 }
 
 impl LspStore {
+    fn refresh_save_capability(&mut self, server: &LanguageServer, cx: &mut Context<Self>) {
+        let Some(local) = self.as_local() else { return };
+        // ServerCapabilities can represent only one save option, so the newest
+        // registration supplies metadata without revoking other subscriptions.
+        // on_buffer_saved evaluates static and dynamic subscriptions per document
+        // and combines their matching includeText requirements.
+        let save = local
+            .language_server_dynamic_registrations
+            .get(&server.server_id())
+            .and_then(|registrations| registrations.did_save.last())
+            .map(|(_, options)| {
+                TextDocumentSyncSaveOptions::SaveOptions(lsp::SaveOptions {
+                    include_text: options.include_text,
+                })
+            })
+            .or_else(|| {
+                match local
+                    .initial_server_capabilities
+                    .get(&server.server_id())?
+                    .text_document_sync
+                    .as_ref()?
+                {
+                    lsp::TextDocumentSyncCapability::Options(options) => options.save.clone(),
+                    lsp::TextDocumentSyncCapability::Kind(_) => None,
+                }
+            });
+        server.update_capabilities(|capabilities| {
+            let mut options = take_text_document_sync_options(capabilities);
+            options.save = save;
+            capabilities.text_document_sync =
+                Some(lsp::TextDocumentSyncCapability::Options(options));
+        });
+        self.notify_server_capabilities_updated(server, cx);
+    }
+
     fn register_dynamic_text_document_capability<T: Clone + PartialEq>(
         &mut self,
         server: &LanguageServer,
@@ -691,32 +727,20 @@ impl LspStore {
                     }
                 }
                 "textDocument/didSave" => {
-                    if let Some(include_text) = reg
-                        .register_options
-                        .map(|opts| {
-                            let transpose = opts
-                                .get("includeText")
-                                .cloned()
-                                .map(serde_json::from_value::<Option<bool>>)
-                                .transpose();
-                            match transpose {
-                                Ok(value) => Ok(value.flatten()),
-                                Err(e) => Err(e),
-                            }
-                        })
-                        .transpose()?
-                    {
-                        server.update_capabilities(|capabilities| {
-                            let mut sync_options = take_text_document_sync_options(capabilities);
-                            sync_options.save =
-                                Some(TextDocumentSyncSaveOptions::SaveOptions(lsp::SaveOptions {
-                                    include_text,
-                                }));
-                            capabilities.text_document_sync =
-                                Some(lsp::TextDocumentSyncCapability::Options(sync_options));
-                        });
-                        self.notify_server_capabilities_updated(&server, cx);
+                    let options = serde_json::from_value::<lsp::TextDocumentSaveRegistrationOptions>(
+                        reg.register_options
+                            .unwrap_or_else(|| serde_json::json!({})),
+                    )?;
+                    let local = self.as_local_mut().context("Expected local LSP store")?;
+                    let registrations = &mut local
+                        .language_server_dynamic_registrations
+                        .entry(server_id)
+                        .or_default()
+                        .did_save;
+                    if registrations.insert(reg.id.clone(), options).is_some() {
+                        log::warn!("Replacing duplicate didSave registration {}", reg.id);
                     }
+                    self.refresh_save_capability(&server, cx);
                 }
                 "textDocument/codeLens" => {
                     let document_selector =
@@ -1092,13 +1116,14 @@ impl LspStore {
                     self.notify_server_capabilities_updated(&server, cx);
                 }
                 "textDocument/didSave" => {
-                    server.update_capabilities(|capabilities| {
-                        let mut sync_options = take_text_document_sync_options(capabilities);
-                        sync_options.save = None;
-                        capabilities.text_document_sync =
-                            Some(lsp::TextDocumentSyncCapability::Options(sync_options));
-                    });
-                    self.notify_server_capabilities_updated(&server, cx);
+                    if let Some(registrations) = self.as_local_mut().and_then(|local| {
+                        local
+                            .language_server_dynamic_registrations
+                            .get_mut(&server_id)
+                    }) {
+                        registrations.did_save.shift_remove(&unreg.id);
+                    }
+                    self.refresh_save_capability(&server, cx);
                 }
                 "textDocument/inlayHint" => {
                     if self

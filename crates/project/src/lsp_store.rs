@@ -9603,8 +9603,49 @@ impl LspStore {
         };
         let local = self.as_local()?;
 
+        let language_servers = buffer.update(cx, |buffer, cx| {
+            local.language_server_ids_for_buffer(buffer, cx)
+        });
+        let opened_in_servers = local
+            .buffers_opened_in_servers
+            .get(&buffer.read(cx).remote_id());
+        let language = buffer.read(cx).language().map(|language| language.name());
         for server in local.language_servers_for_worktree(worktree_id) {
-            if let Some(include_text) = include_text(server.as_ref()) {
+            let associated = language_servers.contains(&server.server_id());
+            let language_id = language.as_ref().and_then(|language| {
+                self.language_server_adapter_for_id(server.server_id())
+                    .map(|adapter| adapter.language_id(language))
+            });
+            let mut include_text = (associated
+                && opened_in_servers.is_some_and(|servers| servers.contains(&server.server_id())))
+            .then(|| {
+                local
+                    .initial_server_capabilities
+                    .get(&server.server_id())
+                    .and_then(save_include_text)
+            })
+            .flatten();
+            if let Some(registrations) = local
+                .language_server_dynamic_registrations
+                .get(&server.server_id())
+            {
+                for options in registrations.did_save.values() {
+                    if save_selector_matches(
+                        options
+                            .text_document_registration_options
+                            .document_selector
+                            .as_ref(),
+                        associated,
+                        language_id.as_deref(),
+                        &text_document.uri,
+                    ) {
+                        include_text = Some(
+                            include_text.unwrap_or(false) || options.include_text.unwrap_or(false),
+                        );
+                    }
+                }
+            }
+            if let Some(include_text) = include_text {
                 let text = if include_text {
                     Some(buffer.read(cx).text())
                 } else {
@@ -9617,13 +9658,10 @@ impl LspStore {
                             text,
                         },
                     )
-                    .ok();
+                    .log_err();
             }
         }
 
-        let language_servers = buffer.update(cx, |buffer, cx| {
-            local.language_server_ids_for_buffer(buffer, cx)
-        });
         for language_server_id in language_servers {
             self.simulate_disk_based_diagnostics_events_if_needed(language_server_id, cx);
         }
@@ -16629,8 +16667,44 @@ fn related_information_from_lsp(
     )
 }
 
-fn include_text(server: &lsp::LanguageServer) -> Option<bool> {
-    match server.capabilities().text_document_sync.as_ref()? {
+fn save_selector_matches(
+    selector: Option<&lsp::DocumentSelector>,
+    associated: bool,
+    language_id: Option<&str>,
+    uri: &lsp::Uri,
+) -> bool {
+    // A null selector uses the client's document selector. An explicit selector
+    // can subscribe to other files, such as a server's build configuration.
+    let Some(selector) = selector else {
+        return associated;
+    };
+    selector.iter().any(|filter| {
+        if filter
+            .language
+            .as_deref()
+            .is_some_and(|language| Some(language) != language_id)
+            || filter
+                .scheme
+                .as_deref()
+                .is_some_and(|scheme| !scheme.eq_ignore_ascii_case(uri.scheme()))
+        {
+            return false;
+        }
+        filter.pattern.as_ref().is_none_or(|pattern| {
+            GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()
+                .log_err()
+                .is_some_and(|glob| {
+                    uri.to_file_path()
+                        .is_ok_and(|path| glob.compile_matcher().is_match(path))
+                })
+        })
+    })
+}
+
+fn save_include_text(capabilities: &lsp::ServerCapabilities) -> Option<bool> {
+    match capabilities.text_document_sync.as_ref()? {
         lsp::TextDocumentSyncCapability::Options(opts) => match opts.save.as_ref()? {
             // Server wants didSave but didn't specify includeText.
             lsp::TextDocumentSyncSaveOptions::Supported(true) => Some(false),
