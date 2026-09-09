@@ -145,6 +145,74 @@ async fn test_entry_id_is_reused_when_rename_events_are_split(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+async fn test_save_backup_keeps_a_separate_entry_id(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(path!("/root"), json!({ "file.txt": "original" }))
+        .await;
+    let tree = Worktree::local(
+        Path::new(path!("/root")),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+
+    let original_id = tree.read_with(cx, |tree, _| {
+        tree.entry_for_path(rel_path("file.txt")).unwrap().id
+    });
+    fs.rename(
+        Path::new(path!("/root/file.txt")),
+        Path::new(path!("/root/.zed-save-backup-test")),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+    let backup_id = tree.read_with(cx, |tree, _| {
+        tree.entry_for_path(rel_path(".zed-save-backup-test"))
+            .unwrap()
+            .id
+    });
+    assert_ne!(backup_id, original_id);
+
+    fs.touch_path(path!("/root/.zed-save-backup-test")).await;
+    cx.run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entry_for_path(rel_path(".zed-save-backup-test"))
+                .unwrap()
+                .id,
+            backup_id,
+            "updates to a retained recovery backup must preserve its own identity"
+        );
+    });
+
+    // Restoring a backup after a failed replacement must not move a buffer that
+    // the user opened separately to inspect that backup onto the destination.
+    fs.rename(
+        Path::new(path!("/root/.zed-save-backup-test")),
+        Path::new(path!("/root/file.txt")),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert_ne!(
+            tree.entry_for_path(rel_path("file.txt")).unwrap().id,
+            backup_id
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_rescan_requests_processed_before_root_creation_events(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
