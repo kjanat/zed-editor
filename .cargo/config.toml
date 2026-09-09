@@ -31,7 +31,10 @@ xtask        = "run --package xtask --"
 rustflags = ["-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
 
 [env]
-MACOSX_DEPLOYMENT_TARGET = "10.15.7"
+# Cargo links Wasmtime statically; its C headers otherwise declare DLL imports on MSVC.
+CFLAGS_aarch64_pc_windows_msvc = "-DWASM_API_EXTERN= -DWASI_API_EXTERN="
+CFLAGS_x86_64_pc_windows_msvc  = "-DWASM_API_EXTERN= -DWASI_API_EXTERN="
+MACOSX_DEPLOYMENT_TARGET       = "10.15.7"
 
 # We need lld to link libwebrtc.a successfully on aarch64-linux
 [target.aarch64-unknown-linux-gnu]

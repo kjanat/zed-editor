@@ -92,6 +92,12 @@ jobs:
         run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update
       - name: Test save-backup conflict decisions
         run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_)'
+      - name: Check native linker diagnostics
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo rustc --profile test -p project --test integration -- -D linker_messages
+          cargo rustc --profile test -p editor --tests -- -D linker_messages
       - name: Show disk usage
         if: always() && runner.os != 'Windows'
         run: df -h /
