@@ -374,6 +374,9 @@ impl RemovedEntries {
 impl RemovedEntriesGeneration {
     fn insert(&mut self, entry: &Entry) {
         self.by_path.insert(entry.path.clone(), entry.clone());
+        if is_save_backup(&entry.path) {
+            return;
+        }
         match self.by_inode.entry(entry.inode) {
             hash_map::Entry::Occupied(mut o) => {
                 if entry.id > o.get().id {
@@ -408,6 +411,11 @@ impl RemovedEntriesGeneration {
         }
         Some(removed)
     }
+}
+
+fn is_save_backup(path: &RelPath) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.starts_with(fs::SAVE_BACKUP_PREFIX))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3383,6 +3391,12 @@ impl BackgroundScannerState {
     ) -> Option<ProjectEntryId> {
         if let Some(removed_entry) = self.removed_entries.take_by_path(path, inode) {
             return Some(removed_entry.id);
+        }
+
+        // Windows saves move the destination inode into a recovery backup. Following
+        // that move would redirect open buffers and subsequent saves to the backup.
+        if is_save_backup(path) {
+            return self.snapshot.entry_for_path(path).map(|entry| entry.id);
         }
 
         // If an entry with the same inode was removed from the worktree during this scan,

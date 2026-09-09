@@ -8633,6 +8633,103 @@ async fn test_save_file(cx: &mut gpui::TestAppContext) {
     assert_eq!(new_text, buffer.update(cx, |buffer, _| buffer.text()));
 }
 
+#[gpui::test]
+async fn test_buffer_does_not_follow_save_backup(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    for split_events in [false, true] {
+        for dirty in [false, true] {
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(path!("/dir"), json!({ "file.txt": "original" }))
+                .await;
+            let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+            let buffer = project
+                .update(cx, |project, cx| {
+                    project.open_local_buffer(path!("/dir/file.txt"), cx)
+                })
+                .await
+                .unwrap();
+            if dirty {
+                buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+            }
+            cx.run_until_parked();
+
+            // ReplaceFileW moves the original inode to a recovery backup. Watchers can
+            // observe that move before they observe the replacement at the original path.
+            fs.pause_events();
+            fs.rename(
+                Path::new(path!("/dir/file.txt")),
+                Path::new(path!("/dir/.zed-save-backup-test")),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+            if split_events {
+                for _ in 0..2 {
+                    fs.flush_events(1);
+                    cx.run_until_parked();
+                    buffer.read_with(cx, |buffer, _| {
+                        assert_eq!(
+                            buffer.file().unwrap().path().as_ref(),
+                            rel_path("file.txt"),
+                            "a save backup must never become the buffer's save target"
+                        );
+                    });
+                }
+            }
+            fs.insert_file(path!("/dir/file.txt"), b"replacement".to_vec())
+                .await;
+            fs.unpause_events_and_flush();
+            cx.run_until_parked();
+
+            buffer.read_with(cx, |buffer, _| {
+                assert_eq!(buffer.file().unwrap().path().as_ref(), rel_path("file.txt"));
+                assert_eq!(buffer.has_conflict(), dirty);
+                assert_eq!(
+                    buffer.text(),
+                    if dirty {
+                        "edited original"
+                    } else {
+                        "replacement"
+                    }
+                );
+            });
+            let reopened = project
+                .update(cx, |project, cx| {
+                    project.open_local_buffer(path!("/dir/file.txt"), cx)
+                })
+                .await
+                .unwrap();
+            assert_eq!(reopened, buffer);
+
+            fs.remove_file(
+                Path::new(path!("/dir/.zed-save-backup-test")),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+            cx.run_until_parked();
+            buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "saved ")], None, cx));
+            project
+                .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                .await
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                fs.load(Path::new(path!("/dir/file.txt"))).await.unwrap(),
+                buffer.read_with(cx, |buffer, _| buffer.text())
+            );
+            assert!(
+                fs.metadata(Path::new(path!("/dir/.zed-save-backup-test")))
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "saving must not recreate the removed recovery backup"
+            );
+        }
+    }
+}
+
 #[gpui::test(iterations = 10)]
 async fn test_save_file_spawns_language_server(cx: &mut gpui::TestAppContext) {
     // Issue: #24349

@@ -92,6 +92,9 @@ pub struct PathEvent {
     pub kind: Option<PathEventKind>,
 }
 
+/// Recovery backups must not be interpreted as user file renames by worktree scanners.
+pub const SAVE_BACKUP_PREFIX: &str = ".zed-save-backup-";
+
 impl From<PathEvent> for PathBuf {
     fn from(event: PathEvent) -> Self {
         event.path
@@ -5113,7 +5116,7 @@ fn create_windows_backup_path(destination: &Path) -> Result<tempfile::TempPath> 
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let backup = tempfile::Builder::new()
-        .prefix(".zed-save-backup-")
+        .prefix(SAVE_BACKUP_PREFIX)
         .tempfile_in(parent)
         .with_context(|| format!("failed to reserve backup path for {destination:?}"))?;
     let backup_path = backup.into_temp_path();
