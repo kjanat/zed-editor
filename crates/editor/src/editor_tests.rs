@@ -73,7 +73,7 @@ use util::{
 };
 use workspace::{
     CloseActiveItem, CloseAllItems, CloseOtherItems, MultiWorkspace, NavigationEntry, OpenOptions,
-    Pane, SplitDirection, ToolbarItemLocation, ViewId, Workspace,
+    Pane, SaveIntent, SplitDirection, ToolbarItemLocation, ViewId, Workspace,
     item::{FollowEvent, FollowableItem, Item, ItemHandle, SaveOptions},
     register_project_item,
 };
@@ -17078,6 +17078,161 @@ async fn test_multibuffer_format_during_save(cx: &mut TestAppContext) {
         assert!(!buffer.is_dirty());
         assert_eq!(buffer.text(), sample_text_3,)
     });
+}
+
+#[gpui::test]
+async fn test_save_backup_conflict_autosave(cx: &mut TestAppContext) {
+    assert_save_backup_conflict_flow(None, cx).await;
+}
+
+#[gpui::test]
+async fn test_save_backup_conflict_cancel(cx: &mut TestAppContext) {
+    assert_save_backup_conflict_flow(Some("Cancel"), cx).await;
+}
+
+#[gpui::test]
+async fn test_save_backup_conflict_discard_edits(cx: &mut TestAppContext) {
+    assert_save_backup_conflict_flow(Some("Discard Edits"), cx).await;
+}
+
+#[gpui::test]
+async fn test_save_backup_conflict_overwrite(cx: &mut TestAppContext) {
+    assert_save_backup_conflict_flow(Some("Overwrite"), cx).await;
+}
+
+async fn assert_save_backup_conflict_flow(save_answer: Option<&str>, cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+
+    for split_events in [false, true] {
+        let fs = FakeFs::new(cx.executor());
+        let original_path = Path::new(path!("/dir/file.txt"));
+        let backup_path = Path::new(path!("/dir")).join(format!("{}test", fs::SAVE_BACKUP_PREFIX));
+        fs.insert_tree(
+            path!("/dir"),
+            json!({ "file.txt": if save_answer.is_none() { "initial\n" } else { "original\n" } }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+        let worktree_id = project.read_with(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+        let editor = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path((worktree_id, rel_path("file.txt")), None, true, window, cx)
+            })
+            .await
+            .unwrap()
+            .downcast::<Editor>()
+            .unwrap();
+        let buffer = editor.read_with(cx, |editor, cx| {
+            editor.buffer().read(cx).as_singleton().unwrap()
+        });
+
+        if save_answer.is_none() {
+            editor.update_in(cx, |editor, window, cx| {
+                editor.select_all(&SelectAll, window, cx);
+                editor.insert("original\n", window, cx);
+            });
+            cx.update(|window, cx| Pane::autosave_item(&editor, project.clone(), window, cx))
+                .await
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(fs.load(original_path).await.unwrap(), "original\n");
+            assert!(!buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        }
+
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+        cx.run_until_parked();
+
+        // Watchers can report the original inode moving to the recovery backup
+        // before the replacement appears at the original path.
+        fs.pause_events();
+        fs.rename(original_path, &backup_path, Default::default())
+            .await
+            .unwrap();
+        if split_events {
+            for _ in 0..2 {
+                fs.flush_events(1);
+                cx.run_until_parked();
+                buffer.read_with(cx, |buffer, _| {
+                    assert_eq!(buffer.file().unwrap().path().as_ref(), rel_path("file.txt"));
+                });
+            }
+        }
+        fs.insert_file(original_path, b"replacement\n".to_vec())
+            .await;
+        fs.unpause_events_and_flush();
+        cx.run_until_parked();
+
+        buffer.read_with(cx, |buffer, _| {
+            assert_eq!(buffer.file().unwrap().path().as_ref(), rel_path("file.txt"));
+            assert_eq!(buffer.text(), "edited original\n");
+            assert!(buffer.is_dirty());
+            assert!(buffer.has_conflict());
+        });
+        assert_eq!(fs.load(&backup_path).await.unwrap(), "original\n");
+        let original_write_count = fs.write_count_for_path(original_path);
+        let backup_write_count = fs.write_count_for_path(&backup_path);
+
+        if let Some(answer) = save_answer {
+            let save = workspace.update_in(cx, |workspace, window, cx| {
+                workspace.save_active_item(SaveIntent::Save, window, cx)
+            });
+            cx.run_until_parked();
+            assert!(cx.has_pending_prompt());
+            assert_eq!(fs.load(original_path).await.unwrap(), "replacement\n");
+            assert_eq!(fs.write_count_for_path(original_path), original_write_count);
+            assert_eq!(fs.load(&backup_path).await.unwrap(), "original\n");
+            assert_eq!(fs.write_count_for_path(&backup_path), backup_write_count);
+            assert_eq!(
+                buffer.read_with(cx, |buffer, _| buffer.text()),
+                "edited original\n"
+            );
+
+            cx.simulate_prompt_answer(answer);
+            save.await.unwrap();
+        } else {
+            cx.update(|window, cx| Pane::autosave_item(&editor, project.clone(), window, cx))
+                .await
+                .unwrap();
+        }
+        cx.run_until_parked();
+
+        let overwritten = save_answer == Some("Overwrite");
+        let discarded = save_answer == Some("Discard Edits");
+        let unresolved = !overwritten && !discarded;
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(
+            fs.load(original_path).await.unwrap(),
+            if overwritten {
+                "edited original\n"
+            } else {
+                "replacement\n"
+            }
+        );
+        assert_eq!(
+            fs.write_count_for_path(original_path),
+            original_write_count + usize::from(overwritten)
+        );
+        assert_eq!(fs.load(&backup_path).await.unwrap(), "original\n");
+        assert_eq!(fs.write_count_for_path(&backup_path), backup_write_count);
+        buffer.read_with(cx, |buffer, _| {
+            assert_eq!(buffer.file().unwrap().path().as_ref(), rel_path("file.txt"));
+            assert_eq!(
+                buffer.text(),
+                if discarded {
+                    "replacement\n"
+                } else {
+                    "edited original\n"
+                }
+            );
+            assert_eq!(buffer.is_dirty(), unresolved);
+            assert_eq!(buffer.has_conflict(), unresolved);
+        });
+    }
 }
 
 #[gpui::test]
