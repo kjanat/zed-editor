@@ -76,6 +76,10 @@ pub(super) struct DynamicRegistrations {
 impl LspStore {
     fn refresh_save_capability(&mut self, server: &LanguageServer, cx: &mut Context<Self>) {
         let Some(local) = self.as_local() else { return };
+        // ServerCapabilities can represent only one save option, so the newest
+        // registration supplies metadata without revoking other subscriptions.
+        // on_buffer_saved evaluates static and dynamic subscriptions per document
+        // and combines their matching includeText requirements.
         let save = local
             .language_server_dynamic_registrations
             .get(&server.server_id())
