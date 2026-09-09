@@ -17153,6 +17153,7 @@ async fn assert_save_backup_conflict_flow(save_answer: Option<&str>, cx: &mut Te
         fs.rename(original_path, &backup_path, Default::default())
             .await
             .unwrap();
+        assert_eq!(fs.buffered_event_count(), 2);
         if split_events {
             for _ in 0..2 {
                 fs.flush_events(1);
