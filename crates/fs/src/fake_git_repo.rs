@@ -476,7 +476,7 @@ impl GitRepository for FakeGitRepository {
                     }),
                     (_, Some(_), None, None) => FileStatus::Tracked(TrackedStatus {
                         index_status: StatusCode::Deleted,
-                        worktree_status: StatusCode::Deleted,
+                        worktree_status: StatusCode::Unmodified,
                     }),
                     (_, None, Some(index), Some((fs, _))) => FileStatus::Tracked(TrackedStatus {
                         index_status: StatusCode::Added,

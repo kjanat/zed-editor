@@ -17584,6 +17584,76 @@ fn merge_pending_ops_snapshots(
 }
 
 #[gpui::test]
+async fn test_staging_deleted_file_without_fs_events(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(path!("/repo"), json!({ ".git": {} })).await;
+    fs.set_head_and_index_for_repo(
+        path!("/repo/.git").as_ref(),
+        &[("deleted.txt", "original\n".into())],
+    );
+    let project = Project::test(fs.clone(), [path!("/repo").as_ref()], cx).await;
+    cx.run_until_parked();
+    let repository = project.read_with(cx, |project, cx| {
+        project.repositories(cx).values().next().unwrap().clone()
+    });
+    let path = repo_path("deleted.txt");
+    repository.read_with(cx, |repository, _| {
+        assert_eq!(
+            repository.status_for_path(&path).unwrap().status,
+            StatusCode::Deleted.worktree(),
+        );
+    });
+
+    fs.pause_events();
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/repo/deleted.txt"), cx)
+        })
+        .await
+        .unwrap();
+    let diff = project
+        .update(cx, |project, cx| {
+            project.open_unstaged_diff(buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    for stage in [true, false, true] {
+        repository
+            .update(cx, |repository, cx| {
+                if stage {
+                    repository.stage_entries(vec![path.clone()], cx)
+                } else {
+                    repository.unstage_entries(vec![path.clone()], cx)
+                }
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        repository.read_with(cx, |repository, _| {
+            assert_eq!(
+                repository.status_for_path(&path).unwrap().status,
+                if stage {
+                    StatusCode::Deleted.index()
+                } else {
+                    StatusCode::Deleted.worktree()
+                },
+                "staging a deleted file must refresh status without a filesystem event",
+            );
+            assert!(repository.pending_ops().next().is_none());
+        });
+        diff.read_with(cx, |diff, cx| {
+            assert_eq!(
+                diff.base_text_string(cx).as_deref(),
+                if stage { None } else { Some("original\n") },
+            );
+        });
+    }
+    assert!(!fs.is_file(path!("/repo/deleted.txt").as_ref()).await);
+}
+
+#[gpui::test]
 async fn test_repository_pending_ops_staging(
     executor: gpui::BackgroundExecutor,
     cx: &mut gpui::TestAppContext,
@@ -17898,7 +17968,9 @@ async fn test_repository_pending_ops_stage_all(
     );
 
     let project = Project::test(fs.clone(), [path!("/root/my-repo").as_ref()], cx).await;
-    let pending_ops_all = Arc::new(Mutex::new(SumTree::default()));
+    let pending_ops_all = Arc::new(Mutex::new(
+        HashMap::<RepoPath, Vec<pending_op::GitStatus>>::default(),
+    ));
     project.update(cx, |project, cx| {
         let pending_ops_all = pending_ops_all.clone();
         cx.subscribe(project.git_store(), move |_, _, e, _| {
@@ -17908,11 +17980,17 @@ async fn test_repository_pending_ops_stage_all(
                 _,
             ) = e
             {
-                let merged = merge_pending_ops_snapshots(
-                    pending_ops.items(()),
-                    pending_ops_all.lock().items(()),
-                );
-                *pending_ops_all.lock() = SumTree::from_iter(merged.into_iter(), ());
+                let mut history = pending_ops_all.lock();
+                for pending in pending_ops.iter() {
+                    let stages = history.entry(pending.repo_path.clone()).or_default();
+                    for op in &pending.ops {
+                        if op.job_status == pending_op::JobStatus::Finished
+                            && stages.last() != Some(&op.git_status)
+                        {
+                            stages.push(op.git_status);
+                        }
+                    }
+                }
             }
         })
         .detach();
@@ -17939,44 +18017,15 @@ async fn test_repository_pending_ops_stage_all(
 
     cx.run_until_parked();
 
-    assert_eq!(
-        pending_ops_all
-            .lock()
-            .get(&worktree::PathKey(repo_path("a.txt").as_ref().clone()), ())
-            .unwrap()
-            .ops,
-        vec![
-            pending_op::PendingOp {
-                id: 1u16.into(),
-                git_status: pending_op::GitStatus::Staged,
-                job_status: pending_op::JobStatus::Finished
-            },
-            pending_op::PendingOp {
-                id: 2u16.into(),
-                git_status: pending_op::GitStatus::Unstaged,
-                job_status: pending_op::JobStatus::Finished
-            },
-        ],
-    );
-    assert_eq!(
-        pending_ops_all
-            .lock()
-            .get(&worktree::PathKey(repo_path("b.txt").as_ref().clone()), ())
-            .unwrap()
-            .ops,
-        vec![
-            pending_op::PendingOp {
-                id: 1u16.into(),
-                git_status: pending_op::GitStatus::Staged,
-                job_status: pending_op::JobStatus::Finished
-            },
-            pending_op::PendingOp {
-                id: 2u16.into(),
-                git_status: pending_op::GitStatus::Unstaged,
-                job_status: pending_op::JobStatus::Finished
-            },
-        ],
-    );
+    for path in [repo_path("a.txt"), repo_path("b.txt")] {
+        assert_eq!(
+            pending_ops_all.lock().get(&path).unwrap(),
+            &[
+                pending_op::GitStatus::Staged,
+                pending_op::GitStatus::Unstaged
+            ],
+        );
+    }
 
     repo.update(cx, |repo, _cx| {
         let git_statuses = repo.cached_status().collect::<Vec<_>>();
