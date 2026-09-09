@@ -10,7 +10,6 @@ path = "src/cloud_api_client.rs"
 
 [dependencies]
 anyhow.workspace          = true
-async-lock.workspace      = true
 cloud_api_types.workspace = true
 futures.workspace         = true
 futures-lite.workspace    = true
@@ -21,6 +20,13 @@ serde.workspace           = true
 serde_json.workspace      = true
 thiserror.workspace       = true
 yawc.workspace            = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Workspace inheritance would re-enable defaults, including blocking synchronization.
+async-lock = { version = "3.4.2", default-features = false }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+async-lock.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 gpui_tokio.workspace = true
