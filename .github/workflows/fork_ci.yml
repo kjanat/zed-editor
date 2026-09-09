@@ -89,9 +89,21 @@ jobs:
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
             with: { shared-key: fork-ci-tests, cache-on-failure: false }
       - name: Test the crates this fork changes
-        run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update
+        shell: bash
+        run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update 2>&1 | tee fork-tests.log
       - name: Test save-backup conflict decisions
-        run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_)'
+        shell: bash
+        run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_)' 2>&1 | tee editor-tests.log
+      - name: Check native linker diagnostics
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        shell: bash
+        run: |
+          if grep -E 'LNK4217|__eh_frame section too large' fork-tests.log editor-tests.log; then
+            echo "::error::Native test build emitted linker warnings"
+            exit 1
+          else
+            test "$?" -eq 1
+          fi
       - name: Show disk usage
         if: always() && runner.os != 'Windows'
         run: df -h /

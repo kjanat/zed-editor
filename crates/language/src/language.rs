@@ -1731,6 +1731,29 @@ mod tests {
     use pretty_assertions::assert_matches;
 
     #[test]
+    fn test_wasm_grammar_parsing() {
+        with_parser(|parser| {
+            let mut store = parser.take_wasm_store().unwrap();
+            let grammar = store
+                .load_language("json", include_bytes!("../test_data/json.wasm"))
+                .unwrap();
+            parser.set_wasm_store(store).unwrap();
+            assert!(grammar.is_wasm());
+            parser.set_language(&grammar).unwrap();
+
+            let tree = parser.parse(r#"{"answer":42}"#, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(document (object (pair key: (string (string_content)) value: (number))))"
+            );
+
+            let tree = parser.parse(r#"{"answer":}"#, None).unwrap();
+            assert!(tree.root_node().has_error());
+        });
+    }
+
+    #[test]
     fn test_highlight_map() {
         let theme = SyntaxTheme::new(
             [

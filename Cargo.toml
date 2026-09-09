@@ -1145,6 +1145,10 @@ codegen-units = 1
 [profile.release.package]
 zed = { codegen-units = 16 }
 
+# Unoptimized test binaries exceed macOS compact-unwind limits, including dependency code.
+[profile.test]
+opt-level = 1
+
 # "debug" is a reserved profile name.
 [profile.dbg]
 inherits = "dev"
