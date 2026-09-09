@@ -16437,9 +16437,7 @@ impl LspAdapterDelegate for LocalLspAdapterDelegate {
 
         let env = self.shell_env().await;
 
-        let shell_path = env.get("PATH").cloned();
-
-        which::which_in(command, shell_path.as_ref(), worktree_abs_path).ok()
+        util::command::resolve_command_path(command, &worktree_abs_path, &env).ok()
     }
 
     async fn try_exec(&self, command: LanguageServerBinary) -> Result<()> {
@@ -16447,12 +16445,14 @@ impl LspAdapterDelegate for LocalLspAdapterDelegate {
         if self.fs.is_file(&working_dir).await {
             working_dir.pop();
         }
-        let output = util::command::new_command(&command.path)
-            .args(command.arguments)
-            .envs(command.env.clone().unwrap_or_default())
-            .current_dir(working_dir)
-            .output()
-            .await?;
+        let output = util::command::new_command_with_env(
+            &command.path,
+            &working_dir,
+            &command.env.clone().unwrap_or_default(),
+        )?
+        .args(command.arguments)
+        .output()
+        .await?;
 
         anyhow::ensure!(
             output.status.success(),

@@ -528,18 +528,26 @@ impl LanguageServer {
         };
         let root_uri = Uri::from_file_path(&working_dir)
             .map_err(|()| anyhow!("{working_dir:?} is not a valid URI"))?;
+        let mut command = util::command::new_command_with_env(
+            &binary.path,
+            working_dir,
+            &binary.env.clone().unwrap_or_default(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to resolve language server command {:?}",
+                binary.path
+            )
+        })?;
         log::info!(
             "starting language server process. binary path: \
             {:?}, working directory: {:?}, args: {:?}",
-            binary.path,
+            command.get_program(),
             working_dir,
             binary.arguments
         );
-        let mut command = util::command::new_command(&binary.path);
         command
-            .current_dir(working_dir)
             .args(&binary.arguments)
-            .envs(binary.env.clone().unwrap_or_default())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
