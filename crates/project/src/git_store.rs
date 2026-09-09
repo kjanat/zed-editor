@@ -2714,18 +2714,22 @@ impl GitStore {
             }
         }
 
+        let is_active_repo_removed = self
+            .active_repo_id
+            .is_some_and(|id| removed_ids.contains(&id));
         for id in removed_ids {
-            if self.active_repo_id == Some(id) {
-                self.active_repo_id = None;
-                cx.emit(GitStoreEvent::ActiveRepositoryChanged(None));
-            }
             self.display_diffs.remove(&id);
             self.repositories.remove(&id);
+            self.worktree_ids.remove(&id);
             if let Some(updates_tx) = updates_tx.as_ref() {
                 updates_tx
                     .unbounded_send(DownstreamUpdate::RemoveRepository(id))
                     .ok();
             }
+        }
+        if is_active_repo_removed {
+            self.active_repo_id = self.repositories.keys().next().copied();
+            cx.emit(GitStoreEvent::ActiveRepositoryChanged(self.active_repo_id));
         }
     }
 

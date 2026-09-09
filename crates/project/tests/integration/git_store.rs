@@ -2338,6 +2338,110 @@ mod repository_activation_tests {
     }
 
     #[gpui::test]
+    async fn test_removing_nested_repositories_preserves_active_selection(cx: &mut TestAppContext) {
+        init_test(cx);
+        for select_nested in [false, true] {
+            for remove_in_batch in [false, true] {
+                let (fs, project) = build_project(
+                    cx,
+                    json!({
+                        ".git": {},
+                        "nested": { ".git": {} },
+                        "other": { ".git": {} }
+                    }),
+                )
+                .await;
+                assert_repositories(
+                    &project,
+                    cx,
+                    &[path!("/root"), path!("/root/nested"), path!("/root/other")],
+                    &[],
+                );
+                let git_store = project.read_with(cx, |project, _| project.git_store().clone());
+                let selected_path = if select_nested {
+                    path!("/root/nested")
+                } else {
+                    path!("/root")
+                };
+                let selected = git_store.read_with(cx, |store, cx| {
+                    store
+                        .repositories()
+                        .values()
+                        .find(|repository| {
+                            repository.read(cx).work_directory_abs_path.as_ref()
+                                == Path::new(selected_path)
+                        })
+                        .unwrap()
+                        .clone()
+                });
+                selected.update(cx, |repository, cx| repository.set_as_active_repository(cx));
+                cx.run_until_parked();
+
+                let subscription = cx.update(|cx| {
+                    cx.subscribe(&git_store, |store, event, cx| {
+                        if let project::git_store::GitStoreEvent::ActiveRepositoryChanged(id) =
+                            event
+                        {
+                            let id = id.expect("a surviving repository must remain selected");
+                            assert!(store.read(cx).repositories().contains_key(&id));
+                        }
+                    })
+                });
+                fs.pause_events();
+                fs.remove_dir(
+                    Path::new(path!("/root/nested/.git")),
+                    RemoveOptions::default(),
+                )
+                .await
+                .unwrap();
+                if remove_in_batch {
+                    fs.remove_dir(
+                        Path::new(path!("/root/other/.git")),
+                        RemoveOptions::default(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                fs.unpause_events_and_flush();
+                cx.run_until_parked();
+
+                let remaining = if remove_in_batch {
+                    vec![path!("/root")]
+                } else {
+                    vec![path!("/root"), path!("/root/other")]
+                };
+                assert_repositories(&project, cx, &remaining, &[]);
+                git_store.read_with(cx, |store, cx| {
+                    let active = store
+                        .active_repository()
+                        .expect("select a surviving repository");
+                    assert!(
+                        remaining
+                            .contains(&active.read(cx).work_directory_abs_path.to_str().unwrap())
+                    );
+                    if !select_nested {
+                        assert_eq!(active, selected, "preserve an unaffected selection");
+                    }
+                });
+                drop(subscription);
+
+                fs.pause_events();
+                for path in remaining {
+                    fs.remove_dir(&Path::new(path).join(".git"), RemoveOptions::default())
+                        .await
+                        .unwrap();
+                }
+                fs.unpause_events_and_flush();
+                cx.run_until_parked();
+                assert_repositories(&project, cx, &[], &[]);
+                git_store.read_with(cx, |store, _| {
+                    assert!(store.active_repository().is_none());
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
     async fn test_nested_repository_inside_active_repository_not_parked(cx: &mut TestAppContext) {
         init_test(cx);
         let (_fs, project) = build_project(
