@@ -8118,7 +8118,27 @@ impl Repository {
                         },
                     )
                 })?
-                .await?
+                .await??;
+
+                this.update(cx, |this, cx| {
+                    let scan_updates_tx =
+                        this.git_store()
+                            .and_then(|git_store| match &git_store.read(cx).state {
+                                GitStoreState::Local { downstream, .. } => Some(
+                                    downstream
+                                        .as_ref()
+                                        .map(|downstream| downstream.updates_tx.clone()),
+                                ),
+                                _ => None,
+                            });
+                    if let Some(updates_tx) = scan_updates_tx {
+                        // Index writes need not change a working-tree file, and
+                        // the index's watcher event may be delayed or lost.
+                        this.schedule_scan(updates_tx, cx);
+                        this.reload_buffer_diff_bases(cx);
+                    }
+                })?;
+                Ok(())
             },
         )
     }
