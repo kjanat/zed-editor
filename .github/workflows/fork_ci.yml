@@ -47,7 +47,10 @@ jobs:
           - name: Install build dependencies
             if: runner.os == 'Linux'
             shell: bash
-            run: ./script/linux
+            run: |
+              # Chrome's unused package repository can block apt updates with inconsistent metadata.
+              sudo rm -f /etc/apt/sources.list.d/google-chrome.{list,sources}
+              ./script/linux
       - name: Clippy
         if: runner.os != 'Windows'
         shell: bash
@@ -79,7 +82,10 @@ jobs:
       - parallel:
           - name: Install build dependencies
             if: runner.os == 'Linux'
-            run: ./script/linux
+            run: |
+              # Chrome's unused package repository can block apt updates with inconsistent metadata.
+              sudo rm -f /etc/apt/sources.list.d/google-chrome.{list,sources}
+              ./script/linux
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
             with: { shared-key: fork-ci-tests, cache-on-failure: false }
       - name: Test the crates this fork changes
