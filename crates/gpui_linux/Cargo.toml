@@ -90,6 +90,9 @@ xim                   = { package = "zed-xim", git = "https://github.com/zed-ind
   "x11rb-xcb",
 ], optional = true }
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [features]
 default        = ["wayland", "x11"]
 screen-capture = [

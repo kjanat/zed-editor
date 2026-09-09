@@ -34,8 +34,9 @@ Zed's hosted models require a Pro subscription.
 
 Zed Pro includes access to all hosted AI models and Edit Predictions. The plan
 includes $5 of monthly token credit; usage beyond that is billed at the rates
-listed on [Zed-Hosted Models](./zed-hosted-models.md). A trial of Zed Pro
-includes $20 of credit, usable for 14 days.
+listed on [Zed-Hosted Models](./zed-hosted-models.md). A
+[trial of Zed Pro](#trials) includes $5 of GPT Luna and unlimited Edit
+Predictions for 14 days from when you start the trial.
 
 For details on billing and payment, see [Individual Billing](./billing.md).
 
@@ -100,6 +101,9 @@ the limit resets or an administrator raises it.
 
 ### Trials {#trials}
 
-Trials automatically convert to Zed Free when they end. Trials do not include
-access to Anthropic's Opus models. No cancellation is needed to prevent
-conversion to Zed Pro.
+Trials include $5 of GPT Luna and unlimited Edit Predictions for 14 days from
+when you start the trial. Trial hosted-model access is limited to GPT Luna. Zed
+and Delta share the same $5 trial balance. No credit card is required.
+
+Trials automatically convert to Zed Free when they end. No cancellation is
+needed to prevent conversion to Zed Pro.

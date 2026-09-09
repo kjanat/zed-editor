@@ -132,6 +132,7 @@ members         = [
   "crates/llama_cpp",
   "crates/lmstudio",
   "crates/lsp",
+  "crates/lsp_command_selector",
   "crates/lsp_locations",
   "crates/markdown",
   "crates/markdown_preview",
@@ -398,6 +399,7 @@ livekit_client            = { path = "crates/livekit_client" }
 llama_cpp                 = { path = "crates/llama_cpp" }
 lmstudio                  = { path = "crates/lmstudio" }
 lsp                       = { path = "crates/lsp" }
+lsp_command_selector      = { path = "crates/lsp_command_selector" }
 lsp_locations             = { path = "crates/lsp_locations" }
 markdown                  = { path = "crates/markdown" }
 markdown_preview          = { path = "crates/markdown_preview" }
@@ -528,6 +530,7 @@ anyhow                        = "1.0.86"
 ashpd                         = { version = "0.13", default-features = false, features = [
   "async-io",
   "file_chooser",
+  "inhibit",
   "notification",
   "open_uri",
   "settings",
@@ -703,6 +706,7 @@ objc2-app-kit                 = { version = "0.3.2", default-features = false, f
   "NSResponder",
   "NSView",
   "NSWindow",
+  "NSWorkspace",
   "block2",
   "objc2-core-foundation",
 ] }
@@ -958,6 +962,7 @@ features = [
   "Win32_System_Ole",
   "Win32_System_Performance",
   "Win32_System_Pipes",
+  "Win32_System_Power",
   "Win32_System_RestartManager",
   "Win32_System_SystemInformation",
   "Win32_System_SystemServices",

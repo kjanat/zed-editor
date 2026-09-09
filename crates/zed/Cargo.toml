@@ -1,6 +1,6 @@
 [package]
 name              = "zed"
-version           = "1.20.0"
+version           = "1.21.0"
 authors           = ["Zed Team <hi@zed.dev>"]
 edition.workspace = true
 description       = "The fast, collaborative code editor."
@@ -147,6 +147,7 @@ language_tools.workspace            = true
 languages                           = { workspace = true, features = ["load-grammars"] }
 line_ending_selector.workspace      = true
 log.workspace                       = true
+lsp_command_selector.workspace      = true
 lsp_locations.workspace             = true
 markdown.workspace                  = true
 markdown_preview.workspace          = true
