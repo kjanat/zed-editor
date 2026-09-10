@@ -224,7 +224,7 @@ def sync_pr_body(resolutions: str = "") -> str:
         "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
         + "Merge preparation runs in an isolated container without runner credentials. "
         + "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
-        + "Passing CI does not replace review of the imported code.\n\n"
+        + "Auto-merge is enabled with a merge commit once the required checks pass.\n\n"
         + resolutions
         + references
         + ("\n" if references else "")
@@ -318,6 +318,15 @@ def publish(directory: Path):
                 "--label",
                 "build",
             )
+    _ = gh(
+        "pr",
+        "merge",
+        number or BRANCH,
+        "--auto",
+        "--merge",
+        "--match-head-commit",
+        head,
+    )
 
 
 if __name__ == "__main__":

@@ -22,8 +22,13 @@ or sync-branch race stops publication. Local commits on the existing sync branch
 also stop its replacement.
 
 Changes to `.github` require manual review and integration; the automatic sync
-opens an issue instead of publishing them to a same-repository PR. Keeping CI
-green is not a substitute for reviewing upstream code before merging it.
+opens an issue instead of publishing them to a same-repository PR.
+
+After creating or updating the `sync/upstream` PR, the publisher enables GitHub
+auto-merge with a merge commit, preserving upstream history. The request must
+match the validated and published head commit. GitHub waits for the existing
+required checks and branch rules before merging. If enabling auto-merge fails,
+the workflow fails so the PR can be handled manually.
 
 `SYNC_TOKEN` is referenced only in the publisher. If configured, use a
 fine-grained PAT limited to this repository and the contents, pull requests, and
