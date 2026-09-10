@@ -14,7 +14,7 @@ use picker::{Picker, PickerDelegate};
 use project::Project;
 use settings::Settings;
 use std::{ops::Not as _, path::Path, sync::Arc};
-use ui::{HighlightedLabel, ListItem, ListItemSpacing, prelude::*};
+use ui::{HighlightedLabel, ListItem, ListItemSpacing, Tooltip, prelude::*};
 use util::ResultExt;
 use workspace::{ModalView, Workspace};
 
@@ -158,6 +158,13 @@ impl LanguageSelectorDelegate {
 
     fn language_data_for_match(&self, mat: &StringMatch, cx: &App) -> (String, Option<Icon>) {
         let mut label = mat.string.clone();
+        if self
+            .language_registry
+            .language_load_error(&mat.string)
+            .is_some()
+        {
+            label.push_str(" (failed to load)");
+        }
         let buffer_language = self.buffer.read(cx).language();
         let need_icon = FileFinderSettings::get_global(cx).file_icons;
 
@@ -326,6 +333,10 @@ impl PickerDelegate for LanguageSelectorDelegate {
                 .spacing(ListItemSpacing::Sparse)
                 .toggle_state(selected)
                 .start_slot::<Icon>(language_icon)
+                .when_some(
+                    self.language_registry.language_load_error(&mat.string),
+                    |item, error| item.tooltip(Tooltip::text(error.to_string())),
+                )
                 .child(HighlightedLabel::new(label, mat.positions.clone())),
         )
     }
@@ -545,6 +556,71 @@ mod tests {
             }
         });
         close_selector(workspace, cx);
+    }
+
+    #[gpui::test]
+    async fn test_language_selector_keeps_failed_languages_visible(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/test"), json!({}))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/test").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let registry = project.read_with(cx, |project, _| project.languages().clone());
+        registry.register_test_language(LanguageConfig {
+            name: "Broken".into(),
+            grammar: Some("missing".into()),
+            ..Default::default()
+        });
+        assert!(registry.language_for_name("Broken").await.is_err());
+        let editor = open_new_buffer_editor(&workspace, &project, cx).await;
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.activate_item(&editor, true, true, window, cx));
+        });
+        let picker = open_selector(&workspace, cx);
+        picker.read_with(cx, |picker, cx| {
+            let matched = picker
+                .delegate
+                .matches
+                .iter()
+                .find(|matched| matched.string == "Broken")
+                .expect("failed language must remain in the picker");
+            assert_eq!(
+                picker.delegate.language_data_for_match(matched, cx).0,
+                "Broken (failed to load)"
+            );
+            assert!(
+                picker
+                    .delegate
+                    .language_registry
+                    .language_load_error("Broken")
+                    .is_some_and(|error| error.contains("missing"))
+            );
+        });
+        close_selector(&workspace, cx);
+        registry.register_test_language(LanguageConfig {
+            name: "Broken".into(),
+            ..Default::default()
+        });
+        assert!(registry.language_for_name("Broken").await.is_ok());
+        let picker = open_selector(&workspace, cx);
+        picker.read_with(cx, |picker, cx| {
+            let matched = picker
+                .delegate
+                .matches
+                .iter()
+                .find(|matched| matched.string == "Broken")
+                .expect("recovered language must remain in the picker");
+            assert_eq!(
+                picker.delegate.language_data_for_match(matched, cx).0,
+                "Broken"
+            );
+        });
     }
 
     #[gpui::test]

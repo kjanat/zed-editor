@@ -42,8 +42,9 @@ impl ExtensionGrammarProxy for LanguageServerRegistryProxy {
     }
 
     #[ztracing::instrument(skip_all)]
-    fn register_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>) {
-        self.language_registry.register_wasm_grammars(grammars)
+    fn register_grammars(&self, extension_id: Arc<str>, grammars: Vec<(Arc<str>, PathBuf)>) {
+        self.language_registry
+            .register_wasm_grammars(extension_id, grammars)
     }
 }
 
@@ -54,14 +55,22 @@ impl ExtensionLanguageProxy for LanguageServerRegistryProxy {
 
     fn register_language(
         &self,
+        extension_id: Arc<str>,
         language: LanguageName,
         grammar: Option<Arc<str>>,
         matcher: Arc<LanguageMatcher>,
         hidden: bool,
         load: LanguageLoader,
     ) -> bool {
-        self.language_registry
-            .register_extension_language(language, grammar, matcher, hidden, None, load)
+        self.language_registry.register_extension_language(
+            extension_id,
+            language,
+            grammar,
+            matcher,
+            hidden,
+            None,
+            load,
+        )
     }
 
     fn is_language_registered(&self, language: &LanguageName) -> bool {
@@ -73,9 +82,9 @@ impl ExtensionLanguageProxy for LanguageServerRegistryProxy {
     fn remove_languages(
         &self,
         languages_to_remove: &[LanguageName],
-        grammars_to_remove: &[Arc<str>],
+        extensions_to_remove: &[Arc<str>],
     ) {
         self.language_registry
-            .remove_languages(languages_to_remove, grammars_to_remove);
+            .remove_languages(languages_to_remove, extensions_to_remove);
     }
 }

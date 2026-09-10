@@ -20,10 +20,10 @@ pub struct AvailableLanguage {
     pub(super) origin: LanguageOrigin,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LanguageOrigin {
     Native,
-    Extension,
+    Extension(Arc<str>),
 }
 
 impl AvailableLanguage {
@@ -71,7 +71,7 @@ impl AvailableLanguages {
             .iter_mut()
             .find(|existing_language| existing_language.name == name)
         {
-            if origin == LanguageOrigin::Extension
+            if matches!(origin, LanguageOrigin::Extension(_))
                 && existing_language.origin == LanguageOrigin::Native
             {
                 return None;
@@ -184,8 +184,8 @@ impl AvailableLanguages {
     ) -> Vec<LanguageName> {
         let mut removed = Vec::new();
         self.0.retain(|language| {
-            let should_remove =
-                language.origin == LanguageOrigin::Extension && names.contains(&language.name);
+            let should_remove = matches!(language.origin, LanguageOrigin::Extension(_))
+                && names.contains(&language.name);
             if should_remove {
                 removed.push(language.name.clone());
             }

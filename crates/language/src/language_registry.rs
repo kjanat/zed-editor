@@ -46,12 +46,13 @@ struct LanguageRegistryState {
     languages: Vec<Arc<Language>>,
     language_settings: AllLanguageSettingsContent,
     available_languages: AvailableLanguages,
-    grammars: HashMap<Arc<str>, AvailableGrammar>,
+    grammars: HashMap<GrammarKey, AvailableGrammar>,
     lsp_adapters: HashMap<LanguageName, Vec<Arc<CachedLspAdapter>>>,
     all_lsp_adapters: HashMap<LanguageServerName, Arc<CachedLspAdapter>>,
     available_lsp_adapters:
         HashMap<LanguageServerName, Arc<dyn Fn() -> Arc<CachedLspAdapter> + 'static + Send + Sync>>,
     loading_languages: HashMap<LanguageId, Vec<oneshot::Sender<Result<Arc<Language>>>>>,
+    language_load_errors: HashMap<LanguageId, Arc<str>>,
     subscription: (watch::Sender<()>, watch::Receiver<()>),
     theme: Option<Arc<Theme>>,
     version: usize,
@@ -69,11 +70,17 @@ pub struct FakeLanguageServerEntry {
     pub _server: Option<lsp::FakeLanguageServer>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct GrammarKey {
+    name: Arc<str>,
+    extension_id: Option<Arc<str>>,
+}
+
 enum AvailableGrammar {
     Native(tree_sitter::Language),
     Loaded(#[allow(unused)] PathBuf, tree_sitter::Language),
     Loading(
-        #[allow(unused)] PathBuf,
+        Arc<()>,
         Vec<oneshot::Sender<Result<tree_sitter::Language, Arc<anyhow::Error>>>>,
     ),
     Unloaded(PathBuf),
@@ -123,6 +130,7 @@ impl LanguageRegistry {
                 grammars: Default::default(),
                 language_settings: Default::default(),
                 loading_languages: Default::default(),
+                language_load_errors: Default::default(),
                 lsp_adapters: Default::default(),
                 all_lsp_adapters: Default::default(),
                 available_lsp_adapters: HashMap::default(),
@@ -170,15 +178,15 @@ impl LanguageRegistry {
             .reorder_language_servers(language, ordered_lsp_adapters);
     }
 
-    /// Removes the specified languages and grammars from the registry.
+    /// Removes the specified extension languages and the grammars owned by the given extensions.
     pub fn remove_languages(
         &self,
         languages_to_remove: &[LanguageName],
-        grammars_to_remove: &[Arc<str>],
+        extensions_to_remove: &[Arc<str>],
     ) {
         self.state
             .write()
-            .remove_languages(languages_to_remove, grammars_to_remove)
+            .remove_languages(languages_to_remove, extensions_to_remove)
     }
 
     pub fn remove_lsp_adapter(&self, language_name: &LanguageName, name: &LanguageServerName) {
@@ -405,6 +413,7 @@ impl LanguageRegistry {
 
     pub fn register_extension_language(
         &self,
+        extension_id: Arc<str>,
         name: LanguageName,
         grammar_name: Option<Arc<str>>,
         matcher: Arc<LanguageMatcher>,
@@ -419,7 +428,7 @@ impl LanguageRegistry {
             hidden,
             manifest_name,
             load,
-            LanguageOrigin::Extension,
+            LanguageOrigin::Extension(extension_id),
         )
     }
 
@@ -434,6 +443,11 @@ impl LanguageRegistry {
         origin: LanguageOrigin,
     ) -> bool {
         let state = &mut *self.state.write();
+
+        let previous_id = state
+            .available_languages
+            .find_by_exact_name(name.as_ref())
+            .map(|language| language.id());
 
         let Some(was_loaded) = state.available_languages.register(
             name.clone(),
@@ -452,6 +466,9 @@ impl LanguageRegistry {
         if was_loaded {
             state.languages.retain(|language| language.name() != name);
         }
+        if let Some(previous_id) = previous_id {
+            state.language_load_errors.remove(&previous_id);
+        }
 
         state.version += 1;
         state.reload_count += 1;
@@ -465,16 +482,26 @@ impl LanguageRegistry {
         &self,
         grammars: impl IntoIterator<Item = (impl Into<Arc<str>>, impl Into<tree_sitter::Language>)>,
     ) {
-        self.state.write().grammars.extend(
-            grammars
-                .into_iter()
-                .map(|(name, grammar)| (name.into(), AvailableGrammar::Native(grammar.into()))),
-        );
+        self.state
+            .write()
+            .grammars
+            .extend(grammars.into_iter().map(|(name, grammar)| {
+                (
+                    GrammarKey {
+                        name: name.into(),
+                        extension_id: None,
+                    },
+                    AvailableGrammar::Native(grammar.into()),
+                )
+            }));
     }
 
     pub fn is_native_grammar(&self, name: &str) -> bool {
         matches!(
-            self.state.read().grammars.get(name),
+            self.state.read().grammars.get(&GrammarKey {
+                name: name.into(),
+                extension_id: None,
+            }),
             Some(AvailableGrammar::Native(_))
         )
     }
@@ -488,22 +515,24 @@ impl LanguageRegistry {
     }
 
     /// Adds paths to WASM grammar files, which can be loaded if needed.
-    pub fn register_wasm_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>) {
+    pub fn register_wasm_grammars(
+        &self,
+        extension_id: Arc<str>,
+        grammars: Vec<(Arc<str>, PathBuf)>,
+    ) {
         if grammars.is_empty() {
             return;
         }
 
         let mut state = self.state.write();
         for (name, path) in grammars {
-            if let Some(AvailableGrammar::Native(_)) = state.grammars.get(&name) {
-                log::warn!(
-                    "not registering extension grammar {name}: a native grammar with this name is already registered"
-                );
-                continue;
-            }
-            state
-                .grammars
-                .insert(name, AvailableGrammar::Unloaded(path));
+            state.grammars.insert(
+                GrammarKey {
+                    name,
+                    extension_id: Some(extension_id.clone()),
+                },
+                AvailableGrammar::Unloaded(path),
+            );
         }
         state.version += 1;
         state.reload_count += 1;
@@ -527,10 +556,23 @@ impl LanguageRegistry {
         result
     }
 
+    pub fn language_load_error(&self, name: &str) -> Option<Arc<str>> {
+        let state = self.state.read();
+        let language = state.available_languages.find_by_exact_name(name)?;
+        state.language_load_errors.get(&language.id()).cloned()
+    }
+
     pub fn grammar_names(&self) -> Vec<Arc<str>> {
         let state = self.state.read();
-        let mut result = state.grammars.keys().cloned().collect::<Vec<_>>();
-        result.sort_unstable_by_key(|grammar_name| grammar_name.to_lowercase());
+        let mut result = state
+            .grammars
+            .keys()
+            .map(|key| key.name.clone())
+            .collect::<Vec<_>>();
+        result.sort_unstable_by_key(|grammar_name| {
+            (grammar_name.to_lowercase(), grammar_name.clone())
+        });
+        result.dedup();
         result
     }
 
@@ -702,9 +744,10 @@ impl LanguageRegistry {
             return rx;
         };
 
-        let (language_name, language_load) = (
+        let (language_name, language_load, origin) = (
             available_language.name.clone(),
             available_language.load.clone(),
+            available_language.origin.clone(),
         );
 
         match state.loading_languages.entry(language_id) {
@@ -721,7 +764,7 @@ impl LanguageRegistry {
                         let language = async {
                             let loaded_language = (language_load)().await?;
                             if let Some(grammar) = loaded_language.config.grammar.clone() {
-                                let grammar = Some(this.get_or_load_grammar(grammar).await?);
+                                let grammar = Some(this.get_or_load_grammar(grammar, &origin).await?);
 
                                 Language::new_with_id(language_id, loaded_language.config, grammar)
                                     .with_context_provider(loaded_language.context_provider)
@@ -755,9 +798,17 @@ impl LanguageRegistry {
                                 .is_some();
                             if is_current {
                                 if let Ok(language) = &language {
+                                    state.language_load_errors.remove(&language_id);
                                     state.add(language.clone());
+                                    state.mark_language_loaded(language_id);
+                                } else if let Err(error) = &language {
+                                    let error: Arc<str> = format!("{error:#}").into();
+                                    if state.language_load_errors.get(&language_id) != Some(&error) {
+                                        state.language_load_errors.insert(language_id, error);
+                                        state.version += 1;
+                                        *state.subscription.0.borrow_mut() = ();
+                                    }
                                 }
-                                state.mark_language_loaded(language_id);
                                 if let Some(txs) = state.loading_languages.remove(&language_id) {
                                     for tx in txs {
                                         let _ = tx.send(match &language {
@@ -841,13 +892,17 @@ impl LanguageRegistry {
     fn get_or_load_grammar(
         self: &Arc<Self>,
         name: Arc<str>,
+        origin: &LanguageOrigin,
     ) -> impl Future<Output = Result<tree_sitter::Language>> {
         let span = ztracing::debug_span!("get_or_load_grammar", name = &*name.clone());
         let _enter = span.enter();
         let (tx, rx) = oneshot::channel();
         let mut state = self.state.write();
 
-        if let Some(grammar) = state.grammars.get_mut(name.as_ref()) {
+        let key = state.grammar_key(name.clone(), origin);
+        if let Ok(key) = &key
+            && let Some(grammar) = state.grammars.get_mut(key)
+        {
             match grammar {
                 AvailableGrammar::LoadFailed(error) => {
                     tx.send(Err(error.clone())).ok();
@@ -861,8 +916,10 @@ impl LanguageRegistry {
                 AvailableGrammar::Unloaded(wasm_path) => {
                     log::trace!("start loading grammar {name:?}");
                     let this = self.clone();
+                    let key = key.clone();
                     let wasm_path = wasm_path.clone();
-                    *grammar = AvailableGrammar::Loading(wasm_path.clone(), vec![tx]);
+                    let load_id = Arc::new(());
+                    *grammar = AvailableGrammar::Loading(load_id.clone(), vec![tx]);
                     self.executor
                         .spawn(async move {
                             let grammar_result = maybe!({
@@ -886,7 +943,15 @@ impl LanguageRegistry {
                             };
 
                             log::trace!("finish loading grammar {name:?}");
-                            let old_value = this.state.write().grammars.insert(name, value);
+                            let mut state = this.state.write();
+                            if !matches!(
+                                state.grammars.get(&key),
+                                Some(AvailableGrammar::Loading(current_load_id, _))
+                                    if Arc::ptr_eq(current_load_id, &load_id)
+                            ) {
+                                return;
+                            }
+                            let old_value = state.grammars.insert(key, value);
                             if let Some(AvailableGrammar::Loading(_, txs)) = old_value {
                                 for tx in txs {
                                     tx.send(grammar_result.clone()).ok();
@@ -897,8 +962,11 @@ impl LanguageRegistry {
                 }
             }
         } else {
-            tx.send(Err(Arc::new(anyhow!("no such grammar {name}"))))
-                .ok();
+            tx.send(Err(Arc::new(
+                key.err()
+                    .unwrap_or_else(|| anyhow!("no such grammar {name}")),
+            )))
+            .ok();
         }
 
         async move { rx.await?.map_err(|e| anyhow!(e)) }
@@ -1010,6 +1078,33 @@ impl LanguageRegistry {
 }
 
 impl LanguageRegistryState {
+    fn grammar_key(&self, name: Arc<str>, origin: &LanguageOrigin) -> Result<GrammarKey> {
+        if let LanguageOrigin::Extension(extension_id) = origin {
+            let key = GrammarKey {
+                name: name.clone(),
+                extension_id: Some(extension_id.clone()),
+            };
+            if self.grammars.contains_key(&key) {
+                return Ok(key);
+            }
+        }
+        let native_key = GrammarKey {
+            name: name.clone(),
+            extension_id: None,
+        };
+        if self.grammars.contains_key(&native_key) {
+            return Ok(native_key);
+        }
+        let mut candidates = self.grammars.keys().filter(|key| key.name == name);
+        match (candidates.next(), candidates.next()) {
+            (Some(key), None) => Ok(key.clone()),
+            (None, _) => Err(anyhow!("no such grammar {name}")),
+            (Some(_), Some(_)) => Err(anyhow!(
+                "multiple extensions provide grammar {name:?}; the language's extension must declare its own grammar"
+            )),
+        }
+    }
+
     fn next_language_server_id(&mut self) -> LanguageServerId {
         LanguageServerId(post_inc(&mut self.next_language_server_id))
     }
@@ -1035,6 +1130,7 @@ impl LanguageRegistryState {
 
     fn reload(&mut self) {
         self.languages.clear();
+        self.language_load_errors.clear();
         self.version += 1;
         self.reload_count += 1;
         self.available_languages.mark_all_unloaded();
@@ -1074,9 +1170,9 @@ impl LanguageRegistryState {
     fn remove_languages(
         &mut self,
         languages_to_remove: &[LanguageName],
-        grammars_to_remove: &[Arc<str>],
+        extensions_to_remove: &[Arc<str>],
     ) {
-        if languages_to_remove.is_empty() && grammars_to_remove.is_empty() {
+        if languages_to_remove.is_empty() && extensions_to_remove.is_empty() {
             return;
         }
 
@@ -1085,9 +1181,17 @@ impl LanguageRegistryState {
             .remove_extension_languages(languages_to_remove);
         self.languages
             .retain(|language| !removed_languages.contains(&language.name()));
-        self.grammars.retain(|name, grammar| {
-            !grammars_to_remove.contains(name) || matches!(grammar, AvailableGrammar::Native(_))
+        self.language_load_errors
+            .retain(|id, _| self.available_languages.get_language(*id).is_some());
+        let previous_grammar_count = self.grammars.len();
+        self.grammars.retain(|key, _| {
+            key.extension_id
+                .as_ref()
+                .is_none_or(|extension_id| !extensions_to_remove.contains(extension_id))
         });
+        if removed_languages.is_empty() && self.grammars.len() == previous_grammar_count {
+            return;
+        }
         self.version += 1;
         self.reload_count += 1;
         *self.subscription.0.borrow_mut() = ();
@@ -1128,6 +1232,233 @@ impl ServerStatusSender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::TestAppContext;
+    use util::test::TempTree;
+
+    fn grammar_fixtures() -> Result<TempTree> {
+        let tree = TempTree::new(serde_json::json!({"html": {}, "html-jinja": {}}));
+        std::fs::write(
+            tree.path().join("html/html.wasm"),
+            include_bytes!("../test_data/grammars/html.wasm"),
+        )?;
+        std::fs::write(
+            tree.path().join("html-jinja/html.wasm"),
+            include_bytes!("../test_data/grammars/html-jinja.wasm"),
+        )?;
+        Ok(tree)
+    }
+
+    fn register_html_language(
+        registry: &LanguageRegistry,
+        extension: &str,
+        name: &'static str,
+        jinja: bool,
+    ) {
+        let config = LanguageConfig {
+            name: name.into(),
+            grammar: Some("html".into()),
+            ..Default::default()
+        };
+        assert!(registry.register_extension_language(
+            extension.into(),
+            config.name.clone(),
+            config.grammar.clone(),
+            config.matcher.clone(),
+            false,
+            None,
+            Arc::new(move || {
+                let config = config.clone();
+                async move {
+                    Ok(LoadedLanguage {
+                        config,
+                        queries: LanguageQueries {
+                            injections: jinja.then(|| {
+                                "((jinja) @content (#set! \"language\" \"Jinja-Inline\"))".into()
+                            }),
+                            ..Default::default()
+                        },
+                        context_provider: None,
+                        toolchain_provider: None,
+                        manifest_name: None,
+                    })
+                }
+                .boxed()
+            }),
+        ));
+    }
+
+    #[gpui::test]
+    async fn extension_grammars_are_isolated_across_registration_reload_and_removal(
+        cx: &mut TestAppContext,
+    ) {
+        let result: Result<()> = async {
+            let tree = grammar_fixtures()?;
+            for order in [["html", "html-jinja"], ["html-jinja", "html"]] {
+                let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+                for extension in order {
+                    registry.register_wasm_grammars(
+                        extension.into(),
+                        vec![("html".into(), tree.path().join(extension).join("html.wasm"))],
+                    );
+                }
+                register_html_language(&registry, "html", "HTML", false);
+                register_html_language(&registry, "html-jinja", "HTML-Jinja", true);
+
+                // Reload HTML before Jinja's first load, when no cached language can hide a collision.
+                registry.remove_languages(&["HTML".into()], &["html".into()]);
+                registry.register_wasm_grammars(
+                    "html".into(),
+                    vec![("html".into(), tree.path().join("html/html.wasm"))],
+                );
+                register_html_language(&registry, "html", "HTML", false);
+                let jinja = registry.language_for_name("HTML-Jinja").await?;
+                let html = registry.language_for_name("HTML").await?;
+                assert_ne!(
+                    html.grammar().context("HTML grammar")?.ts_language,
+                    jinja.grammar().context("Jinja grammar")?.ts_language
+                );
+
+                registry.remove_languages(&["HTML".into()], &["html".into()]);
+                registry.reload();
+                registry.language_for_name("HTML-Jinja").await?;
+                assert_eq!(registry.grammar_names(), vec![Arc::<str>::from("html")]);
+                registry.remove_languages(&["HTML-Jinja".into()], &["html-jinja".into()]);
+                assert!(registry.grammar_names().is_empty());
+            }
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[gpui::test]
+    async fn extension_grammar_resolution_preserves_native_and_unambiguous_fallbacks(
+        cx: &mut TestAppContext,
+    ) {
+        let result: Result<()> = async {
+            let tree = grammar_fixtures()?;
+            let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+            registry.register_wasm_grammars(
+                "html-jinja".into(),
+                vec![("html".into(), tree.path().join("html-jinja/html.wasm"))],
+            );
+            register_html_language(&registry, "consumer", "Consumer", true);
+            registry.language_for_name("Consumer").await?;
+
+            registry.register_wasm_grammars(
+                "html".into(),
+                vec![("html".into(), tree.path().join("html/html.wasm"))],
+            );
+            registry.reload();
+            let error = registry
+                .language_for_name("Consumer")
+                .await
+                .err()
+                .context("ambiguous grammar should fail")?;
+            assert!(
+                error
+                    .to_string()
+                    .contains("multiple extensions provide grammar")
+            );
+            assert!(registry.language_names().contains(&"Consumer".into()));
+
+            registry.register_native_grammars([("html", tree_sitter_html::LANGUAGE)]);
+            register_html_language(&registry, "html-jinja", "HTML-Jinja", true);
+            registry.register_test_language(LanguageConfig {
+                name: "Native HTML".into(),
+                grammar: Some("html".into()),
+                ..Default::default()
+            });
+            register_html_language(&registry, "consumer", "Consumer", false);
+            let native = registry.language_for_name("Native HTML").await?;
+            let consumer = registry.language_for_name("Consumer").await?;
+            let jinja = registry.language_for_name("HTML-Jinja").await?;
+            assert_eq!(
+                native.grammar().context("native grammar")?.ts_language,
+                consumer.grammar().context("consumer grammar")?.ts_language
+            );
+            assert_ne!(
+                native.grammar().context("native grammar")?.ts_language,
+                jinja.grammar().context("Jinja grammar")?.ts_language
+            );
+            registry.remove_languages(&["HTML-Jinja".into()], &["html-jinja".into()]);
+            assert!(registry.is_native_grammar("html"));
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[gpui::test]
+    async fn failed_language_load_remains_visible_and_can_recover(cx: &mut TestAppContext) {
+        let result: Result<()> = async {
+            let tree = grammar_fixtures()?;
+            let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+            registry.register_wasm_grammars(
+                "html-jinja".into(),
+                vec![("html".into(), tree.path().join("html/html.wasm"))],
+            );
+            register_html_language(&registry, "html-jinja", "HTML-Jinja", true);
+            assert!(registry.language_for_name("HTML-Jinja").await.is_err());
+            let error = registry
+                .language_load_error("HTML-Jinja")
+                .context("load error should be exposed")?;
+            assert!(error.contains("jinja"), "{error}");
+            assert!(error.contains("injection query"), "{error}");
+            assert!(registry.language_names().contains(&"HTML-Jinja".into()));
+            let version = registry.state.read().version;
+            assert!(registry.language_for_name("HTML-Jinja").await.is_err());
+            assert_eq!(
+                registry.state.read().version,
+                version,
+                "identical failures must not trigger an endless subscription retry loop"
+            );
+
+            registry.register_wasm_grammars(
+                "html-jinja".into(),
+                vec![("html".into(), tree.path().join("html-jinja/html.wasm"))],
+            );
+            registry.language_for_name("HTML-Jinja").await?;
+            assert!(registry.language_load_error("HTML-Jinja").is_none());
+            assert_eq!(
+                registry
+                    .language_names()
+                    .iter()
+                    .filter(|name| name.as_ref() == "HTML-Jinja")
+                    .count(),
+                1
+            );
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn stale_grammar_load_cannot_replace_a_reloaded_provider(cx: &mut TestAppContext) {
+        let result: Result<()> = async {
+            let tree = grammar_fixtures()?;
+            let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+            let origin = LanguageOrigin::Extension("html".into());
+            registry.register_wasm_grammars(
+                "html".into(),
+                vec![("html".into(), tree.path().join("missing/html.wasm"))],
+            );
+            let stale = registry.get_or_load_grammar("html".into(), &origin);
+            registry.remove_languages(&[], &["html".into()]);
+            registry.register_wasm_grammars(
+                "html".into(),
+                vec![("html".into(), tree.path().join("html/html.wasm"))],
+            );
+            let current = registry.get_or_load_grammar("html".into(), &origin);
+            assert!(stale.await.is_err());
+            current.await?;
+            registry.get_or_load_grammar("html".into(), &origin).await?;
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
 
     #[test]
     fn dropping_server_status_subscription_unregisters_sender() {
@@ -1137,5 +1468,17 @@ mod tests {
 
         drop(subscription);
         assert!(sender.state.lock().txs.is_empty());
+    }
+
+    #[gpui::test]
+    fn removing_an_unregistered_grammar_provider_does_not_reload_languages(
+        cx: &mut TestAppContext,
+    ) {
+        let registry = LanguageRegistry::test(cx.executor());
+        let version = registry.version();
+        let reload_count = registry.reload_count();
+        registry.remove_languages(&[], &["theme-only-extension".into()]);
+        assert_eq!(registry.version(), version);
+        assert_eq!(registry.reload_count(), reload_count);
     }
 }

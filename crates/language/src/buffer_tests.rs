@@ -519,10 +519,13 @@ async fn test_reregistering_language_during_failed_load_yields_current_language(
 async fn test_extension_grammar_cannot_shadow_native_grammar(cx: &mut TestAppContext) {
     let registry = Arc::new(LanguageRegistry::test(cx.executor()));
     registry.register_native_grammars([("rust", tree_sitter_rust::LANGUAGE)]);
-    registry.register_wasm_grammars(vec![(
-        Arc::from("rust"),
-        PathBuf::from("/extensions/bogus/grammars/rust.wasm"),
-    )]);
+    registry.register_wasm_grammars(
+        "bogus".into(),
+        vec![(
+            Arc::from("rust"),
+            PathBuf::from("/extensions/bogus/grammars/rust.wasm"),
+        )],
+    );
 
     registry.register_test_language(LanguageConfig {
         name: LanguageName::new_static("TheLanguage"),
@@ -539,7 +542,7 @@ async fn test_extension_grammar_cannot_shadow_native_grammar(cx: &mut TestAppCon
         "an extension grammar must not replace a native grammar with the same name"
     );
 
-    registry.remove_languages(&[], &[Arc::from("rust")]);
+    registry.remove_languages(&[], &[Arc::from("bogus")]);
     registry.register_test_language(LanguageConfig {
         name: LanguageName::new_static("TheOtherLanguage"),
         grammar: Some(Arc::from("rust")),

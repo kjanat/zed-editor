@@ -213,7 +213,7 @@ impl ExtensionThemeProxy for ExtensionHostProxy {
 }
 
 pub trait ExtensionGrammarProxy: Send + Sync + 'static {
-    fn register_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>);
+    fn register_grammars(&self, extension_id: Arc<str>, grammars: Vec<(Arc<str>, PathBuf)>);
     fn is_native_grammar(&self, name: &str) -> bool;
 }
 
@@ -226,18 +226,19 @@ impl ExtensionGrammarProxy for ExtensionHostProxy {
     }
 
     #[ztracing::instrument(skip_all)]
-    fn register_grammars(&self, grammars: Vec<(Arc<str>, PathBuf)>) {
+    fn register_grammars(&self, extension_id: Arc<str>, grammars: Vec<(Arc<str>, PathBuf)>) {
         let Some(proxy) = self.grammar_proxy.read().clone() else {
             return;
         };
 
-        proxy.register_grammars(grammars)
+        proxy.register_grammars(extension_id, grammars)
     }
 }
 
 pub trait ExtensionLanguageProxy: Send + Sync + 'static {
     fn register_language(
         &self,
+        extension_id: Arc<str>,
         language: LanguageName,
         grammar: Option<Arc<str>>,
         matcher: Arc<LanguageMatcher>,
@@ -251,7 +252,7 @@ pub trait ExtensionLanguageProxy: Send + Sync + 'static {
     fn remove_languages(
         &self,
         languages_to_remove: &[LanguageName],
-        grammars_to_remove: &[Arc<str>],
+        extensions_to_remove: &[Arc<str>],
     );
 }
 
@@ -266,6 +267,7 @@ impl ExtensionLanguageProxy for ExtensionHostProxy {
     #[ztracing::instrument(skip_all, fields(lang = language.0.as_str()))]
     fn register_language(
         &self,
+        extension_id: Arc<str>,
         language: LanguageName,
         grammar: Option<Arc<str>>,
         matcher: Arc<LanguageMatcher>,
@@ -276,7 +278,7 @@ impl ExtensionLanguageProxy for ExtensionHostProxy {
             return false;
         };
 
-        proxy.register_language(language, grammar, matcher, hidden, load)
+        proxy.register_language(extension_id, language, grammar, matcher, hidden, load)
     }
 
     fn is_language_registered(&self, language: &LanguageName) -> bool {
@@ -290,13 +292,13 @@ impl ExtensionLanguageProxy for ExtensionHostProxy {
     fn remove_languages(
         &self,
         languages_to_remove: &[LanguageName],
-        grammars_to_remove: &[Arc<str>],
+        extensions_to_remove: &[Arc<str>],
     ) {
         let Some(proxy) = self.language_proxy.read().clone() else {
             return;
         };
 
-        proxy.remove_languages(languages_to_remove, grammars_to_remove)
+        proxy.remove_languages(languages_to_remove, extensions_to_remove)
     }
 }
 

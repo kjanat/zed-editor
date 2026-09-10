@@ -41,12 +41,17 @@ enum Resource<'a> {
 }
 
 impl Resource<'_> {
-    fn conflicts(&self, index: &ExtensionIndex, first: &Provider, second: &Provider) -> bool {
+    fn matching_sources(
+        &self,
+        index: &ExtensionIndex,
+        first: &Provider,
+        second: &Provider,
+    ) -> bool {
         let Self::Grammar(name) = self else {
-            return true;
+            return false;
         };
         let (Provider::Extension(first), Provider::Extension(second)) = (first, second) else {
-            return true;
+            return false;
         };
         let source = |id| {
             index
@@ -55,8 +60,8 @@ impl Resource<'_> {
                 .and_then(|entry| entry.manifest.grammars.get(*name))
         };
         match (source(first), source(second)) {
-            (Some(first), Some(second)) => first != second,
-            _ => true,
+            (Some(first), Some(second)) => first == second,
+            _ => false,
         }
     }
 }
@@ -80,7 +85,6 @@ impl LanguageCollisions {
         &mut self,
         index: &ExtensionIndex,
         registered_languages: &BTreeMap<LanguageName, Arc<str>>,
-        grammar_providers: &BTreeMap<Arc<str>, Arc<str>>,
         proxy: &ExtensionHostProxy,
     ) {
         let mut active = BTreeMap::new();
@@ -112,21 +116,13 @@ impl LanguageCollisions {
         }
         for (name, providers) in grammars {
             let native = proxy.is_native_grammar(&name);
-            let winner = if native {
-                Some(Provider::BuiltIn)
-            } else {
-                grammar_providers
-                    .get(&name)
-                    .cloned()
-                    .map(Provider::Extension)
-            };
             Self::record(
                 &mut active,
                 index,
                 Resource::Grammar(&name),
                 &providers,
                 native,
-                winner,
+                None,
             );
         }
 
@@ -143,7 +139,12 @@ impl LanguageCollisions {
                 resources: details.resources,
             };
             if self.diagnostics.get(&pair) != Some(&collision) {
-                log::warn!(
+                log::log!(
+                    if details.conflicting_resources.is_empty() {
+                        log::Level::Info
+                    } else {
+                        log::Level::Warn
+                    },
                     "duplicate language/grammar providers {} and {}: {}",
                     collision.providers.0,
                     collision.providers.1,
@@ -206,9 +207,13 @@ impl LanguageCollisions {
                     Resource::Language(name) => ("language", name),
                     Resource::Grammar(name) => ("grammar", name),
                 };
-                let conflicts = resource.conflicts(index, first, second);
-                let mut description = format!("{kind} {name:?} (active provider: {winner})");
-                if !conflicts {
+                let conflicts = matches!(resource, Resource::Language(_));
+                let mut description = if conflicts {
+                    format!("{kind} {name:?} (active provider: {winner})")
+                } else {
+                    format!("{kind} {name:?} (isolated by provider)")
+                };
+                if resource.matching_sources(index, first, second) {
                     description.push_str(" (matching source declarations)");
                 }
                 let pair = match (first, second) {
@@ -249,7 +254,7 @@ mod tests {
     use crate::{ExtensionIndexEntry, ExtensionManifest};
 
     #[test]
-    fn matching_grammar_sources_remain_diagnosable() -> anyhow::Result<()> {
+    fn isolated_grammar_sources_remain_diagnosable() -> anyhow::Result<()> {
         let mut index = ExtensionIndex::default();
         for id in ["alpha", "beta"] {
             let manifest: ExtensionManifest = toml::from_str(&format!(
@@ -264,12 +269,7 @@ mod tests {
             );
         }
         let mut collisions = LanguageCollisions::default();
-        collisions.update(
-            &index,
-            &BTreeMap::new(),
-            &BTreeMap::from_iter([("shared".into(), "beta".into())]),
-            &ExtensionHostProxy::new(),
-        );
+        collisions.update(&index, &BTreeMap::new(), &ExtensionHostProxy::new());
         assert_eq!(collisions.diagnostics.len(), 1);
         let diagnostic = collisions
             .diagnostics
@@ -281,13 +281,33 @@ mod tests {
             diagnostic
                 .resources
                 .iter()
-                .all(|resource| resource.contains("active provider: beta"))
+                .all(|resource| resource.contains("isolated by provider"))
         );
         assert!(collisions.take_warnings().is_empty());
         assert!(
             collisions.warned.is_empty(),
             "diagnosing identical sources must not consume the session warning"
         );
+        let beta = index
+            .extensions
+            .get_mut("beta")
+            .ok_or_else(|| anyhow::anyhow!("missing beta"))?;
+        let grammar = Arc::make_mut(&mut beta.manifest)
+            .grammars
+            .get_mut("shared")
+            .ok_or_else(|| anyhow::anyhow!("missing grammar"))?;
+        grammar.rev = "different-revision".into();
+        collisions.update(&index, &BTreeMap::new(), &ExtensionHostProxy::new());
+        assert_eq!(collisions.diagnostics.len(), 1);
+        assert!(
+            collisions
+                .diagnostics
+                .values()
+                .flat_map(|diagnostic| &diagnostic.resources)
+                .all(|resource| resource.contains("isolated by provider")
+                    && !resource.contains("matching source"))
+        );
+        assert!(collisions.take_warnings().is_empty());
         Ok(())
     }
 }
