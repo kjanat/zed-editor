@@ -3665,7 +3665,7 @@ impl GitPanel {
             self.fill_co_authors(&mut message, cx);
         }
 
-        let task = if self.has_staged_changes() {
+        let task = if options.amend || self.has_staged_changes() {
             // Repository serializes all git operations, so we can just send a commit immediately
             let commit_task = active_repository.update(cx, |repo, cx| {
                 repo.commit(message.into(), None, options, askpass, cx)
@@ -3678,7 +3678,7 @@ impl GitPanel {
                 .map(|status_entry| status_entry.repo_path.clone())
                 .collect::<Vec<_>>();
 
-            if changed_files.is_empty() && !options.amend {
+            if changed_files.is_empty() {
                 error_spawn("No changes to commit", window, cx);
                 return;
             }
@@ -6255,13 +6255,7 @@ impl GitPanel {
 
     pub fn commit_button_title(&self) -> &'static str {
         if self.amend_pending {
-            if self.has_staged_changes() {
-                "Amend"
-            } else if self.has_tracked_changes() {
-                "Amend Tracked"
-            } else {
-                "Amend"
-            }
+            "Amend"
         } else if self.has_staged_changes() {
             "Commit"
         } else {
@@ -6682,8 +6676,10 @@ impl GitPanel {
         h_flex()
             .id("commit-wrapper")
             .on_hover(cx.listener(move |this, hovered, _, cx| {
-                this.show_placeholders =
-                    *hovered && !this.has_staged_changes() && !this.has_unstaged_conflicts();
+                this.show_placeholders = *hovered
+                    && !this.amend_pending
+                    && !this.has_staged_changes()
+                    && !this.has_unstaged_conflicts();
                 cx.notify()
             }))
             .child(SplitButton::new(
@@ -12457,6 +12453,72 @@ mod tests {
         buffer_a.read_with(cx, |buffer, _| {
             assert_eq!(buffer.text(), "Draft for A");
         });
+    }
+
+    #[gpui::test]
+    async fn test_amend_preserves_unstaged_changes(cx: &mut TestAppContext) {
+        init_test(cx);
+        for (amend, staged) in [(true, false), (true, true), (false, false)] {
+            let (fs, _, _, panel, mut visual_cx) = setup_git_panel_with_changes(
+                cx,
+                json!({
+                    ".git": {},
+                    "file": "unstaged\n",
+                    "untracked": "new\n",
+                }),
+                &[],
+            )
+            .await;
+            fs.set_head_and_index_for_repo(
+                path!("/project/.git").as_ref(),
+                &[("file", "original\n".into())],
+            );
+            if staged {
+                fs.with_git_state(path!("/project/.git").as_ref(), true, |state| {
+                    state
+                        .index_contents
+                        .insert(repo_path("file"), b"staged\n".to_vec());
+                })
+                .unwrap();
+            }
+            visual_cx.run_until_parked();
+            await_git_panel_entries(&panel, &mut visual_cx).await;
+
+            panel.update_in(&mut visual_cx, |panel, window, cx| {
+                assert_eq!(panel.has_staged_changes(), staged);
+                assert!(panel.has_tracked_changes());
+                panel.set_amend_pending(amend, cx);
+                assert_eq!(
+                    panel.commit_button_title(),
+                    if amend { "Amend" } else { "Commit Tracked" }
+                );
+                panel.commit_message_buffer(cx).update(cx, |buffer, cx| {
+                    buffer.set_text("Updated message", cx);
+                });
+                let focus_handle = panel.commit_editor.focus_handle(cx);
+                focus_handle.focus(window, cx);
+                assert!(panel.commit(&focus_handle, window, cx));
+            });
+            visual_cx.run_until_parked();
+
+            fs.with_git_state(path!("/project/.git").as_ref(), false, |state| {
+                assert_eq!(state.commit_history.len(), 1);
+                let expected = if staged {
+                    b"staged\n".as_slice()
+                } else if amend {
+                    b"original\n".as_slice()
+                } else {
+                    b"unstaged\n".as_slice()
+                };
+                assert_eq!(
+                    state.head_contents.get(&repo_path("file")).unwrap(),
+                    expected
+                );
+                assert_eq!(state.index_contents, state.head_contents);
+                assert!(!state.head_contents.contains_key(&repo_path("untracked")));
+            })
+            .unwrap();
+        }
     }
 
     #[gpui::test]
