@@ -45,11 +45,11 @@ based on your system preference:
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "system",
-		"light": "One Light",
-		"dark": "One Dark"
-	}
+  "theme": {
+    "mode": "system",
+    "light": "One Light",
+    "dark": "One Dark"
+  }
 }
 ```
 
@@ -67,11 +67,11 @@ Like color themes, icon themes support separate light and dark variants:
 
 ```json [settings]
 {
-	"icon_theme": {
-		"mode": "system",
-		"light": "Zed (Default)",
-		"dark": "Zed (Default)"
-	}
+  "icon_theme": {
+    "mode": "system",
+    "light": "Zed (Default)",
+    "dark": "Zed (Default)"
+  }
 }
 ```
 
@@ -95,17 +95,17 @@ Example configuration:
 
 ```json [settings]
 {
-	"buffer_font_family": "JetBrains Mono",
-	"buffer_font_fallbacks": ["Nerd Font"],
-	"buffer_font_size": 14,
-	"ui_font_family": "Inter",
-	"ui_font_fallbacks": ["Nerd Font"],
-	"ui_font_size": 16,
-	"terminal": {
-		"font_family": "JetBrains Mono",
-		"font_fallbacks": ["Nerd Font"],
-		"font_size": 14
-	}
+  "buffer_font_family": "JetBrains Mono",
+  "buffer_font_fallbacks": ["Nerd Font"],
+  "buffer_font_size": 14,
+  "ui_font_family": "Inter",
+  "ui_font_fallbacks": ["Nerd Font"],
+  "ui_font_size": 16,
+  "terminal": {
+    "font_family": "JetBrains Mono",
+    "font_fallbacks": ["Nerd Font"],
+    "font_size": 14
+  }
 }
 ```
 
@@ -115,9 +115,9 @@ To disable font ligatures:
 
 ```json [settings]
 {
-	"buffer_font_features": {
-		"calt": false
-	}
+  "buffer_font_features": {
+    "calt": false
+  }
 }
 ```
 

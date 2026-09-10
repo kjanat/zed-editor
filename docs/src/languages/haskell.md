@@ -32,15 +32,15 @@ options to your Zed settings.json:
 
 ```json [settings]
 {
-	"lsp": {
-		"hls": {
-			"initialization_options": {
-				"haskell": {
-					"formattingProvider": "fourmolu"
-				}
-			}
-		}
-	}
+  "lsp": {
+    "hls": {
+      "initialization_options": {
+        "haskell": {
+          "formattingProvider": "fourmolu"
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -54,13 +54,13 @@ instead, you can specify the binary path and arguments:
 
 ```json [settings]
 {
-	"lsp": {
-		"hls": {
-			"binary": {
-				"path": "static-ls",
-				"arguments": ["--experimentalFeatures"]
-			}
-		}
-	}
+  "lsp": {
+    "hls": {
+      "binary": {
+        "path": "static-ls",
+        "arguments": ["--experimentalFeatures"]
+      }
+    }
+  }
 }
 ```

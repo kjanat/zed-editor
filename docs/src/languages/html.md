@@ -18,9 +18,9 @@ can add the following to your settings:
 
 ```json [settings]
 {
-	"auto_install_extensions": {
-		"html": false
-	}
+  "auto_install_extensions": {
+    "html": false
+  }
 }
 ```
 
@@ -89,15 +89,15 @@ where to look for CSS classes by adding the following to your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"experimental": {
-					"classRegex": ["class=\"([^\"]*)\""]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "experimental": {
+          "classRegex": ["class=\"([^\"]*)\""]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -106,7 +106,7 @@ With these settings, you will get completions for Tailwind CSS classes in HTML
 
 ```html
 <div class="flex items-center <completion here>">
-	<p class="text-lg font-bold <completion here>">Hello World</p>
+  <p class="text-lg font-bold <completion here>">Hello World</p>
 </div>
 ```
 

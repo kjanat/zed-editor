@@ -159,11 +159,11 @@ The above code will be transformed into (with non-relevant tags removed):
 
 ```html
 <head>
-	<title>Editor | Some more detailed title for this page</title>
-	<meta name="description" contents="A page-specific description">
+  <title>Editor | Some more detailed title for this page</title>
+  <meta name="description" contents="A page-specific description">
 </head>
 <body>
-	<h1>Editor</h1>
+  <h1>Editor</h1>
 </body>
 ```
 

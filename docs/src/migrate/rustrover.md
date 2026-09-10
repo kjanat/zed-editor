@@ -227,26 +227,26 @@ project. Zed doesn't generate anything. You create `.zed/settings.json`,
 
 ```json
 [
-	{
-		"label": "cargo run",
-		"command": "cargo run"
-	},
-	{
-		"label": "cargo build",
-		"command": "cargo build"
-	},
-	{
-		"label": "cargo test",
-		"command": "cargo test"
-	},
-	{
-		"label": "cargo clippy",
-		"command": "cargo clippy"
-	},
-	{
-		"label": "cargo run --release",
-		"command": "cargo run --release"
-	}
+  {
+    "label": "cargo run",
+    "command": "cargo run"
+  },
+  {
+    "label": "cargo build",
+    "command": "cargo build"
+  },
+  {
+    "label": "cargo test",
+    "command": "cargo test"
+  },
+  {
+    "label": "cargo clippy",
+    "command": "cargo clippy"
+  },
+  {
+    "label": "cargo run --release",
+    "command": "cargo run --release"
+  }
 ]
 ```
 
@@ -317,30 +317,30 @@ For more control, create a `.zed/debug.json` file:
 
 ```json
 [
-	{
-		"label": "Debug Binary",
-		"adapter": "CodeLLDB",
-		"request": "launch",
-		"program": "${workspaceFolder}/target/debug/my_project"
-	},
-	{
-		"label": "Debug Tests",
-		"adapter": "CodeLLDB",
-		"request": "launch",
-		"cargo": {
-			"args": ["test", "--no-run"],
-			"filter": {
-				"kind": "test"
-			}
-		}
-	},
-	{
-		"label": "Debug with Arguments",
-		"adapter": "CodeLLDB",
-		"request": "launch",
-		"program": "${workspaceFolder}/target/debug/my_project",
-		"args": ["--config", "dev.toml"]
-	}
+  {
+    "label": "Debug Binary",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "${workspaceFolder}/target/debug/my_project"
+  },
+  {
+    "label": "Debug Tests",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "cargo": {
+      "args": ["test", "--no-run"],
+      "filter": {
+        "kind": "test"
+      }
+    }
+  },
+  {
+    "label": "Debug with Arguments",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "${workspaceFolder}/target/debug/my_project",
+    "args": ["--config", "dev.toml"]
+  }
 ]
 ```
 
@@ -458,12 +458,12 @@ Here are a few useful tweaks for Rust developers:
 
 ```json
 {
-	"inlay_hints": {
-		"enabled": true,
-		"show_type_hints": true,
-		"show_parameter_hints": true,
-		"show_other_hints": true
-	}
+  "inlay_hints": {
+    "enabled": true,
+    "show_type_hints": true,
+    "show_parameter_hints": true,
+    "show_other_hints": true
+  }
 }
 ```
 
@@ -471,21 +471,21 @@ Here are a few useful tweaks for Rust developers:
 
 ```json
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"checkOnSave": {
-					"command": "clippy"
-				},
-				"cargo": {
-					"allFeatures": true
-				},
-				"procMacro": {
-					"enable": true
-				}
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "checkOnSave": {
+          "command": "clippy"
+        },
+        "cargo": {
+          "allFeatures": true
+        },
+        "procMacro": {
+          "enable": true
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -493,13 +493,13 @@ Here are a few useful tweaks for Rust developers:
 
 ```json
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"rust-analyzer.cargo.targetDir": true
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "rust-analyzer.cargo.targetDir": true
+      }
+    }
+  }
 }
 ```
 
@@ -519,13 +519,13 @@ tell rust-analyzer about them:
 
 ```json
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"linkedProjects": ["./project-a/Cargo.toml", "./project-b/Cargo.toml"]
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": ["./project-a/Cargo.toml", "./project-b/Cargo.toml"]
+      }
+    }
+  }
 }
 ```
 

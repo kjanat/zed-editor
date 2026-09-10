@@ -83,11 +83,11 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"R": {
-			"language_servers": ["air"]
-		}
-	}
+  "languages": {
+    "R": {
+      "language_servers": ["air"]
+    }
+  }
 }
 ```
 
@@ -97,12 +97,12 @@ zed::OpenSettings}) under Languages > R, or add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"R": {
-			"language_servers": ["air", "r_language_server"],
-			"use_on_type_format": false
-		}
-	}
+  "languages": {
+    "R": {
+      "language_servers": ["air", "r_language_server"],
+      "use_on_type_format": false
+    }
+  }
 }
 ```
 

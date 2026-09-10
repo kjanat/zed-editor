@@ -73,20 +73,20 @@ similar to the ones below:
 
 ```json [settings]
 {
-	"context_servers": {
-		"local-mcp-server": {
-			"command": "some-command",
-			"args": ["arg-1", "arg-2"],
-			"env": {}
-		},
-		"remote-mcp-server": {
-			"url": "https://example.com/mcp",
-			"headers": { "Authorization": "Bearer <token>" }
-		},
-		"remote-mcp-server-with-oauth": {
-			"url": "https://mcp.example.com/mcp"
-		}
-	}
+  "context_servers": {
+    "local-mcp-server": {
+      "command": "some-command",
+      "args": ["arg-1", "arg-2"],
+      "env": {}
+    },
+    "remote-mcp-server": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    },
+    "remote-mcp-server-with-oauth": {
+      "url": "https://mcp.example.com/mcp"
+    }
+  }
 }
 ```
 

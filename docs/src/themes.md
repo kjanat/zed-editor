@@ -47,11 +47,11 @@ You can set the mode to `"dark"` or `"light"` to ignore the current system mode.
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "system",
-		"light": "One Light",
-		"dark": "One Dark"
-	}
+  "theme": {
+    "mode": "system",
+    "light": "One Light",
+    "dark": "One Dark"
+  }
 }
 ```
 
@@ -64,7 +64,7 @@ If your settings currently use a static theme value, like:
 
 ```json [settings]
 {
-	"theme": "Any Theme"
+  "theme": "Any Theme"
 }
 ```
 
@@ -72,11 +72,11 @@ the first toggle converts it to dynamic theme selection with default themes:
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "system",
-		"light": "One Light",
-		"dark": "One Dark"
-	}
+  "theme": {
+    "mode": "system",
+    "light": "One Light",
+    "dark": "One Dark"
+  }
 }
 ```
 
@@ -98,27 +98,27 @@ italics:
 
 ```json [settings]
 {
-	"theme_overrides": {
-		"One Dark": {
-			"editor.background": "#333",
-			"syntax": {
-				"comment": {
-					"font_style": "italic"
-				},
-				"comment.doc": {
-					"font_style": "italic"
-				}
-			},
-			"accents": [
-				"#ff0000",
-				"#ff7f00",
-				"#ffff00",
-				"#00ff00",
-				"#0000ff",
-				"#8b00ff"
-			]
-		}
-	}
+  "theme_overrides": {
+    "One Dark": {
+      "editor.background": "#333",
+      "syntax": {
+        "comment": {
+          "font_style": "italic"
+        },
+        "comment.doc": {
+          "font_style": "italic"
+        }
+      },
+      "accents": [
+        "#ff0000",
+        "#ff7f00",
+        "#ffff00",
+        "#00ff00",
+        "#0000ff",
+        "#8b00ff"
+      ]
+    }
+  }
 }
 ```
 

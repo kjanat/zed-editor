@@ -23,14 +23,14 @@ To turn `format-on-save` on, you can enable the setting globally or for
 
 ```json [settings]
 {
-	"languages": {
-		"JavaScript": {
-			"format_on_save": "on"
-		},
-		"TypeScript": {
-			"format_on_save": "on"
-		}
-	}
+  "languages": {
+    "JavaScript": {
+      "format_on_save": "on"
+    },
+    "TypeScript": {
+      "format_on_save": "on"
+    }
+  }
 }
 ```
 
@@ -47,16 +47,16 @@ JavaScript, or add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"JavaScript": {
-			"formatter": {
-				"external": {
-					"command": "prettier",
-					"arguments": ["--stdin-filepath", "{buffer_path}"]
-				}
-			}
-		}
-	}
+  "languages": {
+    "JavaScript": {
+      "formatter": {
+        "external": {
+          "command": "prettier",
+          "arguments": ["--stdin-filepath", "{buffer_path}"]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -84,13 +84,13 @@ Languages > JavaScript, or add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"JavaScript": {
-			"code_actions_on_format": {
-				"source.fixAll.eslint": true
-			}
-		}
-	}
+  "languages": {
+    "JavaScript": {
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true
+      }
+    }
+  }
 }
 ```
 
@@ -98,22 +98,22 @@ You can also only execute a single ESLint rule when using `fixAll`:
 
 ```json [settings]
 {
-	"languages": {
-		"JavaScript": {
-			"code_actions_on_format": {
-				"source.fixAll.eslint": true
-			}
-		}
-	},
-	"lsp": {
-		"eslint": {
-			"settings": {
-				"codeActionOnSave": {
-					"rules": ["import/order"]
-				}
-			}
-		}
-	}
+  "languages": {
+    "JavaScript": {
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true
+      }
+    }
+  },
+  "lsp": {
+    "eslint": {
+      "settings": {
+        "codeActionOnSave": {
+          "rules": ["import/order"]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -130,14 +130,14 @@ add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"JavaScript": {
-			"formatter": [],
-			"code_actions_on_format": {
-				"source.fixAll.eslint": true
-			}
-		}
-	}
+  "languages": {
+    "JavaScript": {
+      "formatter": [],
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true
+      }
+    }
+  }
 }
 ```
 
@@ -147,13 +147,13 @@ You can configure ESLint's `nodePath` setting:
 
 ```json [settings]
 {
-	"lsp": {
-		"eslint": {
-			"settings": {
-				"nodePath": ".yarn/sdks"
-			}
-		}
-	}
+  "lsp": {
+    "eslint": {
+      "settings": {
+        "nodePath": ".yarn/sdks"
+      }
+    }
+  }
 }
 ```
 
@@ -165,15 +165,15 @@ For example, here's how to set `problems.shortenToSingleLine`:
 
 ```json [settings]
 {
-	"lsp": {
-		"eslint": {
-			"settings": {
-				"problems": {
-					"shortenToSingleLine": true
-				}
-			}
-		}
-	}
+  "lsp": {
+    "eslint": {
+      "settings": {
+        "problems": {
+          "shortenToSingleLine": true
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -183,16 +183,16 @@ You can configure ESLint's `rulesCustomizations` setting:
 
 ```json [settings]
 {
-	"lsp": {
-		"eslint": {
-			"settings": {
-				"rulesCustomizations": [
-					// set all eslint errors/warnings to show as warnings
-					{ "rule": "*", "severity": "warn" }
-				]
-			}
-		}
-	}
+  "lsp": {
+    "eslint": {
+      "settings": {
+        "rulesCustomizations": [
+          // set all eslint errors/warnings to show as warnings
+          { "rule": "*", "severity": "warn" }
+        ]
+      }
+    }
+  }
 }
 ```
 
@@ -202,15 +202,15 @@ You can configure ESLint's `workingDirectory` setting:
 
 ```json [settings]
 {
-	"lsp": {
-		"eslint": {
-			"settings": {
-				"workingDirectory": {
-					"mode": "auto"
-				}
-			}
-		}
-	}
+  "lsp": {
+    "eslint": {
+      "settings": {
+        "workingDirectory": {
+          "mode": "auto"
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -223,25 +223,25 @@ under it in your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"experimental": {
-					"classRegex": [
-						"\\.className\\s*[+]?=\\s*['\"]([^'\"]*)['\"]",
-						"\\.setAttributeNS\\(.*,\\s*['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
-						"\\.setAttribute\\(['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
-						"\\.classList\\.add\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.remove\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.toggle\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.contains\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.replace\\(\\s*['\"]([^'\"]*)['\"]",
-						"\\.classList\\.replace\\([^,)]+,\\s*['\"]([^'\"]*)['\"]"
-					]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "experimental": {
+          "classRegex": [
+            "\\.className\\s*[+]?=\\s*['\"]([^'\"]*)['\"]",
+            "\\.setAttributeNS\\(.*,\\s*['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
+            "\\.setAttribute\\(['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
+            "\\.classList\\.add\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.remove\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.toggle\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.contains\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.replace\\(\\s*['\"]([^'\"]*)['\"]",
+            "\\.classList\\.replace\\([^,)]+,\\s*['\"]([^'\"]*)['\"]"
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -283,14 +283,14 @@ two different environments: Node.js and the browser. `vscode-js-debug` exposes a
 
 ```json [debug]
 [
-	{
-		"adapter": "JavaScript",
-		"label": "Debug JS file",
-		"type": "node",
-		"request": "launch",
-		"program": "$ZED_FILE",
-		"skipFiles": ["<node_internals>/**"]
-	}
+  {
+    "adapter": "JavaScript",
+    "label": "Debug JS file",
+    "type": "node",
+    "request": "launch",
+    "program": "$ZED_FILE",
+    "skipFiles": ["<node_internals>/**"]
+  }
 ]
 ```
 
@@ -298,16 +298,16 @@ two different environments: Node.js and the browser. `vscode-js-debug` exposes a
 
 ```json [debug]
 [
-	{
-		"adapter": "JavaScript",
-		"label": "Debug app in Chrome",
-		"type": "chrome",
-		"request": "launch",
-		"file": "$ZED_WORKTREE_ROOT/index.html",
-		"webRoot": "$ZED_WORKTREE_ROOT",
-		"console": "integratedTerminal",
-		"skipFiles": ["<node_internals>/**"]
-	}
+  {
+    "adapter": "JavaScript",
+    "label": "Debug app in Chrome",
+    "type": "chrome",
+    "request": "launch",
+    "file": "$ZED_WORKTREE_ROOT/index.html",
+    "webRoot": "$ZED_WORKTREE_ROOT",
+    "console": "integratedTerminal",
+    "skipFiles": ["<node_internals>/**"]
+  }
 ]
 ```
 

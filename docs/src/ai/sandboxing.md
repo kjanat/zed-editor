@@ -163,12 +163,12 @@ to your settings file:
 
 ```json [settings]
 {
-	"agent": {
-		"sandbox_permissions": {
-			"network_hosts": ["github.com", "*.npmjs.org"],
-			"write_paths": ["/Users/you/.cache/my-tool"]
-		}
-	}
+  "agent": {
+    "sandbox_permissions": {
+      "network_hosts": ["github.com", "*.npmjs.org"],
+      "write_paths": ["/Users/you/.cache/my-tool"]
+    }
+  }
 }
 ```
 

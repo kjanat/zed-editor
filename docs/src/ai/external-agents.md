@@ -159,13 +159,13 @@ your `PATH`, then add it as a [Custom Agent](#custom-agents):
 
 ```json [settings]
 {
-	"agent_servers": {
-		"Poolside": {
-			"command": "pool",
-			"args": ["acp"],
-			"type": "custom"
-		}
-	}
+  "agent_servers": {
+    "Poolside": {
+      "command": "pool",
+      "args": ["acp"],
+      "type": "custom"
+    }
+  }
 }
 ```
 
@@ -236,14 +236,14 @@ with an `agent_servers` entry.
 
 ```json [settings]
 {
-	"agent_servers": {
-		"my-agent": {
-			"type": "custom",
-			"command": "node",
-			"args": ["~/projects/agent/index.js", "--acp"],
-			"env": {}
-		}
-	}
+  "agent_servers": {
+    "my-agent": {
+      "type": "custom",
+      "command": "node",
+      "args": ["~/projects/agent/index.js", "--acp"],
+      "env": {}
+    }
+  }
 }
 ```
 

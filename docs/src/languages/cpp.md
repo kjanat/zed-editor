@@ -24,13 +24,13 @@ Zed to do so by setting `pre_release` to `true` in your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"clangd": {
-			"fetch": {
-				"pre_release": true
-			}
-		}
-	}
+  "lsp": {
+    "clangd": {
+      "fetch": {
+        "pre_release": true
+      }
+    }
+  }
 }
 ```
 
@@ -39,13 +39,13 @@ If you want to disable Zed looking for a `clangd` binary, you can set
 
 ```json [settings]
 {
-	"lsp": {
-		"clangd": {
-			"binary": {
-				"ignore_system_version": true
-			}
-		}
-	}
+  "lsp": {
+    "clangd": {
+      "binary": {
+        "ignore_system_version": true
+      }
+    }
+  }
 }
 ```
 
@@ -54,14 +54,14 @@ optional `arguments`:
 
 ```json [settings]
 {
-	"lsp": {
-		"clangd": {
-			"binary": {
-				"path": "/path/to/clangd",
-				"arguments": []
-			}
-		}
-	}
+  "lsp": {
+    "clangd": {
+      "binary": {
+        "path": "/path/to/clangd",
+        "arguments": []
+      }
+    }
+  }
 }
 ```
 
@@ -77,14 +77,14 @@ also contain placeholders for method parameters.
 
 ```json [settings]
 {
-	"lsp": {
-		"clangd": {
-			"binary": {
-				"path": "/path/to/clangd",
-				"arguments": ["--function-arg-placeholders=0"]
-			}
-		}
-	}
+  "lsp": {
+    "clangd": {
+      "binary": {
+        "path": "/path/to/clangd",
+        "arguments": ["--function-arg-placeholders=0"]
+      }
+    }
+  }
 }
 ```
 
@@ -177,17 +177,17 @@ you can add to `.zed/debug.json`.
 
 ```json [debug]
 [
-	{
-		"label": "Debug native binary",
-		"build": {
-			"command": "make",
-			"args": ["-j8"],
-			"cwd": "$ZED_WORKTREE_ROOT"
-		},
-		"program": "$ZED_WORKTREE_ROOT/build/prog",
-		"request": "launch",
-		"adapter": "CodeLLDB"
-	}
+  {
+    "label": "Debug native binary",
+    "build": {
+      "command": "make",
+      "args": ["-j8"],
+      "cwd": "$ZED_WORKTREE_ROOT"
+    },
+    "program": "$ZED_WORKTREE_ROOT/build/prog",
+    "request": "launch",
+    "adapter": "CodeLLDB"
+  }
 ]
 ```
 
@@ -210,9 +210,9 @@ for the `editor::SwitchSourceHeader` action.
 
 ```json [keymap]
 {
-	"context": "Editor",
-	"bindings": {
-		"alt-enter": "editor::SwitchSourceHeader"
-	}
+  "context": "Editor",
+  "bindings": {
+    "alt-enter": "editor::SwitchSourceHeader"
+  }
 }
 ```

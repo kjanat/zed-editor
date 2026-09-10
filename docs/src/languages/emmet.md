@@ -59,12 +59,12 @@ The action has no default keybinding. To add one, bind it in your keymap:
 
 ```json [keymap]
 [
-	{
-		"context": "Editor && mode == full",
-		"bindings": {
-			"ctrl-alt-w": "editor::WrapWithAbbreviation"
-		}
-	}
+  {
+    "context": "Editor && mode == full",
+    "bindings": {
+      "ctrl-alt-w": "editor::WrapWithAbbreviation"
+    }
+  }
 ]
 ```
 

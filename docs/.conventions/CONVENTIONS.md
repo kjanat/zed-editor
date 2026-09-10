@@ -165,16 +165,16 @@ Always use the `[settings]` or `[keymap]` annotation:
 
 ```json [settings]
 {
-	"vim_mode": true
+  "vim_mode": true
 }
 ```
 
 ```json [keymap]
 {
-	"context": "Editor",
-	"bindings": {
-		"ctrl-s": "workspace::Save"
-	}
+  "context": "Editor",
+  "bindings": {
+    "ctrl-s": "workspace::Save"
+  }
 }
 ```
 

@@ -59,14 +59,14 @@ Here is a common `settings.json` including the above mentioned configurations:
 
 ```jsonc
 {
-	"lsp": {
-		"jdtls": {
-			"settings": {
-				"java_home": "/path/to/your/JDK21+",
-				"lombok_support": true,
-			},
-		},
-	},
+  "lsp": {
+    "jdtls": {
+      "settings": {
+        "java_home": "/path/to/your/JDK21+",
+        "lombok_support": true,
+      },
+    },
+  },
 }
 ```
 
@@ -83,18 +83,18 @@ and replace the contents of the file with the following:
 
 ```jsonc
 [
-	{
-		"adapter": "Java",
-		"request": "launch",
-		"label": "Launch Debugger",
-		// if your project has multiple entry points, specify the one to use:
-		// "mainClass": "com.myorganization.myproject.MyMainClass",
-		//
-		// this effectively sets a breakpoint at your program entry:
-		"stopOnEntry": true,
-		// the working directory for the debug process
-		"cwd": "$ZED_WORKTREE_ROOT",
-	},
+  {
+    "adapter": "Java",
+    "request": "launch",
+    "label": "Launch Debugger",
+    // if your project has multiple entry points, specify the one to use:
+    // "mainClass": "com.myorganization.myproject.MyMainClass",
+    //
+    // this effectively sets a breakpoint at your program entry:
+    "stopOnEntry": true,
+    // the working directory for the debug process
+    "cwd": "$ZED_WORKTREE_ROOT",
+  },
 ]
 ```
 
@@ -128,79 +128,79 @@ would pass on the example configuration from the above wiki page to JDTLS:
 
 ```jsonc
 {
-	"lsp": {
-		"jdtls": {
-			"settings": {
-				// this will be sent to JDTLS as initializationOptions:
-				"initialization_options": {
-					"bundles": [],
-					// use this if your zed project root folder is not the same as the java project root:
-					"workspaceFolders": ["file:///home/snjeza/Project"],
-					"settings": {
-						"java": {
-							"home": "/usr/local/jdk-9.0.1",
-							"errors": {
-								"incompleteClasspath": {
-									"severity": "warning",
-								},
-							},
-							"configuration": {
-								"updateBuildConfiguration": "interactive",
-								"maven": {
-									"userSettings": null,
-								},
-							},
-							"import": {
-								"gradle": {
-									"enabled": true,
-								},
-								"maven": {
-									"enabled": true,
-								},
-								"exclusions": [
-									"**/node_modules/**",
-									"**/.metadata/**",
-									"**/archetype-resources/**",
-									"**/META-INF/maven/**",
-									"/**/test/**",
-								],
-							},
-							"referencesCodeLens": {
-								"enabled": false,
-							},
-							"signatureHelp": {
-								"enabled": false,
-							},
-							"implementationCodeLens": "all",
-							"format": {
-								"enabled": true,
-							},
-							"saveActions": {
-								"organizeImports": false,
-							},
-							"contentProvider": {
-								"preferred": null,
-							},
-							"autobuild": {
-								"enabled": false,
-							},
-							"completion": {
-								"favoriteStaticMembers": [
-									"org.junit.Assert.*",
-									"org.junit.Assume.*",
-									"org.junit.jupiter.api.Assertions.*",
-									"org.junit.jupiter.api.Assumptions.*",
-									"org.junit.jupiter.api.DynamicContainer.*",
-									"org.junit.jupiter.api.DynamicTest.*",
-								],
-								"importOrder": ["java", "javax", "com", "org"],
-							},
-						},
-					},
-				},
-			},
-		},
-	},
+  "lsp": {
+    "jdtls": {
+      "settings": {
+        // this will be sent to JDTLS as initializationOptions:
+        "initialization_options": {
+          "bundles": [],
+          // use this if your zed project root folder is not the same as the java project root:
+          "workspaceFolders": ["file:///home/snjeza/Project"],
+          "settings": {
+            "java": {
+              "home": "/usr/local/jdk-9.0.1",
+              "errors": {
+                "incompleteClasspath": {
+                  "severity": "warning",
+                },
+              },
+              "configuration": {
+                "updateBuildConfiguration": "interactive",
+                "maven": {
+                  "userSettings": null,
+                },
+              },
+              "import": {
+                "gradle": {
+                  "enabled": true,
+                },
+                "maven": {
+                  "enabled": true,
+                },
+                "exclusions": [
+                  "**/node_modules/**",
+                  "**/.metadata/**",
+                  "**/archetype-resources/**",
+                  "**/META-INF/maven/**",
+                  "/**/test/**",
+                ],
+              },
+              "referencesCodeLens": {
+                "enabled": false,
+              },
+              "signatureHelp": {
+                "enabled": false,
+              },
+              "implementationCodeLens": "all",
+              "format": {
+                "enabled": true,
+              },
+              "saveActions": {
+                "organizeImports": false,
+              },
+              "contentProvider": {
+                "preferred": null,
+              },
+              "autobuild": {
+                "enabled": false,
+              },
+              "completion": {
+                "favoriteStaticMembers": [
+                  "org.junit.Assert.*",
+                  "org.junit.Assume.*",
+                  "org.junit.jupiter.api.Assertions.*",
+                  "org.junit.jupiter.api.Assumptions.*",
+                  "org.junit.jupiter.api.DynamicContainer.*",
+                  "org.junit.jupiter.api.DynamicTest.*",
+                ],
+                "importOrder": ["java", "javax", "com", "org"],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
 }
 ```
 

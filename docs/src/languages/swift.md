@@ -43,15 +43,15 @@ found.
 
 ```json [debug]
 [
-	{
-		"label": "Debug Swift",
-		"build": {
-			"command": "swift",
-			"args": ["build"]
-		},
-		"program": "$ZED_WORKTREE_ROOT/swift-app/.build/arm64-apple-macosx/debug/swift-app",
-		"request": "launch",
-		"adapter": "Swift"
-	}
+  {
+    "label": "Debug Swift",
+    "build": {
+      "command": "swift",
+      "args": ["build"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/swift-app/.build/arm64-apple-macosx/debug/swift-app",
+    "request": "launch",
+    "adapter": "Swift"
+  }
 ]
 ```

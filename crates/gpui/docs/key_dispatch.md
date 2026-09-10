@@ -82,11 +82,11 @@ in the keymap by their fully-qualified type name.
 
 ```json
 {
-	"context": "menu",
-	"bindings": {
-		"up": "menu::MoveUp",
-		"down": "menu::MoveDown"
-	}
+  "context": "menu",
+  "bindings": {
+    "up": "menu::MoveUp",
+    "down": "menu::MoveDown"
+  }
 }
 ```
 
@@ -95,12 +95,12 @@ serialized representation of the action alongside the name:
 
 ```json
 {
-	"context": "menu",
-	"bindings": {
-		"up": ["menu::Move", { "direction": "up", "select": false }],
-		"down": ["menu::Move", { "direction": "down", "select": false }],
-		"shift-up": ["menu::Move", { "direction": "up", "select": true }],
-		"shift-down": ["menu::Move", { "direction": "down", "select": true }]
-	}
+  "context": "menu",
+  "bindings": {
+    "up": ["menu::Move", { "direction": "up", "select": false }],
+    "down": ["menu::Move", { "direction": "down", "select": false }],
+    "shift-up": ["menu::Move", { "direction": "up", "select": true }],
+    "shift-down": ["menu::Move", { "direction": "down", "select": true }]
+  }
 }
 ```

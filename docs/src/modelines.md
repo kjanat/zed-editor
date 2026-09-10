@@ -12,7 +12,7 @@ to control how many lines Zed searches for modelines:
 
 ```json [settings]
 {
-	"modeline_lines": 5
+  "modeline_lines": 5
 }
 ```
 

@@ -31,15 +31,15 @@ configuration file:
 
 ```json
 {
-	"overrides": [
-		{
-			"files": ["*.jsonc"],
-			"options": {
-				"parser": "json",
-				"trailingComma": "none"
-			}
-		}
-	]
+  "overrides": [
+    {
+      "files": ["*.jsonc"],
+      "options": {
+        "parser": "json",
+        "trailingComma": "none"
+      }
+    }
+  ]
 }
 ```
 
@@ -61,8 +61,8 @@ For example, for a `.luarc.json` for use with
 
 ```json
 {
-	"$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
-	"runtime.version": "Lua 5.4"
+  "$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.4"
 }
 ```
 

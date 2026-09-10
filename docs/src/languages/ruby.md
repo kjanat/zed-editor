@@ -78,13 +78,13 @@ You can skip step 1 and force using the system executable by setting
 
 ```json [settings]
 {
-	"lsp": {
-		"<SERVER_NAME>": {
-			"settings": {
-				"use_bundler": false
-			}
-		}
-	}
+  "lsp": {
+    "<SERVER_NAME>": {
+      "settings": {
+        "use_bundler": false
+      }
+    }
+  }
 }
 ```
 
@@ -100,23 +100,23 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			"language_servers": ["ruby-lsp", "!solargraph", "!rubocop", "..."]
-		},
-		// Enable herb and ruby-lsp for *.html.erb files
-		"HTML+ERB": {
-			"language_servers": ["herb", "ruby-lsp", "..."]
-		},
-		// Enable ruby-lsp for *.js.erb files
-		"JS+ERB": {
-			"language_servers": ["ruby-lsp", "..."]
-		},
-		// Enable ruby-lsp for *.yaml.erb files
-		"YAML+ERB": {
-			"language_servers": ["ruby-lsp", "..."]
-		}
-	}
+  "languages": {
+    "Ruby": {
+      "language_servers": ["ruby-lsp", "!solargraph", "!rubocop", "..."]
+    },
+    // Enable herb and ruby-lsp for *.html.erb files
+    "HTML+ERB": {
+      "language_servers": ["herb", "ruby-lsp", "..."]
+    },
+    // Enable ruby-lsp for *.js.erb files
+    "JS+ERB": {
+      "language_servers": ["ruby-lsp", "..."]
+    },
+    // Enable ruby-lsp for *.yaml.erb files
+    "YAML+ERB": {
+      "language_servers": ["ruby-lsp", "..."]
+    }
+  }
 }
 ```
 
@@ -133,11 +133,11 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			"language_servers": ["ruby-lsp", "rubocop", "!solargraph", "..."]
-		}
-	}
+  "languages": {
+    "Ruby": {
+      "language_servers": ["ruby-lsp", "rubocop", "!solargraph", "..."]
+    }
+  }
 }
 ```
 
@@ -146,11 +146,11 @@ Or, conversely, you can disable `ruby-lsp` and enable `solargraph` and
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			"language_servers": ["solargraph", "rubocop", "!ruby-lsp", "..."]
-		}
-	}
+  "languages": {
+    "Ruby": {
+      "language_servers": ["solargraph", "rubocop", "!ruby-lsp", "..."]
+    }
+  }
 }
 ```
 
@@ -161,14 +161,14 @@ to enable them by adding the following to your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"solargraph": {
-			"initialization_options": {
-				"diagnostics": true,
-				"formatting": true
-			}
-		}
-	}
+  "lsp": {
+    "solargraph": {
+      "initialization_options": {
+        "diagnostics": true,
+        "formatting": true
+      }
+    }
+  }
 }
 ```
 
@@ -184,20 +184,20 @@ You can pass Ruby LSP configuration to `initialization_options`, e.g.
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			"language_servers": ["ruby-lsp", "!solargraph", "..."]
-		}
-	},
-	"lsp": {
-		"ruby-lsp": {
-			"initialization_options": {
-				"enabledFeatures": {
-					// "someFeature": false
-				}
-			}
-		}
-	}
+  "languages": {
+    "Ruby": {
+      "language_servers": ["ruby-lsp", "!solargraph", "..."]
+    }
+  },
+  "lsp": {
+    "ruby-lsp": {
+      "initialization_options": {
+        "enabledFeatures": {
+          // "someFeature": false
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -211,14 +211,14 @@ a formatter and linter for a particular project, add this to a
 
 ```json [settings]
 {
-	"lsp": {
-		"ruby-lsp": {
-			"initialization_options": {
-				"formatter": "standard",
-				"linters": ["standard"]
-			}
-		}
-	}
+  "lsp": {
+    "ruby-lsp": {
+      "initialization_options": {
+        "formatter": "standard",
+        "linters": ["standard"]
+      }
+    }
+  }
 }
 ```
 
@@ -229,26 +229,26 @@ it by adding the following to your `settings.json`:
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			// Use ruby-lsp as the primary language server and rubocop as the secondary.
-			"language_servers": ["ruby-lsp", "rubocop", "!solargraph", "..."]
-		}
-	},
-	"lsp": {
-		"rubocop": {
-			"initialization_options": {
-				"safeAutocorrect": false
-			}
-		},
-		"ruby-lsp": {
-			"initialization_options": {
-				"enabledFeatures": {
-					"diagnostics": false
-				}
-			}
-		}
-	}
+  "languages": {
+    "Ruby": {
+      // Use ruby-lsp as the primary language server and rubocop as the secondary.
+      "language_servers": ["ruby-lsp", "rubocop", "!solargraph", "..."]
+    }
+  },
+  "lsp": {
+    "rubocop": {
+      "initialization_options": {
+        "safeAutocorrect": false
+      }
+    },
+    "ruby-lsp": {
+      "initialization_options": {
+        "enabledFeatures": {
+          "diagnostics": false
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -268,17 +268,17 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			"language_servers": [
-				"ruby-lsp",
-				"sorbet",
-				"!rubocop",
-				"!solargraph",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "Ruby": {
+      "language_servers": [
+        "ruby-lsp",
+        "sorbet",
+        "!rubocop",
+        "!solargraph",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -301,17 +301,17 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			"language_servers": [
-				"ruby-lsp",
-				"steep",
-				"!solargraph",
-				"!rubocop",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "Ruby": {
+      "language_servers": [
+        "ruby-lsp",
+        "steep",
+        "!solargraph",
+        "!rubocop",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -329,15 +329,15 @@ about where to look for CSS classes by adding the following to your
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"experimental": {
-					"classRegex": ["\\bclass:\\s*['\"]([^'\"]*)['\"]"]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "experimental": {
+          "classRegex": ["\\bclass:\\s*['\"]([^'\"]*)['\"]"]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -370,18 +370,18 @@ editor.
 
 ```json [tasks]
 [
-	{
-		"label": "test $ZED_RELATIVE_FILE -n /$ZED_CUSTOM_RUBY_TEST_NAME/",
-		"command": "bin/rails",
-		"args": [
-			"test",
-			"$ZED_RELATIVE_FILE",
-			"-n",
-			"\"$ZED_CUSTOM_RUBY_TEST_NAME\""
-		],
-		"cwd": "$ZED_WORKTREE_ROOT",
-		"tags": ["ruby-test"]
-	}
+  {
+    "label": "test $ZED_RELATIVE_FILE -n /$ZED_CUSTOM_RUBY_TEST_NAME/",
+    "command": "bin/rails",
+    "args": [
+      "test",
+      "$ZED_RELATIVE_FILE",
+      "-n",
+      "\"$ZED_CUSTOM_RUBY_TEST_NAME\""
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["ruby-test"]
+  }
 ]
 ```
 
@@ -392,20 +392,20 @@ we need to use `$ZED_CUSTOM_RUBY_TEST_NAME` instead:
 
 ```json [tasks]
 [
-	{
-		"label": "-Itest $ZED_RELATIVE_FILE -n /$ZED_CUSTOM_RUBY_TEST_NAME/",
-		"command": "bundle",
-		"args": [
-			"exec",
-			"ruby",
-			"-Itest",
-			"$ZED_RELATIVE_FILE",
-			"-n",
-			"\"$ZED_CUSTOM_RUBY_TEST_NAME\""
-		],
-		"cwd": "$ZED_WORKTREE_ROOT",
-		"tags": ["ruby-test"]
-	}
+  {
+    "label": "-Itest $ZED_RELATIVE_FILE -n /$ZED_CUSTOM_RUBY_TEST_NAME/",
+    "command": "bundle",
+    "args": [
+      "exec",
+      "ruby",
+      "-Itest",
+      "$ZED_RELATIVE_FILE",
+      "-n",
+      "\"$ZED_CUSTOM_RUBY_TEST_NAME\""
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["ruby-test"]
+  }
 ]
 ```
 
@@ -413,13 +413,13 @@ we need to use `$ZED_CUSTOM_RUBY_TEST_NAME` instead:
 
 ```json [tasks]
 [
-	{
-		"label": "test $ZED_RELATIVE_FILE:$ZED_ROW",
-		"command": "bundle",
-		"args": ["exec", "rspec", "\"$ZED_RELATIVE_FILE:$ZED_ROW\""],
-		"cwd": "$ZED_WORKTREE_ROOT",
-		"tags": ["ruby-test"]
-	}
+  {
+    "label": "test $ZED_RELATIVE_FILE:$ZED_ROW",
+    "command": "bundle",
+    "args": ["exec", "rspec", "\"$ZED_RELATIVE_FILE:$ZED_ROW\""],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["ruby-test"]
+  }
 ]
 ```
 
@@ -439,13 +439,13 @@ uses the [`debug`](https://github.com/ruby/debug) gem. The extension uses the
 
 ```json [debug]
 [
-	{
-		"label": "Debug current file",
-		"adapter": "rdbg",
-		"request": "launch",
-		"script": "$ZED_FILE",
-		"cwd": "$ZED_WORKTREE_ROOT"
-	}
+  {
+    "label": "Debug current file",
+    "adapter": "rdbg",
+    "request": "launch",
+    "script": "$ZED_FILE",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  }
 ]
 ```
 
@@ -453,17 +453,17 @@ uses the [`debug`](https://github.com/ruby/debug) gem. The extension uses the
 
 ```json [debug]
 [
-	{
-		"label": "Debug Rails server",
-		"adapter": "rdbg",
-		"request": "launch",
-		"command": "./bin/rails",
-		"args": ["server"],
-		"cwd": "$ZED_WORKTREE_ROOT",
-		"env": {
-			"RUBY_DEBUG_OPEN": "true"
-		}
-	}
+  {
+    "label": "Debug Rails server",
+    "adapter": "rdbg",
+    "request": "launch",
+    "command": "./bin/rails",
+    "args": ["server"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "env": {
+      "RUBY_DEBUG_OPEN": "true"
+    }
+  }
 ]
 ```
 
@@ -480,15 +480,15 @@ HTML+ERB, or add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"HTML+ERB": {
-			"formatter": {
-				"external": {
-					"command": "erb-formatter",
-					"arguments": ["--stdin-filename", "{buffer_path}"]
-				}
-			}
-		}
-	}
+  "languages": {
+    "HTML+ERB": {
+      "formatter": {
+        "external": {
+          "command": "erb-formatter",
+          "arguments": ["--stdin-filename", "{buffer_path}"]
+        }
+      }
+    }
+  }
 }
 ```

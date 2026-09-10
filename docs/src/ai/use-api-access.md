@@ -79,14 +79,14 @@ Configure them with `language_models.<provider>.custom_headers`:
 
 ```json [settings]
 {
-	"language_models": {
-		"openai": {
-			"custom_headers": {
-				"Fancy-Auth": "Bearer <your-fancy-key>",
-				"X-My-Tag": "zed"
-			}
-		}
-	}
+  "language_models": {
+    "openai": {
+      "custom_headers": {
+        "Fancy-Auth": "Bearer <your-fancy-key>",
+        "X-My-Tag": "zed"
+      }
+    }
+  }
 }
 ```
 
@@ -133,19 +133,19 @@ display name, context window, output limit, tool override, or thinking mode.
 
 ```json [settings]
 {
-	"language_models": {
-		"anthropic": {
-			"available_models": [
-				{
-					"name": "claude-3-5-sonnet-20240620",
-					"display_name": "Sonnet 2024-June",
-					"max_tokens": 128000,
-					"max_output_tokens": 2560,
-					"tool_override": "some-model-that-supports-toolcalling"
-				}
-			]
-		}
-	}
+  "language_models": {
+    "anthropic": {
+      "available_models": [
+        {
+          "name": "claude-3-5-sonnet-20240620",
+          "display_name": "Sonnet 2024-June",
+          "max_tokens": 128000,
+          "max_output_tokens": 2560,
+          "tool_override": "some-model-that-supports-toolcalling"
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -153,21 +153,21 @@ For Anthropic models that support extended thinking, add a `mode` configuration:
 
 ```json [settings]
 {
-	"language_models": {
-		"anthropic": {
-			"available_models": [
-				{
-					"name": "claude-sonnet-4-latest",
-					"display_name": "claude-sonnet-4-thinking",
-					"max_tokens": 200000,
-					"mode": {
-						"type": "thinking",
-						"budget_tokens": 4096
-					}
-				}
-			]
-		}
-	}
+  "language_models": {
+    "anthropic": {
+      "available_models": [
+        {
+          "name": "claude-sonnet-4-latest",
+          "display_name": "claude-sonnet-4-thinking",
+          "max_tokens": 200000,
+          "mode": {
+            "type": "thinking",
+            "budget_tokens": 4096
+          }
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -193,19 +193,19 @@ IDs, preview releases, or custom request parameters.
 
 ```json [settings]
 {
-	"language_models": {
-		"openai": {
-			"available_models": [
-				{
-					"name": "gpt-5.2",
-					"display_name": "gpt-5.2 high",
-					"reasoning_effort": "high",
-					"max_tokens": 272000,
-					"max_completion_tokens": 20000
-				}
-			]
-		}
-	}
+  "language_models": {
+    "openai": {
+      "available_models": [
+        {
+          "name": "gpt-5.2",
+          "display_name": "gpt-5.2 high",
+          "reasoning_effort": "high",
+          "max_tokens": 272000,
+          "max_completion_tokens": 20000
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -233,30 +233,30 @@ including experimental models, or a thinking-mode configuration.
 
 ```json [settings]
 {
-	"language_models": {
-		"google": {
-			"available_models": [
-				{
-					"name": "gemini-3.1-pro-preview",
-					"display_name": "Gemini 3.1 Pro",
-					"max_tokens": 1000000,
-					"mode": {
-						"type": "thinking",
-						"budget_tokens": 24000
-					}
-				},
-				{
-					"name": "gemini-3-flash-preview",
-					"display_name": "Gemini 3 Flash (Thinking)",
-					"max_tokens": 1000000,
-					"mode": {
-						"type": "thinking",
-						"budget_tokens": 24000
-					}
-				}
-			]
-		}
-	}
+  "language_models": {
+    "google": {
+      "available_models": [
+        {
+          "name": "gemini-3.1-pro-preview",
+          "display_name": "Gemini 3.1 Pro",
+          "max_tokens": 1000000,
+          "mode": {
+            "type": "thinking",
+            "budget_tokens": 24000
+          }
+        },
+        {
+          "name": "gemini-3-flash-preview",
+          "display_name": "Gemini 3 Flash (Thinking)",
+          "max_tokens": 1000000,
+          "mode": {
+            "type": "thinking",
+            "budget_tokens": 24000
+          }
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -279,22 +279,22 @@ support, image support, or a custom endpoint.
 
 ```json [settings]
 {
-	"language_models": {
-		"mistral": {
-			"api_url": "https://api.mistral.ai/v1",
-			"available_models": [
-				{
-					"name": "mistral-tiny-latest",
-					"display_name": "Mistral Tiny",
-					"max_tokens": 32000,
-					"max_output_tokens": 4096,
-					"max_completion_tokens": 1024,
-					"supports_tools": true,
-					"supports_images": false
-				}
-			]
-		}
-	}
+  "language_models": {
+    "mistral": {
+      "api_url": "https://api.mistral.ai/v1",
+      "available_models": [
+        {
+          "name": "mistral-tiny-latest",
+          "display_name": "Mistral Tiny",
+          "max_tokens": 32000,
+          "max_output_tokens": 4096,
+          "max_completion_tokens": 1024,
+          "supports_tools": true,
+          "supports_images": false
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -318,25 +318,25 @@ limits, or a custom endpoint.
 
 ```json [settings]
 {
-	"language_models": {
-		"deepseek": {
-			"api_url": "https://api.deepseek.com/v1",
-			"available_models": [
-				{
-					"name": "deepseek-v4-flash",
-					"display_name": "DeepSeek V4 Flash",
-					"max_tokens": 1000000,
-					"max_output_tokens": 384000
-				},
-				{
-					"name": "deepseek-v4-pro",
-					"display_name": "DeepSeek V4 Pro",
-					"max_tokens": 1000000,
-					"max_output_tokens": 384000
-				}
-			]
-		}
-	}
+  "language_models": {
+    "deepseek": {
+      "api_url": "https://api.deepseek.com/v1",
+      "available_models": [
+        {
+          "name": "deepseek-v4-flash",
+          "display_name": "DeepSeek V4 Flash",
+          "max_tokens": 1000000,
+          "max_output_tokens": 384000
+        },
+        {
+          "name": "deepseek-v4-pro",
+          "display_name": "DeepSeek V4 Pro",
+          "max_tokens": 1000000,
+          "max_output_tokens": 384000
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -358,26 +358,26 @@ image support, or a custom endpoint.
 
 ```json [settings]
 {
-	"language_models": {
-		"x_ai": {
-			"api_url": "https://api.x.ai/v1",
-			"available_models": [
-				{
-					"name": "grok-1.5",
-					"display_name": "Grok 1.5",
-					"max_tokens": 131072,
-					"max_output_tokens": 8192
-				},
-				{
-					"name": "grok-1.5v",
-					"display_name": "Grok 1.5V (Vision)",
-					"max_tokens": 131072,
-					"max_output_tokens": 8192,
-					"supports_images": true
-				}
-			]
-		}
-	}
+  "language_models": {
+    "x_ai": {
+      "api_url": "https://api.x.ai/v1",
+      "available_models": [
+        {
+          "name": "grok-1.5",
+          "display_name": "Grok 1.5",
+          "max_tokens": 131072,
+          "max_output_tokens": 8192
+        },
+        {
+          "name": "grok-1.5v",
+          "display_name": "Grok 1.5V (Vision)",
+          "max_tokens": 131072,
+          "max_output_tokens": 8192,
+          "supports_images": true
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -407,12 +407,12 @@ subscriptions that are not relevant to you in the provider UI or in settings:
 
 ```json [settings]
 {
-	"language_models": {
-		"opencode": {
-			"show_zen_models": false,
-			"show_go_models": true
-		}
-	}
+  "language_models": {
+    "opencode": {
+      "show_zen_models": false,
+      "show_go_models": true
+    }
+  }
 }
 ```
 
@@ -425,23 +425,23 @@ Add custom models in your settings file:
 
 ```json [settings]
 {
-	"language_models": {
-		"opencode": {
-			"available_models": [
-				{
-					"name": "my-custom-model",
-					"display_name": "My Custom Model",
-					"max_tokens": 123456,
-					"max_output_tokens": 98765,
-					"protocol": "openai_chat",
-					"reasoning_effort_levels": ["low", "medium", "high", "max"],
-					"interleaved_reasoning": false,
-					"subscription": "go",
-					"custom_model_api_url": "https://example.com/zen"
-				}
-			]
-		}
-	}
+  "language_models": {
+    "opencode": {
+      "available_models": [
+        {
+          "name": "my-custom-model",
+          "display_name": "My Custom Model",
+          "max_tokens": 123456,
+          "max_output_tokens": 98765,
+          "protocol": "openai_chat",
+          "reasoning_effort_levels": ["low", "medium", "high", "max"],
+          "interleaved_reasoning": false,
+          "subscription": "go",
+          "custom_model_api_url": "https://example.com/zen"
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -482,29 +482,29 @@ You can also configure the provider in your settings file:
 
 ```json [settings]
 {
-	"language_models": {
-		"anthropic_compatible": {
-			"Some Provider": {
-				"api_url": "https://api.someprovider.com",
-				"custom_headers": {
-					"X-Some-Header": "some-value"
-				},
-				"available_models": [
-					{
-						"name": "some-model",
-						"display_name": "Some Model",
-						"max_tokens": 200000,
-						"max_output_tokens": 32000,
-						"capabilities": {
-							"tools": true,
-							"images": false,
-							"prompt_caching": false
-						}
-					}
-				]
-			}
-		}
-	}
+  "language_models": {
+    "anthropic_compatible": {
+      "Some Provider": {
+        "api_url": "https://api.someprovider.com",
+        "custom_headers": {
+          "X-Some-Header": "some-value"
+        },
+        "available_models": [
+          {
+            "name": "some-model",
+            "display_name": "Some Model",
+            "max_tokens": 200000,
+            "max_output_tokens": 32000,
+            "capabilities": {
+              "tools": true,
+              "images": false,
+              "prompt_caching": false
+            }
+          }
+        ]
+      }
+    }
+  }
 }
 ```
 
@@ -543,20 +543,20 @@ You can also configure the provider in your settings file:
 
 ```json [settings]
 {
-	"language_models": {
-		"openai_compatible": {
-			"my-provider": {
-				"api_url": "https://example.com/v1",
-				"available_models": [
-					{
-						"name": "my-model",
-						"display_name": "My Model",
-						"max_tokens": 128000
-					}
-				]
-			}
-		}
-	}
+  "language_models": {
+    "openai_compatible": {
+      "my-provider": {
+        "api_url": "https://example.com/v1",
+        "available_models": [
+          {
+            "name": "my-model",
+            "display_name": "My Model",
+            "max_tokens": 128000
+          }
+        ]
+      }
+    }
+  }
 }
 ```
 
@@ -585,29 +585,29 @@ If the model requires the Responses API for reasoning state, set
 
 ```json [settings]
 {
-	"language_models": {
-		"openai_compatible": {
-			"my-provider": {
-				"api_url": "https://example.com/v1",
-				"available_models": [
-					{
-						"name": "gpt-5",
-						"max_tokens": 272000,
-						"reasoning_effort": "high",
-						"capabilities": {
-							"tools": true,
-							"images": false,
-							"parallel_tool_calls": false,
-							"prompt_cache_key": false,
-							"chat_completions": false,
-							"interleaved_reasoning": false,
-							"max_tokens_parameter": false
-						}
-					}
-				]
-			}
-		}
-	}
+  "language_models": {
+    "openai_compatible": {
+      "my-provider": {
+        "api_url": "https://example.com/v1",
+        "available_models": [
+          {
+            "name": "gpt-5",
+            "max_tokens": 272000,
+            "reasoning_effort": "high",
+            "capabilities": {
+              "tools": true,
+              "images": false,
+              "parallel_tool_calls": false,
+              "prompt_cache_key": false,
+              "chat_completions": false,
+              "interleaved_reasoning": false,
+              "max_tokens_parameter": false
+            }
+          }
+        ]
+      }
+    }
+  }
 }
 ```
 
@@ -625,30 +625,30 @@ effort, streamed thinking, and `max_tokens` output limits can be configured as:
 
 ```json [settings]
 {
-	"language_models": {
-		"openai_compatible": {
-			"my-reasoning-provider": {
-				"api_url": "https://example.com/v1",
-				"available_models": [
-					{
-						"name": "reasoning-model",
-						"max_tokens": 1000000,
-						"max_output_tokens": 128000,
-						"reasoning_effort": "max",
-						"capabilities": {
-							"tools": true,
-							"images": false,
-							"parallel_tool_calls": false,
-							"prompt_cache_key": false,
-							"chat_completions": true,
-							"interleaved_reasoning": true,
-							"max_tokens_parameter": true
-						}
-					}
-				]
-			}
-		}
-	}
+  "language_models": {
+    "openai_compatible": {
+      "my-reasoning-provider": {
+        "api_url": "https://example.com/v1",
+        "available_models": [
+          {
+            "name": "reasoning-model",
+            "max_tokens": 1000000,
+            "max_output_tokens": 128000,
+            "reasoning_effort": "max",
+            "capabilities": {
+              "tools": true,
+              "images": false,
+              "parallel_tool_calls": false,
+              "prompt_cache_key": false,
+              "chat_completions": true,
+              "interleaved_reasoning": true,
+              "max_tokens_parameter": true
+            }
+          }
+        ]
+      }
+    }
+  }
 }
 ```
 

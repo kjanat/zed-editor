@@ -33,9 +33,9 @@ Or verify this in your settings.json:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "zed"
-	}
+  "edit_predictions": {
+    "provider": "zed"
+  }
 }
 ```
 
@@ -104,12 +104,12 @@ Alternatively, you can put the following in your `keymap.json`:
 
 ```json [keymap]
 [
-	{
-		"context": "Editor && edit_prediction",
-		"bindings": {
-			"tab": "editor::AcceptEditPrediction"
-		}
-	}
+  {
+    "context": "Editor && edit_prediction",
+    "bindings": {
+      "tab": "editor::AcceptEditPrediction"
+    }
+  }
 ]
 ```
 
@@ -129,12 +129,12 @@ Alternatively, you can put the following in your `keymap.json`:
 
 ```json [keymap]
 [
-	{
-		"context": "Editor && edit_prediction",
-		"unbind": {
-			"tab": "editor::AcceptEditPrediction"
-		}
-	}
+  {
+    "context": "Editor && edit_prediction",
+    "unbind": {
+      "tab": "editor::AcceptEditPrediction"
+    }
+  }
 ]
 ```
 
@@ -155,18 +155,18 @@ Alternatively, you can put the following in your `keymap.json`:
 
 ```json [keymap]
 [
-	{
-		"context": "Editor && edit_prediction",
-		"unbind": {
-			"alt-tab": "editor::AcceptEditPrediction",
-			// Add this as well on Windows/Linux
-			// "alt-l": "editor::AcceptEditPrediction",
-			"tab": "editor::AcceptEditPrediction"
-		},
-		"bindings": {
-			"ctrl-enter": "editor::AcceptEditPrediction"
-		}
-	}
+  {
+    "context": "Editor && edit_prediction",
+    "unbind": {
+      "alt-tab": "editor::AcceptEditPrediction",
+      // Add this as well on Windows/Linux
+      // "alt-l": "editor::AcceptEditPrediction",
+      "tab": "editor::AcceptEditPrediction"
+    },
+    "bindings": {
+      "ctrl-enter": "editor::AcceptEditPrediction"
+    }
+  }
 ]
 ```
 
@@ -197,12 +197,12 @@ the settings for your selected provider:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "open_ai_compatible_api",
-		"open_ai_compatible_api": {
-			"prediction_debounce": 500
-		}
-	}
+  "edit_predictions": {
+    "provider": "open_ai_compatible_api",
+    "open_ai_compatible_api": {
+      "prediction_debounce": 500
+    }
+  }
 }
 ```
 
@@ -234,7 +234,7 @@ settings file ([how to edit](../configuring-zed.md#settings-files)):
 
 ```json [settings]
 {
-	"show_edit_predictions": false
+  "show_edit_predictions": false
 }
 ```
 
@@ -251,11 +251,11 @@ specific language, set this in your settings file
 
 ```json [settings]
 {
-	"languages": {
-		"Python": {
-			"show_edit_predictions": false
-		}
-	}
+  "languages": {
+    "Python": {
+      "show_edit_predictions": false
+    }
+  }
 }
 ```
 
@@ -266,9 +266,9 @@ settings file ([how to edit](../configuring-zed.md#settings-files)):
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"disabled_globs": ["~/.config/zed/settings.json"]
-	}
+  "edit_predictions": {
+    "disabled_globs": ["~/.config/zed/settings.json"]
+  }
 }
 ```
 
@@ -279,9 +279,9 @@ settings to `none`, like so:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "none"
-	}
+  "edit_predictions": {
+    "provider": "none"
+  }
 }
 ```
 
@@ -296,9 +296,9 @@ To use GitHub Copilot as your provider, set this in your settings file
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "copilot"
-	}
+  "edit_predictions": {
+    "provider": "copilot"
+  }
 }
 ```
 
@@ -316,11 +316,11 @@ file ([how to edit](../configuring-zed.md#settings-files)):
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"copilot": {
-			"enterprise_uri": "https://your.enterprise.domain"
-		}
-	}
+  "edit_predictions": {
+    "copilot": {
+      "enterprise_uri": "https://your.enterprise.domain"
+    }
+  }
 }
 ```
 
@@ -359,9 +359,9 @@ your settings file:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "mercury"
-	}
+  "edit_predictions": {
+    "provider": "mercury"
+  }
 }
 ```
 
@@ -383,9 +383,9 @@ settings file:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "codestral"
-	}
+  "edit_predictions": {
+    "provider": "codestral"
+  }
 }
 ```
 
@@ -401,15 +401,15 @@ Set `ollama` as your provider and configure the local model:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "ollama",
-		"ollama": {
-			"api_url": "http://localhost:11434",
-			"model": "qwen2.5-coder:7b-base",
-			"prompt_format": "infer",
-			"max_output_tokens": 512
-		}
-	}
+  "edit_predictions": {
+    "provider": "ollama",
+    "ollama": {
+      "api_url": "http://localhost:11434",
+      "model": "qwen2.5-coder:7b-base",
+      "prompt_format": "infer",
+      "max_output_tokens": 512
+    }
+  }
 }
 ```
 
@@ -419,15 +419,15 @@ Set `open_ai_compatible_api` as your provider and configure the API endpoint:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "open_ai_compatible_api",
-		"open_ai_compatible_api": {
-			"api_url": "http://localhost:8080/v1/completions",
-			"model": "deepseek-coder-6.7b-base",
-			"prompt_format": "deepseek_coder",
-			"max_output_tokens": 512
-		}
-	}
+  "edit_predictions": {
+    "provider": "open_ai_compatible_api",
+    "open_ai_compatible_api": {
+      "api_url": "http://localhost:8080/v1/completions",
+      "model": "deepseek-coder-6.7b-base",
+      "prompt_format": "deepseek_coder",
+      "max_output_tokens": 512
+    }
+  }
 }
 ```
 
@@ -460,15 +460,15 @@ For example, to use Zeta 2 with Ollama:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "ollama",
-		"ollama": {
-			"api_url": "http://localhost:11434",
-			"model": "zeta2",
-			"prompt_format": "infer",
-			"max_output_tokens": 512
-		}
-	}
+  "edit_predictions": {
+    "provider": "ollama",
+    "ollama": {
+      "api_url": "http://localhost:11434",
+      "model": "zeta2",
+      "prompt_format": "infer",
+      "max_output_tokens": 512
+    }
+  }
 }
 ```
 
@@ -476,15 +476,15 @@ To use Zeta 2.1 with an OpenAI-compatible server:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "open_ai_compatible_api",
-		"open_ai_compatible_api": {
-			"api_url": "http://localhost:8080/v1/completions",
-			"model": "zeta2.1",
-			"prompt_format": "infer",
-			"max_output_tokens": 512
-		}
-	}
+  "edit_predictions": {
+    "provider": "open_ai_compatible_api",
+    "open_ai_compatible_api": {
+      "api_url": "http://localhost:8080/v1/completions",
+      "model": "zeta2.1",
+      "prompt_format": "infer",
+      "max_output_tokens": 512
+    }
+  }
 }
 ```
 

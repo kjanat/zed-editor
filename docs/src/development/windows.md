@@ -51,17 +51,17 @@ least the following components:
 
 ```json
 {
-	"version": "1.0",
-	"components": [
-		"Microsoft.VisualStudio.Component.CoreEditor",
-		"Microsoft.VisualStudio.Workload.CoreEditor",
-		"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-		"Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake",
-		"Microsoft.VisualStudio.Component.VC.CMake.Project",
-		"Microsoft.VisualStudio.Component.Windows11SDK.26100",
-		"Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
-	],
-	"extensions": []
+  "version": "1.0",
+  "components": [
+    "Microsoft.VisualStudio.Component.CoreEditor",
+    "Microsoft.VisualStudio.Workload.CoreEditor",
+    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+    "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake",
+    "Microsoft.VisualStudio.Component.VC.CMake.Project",
+    "Microsoft.VisualStudio.Component.Windows11SDK.26100",
+    "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
+  ],
+  "extensions": []
 }
 ```
 
@@ -69,25 +69,25 @@ If you are using Build Tools only, make sure these components are installed:
 
 ```json
 {
-	"version": "1.0",
-	"components": [
-		"Microsoft.VisualStudio.Component.Roslyn.Compiler",
-		"Microsoft.Component.MSBuild",
-		"Microsoft.VisualStudio.Component.CoreBuildTools",
-		"Microsoft.VisualStudio.Workload.MSBuildTools",
-		"Microsoft.VisualStudio.Component.Windows10SDK",
-		"Microsoft.VisualStudio.Component.VC.CoreBuildTools",
-		"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-		"Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
-		"Microsoft.VisualStudio.Component.Windows11SDK.26100",
-		"Microsoft.VisualStudio.Component.VC.CMake.Project",
-		"Microsoft.VisualStudio.Component.TextTemplating",
-		"Microsoft.VisualStudio.Component.VC.CoreIde",
-		"Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
-		"Microsoft.VisualStudio.Workload.VCTools",
-		"Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
-	],
-	"extensions": []
+  "version": "1.0",
+  "components": [
+    "Microsoft.VisualStudio.Component.Roslyn.Compiler",
+    "Microsoft.Component.MSBuild",
+    "Microsoft.VisualStudio.Component.CoreBuildTools",
+    "Microsoft.VisualStudio.Workload.MSBuildTools",
+    "Microsoft.VisualStudio.Component.Windows10SDK",
+    "Microsoft.VisualStudio.Component.VC.CoreBuildTools",
+    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+    "Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
+    "Microsoft.VisualStudio.Component.Windows11SDK.26100",
+    "Microsoft.VisualStudio.Component.VC.CMake.Project",
+    "Microsoft.VisualStudio.Component.TextTemplating",
+    "Microsoft.VisualStudio.Component.VC.CoreIde",
+    "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
+    "Microsoft.VisualStudio.Workload.VCTools",
+    "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
+  ],
+  "extensions": []
 }
 ```
 

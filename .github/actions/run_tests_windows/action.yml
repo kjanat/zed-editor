@@ -1,3 +1,5 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-action.json
+---
 name: "Run tests on Windows"
 description: "Runs the tests on Windows"
 
@@ -11,8 +13,7 @@ runs:
   using: "composite"
   steps:
     - name: Install test runner
-      working-directory: ${{ inputs.working-directory }}
-      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+      uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
       with: { tool: nextest }
 
     - name: Install Node

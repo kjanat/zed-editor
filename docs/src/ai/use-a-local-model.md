@@ -45,21 +45,21 @@ To list models yourself instead, set `auto_discover` to `false`:
 
 ```json [settings]
 {
-	"language_models": {
-		"llama.cpp": {
-			"api_url": "http://localhost:8080",
-			"auto_discover": false,
-			"available_models": [
-				{
-					"name": "gemma-4-12b-it-GGUF:BF16",
-					"display_name": "gemma-4-12b-it-GGUF:BF16",
-					"max_tokens": 32768,
-					"supports_tools": true,
-					"supports_images": false
-				}
-			]
-		}
-	}
+  "language_models": {
+    "llama.cpp": {
+      "api_url": "http://localhost:8080",
+      "auto_discover": false,
+      "available_models": [
+        {
+          "name": "gemma-4-12b-it-GGUF:BF16",
+          "display_name": "gemma-4-12b-it-GGUF:BF16",
+          "max_tokens": 32768,
+          "supports_tools": true,
+          "supports_images": false
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -71,11 +71,11 @@ models with `context_window`, or per model with `max_tokens` in
 
 ```json [settings]
 {
-	"language_models": {
-		"llama.cpp": {
-			"context_window": 8192
-		}
-	}
+  "language_models": {
+    "llama.cpp": {
+      "context_window": 8192
+    }
+  }
 }
 ```
 
@@ -110,22 +110,22 @@ autodiscovery and list models yourself, configure `auto_discover`:
 
 ```json [settings]
 {
-	"language_models": {
-		"ollama": {
-			"api_url": "http://localhost:11434",
-			"auto_discover": false,
-			"available_models": [
-				{
-					"name": "qwen2.5-coder",
-					"display_name": "qwen 2.5 coder",
-					"max_tokens": 32768,
-					"supports_tools": true,
-					"supports_thinking": true,
-					"supports_images": true
-				}
-			]
-		}
-	}
+  "language_models": {
+    "ollama": {
+      "api_url": "http://localhost:11434",
+      "auto_discover": false,
+      "available_models": [
+        {
+          "name": "qwen2.5-coder",
+          "display_name": "qwen 2.5 coder",
+          "max_tokens": 32768,
+          "supports_tools": true,
+          "supports_thinking": true,
+          "supports_images": true
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -138,11 +138,11 @@ Set a context length for all Ollama models:
 
 ```json [settings]
 {
-	"language_models": {
-		"ollama": {
-			"context_window": 8192
-		}
-	}
+  "language_models": {
+    "ollama": {
+      "context_window": 8192
+    }
+  }
 }
 ```
 

@@ -22,23 +22,23 @@ where to look for CSS classes by adding the following to your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"includeLanguages": {
-					"astro": "html"
-				},
-				"experimental": {
-					"classRegex": [
-						"class=\"([^\"]*)\"",
-						"class='([^']*)'",
-						"class:list=\"{([^}]*)}\"",
-						"class:list='{([^}]*)}'"
-					]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "includeLanguages": {
+          "astro": "html"
+        },
+        "experimental": {
+          "classRegex": [
+            "class=\"([^\"]*)\"",
+            "class='([^']*)'",
+            "class:list=\"{([^}]*)}\"",
+            "class:list='{([^}]*)}'"
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -52,16 +52,16 @@ const active = true;
 
 <!-- Standard class attribute -->
 <div class="flex items-center <completion here>">
-	<p class="text-lg font-bold <completion here>">Hello World</p>
+  <p class="text-lg font-bold <completion here>">Hello World</p>
 </div>
 
 <!-- class:list directive -->
 <div class:list={['flex', 'items-center', '<completion here>']}>
-	Content
+  Content
 </div>
 
 <!-- Conditional classes -->
 <div class:list={{ 'flex <completion here>': active, 'hidden <completion here>': !active }}>
-	Content
+  Content
 </div>
 ```

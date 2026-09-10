@@ -60,14 +60,14 @@ configuration file:
 
 ```json
 {
-	"overrides": [
-		{
-			"files": ["*.yaml", "*.yml"],
-			"options": {
-				"singleQuote": false
-			}
-		}
-	]
+  "overrides": [
+    {
+      "files": ["*.yaml", "*.yml"],
+      "options": {
+        "singleQuote": false
+      }
+    }
+  ]
 }
 ```
 

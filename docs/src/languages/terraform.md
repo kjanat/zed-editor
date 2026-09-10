@@ -23,15 +23,15 @@ The Terraform language server can be configured in your `settings.json`, e.g.:
 
 ```json [settings]
 {
-	"lsp": {
-		"terraform-ls": {
-			"initialization_options": {
-				"experimentalFeatures": {
-					"prefillRequiredFields": true
-				}
-			}
-		}
-	}
+  "lsp": {
+    "terraform-ls": {
+      "initialization_options": {
+        "experimentalFeatures": {
+          "prefillRequiredFields": true
+        }
+      }
+    }
+  }
 }
 ```
 

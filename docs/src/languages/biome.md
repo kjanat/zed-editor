@@ -34,7 +34,7 @@ workspace.
 
 ```json
 {
-	"$schema": "https://biomejs.dev/schemas/1.8.3/schema.json"
+  "$schema": "https://biomejs.dev/schemas/1.8.3/schema.json"
 }
 ```
 

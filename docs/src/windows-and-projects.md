@@ -77,7 +77,7 @@ setting:
 
 ```json [settings]
 {
-	"cli_default_open_behavior": "new_window"
+  "cli_default_open_behavior": "new_window"
 }
 ```
 

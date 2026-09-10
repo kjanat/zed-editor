@@ -260,22 +260,22 @@ What this means in practice:
 
 ```json
 [
-	{
-		"label": "dev",
-		"command": "npm run dev"
-	},
-	{
-		"label": "build",
-		"command": "npm run build"
-	},
-	{
-		"label": "test",
-		"command": "npm test"
-	},
-	{
-		"label": "test current file",
-		"command": "npm test -- $ZED_FILE"
-	}
+  {
+    "label": "dev",
+    "command": "npm run dev"
+  },
+  {
+    "label": "build",
+    "command": "npm run build"
+  },
+  {
+    "label": "test",
+    "command": "npm test"
+  },
+  {
+    "label": "test current file",
+    "command": "npm test -- $ZED_FILE"
+  }
 ]
 ```
 
@@ -352,24 +352,24 @@ For more control, create a `.zed/debug.json` file:
 
 ```json
 [
-	{
-		"label": "Debug Current File",
-		"adapter": "JavaScript",
-		"program": "$ZED_FILE",
-		"request": "launch"
-	},
-	{
-		"label": "Debug Node Server",
-		"adapter": "JavaScript",
-		"request": "launch",
-		"program": "${workspaceFolder}/src/server.js"
-	},
-	{
-		"label": "Attach to Chrome",
-		"adapter": "JavaScript",
-		"request": "attach",
-		"port": 9222
-	}
+  {
+    "label": "Debug Current File",
+    "adapter": "JavaScript",
+    "program": "$ZED_FILE",
+    "request": "launch"
+  },
+  {
+    "label": "Debug Node Server",
+    "adapter": "JavaScript",
+    "request": "launch",
+    "program": "${workspaceFolder}/src/server.js"
+  },
+  {
+    "label": "Attach to Chrome",
+    "adapter": "JavaScript",
+    "request": "attach",
+    "port": 9222
+  }
 ]
 ```
 
@@ -492,12 +492,12 @@ Here are a few useful tweaks for JavaScript/TypeScript developers:
 
 ```json
 {
-	"formatter": {
-		"external": {
-			"command": "prettier",
-			"arguments": ["--stdin-filepath", "{buffer_path}"]
-		}
-	}
+  "formatter": {
+    "external": {
+      "command": "prettier",
+      "arguments": ["--stdin-filepath", "{buffer_path}"]
+    }
+  }
 }
 ```
 
@@ -505,15 +505,15 @@ Here are a few useful tweaks for JavaScript/TypeScript developers:
 
 ```json
 {
-	"lsp": {
-		"eslint": {
-			"settings": {
-				"codeActionOnSave": {
-					"rules": ["import/order"]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "eslint": {
+      "settings": {
+        "codeActionOnSave": {
+          "rules": ["import/order"]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -523,10 +523,10 @@ In your `tsconfig.json`, enable strict mode for better type checking:
 
 ```json
 {
-	"compilerOptions": {
-		"strict": true,
-		"noUncheckedIndexedAccess": true
-	}
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true
+  }
 }
 ```
 

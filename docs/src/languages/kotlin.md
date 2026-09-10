@@ -26,14 +26,14 @@ release assets in your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"kotlin-lsp": {
-			"binary": {
-				"path": "path/to/kotlin-lsp.sh",
-				"arguments": ["--stdio"]
-			}
-		}
-	}
+  "lsp": {
+    "kotlin-lsp": {
+      "binary": {
+        "path": "path/to/kotlin-lsp.sh",
+        "arguments": ["--stdio"]
+      }
+    }
+  }
 }
 ```
 
@@ -48,11 +48,11 @@ used instead of Kotlin LSP by explicitly enabling it in your `settings.json`:
 
 ```json [settings]
 {
-	"languages": {
-		"Kotlin": {
-			"language_servers": ["kotlin-language-server", "!kotlin-lsp", "..."]
-		}
-	}
+  "languages": {
+    "Kotlin": {
+      "language_servers": ["kotlin-language-server", "!kotlin-lsp", "..."]
+    }
+  }
 }
 ```
 
@@ -73,17 +73,17 @@ The following example changes the JVM target from `default` (which is 1.8) to
 
 ```json [settings]
 {
-	"lsp": {
-		"kotlin-language-server": {
-			"settings": {
-				"compiler": {
-					"jvm": {
-						"target": "17"
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    "kotlin-language-server": {
+      "settings": {
+        "compiler": {
+          "jvm": {
+            "target": "17"
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -94,14 +94,14 @@ variable with:
 
 ```json [settings]
 {
-	"lsp": {
-		"kotlin-language-server": {
-			"binary": {
-				"env": {
-					"JAVA_HOME": "/Users/whatever/Applications/Work/Android Studio.app/Contents/jbr/Contents/Home"
-				}
-			}
-		}
-	}
+  "lsp": {
+    "kotlin-language-server": {
+      "binary": {
+        "env": {
+          "JAVA_HOME": "/Users/whatever/Applications/Work/Android Studio.app/Contents/jbr/Contents/Home"
+        }
+      }
+    }
+  }
 }
 ```

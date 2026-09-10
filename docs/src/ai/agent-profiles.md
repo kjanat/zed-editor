@@ -42,25 +42,25 @@ Profiles are stored under `agent.profiles` in your settings.
 
 ```json [settings]
 {
-	"agent": {
-		"profiles": {
-			"ask": {
-				"name": "Ask",
-				"tools": {
-					"read_file": true,
-					"grep": true,
-					"terminal": false,
-					"edit_file": false
-				},
-				"enable_all_context_servers": false,
-				"context_servers": {},
-				"default_model": {
-					"provider": "zed.dev",
-					"model": "claude-sonnet-4-5"
-				}
-			}
-		}
-	}
+  "agent": {
+    "profiles": {
+      "ask": {
+        "name": "Ask",
+        "tools": {
+          "read_file": true,
+          "grep": true,
+          "terminal": false,
+          "edit_file": false
+        },
+        "enable_all_context_servers": false,
+        "context_servers": {},
+        "default_model": {
+          "provider": "zed.dev",
+          "model": "claude-sonnet-4-5"
+        }
+      }
+    }
+  }
 }
 ```
 

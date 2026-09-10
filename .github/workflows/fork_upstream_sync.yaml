@@ -1,0 +1,89 @@
+# Upstream code runs only inside an isolated container. The publisher never
+# checks out the candidate tree and rejects changes to GitHub automation.
+---
+name: fork_upstream_sync
+on:
+  schedule: [cron: "0 6,18 * * *"]
+  workflow_dispatch: null
+concurrency: { group: "${{ github.workflow }}", cancel-in-progress: false }
+permissions: { contents: read }
+jobs:
+  prepare:
+    if: github.repository == 'kjanat/zed-editor' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - parallel:
+          - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
+          - name: export and create dirs env
+            env: { o: "${{ runner.temp }}/sync-output", e: "${{ runner.temp }}/sync-export" }
+            run: printf "sync_output=%s\nsync_export=%s\n" "${o}" "${e}" >> "${GITHUB_ENV}"; mkdir -p "${o}" "${e}"
+          - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: script/upstream-sync
+          load: true
+          tags: upstream-sync-tools
+          cache-from: type=gha,scope=upstream-sync-tools
+          cache-to: type=gha,mode=max,scope=upstream-sync-tools
+      - name: Prepare the candidate without runner credentials
+        shell: bash
+        run: |
+          mkdir -p "${sync_output}"
+          # Untrusted formatter output must not be interpreted as runner commands.
+          marker="$(cat /proc/sys/kernel/random/uuid)"; echo "::stop-commands::${marker}"; trap 'echo "::${marker}::"' EXIT
+          user_id="$(id -u)"; group_id="$(id -g)"
+          docker run --rm --user "${user_id}:${group_id}" --cap-drop=ALL --security-opt=no-new-privileges \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/source,readonly" \
+            --mount "type=bind,src=${sync_output},dst=/output" \
+            upstream-sync-tools bash /source/script/upstream-sync/prepare.sh
+      - uses: kjanat/actions-shells@697bb547ef1ce427e202b4cbcdb19886aa587da7 # v0.1.0 # v0
+      - name: Export container output
+        shell: "actions-shell perl {0}"
+        run: |
+          use Fcntl qw(:DEFAULT :mode);
+          use Errno qw(ENOENT);
+          use File::Copy qw(copy);
+
+          my($s,$d)=@ARGV;
+          $s//=$ENV{sync_output}; $d//=$ENV{sync_export};
+          die "missing source/destination\n" unless $s && $d;
+          mkdir $d or die "$d: $!";
+
+          for(["result",32],["sync.bundle",256<<20],["issue-body.md",60000],
+              ["formatting-only.txt",16000],["formatted-three-way.txt",16000],["lockfiles.txt",16000]){
+            my($n,$m)=@$_; my $i;
+            unless(sysopen $i,"$s/$n",O_RDONLY|O_NOFOLLOW|O_NONBLOCK){
+              next if $!==ENOENT && $n ne "result";
+              die "$n: $!";
+            }
+
+            my @x=stat $i;
+            die "Invalid container output: $n\n" unless @x && S_ISREG($x[2]) && $x[7]<=$m;
+
+            sysopen(my $o,"$d/$n",O_WRONLY|O_CREAT|O_EXCL) or die "$n: $!";
+            copy($i,$o) or die "$n: $!";
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: upstream-sync-candidate
+          path: ${{ env.sync_export }}
+          if-no-files-found: error
+          retention-days: 1
+  publish:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: { contents: write, pull-requests: write, issues: write }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: upstream-sync-candidate, path: "${{ runner.temp }}/sync-candidate" }
+      - name: Validate and publish without executing the candidate
+        env:
+          # A fine-grained PAT limited to this repository can trigger PR CI.
+          # This token is never passed to the preparation job or its container.
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+        run: python3 script/upstream-sync/publish.py "${RUNNER_TEMP}/sync-candidate"

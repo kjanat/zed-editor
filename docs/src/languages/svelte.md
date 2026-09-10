@@ -94,24 +94,24 @@ about where to look for CSS classes by adding the following to your
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"includeLanguages": {
-					"svelte": "html"
-				},
-				"experimental": {
-					"classRegex": [
-						"class=\"([^\"]*)\"",
-						"class='([^']*)'",
-						"class:\\s*([^\\s{]+)",
-						"\\{\\s*class:\\s*\"([^\"]*)\"",
-						"\\{\\s*class:\\s*'([^']*)'"
-					]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "includeLanguages": {
+          "svelte": "html"
+        },
+        "experimental": {
+          "classRegex": [
+            "class=\"([^\"]*)\"",
+            "class='([^']*)'",
+            "class:\\s*([^\\s{]+)",
+            "\\{\\s*class:\\s*\"([^\"]*)\"",
+            "\\{\\s*class:\\s*'([^']*)'"
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -121,7 +121,7 @@ files. Examples:
 ```svelte
 <!-- Standard class attribute -->
 <div class="flex items-center <completion here>">
-	<p class="text-lg font-bold <completion here>">Hello World</p>
+  <p class="text-lg font-bold <completion here>">Hello World</p>
 </div>
 
 <!-- Class directive -->
@@ -129,6 +129,6 @@ files. Examples:
 
 <!-- Expression -->
 <div class={active ? 'flex <completion here>' : 'hidden <completion here>'}>
-	Content
+  Content
 </div>
 ```

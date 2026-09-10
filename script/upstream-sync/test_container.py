@@ -1,4 +1,4 @@
-"""Exercise a malicious formatter using synthetic credentials, never real secrets."""
+"""Exercise a malicious formatter using synthetic credentials."""
 
 import json
 import os

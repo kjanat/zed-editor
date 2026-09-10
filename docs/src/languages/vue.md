@@ -29,15 +29,15 @@ following initialization options in your Zed settings:
 
 ```json
 {
-	"lsp": {
-		"vue": {
-			"initialization_options": {
-				"typescript": {
-					"tsdk": ".yarn/sdks/typescript/lib"
-				}
-			}
-		}
-	}
+  "lsp": {
+    "vue": {
+      "initialization_options": {
+        "typescript": {
+          "tsdk": ".yarn/sdks/typescript/lib"
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -49,20 +49,20 @@ following settings are enabled by default:
 
 ```json
 {
-	"lsp": {
-		"vue": {
-			"settings": {
-				// Display inlay hints for the `$event` parameter in inline event handlers.
-				"vue.inlayHints.inlineHandlerLeading": true,
-				// Display hints when required component props are missing in templates.
-				"vue.inlayHints.missingProps": true,
-				// Display inlay hints for patterns that wrap component options.
-				"vue.inlayHints.optionsWrapper": true,
-				// Display inlay hints related to `v-bind` shorthand (`:`).
-				"vue.inlayHints.vBindShorthand": true
-			}
-		}
-	}
+  "lsp": {
+    "vue": {
+      "settings": {
+        // Display inlay hints for the `$event` parameter in inline event handlers.
+        "vue.inlayHints.inlineHandlerLeading": true,
+        // Display hints when required component props are missing in templates.
+        "vue.inlayHints.missingProps": true,
+        // Display inlay hints for patterns that wrap component options.
+        "vue.inlayHints.optionsWrapper": true,
+        // Display inlay hints related to `v-bind` shorthand (`:`).
+        "vue.inlayHints.vBindShorthand": true
+      }
+    }
+  }
 }
 ```
 
@@ -80,23 +80,23 @@ where to look for CSS classes by adding the following to your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"includeLanguages": {
-					"vue": "html"
-				},
-				"experimental": {
-					"classRegex": [
-						"class=\"([^\"]*)\"",
-						"class='([^']*)'",
-						":class=\"([^\"]*)\"",
-						":class='([^']*)'"
-					]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "includeLanguages": {
+          "vue": "html"
+        },
+        "experimental": {
+          "classRegex": [
+            "class=\"([^\"]*)\"",
+            "class='([^']*)'",
+            ":class=\"([^\"]*)\"",
+            ":class='([^']*)'"
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -105,27 +105,27 @@ template files. Examples:
 
 ```vue
 <template>
-	<!-- Static class attribute -->
-	<div class="flex items-center <completion here>">
-		<p class="text-lg font-bold <completion here>">Hello World</p>
-	</div>
+  <!-- Static class attribute -->
+  <div class="flex items-center <completion here>">
+    <p class="text-lg font-bold <completion here>">Hello World</p>
+  </div>
 
-	<!-- Dynamic class binding -->
-	<div :class="active ? 'bg-blue-500 <completion here>' : 'bg-gray-200 <completion here>'">
-		Content
-	</div>
+  <!-- Dynamic class binding -->
+  <div :class="active ? 'bg-blue-500 <completion here>' : 'bg-gray-200 <completion here>'">
+    Content
+  </div>
 
-	<!-- Array syntax -->
-	<div :class="['flex', 'items-center', '<completion here>']">Content</div>
+  <!-- Array syntax -->
+  <div :class="['flex', 'items-center', '<completion here>']">Content</div>
 
-	<!-- Object syntax -->
-	<div
-		:class="{
-			'flex <completion here>': isFlex,
-			'block <completion here>': isBlock,
-		}"
-	>
-		Content
-	</div>
+  <!-- Object syntax -->
+  <div
+    :class="{
+    	'flex <completion here>': isFlex,
+    	'block <completion here>': isBlock,
+    }"
+  >
+    Content
+  </div>
 </template>
 ```

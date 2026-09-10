@@ -34,12 +34,12 @@ your settings:
 
 ```json [settings]
 {
-	"agent": {
-		"default_model": {
-			"provider": "openrouter",
-			"model": "openrouter/auto"
-		}
-	}
+  "agent": {
+    "default_model": {
+      "provider": "openrouter",
+      "model": "openrouter/auto"
+    }
+  }
 }
 ```
 
@@ -52,25 +52,25 @@ You can add custom models to the OpenRouter provider in settings:
 
 ```json [settings]
 {
-	"language_models": {
-		"open_router": {
-			"api_url": "https://openrouter.ai/api/v1",
-			"available_models": [
-				{
-					"name": "google/gemini-2.0-flash-thinking-exp",
-					"display_name": "Gemini 2.0 Flash (Thinking)",
-					"max_tokens": 200000,
-					"max_output_tokens": 8192,
-					"supports_tools": true,
-					"supports_images": true,
-					"mode": {
-						"type": "thinking",
-						"budget_tokens": 8000
-					}
-				}
-			]
-		}
-	}
+  "language_models": {
+    "open_router": {
+      "api_url": "https://openrouter.ai/api/v1",
+      "available_models": [
+        {
+          "name": "google/gemini-2.0-flash-thinking-exp",
+          "display_name": "Gemini 2.0 Flash (Thinking)",
+          "max_tokens": 200000,
+          "max_output_tokens": 8192,
+          "supports_tools": true,
+          "supports_images": true,
+          "mode": {
+            "type": "thinking",
+            "budget_tokens": 8000
+          }
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -88,24 +88,24 @@ Supported fields include `order`, `allow_fallbacks`, `require_parameters`,
 
 ```json [settings]
 {
-	"language_models": {
-		"open_router": {
-			"available_models": [
-				{
-					"name": "openrouter/auto",
-					"display_name": "Auto Router",
-					"max_tokens": 2000000,
-					"supports_tools": true,
-					"provider": {
-						"order": ["anthropic", "openai"],
-						"allow_fallbacks": true,
-						"require_parameters": true,
-						"data_collection": "allow"
-					}
-				}
-			]
-		}
-	}
+  "language_models": {
+    "open_router": {
+      "available_models": [
+        {
+          "name": "openrouter/auto",
+          "display_name": "Auto Router",
+          "max_tokens": 2000000,
+          "supports_tools": true,
+          "provider": {
+            "order": ["anthropic", "openai"],
+            "allow_fallbacks": true,
+            "require_parameters": true,
+            "data_collection": "allow"
+          }
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -125,11 +125,11 @@ You can set a custom endpoint for Vercel AI Gateway in settings:
 
 ```json [settings]
 {
-	"language_models": {
-		"vercel_ai_gateway": {
-			"api_url": "https://ai-gateway.vercel.sh/v1"
-		}
-	}
+  "language_models": {
+    "vercel_ai_gateway": {
+      "api_url": "https://ai-gateway.vercel.sh/v1"
+    }
+  }
 }
 ```
 
@@ -165,13 +165,13 @@ For a named profile, configure Bedrock in settings:
 
 ```json [settings]
 {
-	"language_models": {
-		"bedrock": {
-			"authentication_method": "named_profile",
-			"region": "your-aws-region",
-			"profile": "your-profile-name"
-		}
-	}
+  "language_models": {
+    "bedrock": {
+      "authentication_method": "named_profile",
+      "region": "your-aws-region",
+      "profile": "your-profile-name"
+    }
+  }
 }
 ```
 
@@ -183,12 +183,12 @@ For a Bedrock API key, choose API key authentication:
 
 ```json [settings]
 {
-	"language_models": {
-		"bedrock": {
-			"authentication_method": "api_key",
-			"region": "your-aws-region"
-		}
-	}
+  "language_models": {
+    "bedrock": {
+      "authentication_method": "api_key",
+      "region": "your-aws-region"
+    }
+  }
 }
 ```
 
@@ -205,14 +205,14 @@ add `allow_global`:
 
 ```json [settings]
 {
-	"language_models": {
-		"bedrock": {
-			"authentication_method": "named_profile",
-			"region": "your-aws-region",
-			"profile": "your-profile-name",
-			"allow_global": true
-		}
-	}
+  "language_models": {
+    "bedrock": {
+      "authentication_method": "named_profile",
+      "region": "your-aws-region",
+      "profile": "your-profile-name",
+      "allow_global": true
+    }
+  }
 }
 ```
 
@@ -226,12 +226,12 @@ Some AWS environments require a guardrail on every Bedrock API call. Add
 
 ```json [settings]
 {
-	"language_models": {
-		"bedrock": {
-			"guardrail_identifier": "arn:aws:bedrock:us-east-1:123456789012:guardrail/abc123",
-			"guardrail_version": "DRAFT"
-		}
-	}
+  "language_models": {
+    "bedrock": {
+      "guardrail_identifier": "arn:aws:bedrock:us-east-1:123456789012:guardrail/abc123",
+      "guardrail_version": "DRAFT"
+    }
+  }
 }
 ```
 
@@ -259,21 +259,21 @@ You can add custom models served through `bedrock-mantle` with
 
 ```json [settings]
 {
-	"language_models": {
-		"bedrock": {
-			"mantle_available_models": [
-				{
-					"name": "openai.gpt-oss-120b",
-					"display_name": "GPT-OSS 120B",
-					"max_tokens": 128000,
-					"protocol": "chat_completions",
-					"supports_tools": true,
-					"supports_images": false,
-					"supports_thinking": true
-				}
-			]
-		}
-	}
+  "language_models": {
+    "bedrock": {
+      "mantle_available_models": [
+        {
+          "name": "openai.gpt-oss-120b",
+          "display_name": "GPT-OSS 120B",
+          "max_tokens": 128000,
+          "protocol": "chat_completions",
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": true
+        }
+      ]
+    }
+  }
 }
 ```
 
