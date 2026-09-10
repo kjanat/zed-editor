@@ -19,6 +19,7 @@ class Publisher(Protocol):
     def inspect_sync_pr(self) -> str: ...
     def resolution_details(self, directory: Path) -> str: ...
     def sync_pr_body(self, resolutions: str = "") -> str: ...
+    def enable_auto_merge(self, pull_request: str, head: str) -> None: ...
     def publish(self, directory: Path) -> None: ...
 
 
@@ -385,7 +386,87 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Auto-merge is enabled with a merge commit", body)
 
 
+class AutoMergeTests(unittest.TestCase):
+    def test_repeated_publication_keeps_existing_auto_merge(self):
+        import json
+
+        head = "b" * 40
+        enabled = False
+        commands: list[tuple[str, ...]] = []
+
+        def fake_gh(*arguments: str) -> str:
+            nonlocal enabled
+            commands.append(arguments)
+            if arguments[:2] == ("pr", "view"):
+                return json.dumps({
+                    "headRefOid": head,
+                    "state": "OPEN",
+                    "autoMergeRequest": {"mergeMethod": "MERGE"} if enabled else None,
+                })
+            if enabled:
+                raise subprocess.CalledProcessError(1, "gh pr merge")
+            enabled = True
+            return ""
+
+        with patch.object(publisher, "gh", side_effect=fake_gh):
+            publisher.enable_auto_merge("42", head)
+            publisher.enable_auto_merge("42", head)
+
+        self.assertEqual(
+            [arguments[:2] for arguments in commands],
+            [("pr", "view"), ("pr", "merge"), ("pr", "view")],
+        )
+
+    def test_checks_head_and_state_before_accepting_existing_auto_merge(self):
+        import json
+
+        head = "b" * 40
+        for current_head, state, method, error in (
+            ("c" * 40, "OPEN", "MERGE", "head does not match"),
+            ("c" * 40, "MERGED", None, "head does not match"),
+            (head, "CLOSED", None, "not open"),
+            (head, "OPEN", "SQUASH", "must use a merge commit"),
+            (head, "MERGED", None, None),
+        ):
+            with (
+                self.subTest(head=current_head, state=state, method=method),
+                patch.object(
+                    publisher,
+                    "gh",
+                    return_value=json.dumps({
+                        "headRefOid": current_head,
+                        "state": state,
+                        "autoMergeRequest": {"mergeMethod": method} if method else None,
+                    }),
+                ) as gh,
+            ):
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        publisher.enable_auto_merge("42", head)
+                else:
+                    publisher.enable_auto_merge("42", head)
+                self.assertEqual(gh.call_count, 1)
+                self.assertEqual(gh.call_args.args[:2], ("pr", "view"))
+
+
 class PublishFlowTests(unittest.TestCase):
+    def test_missing_sync_token_stops_before_publication(self):
+        for token in (None, ""):
+            with (
+                self.subTest(token=token),
+                patch.dict(
+                    os.environ, {"GITHUB_REPOSITORY": publisher.REPOSITORY}, clear=True
+                ),
+                patch.object(publisher, "git") as git,
+                patch.object(publisher, "gh") as gh,
+            ):
+                if token is not None:
+                    os.environ["GH_TOKEN"] = token
+                with self.assertRaisesRegex(ValueError, "SYNC_TOKEN is required"):
+                    publisher.publish(Path("not-read"))
+                git.assert_not_called()
+                gh.assert_not_called()
+
     def test_incidents_remain_separate_through_successful_publication(self):
         import json
 
@@ -433,6 +514,12 @@ class PublishFlowTests(unittest.TestCase):
                         result: str = result,
                     ) -> str:
                         calls.append(arguments)
+                        if arguments[:2] == ("pr", "view"):
+                            return json.dumps({
+                                "headRefOid": "b" * 40,
+                                "state": "OPEN",
+                                "autoMergeRequest": None,
+                            })
                         if (
                             arguments[:2] == ("pr", "merge")
                             and result == "auto_merge_failure"
@@ -492,6 +579,7 @@ class PublishFlowTests(unittest.TestCase):
                             {
                                 "GITHUB_REPOSITORY": publisher.REPOSITORY,
                                 "GITHUB_SHA": base,
+                                "GH_TOKEN": "synthetic-sync-token",
                             },
                         ),
                         patch.object(
@@ -538,7 +626,7 @@ class PublishFlowTests(unittest.TestCase):
                         if result in ("clean", "resolved", "auto_merge_failure"):
                             report.assert_not_called()
                             self.assertEqual(
-                                calls[-2][:2], ("pr", "edit" if existing else "create")
+                                calls[-3][:2], ("pr", "edit" if existing else "create")
                             )
                             self.assertEqual(
                                 merge_calls,

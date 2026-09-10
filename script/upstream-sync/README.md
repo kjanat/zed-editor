@@ -27,14 +27,17 @@ opens an issue instead of publishing them to a same-repository PR.
 After creating or updating the `sync/upstream` PR, the publisher enables GitHub
 auto-merge with a merge commit, preserving upstream history. The request must
 match the validated and published head commit. GitHub waits for the existing
-required checks and branch rules before merging. If enabling auto-merge fails,
-the workflow fails so the PR can be handled manually.
+required checks and branch rules before merging. An existing auto-merge request
+using a merge commit is kept without enabling it again. If enabling auto-merge
+fails, the workflow fails so the PR can be handled manually.
 
-`SYNC_TOKEN` is referenced only in the publisher. If configured, use a
-fine-grained PAT limited to this repository and the contents, pull requests, and
-issues permissions this workflow needs. The workflow does not change existing
-token scopes or repository settings. Without it, publishing falls back to
-`GITHUB_TOKEN`, so automatic PR CI may need a separate user action.
+`SYNC_TOKEN` is required and referenced only in the publisher. Use a
+fine-grained PAT or GitHub App token limited to this repository and the
+contents, pull requests, and issues permissions this workflow needs. The
+workflow does not change existing token scopes or repository settings. A missing
+token stops publication before any branch or PR changes. There is no
+`GITHUB_TOKEN` fallback: that token cannot start the required PR checks without
+user approval.
 
 The sandbox assumes the GitHub-hosted runner, Docker/kernel, pinned tool image,
 and trusted workflow revision are not compromised. Do not pass Actions runtime

@@ -31,6 +31,12 @@ class PullRequestChecks(TypedDict):
     statusCheckRollup: NotRequired[list[Check] | None]
 
 
+class PullRequestMerge(TypedDict):
+    headRefOid: str
+    state: str
+    autoMergeRequest: dict[str, str] | None
+
+
 def run(*arguments: str, cwd: Path | None = None) -> str:
     return subprocess.check_output(
         arguments, cwd=cwd, text=True, stderr=subprocess.PIPE
@@ -232,9 +238,50 @@ def sync_pr_body(resolutions: str = "") -> str:
     )
 
 
+def enable_auto_merge(pull_request: str, head: str):
+    details = cast(
+        PullRequestMerge,
+        json.loads(
+            gh(
+                "pr",
+                "view",
+                pull_request,
+                "--json",
+                "headRefOid,state,autoMergeRequest",
+            )
+        ),
+    )
+    if details["headRefOid"] != head:
+        raise ValueError("Sync PR head does not match the validated candidate")
+    if details["state"] == "MERGED":
+        print("Sync PR is already merged")
+        return
+    if details["state"] != "OPEN":
+        raise ValueError("Sync PR is not open")
+    if (request := details["autoMergeRequest"]) is not None:
+        if request["mergeMethod"] != "MERGE":
+            raise ValueError("Existing sync auto-merge must use a merge commit")
+        print("Sync PR already has auto-merge enabled")
+        return
+    _ = gh(
+        "pr",
+        "merge",
+        pull_request,
+        "--auto",
+        "--merge",
+        "--match-head-commit",
+        head,
+    )
+
+
 def publish(directory: Path):
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("Unexpected repository")
+    if not os.environ.get("GH_TOKEN"):
+        raise ValueError(
+            "SYNC_TOKEN is required: configure a repository-scoped PAT or GitHub App "
+            + "token so sync PRs can run required checks automatically"
+        )
     base = os.environ["GITHUB_SHA"]
     if not re.fullmatch(r"[0-9a-f]{40}", base):
         raise ValueError("Invalid trusted base")
@@ -318,15 +365,7 @@ def publish(directory: Path):
                 "--label",
                 "build",
             )
-    _ = gh(
-        "pr",
-        "merge",
-        number or BRANCH,
-        "--auto",
-        "--merge",
-        "--match-head-commit",
-        head,
-    )
+    enable_auto_merge(number or BRANCH, head)
 
 
 if __name__ == "__main__":

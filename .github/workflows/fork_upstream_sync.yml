@@ -54,5 +54,5 @@ jobs:
         env:
           # A fine-grained PAT limited to this repository can trigger PR CI.
           # This token is never passed to the preparation job or its container.
-          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: python3 script/upstream-sync/publish.py "${RUNNER_TEMP}/sync-candidate"
