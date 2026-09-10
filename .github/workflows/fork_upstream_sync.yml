@@ -1,422 +1,58 @@
-# Upstream drift watcher for kjanat/zed-editor.
-#
-# Twice a day (and on demand): fetch zed-industries/zed main, try to merge
-# it into master on the rolling branch sync/upstream, and either open/update
-# a PR (clean merge) or open an issue listing the conflicted files.
-#
-# The branch is rebuilt and force-pushed every run, which is also how a red
-# sync PR repairs itself. A PR that stays blocked gets an issue, and commits
-# by anyone other than the bot on the branch stop the run outright.
-#
-# The merge lands as a merge commit on purpose: this fork's commits are
-# signed and tagged, so rebasing would rewrite SHAs that releases and the
-# base/v* tags already point to.
-#
-# Token note: PRs created with the default GITHUB_TOKEN do not trigger
-# other workflows, so fork_ci would not run on the sync PR. Add a classic
-# PAT with repo scope as the SYNC_TOKEN secret to get CI on these PRs;
-# without it the workflow still works, but you kick off fork_ci on the PR
-# manually (or push any empty commit to the branch).
+# Upstream code runs only inside an isolated container. The publisher never
+# checks out the candidate tree and rejects changes to GitHub automation.
 ---
 name: fork_upstream_sync
 on:
-  schedule: [cron: "0 6,18 * * *"] # 06:00 and 18:00 UTC
+  schedule: [cron: "0 6,18 * * *"]
   workflow_dispatch: null
 concurrency: { group: "${{ github.workflow }}", cancel-in-progress: false }
-permissions: { contents: write, pull-requests: write, issues: write }
+permissions: { contents: read }
 jobs:
-  sync:
-    if: github.repository == 'kjanat/zed-editor'
+  prepare:
+    if: github.repository == 'kjanat/zed-editor' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
-      UPSTREAM: https://github.com/zed-industries/zed.git
-      SYNC_BRANCH: sync/upstream
-      CONFLICT_LABEL: upstream-sync-conflict
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { ref: master, fetch-depth: 0, token: "${{ secrets.SYNC_TOKEN || github.token }}" }
-      - name: Fetch upstream
-        run: git remote add upstream "${UPSTREAM}"; git fetch upstream main --no-tags
-
-      - name: Check for new upstream commits
-        id: drift
+        with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
+      - name: Build the isolated sync tools
+        run: docker build -t upstream-sync-tools script/upstream-sync
+      - name: Prepare the candidate without runner credentials
+        shell: bash
         run: |
-          BEHIND="$(git rev-list --count master..upstream/main)"
-          echo "behind=${BEHIND}" >> "${GITHUB_OUTPUT}"
-          echo "Upstream is ${BEHIND} commits ahead of master." | tee -a "${GITHUB_STEP_SUMMARY}"
-
-      # The sync branch is rebuilt from scratch every run, so force-pushing over
-      # a red PR is the repair: it re-merges the current master and upstream and
-      # reformats. Commits a human put on the branch are the one thing a
-      # force-push would destroy, so those stop the run.
-      - name: Inspect the open sync PR
-        id: open_pr
-        if: steps.drift.outputs.behind != '0'
-        run: |
-          git fetch origin "${SYNC_BRANCH}" || true
-          FOREIGN=""
-          if git rev-parse --verify --quiet "refs/remotes/origin/${SYNC_BRANCH}" >/dev/null; then
-            FOREIGN="$(git log --format='%an' "origin/${SYNC_BRANCH}" --not master \
-              | grep -vFx 'github-actions[bot]' | sort -u | paste -sd ', ' - || true)"
-          fi
-          NUMBER="$(gh pr list --repo "${GITHUB_REPOSITORY}" \
-            --head "${SYNC_BRANCH}" --base master --state open \
-            --json number --jq '.[0].number // empty')"
-          STATE=""
-          FAILED=""
-          if [[ -n "${NUMBER}" ]]; then
-            # GitHub computes mergeStateStatus lazily and answers UNKNOWN until
-            # its background job finishes.
-            for _ in 1 2 3; do
-              STATE="$(gh pr view "${NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-                --json mergeStateStatus --jq '.mergeStateStatus')"
-              [[ "${STATE}" != "UNKNOWN" ]] && break
-              sleep 10
-            done
-            FAILED="$(gh pr view "${NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-              --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.conclusion // "") | ascii_upcase | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED")) | .name] | unique | join(", ")')"
-          fi
-          PR_BLOCKED=false
-          case "${STATE}" in
-            DIRTY | BLOCKED) PR_BLOCKED=true ;;
-            *) ;;
-          esac
-          [[ -n "${FAILED}" ]] && PR_BLOCKED=true
-          {
-            echo "number=${NUMBER}"
-            echo "state=${STATE}"
-            echo "failed=${FAILED}"
-            echo "foreign=${FOREIGN}"
-            echo "blocked=${PR_BLOCKED}"
-          } >> "${GITHUB_OUTPUT}"
-          echo "Open sync PR: ${NUMBER:-none}, merge state ${STATE:-n/a}, failing checks: ${FAILED:-none}, other authors on the branch: ${FOREIGN:-none}" \
-            | tee -a "${GITHUB_STEP_SUMMARY}"
-
-      - name: Report a sync that needs attention
-        if: steps.open_pr.outputs.blocked == 'true' || steps.open_pr.outputs.foreign != ''
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/sync-output"
+          # Untrusted formatter output must not be interpreted as runner commands.
+          marker=$(cat /proc/sys/kernel/random/uuid)
+          echo "::stop-commands::${marker}"
+          trap 'echo "::${marker}::"' EXIT
+          user_id=$(id -u)
+          group_id=$(id -g)
+          docker run --rm --user "${user_id}:${group_id}" --cap-drop=ALL --security-opt=no-new-privileges \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/source,readonly" \
+            --mount "type=bind,src=${RUNNER_TEMP}/sync-output,dst=/output" \
+            upstream-sync-tools bash /source/script/upstream-sync/prepare.sh
+      - name: Export only regular candidate files
+        run: python3 script/upstream-sync/export.py "${RUNNER_TEMP}/sync-output" "${RUNNER_TEMP}/sync-export"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: upstream-sync-candidate
+          path: ${{ runner.temp }}/sync-export/
+          if-no-files-found: error
+          retention-days: 1
+  publish:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: { contents: write, pull-requests: write, issues: write }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: upstream-sync-candidate, path: "${{ runner.temp }}/sync-candidate" }
+      - name: Validate and publish without executing the candidate
         env:
-          NUMBER: ${{ steps.open_pr.outputs.number }}
-          STATE: ${{ steps.open_pr.outputs.state }}
-          FAILED: ${{ steps.open_pr.outputs.failed }}
-          FOREIGN: ${{ steps.open_pr.outputs.foreign }}
-          BEHIND: ${{ steps.drift.outputs.behind }}
-        run: |
-          TITLE="Upstream sync needs attention"
-          EXISTING="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
-            --state open --search "Upstream sync needs attention in:title" \
-            --json number --jq '.[0].number // empty')"
-          if [[ -n "${FOREIGN}" ]]; then
-            OUTCOME="Commits by ${FOREIGN} sit on \`${SYNC_BRANCH}\`, so this run stopped instead of force-pushing over them. Merge or close the PR, or delete the branch, to let syncing continue."
-          else
-            OUTCOME="This run re-merged and force-pushed the branch anyway, which is how a red sync usually repairs itself. If the same checks fail again, they need a human."
-          fi
-          cat > /tmp/attention-body.md <<EOF
-          Upstream is ${BEHIND} commits ahead of master.
-
-          - Sync PR: ${NUMBER:-none open}
-          - Merge state: \`${STATE:-n/a}\`
-          - Failing checks: ${FAILED:-none}
-          - Other authors on the branch: ${FOREIGN:-none}
-
-          ${OUTCOME}
-          EOF
-          if [[ -n "${EXISTING}" ]]; then
-            gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/attention-body.md
-          else
-            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --body-file /tmp/attention-body.md
-          fi
-
-      - name: Install dprint
-        if: steps.drift.outputs.behind != '0' && steps.open_pr.outputs.foreign == ''
-        uses: kjanat/dprint-check@v3
-        with: { install-only: "true" }
-
-      - name: Attempt and resolve the merge
-        id: merge
-        if: steps.drift.outputs.behind != '0' && steps.open_pr.outputs.foreign == ''
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "${SYNC_BRANCH}"
-
-          BASE="$(git merge-base master upstream/main)"
-          UPSTREAM_SHA="$(git rev-parse upstream/main)"
-          : > /tmp/formatting-only.txt
-          : > /tmp/formatted-three-way.txt
-          : > /tmp/lockfiles.txt
-          : > /tmp/human.txt
-
-          if git merge --no-ff --no-commit upstream/main; then
-            git commit --message "Merge upstream main"
-            echo "result=clean" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          git diff --name-only --diff-filter=U -z > /tmp/conflicts.zlist
-          mapfile -d '' CONFLICTS < /tmp/conflicts.zlist
-          printf '%s\n' "${CONFLICTS[@]}" | tee -a "${GITHUB_STEP_SUMMARY}"
-
-          for FILE in "${CONFLICTS[@]}"; do
-            # Modify/delete conflicts cannot be checked out or restored as a three-way merge.
-            if ! git cat-file -e ":2:${FILE}" || ! git cat-file -e ":3:${FILE}"; then
-              printf '%s\n' "${FILE}" >> /tmp/human.txt
-              continue
-            fi
-
-            if [[ "${FILE}" == "Cargo.lock" ]]; then
-              git checkout --ours -- "${FILE}"
-              printf '%s\n' "${FILE}" >> /tmp/lockfiles.txt
-              continue
-            fi
-
-            BASE_FORMATTED="$(mktemp)"
-            MASTER_FILE="$(mktemp)"
-            MASTER_FORMATTED="$(mktemp)"
-            UPSTREAM_FORMATTED="$(mktemp)"
-            MERGED_FILE="$(mktemp)"
-            if git show "${BASE}:${FILE}" | dprint fmt --stdin "${FILE}" > "${BASE_FORMATTED}" \
-              && git show "master:${FILE}" > "${MASTER_FILE}"; then
-              if cmp -s "${BASE_FORMATTED}" "${MASTER_FILE}"; then
-                if git checkout --theirs -- "${FILE}" && dprint fmt "${FILE}" && dprint check "${FILE}"; then
-                  git add "${FILE}"
-                  printf '%s\n' "${FILE}" >> /tmp/formatting-only.txt
-                else
-                  git checkout --conflict=merge -- "${FILE}"
-                  printf '%s\n' "${FILE}" >> /tmp/human.txt
-                fi
-              elif git show "master:${FILE}" | dprint fmt --stdin "${FILE}" > "${MASTER_FORMATTED}" \
-                && git show "upstream/main:${FILE}" | dprint fmt --stdin "${FILE}" > "${UPSTREAM_FORMATTED}" \
-                && git merge-file -p "${MASTER_FORMATTED}" "${BASE_FORMATTED}" "${UPSTREAM_FORMATTED}" > "${MERGED_FILE}"; then
-                cp "${MERGED_FILE}" "${FILE}"
-                if dprint fmt "${FILE}" && dprint check "${FILE}"; then
-                  git add "${FILE}"
-                  printf '%s\n' "${FILE}" >> /tmp/formatted-three-way.txt
-                else
-                  git checkout --conflict=merge -- "${FILE}"
-                  printf '%s\n' "${FILE}" >> /tmp/human.txt
-                fi
-              else
-                git checkout --conflict=merge -- "${FILE}"
-                printf '%s\n' "${FILE}" >> /tmp/human.txt
-              fi
-            else
-              printf '%s\n' "${FILE}" >> /tmp/human.txt
-            fi
-            rm -f "${BASE_FORMATTED}" "${MASTER_FILE}" "${MASTER_FORMATTED}" "${UPSTREAM_FORMATTED}" "${MERGED_FILE}"
-          done
-
-          if [[ ! -s /tmp/human.txt && -s /tmp/lockfiles.txt ]]; then
-            if cargo metadata --format-version 1 -q > /dev/null; then
-              git add Cargo.lock
-            else
-              git checkout --conflict=merge -- Cargo.lock
-              : > /tmp/lockfiles.txt
-              printf 'Cargo.lock\n' >> /tmp/human.txt
-            fi
-          fi
-
-          if [[ ! -s /tmp/human.txt ]]; then
-            CHECK_FILES=()
-            if [[ -s /tmp/formatting-only.txt ]]; then
-              mapfile -t FORMATTING_ONLY_FILES < /tmp/formatting-only.txt
-              CHECK_FILES+=("${FORMATTING_ONLY_FILES[@]}")
-            fi
-            if [[ -s /tmp/formatted-three-way.txt ]]; then
-              mapfile -t THREE_WAY_FILES < /tmp/formatted-three-way.txt
-              CHECK_FILES+=("${THREE_WAY_FILES[@]}")
-            fi
-            if [[ "${#CHECK_FILES[@]}" -gt 0 ]]; then
-              dprint check "${CHECK_FILES[@]}"
-            fi
-            {
-              printf 'Merge upstream with automatic conflict resolution\n\n'
-              printf 'Formatting-only:\n'
-              while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/formatting-only.txt
-              printf '\nFormatted three-way:\n'
-              while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/formatted-three-way.txt
-              printf '\nLockfile:\n'
-              while IFS= read -r FILE; do printf -- '- %s\n' "${FILE}"; done < /tmp/lockfiles.txt
-            } > /tmp/merge-message.txt
-            git commit --file /tmp/merge-message.txt
-            echo "result=resolved" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          DATE="$(date -u +%Y-%m-%d)"
-          BEHIND="$(git rev-list --count master..upstream/main)"
-          HUMAN_COUNT="$(wc -l < /tmp/human.txt)"
-          {
-            printf '## Upstream sync conflict, %s\n\n' "${DATE}"
-            printf "Upstream is %s commits ahead (https://github.com/zed-industries/zed/compare/%s...%s).\n\n" \
-              "${BEHIND}" "${BASE}" "${UPSTREAM_SHA}"
-            printf '### Resolved automatically (verify, do not resolve)\n'
-            if [[ -s /tmp/formatting-only.txt ]]; then
-              while IFS= read -r FILE; do
-                printf -- "- \`%s\`: formatting-only, upstream taken and reformatted\n" "${FILE}"
-              done < /tmp/formatting-only.txt
-            fi
-            if [[ -s /tmp/formatted-three-way.txt ]]; then
-              while IFS= read -r FILE; do
-                printf -- "- \`%s\`: formatted three-way, fork and upstream changes retained\n" "${FILE}"
-              done < /tmp/formatted-three-way.txt
-            fi
-            if [[ -s /tmp/lockfiles.txt ]]; then
-              printf -- "- \`Cargo.lock\`: fork side kept; cargo reconciles it after human files are resolved\n"
-            fi
-            printf '\n### Needs a human (%s files)\n' "${HUMAN_COUNT}"
-            while IFS= read -r FILE; do
-              HUNKS="$(grep -c '^<<<<<<< ' "${FILE}" || true)"
-              FORK_LOG="$(git log --format="- \`%h\` %s" -5 "${BASE}..master" -- "${FILE}")"
-              UPSTREAM_LOG="$(git log --format="- \`%h\` %s" -5 "master..upstream/main" -- "${FILE}")"
-              DIFF_LINES="$(git diff --cc -- "${FILE}" | wc -l)"
-              if [[ "${HUNKS}" == "1" ]]; then
-                HUNK_LABEL="hunk"
-              else
-                HUNK_LABEL="hunks"
-              fi
-              printf "#### \`%s\` - %s conflict %s\n\n" "${FILE}" "${HUNKS}" "${HUNK_LABEL}"
-              printf '<details><summary>Relevant commits</summary>\n\n'
-              printf '**Fork**\n\n'
-              if [[ -n "${FORK_LOG}" ]]; then printf '%s\n' "${FORK_LOG}"; else printf '_None._\n'; fi
-              printf '\n**Upstream**\n\n'
-              if [[ -n "${UPSTREAM_LOG}" ]]; then printf '%s\n' "${UPSTREAM_LOG}"; else printf '_None._\n'; fi
-              printf '\n</details>\n\n'
-              if (( DIFF_LINES > 200 )); then
-                printf '<details><summary>Conflict diff (first 200 of %s lines)</summary>\n\n' "${DIFF_LINES}"
-              else
-                printf '<details><summary>Conflict diff</summary>\n\n'
-              fi
-              printf '```diff\n'
-              git diff --cc -- "${FILE}" | awk 'NR <= 200 { print }'
-              printf '```\n</details>\n\n'
-            done < /tmp/human.txt
-            printf '### Resolve\n```sh\n'
-            printf 'git fetch upstream main && git merge --no-commit upstream/main\n'
-            printf "BASE=\"\$(git merge-base master upstream/main)\"\n"
-            while IFS= read -r FILE; do
-              printf 'git checkout --theirs -- %q && dprint fmt %q && git add %q\n' "${FILE}" "${FILE}" "${FILE}"
-            done < /tmp/formatting-only.txt
-            if [[ -s /tmp/formatted-three-way.txt ]]; then
-              printf 'set -euo pipefail\n'
-              printf 'resolve_formatted_three_way() {\n'
-              printf "  local file=\"\$1\" base_formatted master_formatted upstream_formatted merged_file\n"
-              printf "  base_formatted=\"\$(mktemp)\"\n"
-              printf "  master_formatted=\"\$(mktemp)\"\n"
-              printf "  upstream_formatted=\"\$(mktemp)\"\n"
-              printf "  merged_file=\"\$(mktemp)\"\n"
-              printf "  trap 'rm -f \"\${base_formatted}\" \"\${master_formatted}\" \"\${upstream_formatted}\" \"\${merged_file}\"' EXIT\n"
-              printf "  git show \"\${BASE}:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${base_formatted}\"\n"
-              printf "  git show \"master:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${master_formatted}\"\n"
-              printf "  git show \"upstream/main:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${upstream_formatted}\"\n"
-              printf "  git merge-file -p \"\${master_formatted}\" \"\${base_formatted}\" \"\${upstream_formatted}\" > \"\${merged_file}\"\n"
-              printf "  cp \"\${merged_file}\" \"\${file}\"\n"
-              printf "  dprint fmt \"\${file}\" && git add \"\${file}\"\n"
-              printf "  rm -f \"\${base_formatted}\" \"\${master_formatted}\" \"\${upstream_formatted}\" \"\${merged_file}\"\n"
-              printf '  trap - EXIT\n'
-              printf '}\n'
-              while IFS= read -r FILE; do
-                printf 'resolve_formatted_three_way %q\n' "${FILE}"
-              done < /tmp/formatted-three-way.txt
-            fi
-            if [[ -s /tmp/lockfiles.txt ]]; then
-              printf 'git checkout --ours -- Cargo.lock\n'
-            fi
-            printf '# resolve the files above, then:\n'
-            if [[ -s /tmp/lockfiles.txt ]]; then
-              printf 'dprint check && cargo metadata --format-version 1 -q > /dev/null && git add Cargo.lock && git commit\n'
-            else
-              printf 'dprint check && git commit\n'
-            fi
-            printf '```\n'
-          } > /tmp/issue-body.md
-
-          git merge --abort
-          echo "result=conflict" >> "${GITHUB_OUTPUT}"
-
-      # Upstream does not run this fork's dprint config, so a merge still
-      # arrives unformatted and fork_ci's style job fails on files nobody here
-      # wrote. Reformat on the branch instead of leaving it for a human.
-
-      - name: Format the merge
-        if: steps.merge.outputs.result == 'clean' || steps.merge.outputs.result == 'resolved'
-        run: |
-          set -euo pipefail
-          dprint fmt
-          if git diff --quiet; then
-            echo "Upstream needed no reformatting." | tee -a "${GITHUB_STEP_SUMMARY}"
-          else
-            git diff --name-only | tee -a "${GITHUB_STEP_SUMMARY}"
-            git commit --all --message "Apply this fork's formatting to the upstream merge"
-          fi
-
-      - name: Push the sync branch and open or update the PR
-        if: steps.merge.outputs.result == 'clean' || steps.merge.outputs.result == 'resolved'
-        run: |
-          set -euo pipefail
-          git push --force origin "${SYNC_BRANCH}"
-          EXISTING=$(gh pr list --repo "${GITHUB_REPOSITORY}" \
-            --head "${SYNC_BRANCH}" --base master --state open \
-            --json number --jq '.[0].number // empty')
-          CONFLICT_ISSUES="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
-            --state open --label "${CONFLICT_LABEL}" --limit 100 \
-            --json number --jq '.[].number')"
-          BEHIND="${{ steps.drift.outputs.behind }}"
-          {
-            printf 'Automated upstream sync: merges zed-industries/zed main into master.\n\n'
-            printf 'Merging this through the normal flow keeps every upstream sync gated by fork_ci, the same gate as local work. If fork_ci did not start on this PR, start it manually or configure SYNC_TOKEN.\n'
-            if [[ "${{ steps.merge.outputs.result }}" == "resolved" ]]; then
-              printf '\n## Resolved automatically (verify, do not resolve)\n'
-              if [[ -s /tmp/formatting-only.txt ]]; then
-                printf '\n### Formatting-only\n'
-                while IFS= read -r FILE; do printf -- "- \`%s\`: upstream taken and reformatted\n" "${FILE}"; done < /tmp/formatting-only.txt
-              fi
-              if [[ -s /tmp/formatted-three-way.txt ]]; then
-                printf '\n### Formatted three-way\n'
-                while IFS= read -r FILE; do printf -- "- \`%s\`: fork and upstream changes retained\n" "${FILE}"; done < /tmp/formatted-three-way.txt
-              fi
-              if [[ -s /tmp/lockfiles.txt ]]; then
-                printf '\n### Lockfile\n'
-                printf -- "- \`Cargo.lock\`: fork side kept and reconciled by cargo\n"
-              fi
-            fi
-            if [[ -n "${CONFLICT_ISSUES}" ]]; then
-              printf '\n'
-              while IFS= read -r ISSUE; do
-                if [[ -n "${ISSUE}" ]]; then printf 'Closes #%s.\n' "${ISSUE}"; fi
-              done <<< "${CONFLICT_ISSUES}"
-            fi
-          } > /tmp/pr-body.md
-          if [[ -n "${EXISTING}" ]]; then
-            gh pr edit "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/pr-body.md
-            gh pr comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" \
-              --body "Updated: upstream is now ${BEHIND} commits ahead; the branch has been re-merged and force-pushed."
-          else
-            gh pr create --repo "${GITHUB_REPOSITORY}" \
-              --head "${SYNC_BRANCH}" --base master \
-              --title "Merge upstream (${BEHIND} commits)" \
-              --body-file /tmp/pr-body.md
-          fi
-
-      - name: Open a conflict issue
-        if: steps.merge.outputs.result == 'conflict'
-        run: |
-          set -euo pipefail
-          TITLE="Upstream sync conflict ($(date -u +%Y-%m-%d))"
-          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" \
-            --state open --search "Upstream sync conflict in:title" \
-            --json number --jq '.[0].number // empty')
-          if [[ -n "${EXISTING}" ]]; then
-            gh issue edit "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --add-label "${CONFLICT_LABEL}"
-            gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/issue-body.md
-          else
-            gh issue create --repo "${GITHUB_REPOSITORY}" \
-              --title "${TITLE}" --body-file /tmp/issue-body.md --label "${CONFLICT_LABEL}"
-          fi
-
-      - name: Nothing to do
-        if: steps.drift.outputs.behind == '0'
-        run: echo "master is level with upstream main." | tee -a "${GITHUB_STEP_SUMMARY}"
+          # A fine-grained PAT limited to this repository can trigger PR CI.
+          # This token is never passed to the preparation job or its container.
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+        run: python3 script/upstream-sync/publish.py "${RUNNER_TEMP}/sync-candidate"
