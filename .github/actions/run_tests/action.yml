@@ -1,23 +1,20 @@
 name: "Run tests"
 description: "Runs the tests"
-
 runs:
   using: "composite"
   steps:
     - name: Install nextest
-      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
-      with:
-        tool: nextest
+      uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+      with: { tool: nextest }
 
     - name: Install Node
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-      with:
-        node-version: "18"
+      with: { node-version: "18" }
 
     - name: Limit target directory size
-      shell: bash -euxo pipefail {0}
+      shell: "bash -euxo pipefail {0}"
       run: script/clear-target-dir-if-larger-than 350 200
 
     - name: Run tests
-      shell: bash -euxo pipefail {0}
+      shell: "bash -euxo pipefail {0}"
       run: cargo nextest run --workspace --no-fail-fast --failure-output immediate-final

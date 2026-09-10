@@ -2,9 +2,11 @@ import importlib.util
 import os
 import subprocess
 import tempfile
+import textwrap
 import time
 import unittest
 from functools import cached_property
+from itertools import takewhile
 from pathlib import Path
 from typing import Protocol, cast
 from unittest.mock import patch
@@ -22,8 +24,31 @@ class Publisher(Protocol):
     def publish(self, directory: Path) -> None: ...
 
 
-class Exporter(Protocol):
-    def export(self, source: Path, destination: Path) -> None: ...
+class Exporter:
+    @cached_property
+    def script(self) -> str:
+        workflow = (
+            Path(__file__).resolve().parents[2]
+            / ".github/workflows/fork_upstream_sync.yml"
+        ).read_text()
+        step = workflow.split("      - name: Export only regular candidate files\n", 1)[
+            1
+        ]
+        block = step.split("        run: |\n", 1)[1]
+        return textwrap.dedent(
+            "".join(
+                takewhile(
+                    lambda line: not line.strip() or line.startswith("          "),
+                    block.splitlines(keepends=True),
+                )
+            )
+        )
+
+    def export(self, source: Path, destination: Path) -> None:
+        with patch.dict(
+            os.environ, {"sync_output": str(source), "sync_export": str(destination)}
+        ):
+            exec(compile(self.script, "fork_upstream_sync.yml:export", "exec"), {})
 
 
 def load(name: str) -> object:
@@ -37,7 +62,7 @@ def load(name: str) -> object:
     return module
 
 
-exporter = cast(Exporter, load("export"))
+exporter = Exporter()
 publisher = cast(Publisher, load("publish"))
 
 

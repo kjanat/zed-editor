@@ -68,7 +68,7 @@ jobs:
       - name: steps::download_wasi_sdk
         run: ./script/download-wasi-sdk
       - name: steps::cargo_install_nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: nextest
       - name: steps::clear_target_dir_if_large
