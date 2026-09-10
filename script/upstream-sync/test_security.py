@@ -141,5 +141,85 @@ class CandidateTests(unittest.TestCase):
             self.validate()
 
 
+class ReportingTests(unittest.TestCase):
+    def test_failed_checks_alert_before_replacing_the_pr_head(self):
+        import json
+
+        details = {
+            "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [
+                {"name": "tests", "conclusion": "FAILURE"},
+                {"name": "style", "conclusion": "SUCCESS"},
+                {"name": "pending", "conclusion": None},
+            ],
+        }
+        with (
+            patch.object(publisher, "gh", side_effect=["42", json.dumps(details)]),
+            patch.object(publisher, "report") as report,
+        ):
+            self.assertEqual(publisher.inspect_sync_pr(), "42")
+        self.assertEqual(report.call_args.args[0], "Upstream sync needs attention")
+        self.assertIn("Failing checks: tests", report.call_args.args[1])
+
+    def test_dirty_and_blocked_prs_alert_without_failed_checks(self):
+        import json
+
+        for state in ("DIRTY", "BLOCKED"):
+            with (
+                self.subTest(state=state),
+                patch.object(
+                    publisher,
+                    "gh",
+                    side_effect=[
+                        "42",
+                        json.dumps({
+                            "mergeStateStatus": state,
+                            "statusCheckRollup": [],
+                        }),
+                    ],
+                ),
+                patch.object(publisher, "report") as report,
+            ):
+                publisher.inspect_sync_pr()
+                report.assert_called_once()
+                self.assertIn(state, report.call_args.args[1])
+
+    def test_unknown_state_is_retried_without_false_alerts(self):
+        import json
+
+        with (
+            patch.object(
+                publisher,
+                "gh",
+                side_effect=[
+                    "42",
+                    json.dumps({
+                        "mergeStateStatus": "UNKNOWN",
+                        "statusCheckRollup": [],
+                    }),
+                    json.dumps({"mergeStateStatus": "CLEAN", "statusCheckRollup": []}),
+                ],
+            ),
+            patch.object(publisher.time, "sleep") as sleep,
+            patch.object(publisher, "report") as report,
+        ):
+            publisher.inspect_sync_pr()
+            sleep.assert_called_once_with(10)
+            report.assert_not_called()
+
+    def test_successful_body_closes_all_reported_conflicts_on_merge(self):
+        with patch.object(publisher, "gh", return_value="12\n34") as gh:
+            body = publisher.sync_pr_body()
+        self.assertIn("Closes #12.\nCloses #34.\n", body)
+        self.assertTrue(body.endswith("Release Notes:\n\n- N/A\n"))
+        self.assertEqual(gh.call_count, 1)
+        self.assertEqual(gh.call_args.args[:2], ("issue", "list"))
+
+    def test_no_conflicts_needs_no_closing_references(self):
+        with patch.object(publisher, "gh", return_value=""):
+            body = publisher.sync_pr_body()
+        self.assertNotIn("Closes #", body)
+
+
 if __name__ == "__main__":
     unittest.main()

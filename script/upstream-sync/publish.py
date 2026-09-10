@@ -1,11 +1,13 @@
 """Publish a candidate as Git objects, never as executable checkout contents."""
 
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
+import time
 
 REPOSITORY = "kjanat/zed-editor"
 BRANCH = "sync/upstream"
@@ -76,6 +78,80 @@ def report(title: str, body: str):
             )
 
 
+def inspect_sync_pr():
+    number = gh(
+        "pr",
+        "list",
+        "--head",
+        BRANCH,
+        "--base",
+        "master",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number // empty",
+    )
+    if not number:
+        return number
+    for attempt in range(3):
+        details = json.loads(
+            gh(
+                "pr",
+                "view",
+                number,
+                "--json",
+                "mergeStateStatus,statusCheckRollup",
+            )
+        )
+        if details["mergeStateStatus"] != "UNKNOWN" or attempt == 2:
+            break
+        time.sleep(10)
+    failed = sorted({
+        check.get("name", check.get("context", "Unnamed check"))
+        for check in (details.get("statusCheckRollup") or [])
+        if (check.get("conclusion") or "").upper()
+        in {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}
+    })
+    state = details["mergeStateStatus"]
+    if state in {"DIRTY", "BLOCKED"} or failed:
+        report(
+            "Upstream sync needs attention",
+            f"Sync PR: #{number}\n\nMerge state: `{state}`\n\n"
+            f"Failing checks: {', '.join(failed) or 'none'}\n\n"
+            "The next candidate will still be attempted. If the same checks fail again, review the sync PR.",
+        )
+    return number
+
+
+def sync_pr_body():
+    conflicts = gh(
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--label",
+        "upstream-sync-conflict",
+        "--limit",
+        "1000",
+        "--json",
+        "number",
+        "--jq",
+        ".[].number",
+    ).splitlines()
+    references = "".join(f"Closes #{int(number)}.\n" for number in conflicts)
+    return (
+        "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
+        "Merge preparation runs in an isolated container without runner credentials. "
+        "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
+        "Passing CI does not replace review of the imported code.\n\n"
+        + references
+        + ("\n" if references else "")
+        + "Release Notes:\n\n- N/A\n"
+    )
+
+
 def publish(directory: Path):
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("Unexpected repository")
@@ -86,6 +162,7 @@ def publish(directory: Path):
     if result == "unchanged":
         print("No upstream changes")
         return
+    number = inspect_sync_pr()
     if result == "conflict":
         report("Upstream sync conflict", (directory / "issue-body.md").read_text())
         return
@@ -134,27 +211,7 @@ def publish(directory: Path):
     )
     if git("ls-remote", "origin", f"refs/heads/{BRANCH}").split()[0] != head:
         raise ValueError("Published branch does not match the validated candidate")
-    number = gh(
-        "pr",
-        "list",
-        "--head",
-        BRANCH,
-        "--base",
-        "master",
-        "--state",
-        "open",
-        "--json",
-        "number",
-        "--jq",
-        ".[0].number // empty",
-    )
-    body = (
-        "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
-        "Merge preparation runs in an isolated container without runner credentials. "
-        "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
-        "Passing CI does not replace review of the imported code.\n\n"
-        "Release Notes:\n\n- N/A\n"
-    )
+    body = sync_pr_body()
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
         message.write(body)
         message.flush()
