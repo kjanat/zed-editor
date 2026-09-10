@@ -22,6 +22,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  sync_security:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Build the isolated sync tools
+        run: docker build -t upstream-sync-test script/upstream-sync
+      - name: Test credential isolation and candidate validation
+        env: { SYNC_TEST_IMAGE: upstream-sync-test }
+        run: python3 -m unittest discover -s script/upstream-sync -p 'test_*.py'
   style:
     if: github.repository == 'kjanat/zed-editor'
     runs-on: ubuntu-latest

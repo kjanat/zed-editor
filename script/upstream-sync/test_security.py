@@ -1,0 +1,145 @@
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).with_name(f"{name}.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+publisher = load("publish")
+exporter = load("export")
+
+
+class ExportTests(unittest.TestCase):
+    def test_rejects_symlinks_without_copying_the_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (root / "private").write_text("synthetic canary")
+            (source / "result").symlink_to(root / "private")
+            with self.assertRaises(OSError):
+                exporter.export(source, root / "export")
+            self.assertFalse((root / "export" / "result").exists())
+
+    def test_exports_only_known_regular_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "result").write_text("conflict\n")
+            (source / "issue-body.md").write_text("Conflict details")
+            (source / "ignored").write_text("not an artifact")
+            exporter.export(source, root / "export")
+            self.assertEqual(
+                sorted(path.name for path in (root / "export").iterdir()),
+                ["issue-body.md", "result"],
+            )
+
+    def test_rejects_fifo_without_blocking(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            os.mkfifo(source / "result")
+            with self.assertRaises(ValueError):
+                exporter.export(source, root / "export")
+
+
+class CandidateTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        self.git("init", "-q", "-b", "master")
+        self.git("config", "user.name", "Test")
+        self.git("config", "user.email", "test@example.invalid")
+        self.git("config", "commit.gpgsign", "false")
+        workflow = self.source / ".github" / "workflows" / "ci.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("trusted workflow\n")
+        (self.source / "code").write_text("original\n")
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD")
+        self.destination = self.root / "publisher"
+        subprocess.run(
+            ["git", "clone", "-q", str(self.source), str(self.destination)], check=True
+        )
+        self.git("switch", "-q", "-c", "sync/upstream")
+
+    def git(self, *arguments):
+        return subprocess.check_output(
+            ["git", *arguments], cwd=self.source, text=True
+        ).strip()
+
+    def commit(self):
+        self.git("add", "--all")
+        self.git("commit", "-q", "-m", "fixture")
+
+    def validate(self):
+        bundle = self.root / "candidate.bundle"
+        self.git("bundle", "create", str(bundle), "refs/heads/sync/upstream", "^master")
+        original_run = publisher.run
+        with patch.object(
+            publisher,
+            "run",
+            side_effect=lambda *args: original_run(*args, cwd=self.destination),
+        ):
+            return publisher.validate(bundle, self.base)
+
+    def test_accepts_code_without_executing_or_checking_it_out(self):
+        (self.source / "code").write_text("untrusted candidate\n")
+        self.commit()
+        self.assertEqual(self.validate(), self.git("rev-parse", "HEAD"))
+        self.assertEqual((self.destination / "code").read_text(), "original\n")
+
+    def test_rejects_added_workflow(self):
+        (self.source / ".github/workflows/steal.yml").write_text("malicious workflow\n")
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "changes .github"):
+            self.validate()
+
+    def test_rejects_modified_workflow(self):
+        (self.source / ".github/workflows/ci.yml").write_text("modified workflow\n")
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "changes .github"):
+            self.validate()
+
+    def test_rejects_deleted_workflow(self):
+        (self.source / ".github/workflows/ci.yml").unlink()
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "changes .github"):
+            self.validate()
+
+    def test_rejects_replaced_github_directory(self):
+        (self.source / ".github/workflows/ci.yml").unlink()
+        (self.source / ".github/workflows").rmdir()
+        (self.source / ".github").rmdir()
+        (self.source / ".github").symlink_to("elsewhere")
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "changes .github"):
+            self.validate()
+
+    def test_rejects_unrelated_history(self):
+        self.git("switch", "--orphan", "unrelated")
+        (self.source / "other").write_text("unrelated\n")
+        self.commit()
+        self.git("branch", "-f", "sync/upstream", "HEAD")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.validate()
+
+
+if __name__ == "__main__":
+    unittest.main()
