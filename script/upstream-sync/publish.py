@@ -203,7 +203,7 @@ def resolution_details(directory: Path):
     return "\n\n".join(sections) + "\n\n"
 
 
-def sync_pr_body(resolutions: str = "") -> str:
+def sync_pr_body(resolutions: str = "", *, auto_merge: bool = False) -> str:
     conflicts = cast(
         list[Issue],
         json.loads(
@@ -230,7 +230,11 @@ def sync_pr_body(resolutions: str = "") -> str:
         "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
         + "Merge preparation runs in an isolated container without runner credentials. "
         + "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
-        + "Auto-merge is enabled with a merge commit once the required checks pass.\n\n"
+        + (
+            "Auto-merge is enabled with a merge commit once the required checks pass.\n\n"
+            if auto_merge
+            else "Auto-merge was not requested; required checks and merging need manual action.\n\n"
+        )
         + resolutions
         + references
         + ("\n" if references else "")
@@ -277,11 +281,7 @@ def enable_auto_merge(pull_request: str, head: str):
 def publish(directory: Path):
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("Unexpected repository")
-    if not os.environ.get("GH_TOKEN"):
-        raise ValueError(
-            "SYNC_TOKEN is required: configure a repository-scoped PAT or GitHub App "
-            + "token so sync PRs can run required checks automatically"
-        )
+    auto_merge = os.environ.get("SYNC_AUTO_MERGE") == "true"
     base = os.environ["GITHUB_SHA"]
     if not re.fullmatch(r"[0-9a-f]{40}", base):
         raise ValueError("Invalid trusted base")
@@ -344,7 +344,7 @@ def publish(directory: Path):
     )
     if git("ls-remote", "origin", f"refs/heads/{BRANCH}").split()[0] != head:
         raise ValueError("Published branch does not match the validated candidate")
-    body = sync_pr_body(resolutions)
+    body = sync_pr_body(resolutions, auto_merge=auto_merge)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
         _ = message.write(body)
         message.flush()
@@ -365,7 +365,10 @@ def publish(directory: Path):
                 "--label",
                 "build",
             )
-    enable_auto_merge(number or BRANCH, head)
+    if auto_merge:
+        enable_auto_merge(number or BRANCH, head)
+    else:
+        print("Auto-merge skipped: SYNC_TOKEN is not configured")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,9 @@ class Publisher(Protocol):
     def report(self, title: str, body: str) -> None: ...
     def inspect_sync_pr(self) -> str: ...
     def resolution_details(self, directory: Path) -> str: ...
-    def sync_pr_body(self, resolutions: str = "") -> str: ...
+    def sync_pr_body(
+        self, resolutions: str = "", *, auto_merge: bool = False
+    ) -> str: ...
     def enable_auto_merge(self, pull_request: str, head: str) -> None: ...
     def publish(self, directory: Path) -> None: ...
 
@@ -381,9 +383,12 @@ class ReportingTests(unittest.TestCase):
 
     def test_no_conflicts_needs_no_closing_references(self):
         with patch.object(publisher, "gh", return_value="[]"):
-            body = publisher.sync_pr_body()
+            body = publisher.sync_pr_body(auto_merge=True)
+            manual_body = publisher.sync_pr_body()
         self.assertNotIn("Closes #", body)
         self.assertIn("Auto-merge is enabled with a merge commit", body)
+        self.assertNotIn("Auto-merge is enabled", manual_body)
+        self.assertIn("manual action", manual_body)
 
 
 class AutoMergeTests(unittest.TestCase):
@@ -450,22 +455,55 @@ class AutoMergeTests(unittest.TestCase):
 
 
 class PublishFlowTests(unittest.TestCase):
-    def test_missing_sync_token_stops_before_publication(self):
-        for token in (None, ""):
-            with (
-                self.subTest(token=token),
-                patch.dict(
-                    os.environ, {"GITHUB_REPOSITORY": publisher.REPOSITORY}, clear=True
-                ),
-                patch.object(publisher, "git") as git,
-                patch.object(publisher, "gh") as gh,
-            ):
-                if token is not None:
-                    os.environ["GH_TOKEN"] = token
-                with self.assertRaisesRegex(ValueError, "SYNC_TOKEN is required"):
-                    publisher.publish(Path("not-read"))
-                git.assert_not_called()
-                gh.assert_not_called()
+    def test_fallback_token_publishes_without_requesting_auto_merge(self):
+        base, head = "a" * 40, "b" * 40
+        for flag in (None, "false"):
+            for existing in ("", "42"):
+                with (
+                    self.subTest(flag=flag, existing=existing),
+                    tempfile.TemporaryDirectory() as temporary,
+                    patch.dict(
+                        os.environ,
+                        {
+                            "GITHUB_REPOSITORY": publisher.REPOSITORY,
+                            "GITHUB_SHA": base,
+                            "GH_TOKEN": "synthetic-github-token",
+                        },
+                        clear=True,
+                    ),
+                    patch.object(publisher, "inspect_sync_pr", return_value=existing),
+                    patch.object(publisher, "validate", return_value=head),
+                    patch.object(
+                        publisher,
+                        "git",
+                        side_effect=[
+                            "",
+                            base,
+                            "",
+                            "",
+                            f"{head} refs/heads/sync/upstream",
+                        ],
+                    ) as git,
+                    patch.object(
+                        publisher, "sync_pr_body", return_value="manual"
+                    ) as body,
+                    patch.object(publisher, "gh", return_value="") as gh,
+                    patch.object(publisher, "enable_auto_merge") as auto_merge,
+                ):
+                    if flag is not None:
+                        os.environ["SYNC_AUTO_MERGE"] = flag
+                    directory = Path(temporary)
+                    _ = (directory / "result").write_text("clean")
+                    publisher.publish(directory)
+                    self.assertEqual(
+                        sum("push" in call.args for call in git.call_args_list), 1
+                    )
+                    self.assertEqual(gh.call_count, 1)
+                    self.assertEqual(
+                        gh.call_args.args[:2], ("pr", "edit" if existing else "create")
+                    )
+                    body.assert_called_once_with("", auto_merge=False)
+                    auto_merge.assert_not_called()
 
     def test_incidents_remain_separate_through_successful_publication(self):
         import json
@@ -580,6 +618,7 @@ class PublishFlowTests(unittest.TestCase):
                                 "GITHUB_REPOSITORY": publisher.REPOSITORY,
                                 "GITHUB_SHA": base,
                                 "GH_TOKEN": "synthetic-sync-token",
+                                "SYNC_AUTO_MERGE": "true",
                             },
                         ),
                         patch.object(
