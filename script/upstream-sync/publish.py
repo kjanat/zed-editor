@@ -13,11 +13,16 @@ from typing import NotRequired, TypedDict, cast
 
 REPOSITORY = "kjanat/zed-editor"
 BRANCH = "sync/upstream"
+ASSIGNEE = "kjanat"
 
 
 class Issue(TypedDict):
     number: int
     title: str
+
+
+class AssignedIssue(Issue):
+    assignees: list[dict[str, str]]
 
 
 class Check(TypedDict, total=False):
@@ -29,6 +34,12 @@ class Check(TypedDict, total=False):
 class PullRequestChecks(TypedDict):
     mergeStateStatus: str
     statusCheckRollup: NotRequired[list[Check] | None]
+
+
+class PullRequestMerge(TypedDict):
+    headRefOid: str
+    state: str
+    autoMergeRequest: dict[str, str] | None
 
 
 def run(*arguments: str, cwd: Path | None = None) -> str:
@@ -79,7 +90,7 @@ def report(title: str, body: str):
         _ = message.write(body)
         message.flush()
         issues = cast(
-            list[Issue],
+            list[AssignedIssue],
             json.loads(
                 gh(
                     "issue",
@@ -89,24 +100,26 @@ def report(title: str, body: str):
                     "--search",
                     f"{title} in:title",
                     "--json",
-                    "number,title",
+                    "number,title,assignees",
                     "--limit",
                     "1000",
                 )
             ),
         )
         issue = [
-            str(issue["number"])
+            issue
             for issue in issues
             if issue["title"] == title
             or (title == "Upstream sync conflict" and is_conflict_title(issue["title"]))
         ]
         if issue:
+            number = str(issue[0]["number"])
+            edits = [] if issue[0]["assignees"] else ["--add-assignee", ASSIGNEE]
             if title == "Upstream sync conflict":
-                _ = gh(
-                    "issue", "edit", issue[0], "--add-label", "upstream-sync-conflict"
-                )
-            _ = gh("issue", "comment", issue[0], "--body-file", message.name)
+                edits.extend(["--add-label", "upstream-sync-conflict"])
+            if edits:
+                _ = gh("issue", "edit", number, *edits)
+            _ = gh("issue", "comment", number, "--body-file", message.name)
         else:
             _ = gh(
                 "issue",
@@ -115,6 +128,8 @@ def report(title: str, body: str):
                 title,
                 "--body-file",
                 message.name,
+                "--assignee",
+                ASSIGNEE,
                 *(
                     ("--label", "upstream-sync-conflict")
                     if title == "Upstream sync conflict"
@@ -197,7 +212,7 @@ def resolution_details(directory: Path):
     return "\n\n".join(sections) + "\n\n"
 
 
-def sync_pr_body(resolutions: str = "") -> str:
+def sync_pr_body(resolutions: str = "", *, auto_merge: bool = False) -> str:
     conflicts = cast(
         list[Issue],
         json.loads(
@@ -224,7 +239,11 @@ def sync_pr_body(resolutions: str = "") -> str:
         "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
         + "Merge preparation runs in an isolated container without runner credentials. "
         + "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
-        + "Passing CI does not replace review of the imported code.\n\n"
+        + (
+            "Auto-merge is enabled with a merge commit once the required checks pass.\n\n"
+            if auto_merge
+            else "Auto-merge was not requested; required checks and merging need manual action.\n\n"
+        )
         + resolutions
         + references
         + ("\n" if references else "")
@@ -232,9 +251,46 @@ def sync_pr_body(resolutions: str = "") -> str:
     )
 
 
+def enable_auto_merge(pull_request: str, head: str):
+    details = cast(
+        PullRequestMerge,
+        json.loads(
+            gh(
+                "pr",
+                "view",
+                pull_request,
+                "--json",
+                "headRefOid,state,autoMergeRequest",
+            )
+        ),
+    )
+    if details["headRefOid"] != head:
+        raise ValueError("Sync PR head does not match the validated candidate")
+    if details["state"] == "MERGED":
+        print("Sync PR is already merged")
+        return
+    if details["state"] != "OPEN":
+        raise ValueError("Sync PR is not open")
+    if (request := details["autoMergeRequest"]) is not None:
+        if request["mergeMethod"] != "MERGE":
+            raise ValueError("Existing sync auto-merge must use a merge commit")
+        print("Sync PR already has auto-merge enabled")
+        return
+    _ = gh(
+        "pr",
+        "merge",
+        pull_request,
+        "--auto",
+        "--merge",
+        "--match-head-commit",
+        head,
+    )
+
+
 def publish(directory: Path):
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("Unexpected repository")
+    auto_merge = os.environ.get("SYNC_AUTO_MERGE") == "true"
     base = os.environ["GITHUB_SHA"]
     if not re.fullmatch(r"[0-9a-f]{40}", base):
         raise ValueError("Invalid trusted base")
@@ -297,12 +353,28 @@ def publish(directory: Path):
     )
     if git("ls-remote", "origin", f"refs/heads/{BRANCH}").split()[0] != head:
         raise ValueError("Published branch does not match the validated candidate")
-    body = sync_pr_body(resolutions)
+    body = sync_pr_body(resolutions, auto_merge=auto_merge)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
         _ = message.write(body)
         message.flush()
         if number:
-            _ = gh("pr", "edit", number, "--body-file", message.name)
+            assignee_count = gh(
+                "pr",
+                "view",
+                number,
+                "--json",
+                "assignees",
+                "--jq",
+                ".assignees | length",
+            )
+            _ = gh(
+                "pr",
+                "edit",
+                number,
+                "--body-file",
+                message.name,
+                *(("--add-assignee", ASSIGNEE) if assignee_count == "0" else ()),
+            )
         else:
             _ = gh(
                 "pr",
@@ -317,7 +389,13 @@ def publish(directory: Path):
                 message.name,
                 "--label",
                 "build",
+                "--assignee",
+                ASSIGNEE,
             )
+    if auto_merge:
+        enable_auto_merge(number or BRANCH, head)
+    else:
+        print("Auto-merge skipped: SYNC_TOKEN is not configured")
 
 
 if __name__ == "__main__":
