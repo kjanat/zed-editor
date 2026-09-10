@@ -703,11 +703,15 @@ objc2-app-kit                 = { version = "0.3.2", default-features = false, f
   "NSApplication",
   "NSButton",
   "NSControl",
+  "NSDraggingItem",
   "NSGraphics",
+  "NSImage",
   "NSOpenPanel",
   "NSPanel",
+  "NSPasteboard",
   "NSResponder",
   "NSSavePanel",
+  "NSScreen",
   "NSView",
   "NSWindow",
   "NSWorkspace",
@@ -739,6 +743,12 @@ objc2-foundation              = { version = "=0.3.2", default-features = false, 
   "NSValue",
   "objc2-core-foundation",
   "std",
+] }
+objc2-screen-capture-kit      = { version = "=0.3.2", default-features = false, features = [
+  "SCShareableContent",
+  "block2",
+  "objc2-core-graphics",
+  "std"
 ] }
 objc2-user-notifications      = "0.3"
 open                          = "5.0.0"
