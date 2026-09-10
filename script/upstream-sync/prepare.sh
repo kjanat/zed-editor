@@ -232,4 +232,7 @@ case "$result" in
 		;;
 	*) exit 1 ;;
 esac
+if [[ "$result" == resolved ]]; then
+	cp /tmp/formatting-only.txt /tmp/formatted-three-way.txt /tmp/lockfiles.txt /output/
+fi
 printf "%s\n" "$result" >/output/result

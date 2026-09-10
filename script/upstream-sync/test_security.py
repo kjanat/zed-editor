@@ -142,6 +142,93 @@ class CandidateTests(unittest.TestCase):
 
 
 class ReportingTests(unittest.TestCase):
+    def test_reuses_current_and_legacy_conflict_titles(self):
+        import json
+
+        for title in ("Upstream sync conflict", "Upstream sync conflict (2026-09-09)"):
+            with (
+                self.subTest(title=title),
+                patch.object(
+                    publisher,
+                    "gh",
+                    side_effect=[
+                        json.dumps([
+                            {
+                                "number": 1,
+                                "title": "Upstream sync conflict investigation",
+                            },
+                            {"number": 42, "title": title},
+                        ]),
+                        "",
+                    ],
+                ) as gh,
+            ):
+                publisher.report("Upstream sync conflict", "details")
+                self.assertEqual(gh.call_args.args[:3], ("issue", "comment", "42"))
+
+    def test_does_not_reuse_unrelated_conflict_title(self):
+        import json
+
+        with patch.object(
+            publisher,
+            "gh",
+            side_effect=[
+                json.dumps([
+                    {"number": 1, "title": "Upstream sync conflict investigation"},
+                ]),
+                "",
+            ],
+        ) as gh:
+            publisher.report("Upstream sync conflict", "details")
+            self.assertEqual(gh.call_args.args[:2], ("issue", "create"))
+
+    def test_resolution_lists_survive_export_and_appear_in_body(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "result").write_text("resolved")
+            for name, path in (
+                ("formatting-only.txt", "src/a.rs"),
+                ("formatted-three-way.txt", "src/<b>.rs"),
+                ("lockfiles.txt", "Cargo.lock"),
+            ):
+                (source / name).write_text(path + "\n")
+            exporter.export(source, root / "export")
+            details = publisher.resolution_details(root / "export")
+            with patch.object(publisher, "gh", return_value=""):
+                body = publisher.sync_pr_body(details)
+                clean_body = publisher.sync_pr_body()
+            for text in (
+                "Formatting-only",
+                "Formatted three-way",
+                "Lockfile",
+                "src/a.rs",
+                "src/&lt;b&gt;.rs",
+                "Cargo.lock",
+            ):
+                self.assertIn(text, body)
+            self.assertNotIn("Resolved automatically", clean_body)
+            self.assertTrue(body.endswith("Release Notes:\n\n- N/A\n"))
+
+    def test_resolution_exports_reject_oversized_files_and_symlinks(self):
+        for symlink in (False, True):
+            with (
+                self.subTest(symlink=symlink),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                source = root / "source"
+                source.mkdir()
+                (source / "result").write_text("resolved")
+                metadata = source / "formatting-only.txt"
+                if symlink:
+                    metadata.symlink_to(root / "private")
+                else:
+                    metadata.write_text("a" * 16001)
+                with self.assertRaises((ValueError, OSError)):
+                    exporter.export(source, root / "export")
+
     def test_failed_checks_alert_before_replacing_the_pr_head(self):
         import json
 

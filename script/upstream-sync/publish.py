@@ -1,6 +1,7 @@
 """Publish a candidate as Git objects, never as executable checkout contents."""
 
 import json
+import html
 import os
 from pathlib import Path
 import re
@@ -51,18 +52,31 @@ def report(title: str, body: str):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
         message.write(body)
         message.flush()
-        issue = gh(
-            "issue",
-            "list",
-            "--state",
-            "open",
-            "--search",
-            f"{title} in:title",
-            "--json",
-            "number,title",
-            "--jq",
-            f'.[] | select(.title == "{title}") | .number',
-        ).splitlines()
+        issues = json.loads(
+            gh(
+                "issue",
+                "list",
+                "--state",
+                "open",
+                "--search",
+                f"{title} in:title",
+                "--json",
+                "number,title",
+                "--limit",
+                "1000",
+            )
+        )
+        issue = [
+            str(issue["number"])
+            for issue in issues
+            if issue["title"] == title
+            or (
+                title == "Upstream sync conflict"
+                and re.fullmatch(
+                    r"Upstream sync conflict \(\d{4}-\d{2}-\d{2}\)", issue["title"]
+                )
+            )
+        ]
         if issue:
             gh("issue", "comment", issue[0], "--body-file", message.name)
         else:
@@ -125,7 +139,30 @@ def inspect_sync_pr():
     return number
 
 
-def sync_pr_body():
+def resolution_details(directory: Path):
+    sections = ["## Resolved automatically (verify, do not resolve)\n"]
+    for name, heading, description in (
+        ("formatting-only.txt", "Formatting-only", "upstream taken and reformatted"),
+        (
+            "formatted-three-way.txt",
+            "Formatted three-way",
+            "fork and upstream changes retained",
+        ),
+        ("lockfiles.txt", "Lockfile", "fork side kept and reconciled by cargo"),
+    ):
+        paths = (directory / name).read_text().splitlines()
+        if paths:
+            sections.append(f"### {heading}\n")
+            sections.append(
+                "\n".join(
+                    f"- <code>{html.escape(path)}</code>: {description}"
+                    for path in paths
+                )
+            )
+    return "\n\n".join(sections) + "\n\n"
+
+
+def sync_pr_body(resolutions=""):
     conflicts = gh(
         "issue",
         "list",
@@ -146,6 +183,7 @@ def sync_pr_body():
         "Merge preparation runs in an isolated container without runner credentials. "
         "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
         "Passing CI does not replace review of the imported code.\n\n"
+        + resolutions
         + references
         + ("\n" if references else "")
         + "Release Notes:\n\n- N/A\n"
@@ -168,6 +206,8 @@ def publish(directory: Path):
         return
     if result not in ("clean", "resolved"):
         raise ValueError("Invalid preparation result")
+
+    resolutions = resolution_details(directory) if result == "resolved" else ""
 
     git("fetch", "origin", "master", "--no-tags")
     if git("rev-parse", "FETCH_HEAD") != base:
@@ -211,7 +251,7 @@ def publish(directory: Path):
     )
     if git("ls-remote", "origin", f"refs/heads/{BRANCH}").split()[0] != head:
         raise ValueError("Published branch does not match the validated candidate")
-    body = sync_pr_body()
+    body = sync_pr_body(resolutions)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
         message.write(body)
         message.flush()

@@ -13,6 +13,9 @@ def export(source: Path, destination: Path):
         ("result", 32),
         ("sync.bundle", 256 * 1024 * 1024),
         ("issue-body.md", 60000),
+        ("formatting-only.txt", 16000),
+        ("formatted-three-way.txt", 16000),
+        ("lockfiles.txt", 16000),
     ):
         try:
             descriptor = os.open(
