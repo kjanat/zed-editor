@@ -13,11 +13,16 @@ from typing import NotRequired, TypedDict, cast
 
 REPOSITORY = "kjanat/zed-editor"
 BRANCH = "sync/upstream"
+ASSIGNEE = "kjanat"
 
 
 class Issue(TypedDict):
     number: int
     title: str
+
+
+class AssignedIssue(Issue):
+    assignees: list[dict[str, str]]
 
 
 class Check(TypedDict, total=False):
@@ -85,7 +90,7 @@ def report(title: str, body: str):
         _ = message.write(body)
         message.flush()
         issues = cast(
-            list[Issue],
+            list[AssignedIssue],
             json.loads(
                 gh(
                     "issue",
@@ -95,24 +100,26 @@ def report(title: str, body: str):
                     "--search",
                     f"{title} in:title",
                     "--json",
-                    "number,title",
+                    "number,title,assignees",
                     "--limit",
                     "1000",
                 )
             ),
         )
         issue = [
-            str(issue["number"])
+            issue
             for issue in issues
             if issue["title"] == title
             or (title == "Upstream sync conflict" and is_conflict_title(issue["title"]))
         ]
         if issue:
+            number = str(issue[0]["number"])
+            edits = [] if issue[0]["assignees"] else ["--add-assignee", ASSIGNEE]
             if title == "Upstream sync conflict":
-                _ = gh(
-                    "issue", "edit", issue[0], "--add-label", "upstream-sync-conflict"
-                )
-            _ = gh("issue", "comment", issue[0], "--body-file", message.name)
+                edits.extend(["--add-label", "upstream-sync-conflict"])
+            if edits:
+                _ = gh("issue", "edit", number, *edits)
+            _ = gh("issue", "comment", number, "--body-file", message.name)
         else:
             _ = gh(
                 "issue",
@@ -121,6 +128,8 @@ def report(title: str, body: str):
                 title,
                 "--body-file",
                 message.name,
+                "--assignee",
+                ASSIGNEE,
                 *(
                     ("--label", "upstream-sync-conflict")
                     if title == "Upstream sync conflict"
@@ -349,7 +358,23 @@ def publish(directory: Path):
         _ = message.write(body)
         message.flush()
         if number:
-            _ = gh("pr", "edit", number, "--body-file", message.name)
+            assignee_count = gh(
+                "pr",
+                "view",
+                number,
+                "--json",
+                "assignees",
+                "--jq",
+                ".assignees | length",
+            )
+            _ = gh(
+                "pr",
+                "edit",
+                number,
+                "--body-file",
+                message.name,
+                *(("--add-assignee", ASSIGNEE) if assignee_count == "0" else ()),
+            )
         else:
             _ = gh(
                 "pr",
@@ -364,6 +389,8 @@ def publish(directory: Path):
                 message.name,
                 "--label",
                 "build",
+                "--assignee",
+                ASSIGNEE,
             )
     if auto_merge:
         enable_auto_merge(number or BRANCH, head)

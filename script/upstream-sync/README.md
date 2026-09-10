@@ -24,6 +24,9 @@ also stop its replacement.
 Changes to `.github` require manual review and integration; the automatic sync
 opens an issue instead of publishing them to a same-repository PR.
 
+New or unassigned sync PRs and issues are assigned to `kjanat`. Existing
+assignees are preserved.
+
 With `SYNC_TOKEN` configured, creating or updating the `sync/upstream` PR
 enables auto-merge with a merge commit, preserving upstream history. The request
 must match the validated and published head commit. GitHub waits for the

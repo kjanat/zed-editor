@@ -178,22 +178,54 @@ class CandidateTests(unittest.TestCase):
 
 class ReportingTests(unittest.TestCase):
     def test_only_conflict_reports_receive_conflict_label(self):
+        import json
+
         for title in (
             "Upstream sync conflict",
             "Upstream sync needs attention",
             "Upstream sync requires security review",
         ):
-            with (
-                self.subTest(title=title),
-                patch.object(publisher, "gh", side_effect=["[]", ""]) as gh,
+            for assignees in (
+                None,
+                [],
+                [{"login": "kjanat"}],
+                [{"login": "someone-else"}],
             ):
-                publisher.report(title, "details")
-                arguments = gh.call_args.args
-                self.assertEqual(arguments[:2], ("issue", "create"))
-                self.assertEqual(
-                    "upstream-sync-conflict" in arguments,
-                    title == "Upstream sync conflict",
-                )
+                existing = assignees is not None
+                with (
+                    self.subTest(title=title, assignees=assignees),
+                    patch.object(
+                        publisher,
+                        "gh",
+                        side_effect=[
+                            json.dumps([
+                                {"number": 42, "title": title, "assignees": assignees}
+                            ]),
+                            "",
+                            "",
+                        ]
+                        if existing
+                        else ["[]", ""],
+                    ) as gh,
+                ):
+                    publisher.report(title, "details")
+                    if assignees and title != "Upstream sync conflict":
+                        self.assertEqual(gh.call_count, 2)
+                        self.assertEqual(gh.call_args.args[:2], ("issue", "comment"))
+                        continue
+                    arguments = gh.call_args_list[1].args
+                    self.assertEqual(
+                        arguments[:2], ("issue", "edit" if existing else "create")
+                    )
+                    self.assertEqual(
+                        "upstream-sync-conflict" in arguments,
+                        title == "Upstream sync conflict",
+                    )
+                    flag = "--add-assignee" if existing else "--assignee"
+                    if assignees:
+                        self.assertNotIn(flag, arguments)
+                    else:
+                        self.assertEqual(arguments[arguments.index(flag) + 1], "kjanat")
 
     def test_successful_sync_does_not_close_mislabeled_incidents(self):
         import json
@@ -227,7 +259,7 @@ class ReportingTests(unittest.TestCase):
                                 "number": 1,
                                 "title": "Upstream sync conflict investigation",
                             },
-                            {"number": 42, "title": title},
+                            {"number": 42, "title": title, "assignees": []},
                         ]),
                         "",
                         "",
@@ -238,7 +270,15 @@ class ReportingTests(unittest.TestCase):
                 self.assertEqual(gh.call_args.args[:3], ("issue", "comment", "42"))
                 self.assertEqual(
                     gh.call_args_list[-2].args,
-                    ("issue", "edit", "42", "--add-label", "upstream-sync-conflict"),
+                    (
+                        "issue",
+                        "edit",
+                        "42",
+                        "--add-assignee",
+                        "kjanat",
+                        "--add-label",
+                        "upstream-sync-conflict",
+                    ),
                 )
 
     def test_does_not_reuse_unrelated_conflict_title(self):
@@ -458,9 +498,15 @@ class PublishFlowTests(unittest.TestCase):
     def test_fallback_token_publishes_without_requesting_auto_merge(self):
         base, head = "a" * 40, "b" * 40
         for flag in (None, "false"):
-            for existing in ("", "42"):
+            for existing, assignees in (
+                ("", []),
+                ("42", []),
+                ("42", ["kjanat"]),
+                ("42", ["someone-else"]),
+                ("42", ["kjanat", "someone-else"]),
+            ):
                 with (
-                    self.subTest(flag=flag, existing=existing),
+                    self.subTest(flag=flag, existing=existing, assignees=assignees),
                     tempfile.TemporaryDirectory() as temporary,
                     patch.dict(
                         os.environ,
@@ -487,7 +533,9 @@ class PublishFlowTests(unittest.TestCase):
                     patch.object(
                         publisher, "sync_pr_body", return_value="manual"
                     ) as body,
-                    patch.object(publisher, "gh", return_value="") as gh,
+                    patch.object(
+                        publisher, "gh", return_value=str(len(assignees))
+                    ) as gh,
                     patch.object(publisher, "enable_auto_merge") as auto_merge,
                 ):
                     if flag is not None:
@@ -498,10 +546,18 @@ class PublishFlowTests(unittest.TestCase):
                     self.assertEqual(
                         sum("push" in call.args for call in git.call_args_list), 1
                     )
-                    self.assertEqual(gh.call_count, 1)
+                    self.assertEqual(gh.call_count, 1 + bool(existing))
                     self.assertEqual(
                         gh.call_args.args[:2], ("pr", "edit" if existing else "create")
                     )
+                    arguments = gh.call_args.args
+                    assignment_flag = "--add-assignee" if existing else "--assignee"
+                    if assignees:
+                        self.assertNotIn(assignment_flag, arguments)
+                    else:
+                        self.assertEqual(
+                            arguments[arguments.index(assignment_flag) + 1], "kjanat"
+                        )
                     body.assert_called_once_with("", auto_merge=False)
                     auto_merge.assert_not_called()
 
@@ -553,6 +609,8 @@ class PublishFlowTests(unittest.TestCase):
                     ) -> str:
                         calls.append(arguments)
                         if arguments[:2] == ("pr", "view"):
+                            if "assignees" in arguments:
+                                return "0"
                             return json.dumps({
                                 "headRefOid": "b" * 40,
                                 "state": "OPEN",
@@ -666,6 +724,11 @@ class PublishFlowTests(unittest.TestCase):
                             report.assert_not_called()
                             self.assertEqual(
                                 calls[-3][:2], ("pr", "edit" if existing else "create")
+                            )
+                            arguments = calls[-3]
+                            flag = "--add-assignee" if existing else "--assignee"
+                            self.assertEqual(
+                                arguments[arguments.index(flag) + 1], "kjanat"
                             )
                             self.assertEqual(
                                 merge_calls,
