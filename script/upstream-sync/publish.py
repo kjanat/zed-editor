@@ -1,32 +1,49 @@
 """Publish a candidate as Git objects, never as executable checkout contents."""
 
-import json
 import html
+import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+from typing import NotRequired, TypedDict, cast
 
 REPOSITORY = "kjanat/zed-editor"
 BRANCH = "sync/upstream"
 
 
-def run(*arguments, cwd=None):
+class Issue(TypedDict):
+    number: int
+    title: str
+
+
+class Check(TypedDict, total=False):
+    name: str
+    context: str
+    conclusion: str | None
+
+
+class PullRequestChecks(TypedDict):
+    mergeStateStatus: str
+    statusCheckRollup: NotRequired[list[Check] | None]
+
+
+def run(*arguments: str, cwd: Path | None = None) -> str:
     return subprocess.check_output(
         arguments, cwd=cwd, text=True, stderr=subprocess.PIPE
     ).strip()
 
 
-def git(*arguments):
+def git(*arguments: str) -> str:
     return run("git", "-c", "core.hooksPath=/dev/null", *arguments)
 
 
 def validate(candidate: Path, base: str):
-    git("bundle", "verify", str(candidate))
-    git(
+    _ = git("bundle", "verify", str(candidate))
+    _ = git(
         "-c",
         "fetch.fsckObjects=true",
         "fetch",
@@ -35,7 +52,7 @@ def validate(candidate: Path, base: str):
         f"refs/heads/{BRANCH}:refs/sync-candidate",
     )
     head = git("rev-parse", "refs/sync-candidate^{commit}")
-    git("merge-base", "--is-ancestor", base, head)
+    _ = git("merge-base", "--is-ancestor", base, head)
     # Tree equality includes additions, deletions, renames, file modes and symlinks.
     if git("diff", "--name-only", base, head, "--", ".github"):
         raise ValueError(
@@ -44,51 +61,65 @@ def validate(candidate: Path, base: str):
     return head
 
 
-def gh(*arguments):
+def gh(*arguments: str) -> str:
     return run("gh", *arguments, "--repo", REPOSITORY)
+
+
+def is_conflict_title(title: str):
+    return (
+        re.fullmatch(
+            r"Upstream sync conflict(?: \([0-9]{4}-[0-9]{2}-[0-9]{2}\))?", title
+        )
+        is not None
+    )
 
 
 def report(title: str, body: str):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
-        message.write(body)
+        _ = message.write(body)
         message.flush()
-        issues = json.loads(
-            gh(
-                "issue",
-                "list",
-                "--state",
-                "open",
-                "--search",
-                f"{title} in:title",
-                "--json",
-                "number,title",
-                "--limit",
-                "1000",
-            )
+        issues = cast(
+            list[Issue],
+            json.loads(
+                gh(
+                    "issue",
+                    "list",
+                    "--state",
+                    "open",
+                    "--search",
+                    f"{title} in:title",
+                    "--json",
+                    "number,title",
+                    "--limit",
+                    "1000",
+                )
+            ),
         )
         issue = [
             str(issue["number"])
             for issue in issues
             if issue["title"] == title
-            or (
-                title == "Upstream sync conflict"
-                and re.fullmatch(
-                    r"Upstream sync conflict \(\d{4}-\d{2}-\d{2}\)", issue["title"]
-                )
-            )
+            or (title == "Upstream sync conflict" and is_conflict_title(issue["title"]))
         ]
         if issue:
-            gh("issue", "comment", issue[0], "--body-file", message.name)
+            if title == "Upstream sync conflict":
+                _ = gh(
+                    "issue", "edit", issue[0], "--add-label", "upstream-sync-conflict"
+                )
+            _ = gh("issue", "comment", issue[0], "--body-file", message.name)
         else:
-            gh(
+            _ = gh(
                 "issue",
                 "create",
                 "--title",
                 title,
                 "--body-file",
                 message.name,
-                "--label",
-                "upstream-sync-conflict",
+                *(
+                    ("--label", "upstream-sync-conflict")
+                    if title == "Upstream sync conflict"
+                    else ()
+                ),
             )
 
 
@@ -109,15 +140,19 @@ def inspect_sync_pr():
     )
     if not number:
         return number
+    details: PullRequestChecks = {"mergeStateStatus": "UNKNOWN"}
     for attempt in range(3):
-        details = json.loads(
-            gh(
-                "pr",
-                "view",
-                number,
-                "--json",
-                "mergeStateStatus,statusCheckRollup",
-            )
+        details = cast(
+            PullRequestChecks,
+            json.loads(
+                gh(
+                    "pr",
+                    "view",
+                    number,
+                    "--json",
+                    "mergeStateStatus,statusCheckRollup",
+                )
+            ),
         )
         if details["mergeStateStatus"] != "UNKNOWN" or attempt == 2:
             break
@@ -133,8 +168,8 @@ def inspect_sync_pr():
         report(
             "Upstream sync needs attention",
             f"Sync PR: #{number}\n\nMerge state: `{state}`\n\n"
-            f"Failing checks: {', '.join(failed) or 'none'}\n\n"
-            "The next candidate will still be attempted. If the same checks fail again, review the sync PR.",
+            + f"Failing checks: {', '.join(failed) or 'none'}\n\n"
+            + "The next candidate will still be attempted. If the same checks fail again, review the sync PR.",
         )
     return number
 
@@ -162,27 +197,34 @@ def resolution_details(directory: Path):
     return "\n\n".join(sections) + "\n\n"
 
 
-def sync_pr_body(resolutions=""):
-    conflicts = gh(
-        "issue",
-        "list",
-        "--state",
-        "open",
-        "--label",
-        "upstream-sync-conflict",
-        "--limit",
-        "1000",
-        "--json",
-        "number",
-        "--jq",
-        ".[].number",
-    ).splitlines()
-    references = "".join(f"Closes #{int(number)}.\n" for number in conflicts)
+def sync_pr_body(resolutions: str = "") -> str:
+    conflicts = cast(
+        list[Issue],
+        json.loads(
+            gh(
+                "issue",
+                "list",
+                "--state",
+                "open",
+                "--label",
+                "upstream-sync-conflict",
+                "--limit",
+                "1000",
+                "--json",
+                "number,title",
+            )
+        ),
+    )
+    references = "".join(
+        f"Closes #{int(issue['number'])}.\n"
+        for issue in conflicts
+        if is_conflict_title(issue["title"])
+    )
     return (
         "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
-        "Merge preparation runs in an isolated container without runner credentials. "
-        "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
-        "Passing CI does not replace review of the imported code.\n\n"
+        + "Merge preparation runs in an isolated container without runner credentials. "
+        + "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
+        + "Passing CI does not replace review of the imported code.\n\n"
         + resolutions
         + references
         + ("\n" if references else "")
@@ -209,7 +251,7 @@ def publish(directory: Path):
 
     resolutions = resolution_details(directory) if result == "resolved" else ""
 
-    git("fetch", "origin", "master", "--no-tags")
+    _ = git("fetch", "origin", "master", "--no-tags")
     if git("rev-parse", "FETCH_HEAD") != base:
         raise ValueError(
             "master moved during preparation; run sync again on the current master"
@@ -223,11 +265,15 @@ def publish(directory: Path):
     previous = git("ls-remote", "origin", f"refs/heads/{BRANCH}").split()
     previous_head = previous[0] if previous else ""
     if previous_head:
-        git("fetch", "origin", f"refs/heads/{BRANCH}:refs/sync-previous", "--no-tags")
+        _ = git(
+            "fetch", "origin", f"refs/heads/{BRANCH}:refs/sync-previous", "--no-tags"
+        )
         if git("rev-parse", "refs/sync-previous") != previous_head:
             raise ValueError("Sync branch changed while checking it")
         # Upstream commits are expected to retain their original authors.
-        git("fetch", "https://github.com/zed-industries/zed.git", "main", "--no-tags")
+        _ = git(
+            "fetch", "https://github.com/zed-industries/zed.git", "main", "--no-tags"
+        )
         upstream = git("rev-parse", "FETCH_HEAD")
         authors = git(
             "log", "--format=%an", previous_head, "--not", base, upstream
@@ -239,7 +285,7 @@ def publish(directory: Path):
             )
             return
 
-    git(
+    _ = git(
         "-c",
         "credential.helper=",
         "-c",
@@ -253,12 +299,12 @@ def publish(directory: Path):
         raise ValueError("Published branch does not match the validated candidate")
     body = sync_pr_body(resolutions)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
-        message.write(body)
+        _ = message.write(body)
         message.flush()
         if number:
-            gh("pr", "edit", number, "--body-file", message.name)
+            _ = gh("pr", "edit", number, "--body-file", message.name)
         else:
-            gh(
+            _ = gh(
                 "pr",
                 "create",
                 "--head",

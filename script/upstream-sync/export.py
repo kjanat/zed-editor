@@ -1,10 +1,10 @@
 """Copy only regular, bounded files out of the untrusted container output."""
 
 import os
-from pathlib import Path
 import shutil
 import stat
 import sys
+from pathlib import Path
 
 
 def export(source: Path, destination: Path):

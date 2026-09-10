@@ -2,11 +2,11 @@
 
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 
 @unittest.skipUnless(
@@ -23,8 +23,8 @@ class ContainerTests(unittest.TestCase):
             source.mkdir()
             output.mkdir()
 
-            def git(*arguments, cwd=source):
-                subprocess.run(
+            def git(*arguments: str, cwd: Path = source) -> None:
+                _ = subprocess.run(
                     ["git", *arguments], cwd=cwd, check=True, capture_output=True
                 )
 
@@ -34,8 +34,8 @@ class ContainerTests(unittest.TestCase):
             git("config", "commit.gpgsign", "false")
             script = source / "script/upstream-sync/prepare.sh"
             script.parent.mkdir(parents=True)
-            shutil.copyfile(Path(__file__).with_name("prepare.sh"), script)
-            (source / "example.txt").write_text("original\n")
+            _ = shutil.copyfile(Path(__file__).with_name("prepare.sh"), script)
+            _ = (source / "example.txt").write_text("original\n")
             git("add", ".")
             git("commit", "-qm", "baseline")
             git("clone", "-q", str(source), str(upstream))
@@ -51,19 +51,19 @@ class ContainerTests(unittest.TestCase):
                     "commands": [{"exts": ["txt"], "command": "sh /tmp/work/probe.sh"}]
                 },
             }
-            (upstream / ".dprint.json").write_text(json.dumps(configuration))
-            (upstream / "probe.sh").write_text(
+            _ = (upstream / ".dprint.json").write_text(json.dumps(configuration))
+            _ = (upstream / "probe.sh").write_text(
                 "set -eu\n"
-                'test -z "${GH_TOKEN:-}"\n'
-                'test -z "${SYNC_TOKEN:-}"\n'
-                'test -z "${ACTIONS_RUNTIME_TOKEN:-}"\n'
-                "test ! -S /var/run/docker.sock\n"
-                "test ! -e /source/.dprint.json\n"
-                "if touch /source/compromised 2>/dev/null; then exit 1; fi\n"
-                "printf safe > /output/formatter-ran\n"
-                "cat\n"
+                + 'test -z "${GH_TOKEN:-}"\n'
+                + 'test -z "${SYNC_TOKEN:-}"\n'
+                + 'test -z "${ACTIONS_RUNTIME_TOKEN:-}"\n'
+                + "test ! -S /var/run/docker.sock\n"
+                + "test ! -e /source/.dprint.json\n"
+                + "if touch /source/compromised 2>/dev/null; then exit 1; fi\n"
+                + "printf safe > /output/formatter-ran\n"
+                + "cat\n"
             )
-            (upstream / "example.txt").write_text("upstream\n")
+            _ = (upstream / "example.txt").write_text("upstream\n")
             git("add", ".", cwd=upstream)
             git("commit", "-qm", "untrusted formatter", cwd=upstream)
             result = subprocess.run(
@@ -94,6 +94,7 @@ class ContainerTests(unittest.TestCase):
                     "ACTIONS_RUNTIME_TOKEN": "synthetic-canary",
                 },
                 capture_output=True,
+                check=False,
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -104,4 +105,4 @@ class ContainerTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()
