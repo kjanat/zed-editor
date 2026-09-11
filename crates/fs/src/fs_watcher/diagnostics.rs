@@ -168,7 +168,7 @@ impl WatchRecording {
                 roots.sort_by(|left, right| left.path.cmp(&right.path));
                 WatcherSnapshot {
                     backend: watcher.kind,
-                    recursive: watcher.recursive,
+                    recursive: watcher.is_recursive(),
                     roots,
                     cooldown_remaining_millis: state
                         .cooldown_until

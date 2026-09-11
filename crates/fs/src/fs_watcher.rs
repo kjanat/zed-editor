@@ -1247,7 +1247,7 @@ impl OsWatcher {
                 },
                 &[path.to_owned()],
                 match &result {
-                    Ok(()) => format!("recursive={}", self.recursive),
+                    Ok(()) => format!("recursive={}", self.is_recursive()),
                     Err(error) => format!("{error:?}"),
                 },
                 false,
