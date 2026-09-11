@@ -20,7 +20,10 @@ class Publisher(Protocol):
     def report(self, title: str, body: str) -> None: ...
     def inspect_sync_pr(self) -> str: ...
     def resolution_details(self, directory: Path) -> str: ...
-    def sync_pr_body(self, resolutions: str = "") -> str: ...
+    def sync_pr_body(
+        self, resolutions: str = "", *, auto_merge: bool = False
+    ) -> str: ...
+    def enable_auto_merge(self, pull_request: str, head: str) -> None: ...
     def publish(self, directory: Path) -> None: ...
 
 
@@ -29,11 +32,9 @@ class Exporter:
     def script(self) -> str:
         workflow = (
             Path(__file__).resolve().parents[2]
-            / ".github/workflows/fork_upstream_sync.yml"
+            / ".github/workflows/fork_upstream_sync.yaml"
         ).read_text()
-        step = workflow.split("      - name: Export only regular candidate files\n", 1)[
-            1
-        ]
+        step = workflow.split("      - name: Export container output\n", 1)[1]
         block = step.split("        run: |\n", 1)[1]
         return textwrap.dedent(
             "".join(
@@ -48,7 +49,9 @@ class Exporter:
         with patch.dict(
             os.environ, {"sync_output": str(source), "sync_export": str(destination)}
         ):
-            exec(compile(self.script, "fork_upstream_sync.yml:export", "exec"), {})
+            _ = subprocess.run(
+                ["perl", "-e", self.script], check=True, capture_output=True
+            )
 
 
 def load(name: str) -> object:
@@ -74,7 +77,7 @@ class ExportTests(unittest.TestCase):
             source.mkdir()
             _ = (root / "private").write_text("synthetic canary")
             (source / "result").symlink_to(root / "private")
-            with self.assertRaises(OSError):
+            with self.assertRaises(subprocess.CalledProcessError):
                 exporter.export(source, root / "export")
             self.assertFalse((root / "export" / "result").exists())
 
@@ -98,7 +101,7 @@ class ExportTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             os.mkfifo(source / "result")
-            with self.assertRaises(ValueError):
+            with self.assertRaises(subprocess.CalledProcessError):
                 exporter.export(source, root / "export")
 
 
@@ -200,22 +203,54 @@ class CandidateTests(unittest.TestCase):
 
 class ReportingTests(unittest.TestCase):
     def test_only_conflict_reports_receive_conflict_label(self):
+        import json
+
         for title in (
             "Upstream sync conflict",
             "Upstream sync needs attention",
             "Upstream sync requires security review",
         ):
-            with (
-                self.subTest(title=title),
-                patch.object(publisher, "gh", side_effect=["[]", ""]) as gh,
+            for assignees in (
+                None,
+                [],
+                [{"login": "kjanat"}],
+                [{"login": "someone-else"}],
             ):
-                publisher.report(title, "details")
-                arguments = gh.call_args.args
-                self.assertEqual(arguments[:2], ("issue", "create"))
-                self.assertEqual(
-                    "upstream-sync-conflict" in arguments,
-                    title == "Upstream sync conflict",
-                )
+                existing = assignees is not None
+                with (
+                    self.subTest(title=title, assignees=assignees),
+                    patch.object(
+                        publisher,
+                        "gh",
+                        side_effect=[
+                            json.dumps([
+                                {"number": 42, "title": title, "assignees": assignees}
+                            ]),
+                            "",
+                            "",
+                        ]
+                        if existing
+                        else ["[]", ""],
+                    ) as gh,
+                ):
+                    publisher.report(title, "details")
+                    if assignees and title != "Upstream sync conflict":
+                        self.assertEqual(gh.call_count, 2)
+                        self.assertEqual(gh.call_args.args[:2], ("issue", "comment"))
+                        continue
+                    arguments = gh.call_args_list[1].args
+                    self.assertEqual(
+                        arguments[:2], ("issue", "edit" if existing else "create")
+                    )
+                    self.assertEqual(
+                        "upstream-sync-conflict" in arguments,
+                        title == "Upstream sync conflict",
+                    )
+                    flag = "--add-assignee" if existing else "--assignee"
+                    if assignees:
+                        self.assertNotIn(flag, arguments)
+                    else:
+                        self.assertEqual(arguments[arguments.index(flag) + 1], "kjanat")
 
     def test_successful_sync_does_not_close_mislabeled_incidents(self):
         import json
@@ -249,7 +284,7 @@ class ReportingTests(unittest.TestCase):
                                 "number": 1,
                                 "title": "Upstream sync conflict investigation",
                             },
-                            {"number": 42, "title": title},
+                            {"number": 42, "title": title, "assignees": []},
                         ]),
                         "",
                         "",
@@ -260,7 +295,15 @@ class ReportingTests(unittest.TestCase):
                 self.assertEqual(gh.call_args.args[:3], ("issue", "comment", "42"))
                 self.assertEqual(
                     gh.call_args_list[-2].args,
-                    ("issue", "edit", "42", "--add-label", "upstream-sync-conflict"),
+                    (
+                        "issue",
+                        "edit",
+                        "42",
+                        "--add-assignee",
+                        "kjanat",
+                        "--add-label",
+                        "upstream-sync-conflict",
+                    ),
                 )
 
     def test_does_not_reuse_unrelated_conflict_title(self):
@@ -323,7 +366,7 @@ class ReportingTests(unittest.TestCase):
                     metadata.symlink_to(root / "private")
                 else:
                     _ = metadata.write_text("a" * 16001)
-                with self.assertRaises((ValueError, OSError)):
+                with self.assertRaises(subprocess.CalledProcessError):
                     exporter.export(source, root / "export")
 
     def test_failed_checks_alert_before_replacing_the_pr_head(self):
@@ -405,11 +448,144 @@ class ReportingTests(unittest.TestCase):
 
     def test_no_conflicts_needs_no_closing_references(self):
         with patch.object(publisher, "gh", return_value="[]"):
-            body = publisher.sync_pr_body()
+            body = publisher.sync_pr_body(auto_merge=True)
+            manual_body = publisher.sync_pr_body()
         self.assertNotIn("Closes #", body)
+        self.assertIn("Auto-merge is enabled with a merge commit", body)
+        self.assertNotIn("Auto-merge is enabled", manual_body)
+        self.assertIn("manual action", manual_body)
+
+
+class AutoMergeTests(unittest.TestCase):
+    def test_repeated_publication_keeps_existing_auto_merge(self):
+        import json
+
+        head = "b" * 40
+        enabled = False
+        commands: list[tuple[str, ...]] = []
+
+        def fake_gh(*arguments: str) -> str:
+            nonlocal enabled
+            commands.append(arguments)
+            if arguments[:2] == ("pr", "view"):
+                return json.dumps({
+                    "headRefOid": head,
+                    "state": "OPEN",
+                    "autoMergeRequest": {"mergeMethod": "MERGE"} if enabled else None,
+                })
+            if enabled:
+                raise subprocess.CalledProcessError(1, "gh pr merge")
+            enabled = True
+            return ""
+
+        with patch.object(publisher, "gh", side_effect=fake_gh):
+            publisher.enable_auto_merge("42", head)
+            publisher.enable_auto_merge("42", head)
+
+        self.assertEqual(
+            [arguments[:2] for arguments in commands],
+            [("pr", "view"), ("pr", "merge"), ("pr", "view")],
+        )
+
+    def test_checks_head_and_state_before_accepting_existing_auto_merge(self):
+        import json
+
+        head = "b" * 40
+        for current_head, state, method, error in (
+            ("c" * 40, "OPEN", "MERGE", "head does not match"),
+            ("c" * 40, "MERGED", None, "head does not match"),
+            (head, "CLOSED", None, "not open"),
+            (head, "OPEN", "SQUASH", "must use a merge commit"),
+            (head, "MERGED", None, None),
+        ):
+            with (
+                self.subTest(head=current_head, state=state, method=method),
+                patch.object(
+                    publisher,
+                    "gh",
+                    return_value=json.dumps({
+                        "headRefOid": current_head,
+                        "state": state,
+                        "autoMergeRequest": {"mergeMethod": method} if method else None,
+                    }),
+                ) as gh,
+            ):
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        publisher.enable_auto_merge("42", head)
+                else:
+                    publisher.enable_auto_merge("42", head)
+                self.assertEqual(gh.call_count, 1)
+                self.assertEqual(gh.call_args.args[:2], ("pr", "view"))
 
 
 class PublishFlowTests(unittest.TestCase):
+    def test_fallback_token_publishes_without_requesting_auto_merge(self):
+        base, head = "a" * 40, "b" * 40
+        for flag in (None, "false"):
+            for existing, assignees in (
+                ("", []),
+                ("42", []),
+                ("42", ["kjanat"]),
+                ("42", ["someone-else"]),
+                ("42", ["kjanat", "someone-else"]),
+            ):
+                with (
+                    self.subTest(flag=flag, existing=existing, assignees=assignees),
+                    tempfile.TemporaryDirectory() as temporary,
+                    patch.dict(
+                        os.environ,
+                        {
+                            "GITHUB_REPOSITORY": publisher.REPOSITORY,
+                            "GITHUB_SHA": base,
+                            "GH_TOKEN": "synthetic-github-token",
+                        },
+                        clear=True,
+                    ),
+                    patch.object(publisher, "inspect_sync_pr", return_value=existing),
+                    patch.object(publisher, "validate", return_value=head),
+                    patch.object(
+                        publisher,
+                        "git",
+                        side_effect=[
+                            "",
+                            base,
+                            "",
+                            "",
+                            f"{head} refs/heads/sync/upstream",
+                        ],
+                    ) as git,
+                    patch.object(
+                        publisher, "sync_pr_body", return_value="manual"
+                    ) as body,
+                    patch.object(
+                        publisher, "gh", return_value=str(len(assignees))
+                    ) as gh,
+                    patch.object(publisher, "enable_auto_merge") as auto_merge,
+                ):
+                    if flag is not None:
+                        os.environ["SYNC_AUTO_MERGE"] = flag
+                    directory = Path(temporary)
+                    _ = (directory / "result").write_text("clean")
+                    publisher.publish(directory)
+                    self.assertEqual(
+                        sum("push" in call.args for call in git.call_args_list), 1
+                    )
+                    self.assertEqual(gh.call_count, 1 + bool(existing))
+                    self.assertEqual(
+                        gh.call_args.args[:2], ("pr", "edit" if existing else "create")
+                    )
+                    arguments = gh.call_args.args
+                    assignment_flag = "--add-assignee" if existing else "--assignee"
+                    if assignees:
+                        self.assertNotIn(assignment_flag, arguments)
+                    else:
+                        self.assertEqual(
+                            arguments[arguments.index(assignment_flag) + 1], "kjanat"
+                        )
+                    body.assert_called_once_with("", auto_merge=False)
+                    auto_merge.assert_not_called()
+
     def test_incidents_remain_separate_through_successful_publication(self):
         import json
 
@@ -420,6 +596,8 @@ class PublishFlowTests(unittest.TestCase):
             "unchanged",
             "security",
             "foreign",
+            "mismatched_head",
+            "auto_merge_failure",
         ):
             for existing in ("", "42"):
                 with (
@@ -428,7 +606,15 @@ class PublishFlowTests(unittest.TestCase):
                 ):
                     directory = Path(temporary)
                     _ = (directory / "result").write_text(
-                        "clean" if result in ("security", "foreign") else result
+                        "clean"
+                        if result
+                        in (
+                            "security",
+                            "foreign",
+                            "mismatched_head",
+                            "auto_merge_failure",
+                        )
+                        else result
                     )
                     _ = (directory / "issue-body.md").write_text("Conflict details")
                     for name in (
@@ -444,8 +630,22 @@ class PublishFlowTests(unittest.TestCase):
                         *arguments: str,
                         calls: list[tuple[str, ...]] = calls,
                         bodies: list[str] = bodies,
+                        result: str = result,
                     ) -> str:
                         calls.append(arguments)
+                        if arguments[:2] == ("pr", "view"):
+                            if "assignees" in arguments:
+                                return "0"
+                            return json.dumps({
+                                "headRefOid": "b" * 40,
+                                "state": "OPEN",
+                                "autoMergeRequest": None,
+                            })
+                        if (
+                            arguments[:2] == ("pr", "merge")
+                            and result == "auto_merge_failure"
+                        ):
+                            raise subprocess.CalledProcessError(1, "gh pr merge")
                         if arguments[:2] == ("issue", "list"):
                             return json.dumps([
                                 {
@@ -468,6 +668,7 @@ class PublishFlowTests(unittest.TestCase):
 
                     head = "b" * 40
                     base = "a" * 40
+                    remote_queries = 0
 
                     def fake_git(
                         *arguments: str,
@@ -475,11 +676,15 @@ class PublishFlowTests(unittest.TestCase):
                         head: str = head,
                         result: str = result,
                     ) -> str:
+                        nonlocal remote_queries
                         if arguments == ("rev-parse", "FETCH_HEAD"):
                             return base
                         if arguments == ("rev-parse", "refs/sync-previous"):
                             return head
                         if arguments[0] == "ls-remote":
+                            remote_queries += 1
+                            if result == "mismatched_head" and remote_queries == 2:
+                                return f"{'c' * 40} refs/heads/sync/upstream"
                             return f"{head} refs/heads/sync/upstream"
                         if arguments[0] == "log":
                             return (
@@ -495,6 +700,8 @@ class PublishFlowTests(unittest.TestCase):
                             {
                                 "GITHUB_REPOSITORY": publisher.REPOSITORY,
                                 "GITHUB_SHA": base,
+                                "GH_TOKEN": "synthetic-sync-token",
+                                "SYNC_AUTO_MERGE": "true",
                             },
                         ),
                         patch.object(
@@ -512,8 +719,11 @@ class PublishFlowTests(unittest.TestCase):
                         patch.object(publisher, "gh", side_effect=fake_gh),
                         patch.object(publisher, "report") as report,
                     ):
-                        if result == "security":
+                        if result in ("security", "mismatched_head"):
                             with self.assertRaises(ValueError):
+                                publisher.publish(directory)
+                        elif result == "auto_merge_failure":
+                            with self.assertRaises(subprocess.CalledProcessError):
                                 publisher.publish(directory)
                         else:
                             publisher.publish(directory)
@@ -521,13 +731,45 @@ class PublishFlowTests(unittest.TestCase):
                             call for call in git.call_args_list if "push" in call.args
                         ]
                         self.assertEqual(
-                            len(pushes), int(result in ("clean", "resolved"))
+                            len(pushes),
+                            int(
+                                result
+                                in (
+                                    "clean",
+                                    "resolved",
+                                    "mismatched_head",
+                                    "auto_merge_failure",
+                                )
+                            ),
                         )
-                        if result in ("clean", "resolved"):
+                        merge_calls = [
+                            call for call in calls if call[:2] == ("pr", "merge")
+                        ]
+                        if result in ("clean", "resolved", "auto_merge_failure"):
                             report.assert_not_called()
                             self.assertEqual(
-                                calls[-1][:2], ("pr", "edit" if existing else "create")
+                                calls[-3][:2], ("pr", "edit" if existing else "create")
                             )
+                            arguments = calls[-3]
+                            flag = "--add-assignee" if existing else "--assignee"
+                            self.assertEqual(
+                                arguments[arguments.index(flag) + 1], "kjanat"
+                            )
+                            self.assertEqual(
+                                merge_calls,
+                                [
+                                    (
+                                        "pr",
+                                        "merge",
+                                        existing or "sync/upstream",
+                                        "--auto",
+                                        "--merge",
+                                        "--match-head-commit",
+                                        head,
+                                    )
+                                ],
+                            )
+                            self.assertEqual(calls[-1], merge_calls[0])
                             self.assertEqual(len(bodies), 1)
                             self.assertIn("Closes #1.", bodies[0])
                             self.assertNotIn("Closes #2.", bodies[0])
@@ -539,6 +781,9 @@ class PublishFlowTests(unittest.TestCase):
                         elif result == "unchanged":
                             report.assert_not_called()
                             git.assert_not_called()
+                        elif result == "mismatched_head":
+                            report.assert_not_called()
+                            self.assertFalse(bodies)
                         else:
                             expected = {
                                 "conflict": "Upstream sync conflict",
@@ -547,6 +792,8 @@ class PublishFlowTests(unittest.TestCase):
                             }[result]
                             self.assertEqual(report.call_args.args[0], expected)
                             self.assertFalse(bodies)
+                        if result not in ("clean", "resolved", "auto_merge_failure"):
+                            self.assertFalse(merge_calls)
 
 
 if __name__ == "__main__":

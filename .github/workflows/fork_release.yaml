@@ -1,11 +1,16 @@
 ---
 name: fork_release
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0}{1}{2}{3}{4}{5}{6}{7}', inputs.tag || 'untagged', inputs.linux && ' linux' || '', inputs.mac && ' mac' || '', inputs.windows && ' windows' || '', inputs.freebsd && ' freebsd' || '', inputs.bwrap && ' bwrap' || '', inputs.pacman && ' pacman' || '', !inputs.upload && ' (dry run)' || '') || '' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0}{1}{2}{3}{4}{5}{6}{7}', inputs.tag || format('{0} bump', inputs.bump || 'patch'), inputs.linux && ' linux' || '', inputs.mac && ' mac' || '', inputs.windows && ' windows' || '', inputs.freebsd && ' freebsd' || '', inputs.bwrap && ' bwrap' || '', inputs.pacman && ' pacman' || '', !inputs.upload && ' (dry run)' || '') || '' }}
 on:
   push: { tags: ["v*"] }
   workflow_dispatch:
     inputs:
-      tag: { description: Tag to publish the release under, required: false, type: string }
+      tag: { description: Release tag (overrides bump), required: false, type: string }
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
       linux: { description: Build the Linux bundles, type: boolean, default: true }
       mac: { description: Build the macOS bundles, type: boolean, default: true }
       windows: { description: Build the Windows bundles, type: boolean, default: true }
@@ -29,19 +34,36 @@ jobs:
     outputs: { tag: "${{ steps.resolve.outputs.tag }}" }
     env: { GH_REPO: "${{ github.repository }}" }
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, fetch-depth: 0 }
       - name: Resolve the tag
         id: resolve
-        env: { INPUT_TAG: "${{ inputs.tag }}" }
+        env: { INPUT_TAG: "${{ inputs.tag }}", INPUT_BUMP: "${{ inputs.bump }}" }
         run: |
           tag="${INPUT_TAG}"
           if [[ -z "${tag}" ]]; then
-            if [[ "${GITHUB_EVENT_NAME}" == "push" ]];
-            then tag="${GITHUB_REF_NAME}";
-            else tag="dev-${GITHUB_SHA:0:7}"; fi
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+              tag="${GITHUB_REF_NAME}"
+            else
+              stable_version='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+              latest=$(git tag --list 'v*' | sed -nE "/${stable_version}/p" | sort -V | tail -n 1)
+              if [[ ! "${latest}" =~ ${stable_version} ]]; then
+                echo '::error::No stable version tag exists; provide an explicit tag.'
+                exit 1
+              fi
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              patch="${BASH_REMATCH[3]}"
+              case "${INPUT_BUMP:-patch}" in
+                patch) patch=$((patch + 1)) ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+                *) echo '::error::Bump must be patch, minor, or major.'; exit 1 ;;
+              esac
+              tag="v${major}.${minor}.${patch}"
+            fi
           fi
-          echo "tag=${tag}" | tee "${GITHUB_ENV}" >> "${GITHUB_OUTPUT}"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false, fetch-depth: 0 }
+          echo "tag=${tag}" | tee -a "${GITHUB_ENV}" >> "${GITHUB_OUTPUT}"
       - name: Create the draft release
         if: github.event_name == 'push' || inputs.upload
         env: { GH_TOKEN: "${{ github.token }}" }

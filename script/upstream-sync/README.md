@@ -10,7 +10,7 @@ upstream and formatter/toolchain downloads.
 Upstream-controlled formatters, Cargo configuration, and executables may run
 inside that container. Treat everything it produces as untrusted. Runner command
 processing is disabled while its output is logged. After it exits, the inline
-Python step copies only bounded regular files; symlinks and special files must
+Perl step copies only bounded regular files; symlinks and special files must
 never reach the artifact uploader.
 
 The publisher runs on a separate runner and checks out only the trusted workflow
@@ -22,14 +22,24 @@ or sync-branch race stops publication. Local commits on the existing sync branch
 also stop its replacement.
 
 Changes to `.github` require manual review and integration; the automatic sync
-opens an issue instead of publishing them to a same-repository PR. Keeping CI
-green is not a substitute for reviewing upstream code before merging it.
+opens an issue instead of publishing them to a same-repository PR.
 
-`SYNC_TOKEN` is referenced only in the publisher. If configured, use a
-fine-grained PAT limited to this repository and the contents, pull requests, and
-issues permissions this workflow needs. The workflow does not change existing
-token scopes or repository settings. Without it, publishing falls back to
-`GITHUB_TOKEN`, so automatic PR CI may need a separate user action.
+New or unassigned sync PRs and issues are assigned to `kjanat`. Existing
+assignees are preserved.
+
+With `SYNC_TOKEN` configured, creating or updating the `sync/upstream` PR
+enables auto-merge with a merge commit, preserving upstream history. The request
+must match the validated and published head commit. GitHub waits for the
+existing required checks and branch rules before merging. An existing auto-merge
+request using a merge commit is kept without enabling it again. If enabling
+auto-merge fails, the workflow fails so the PR can be handled manually.
+
+`SYNC_TOKEN` is optional and referenced only in the publisher. Use a
+fine-grained PAT or GitHub App token limited to this repository with the
+required contents, pull requests, and issues permissions. Without it,
+publication still uses `GITHUB_TOKEN`, but skips auto-merge; the required checks
+and merge need manual action. Token scopes and repository settings are
+unchanged.
 
 The sandbox assumes the GitHub-hosted runner, Docker/kernel, pinned tool image,
 and trusted workflow revision are not compromised. Do not pass Actions runtime

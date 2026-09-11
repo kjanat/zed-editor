@@ -18,7 +18,7 @@ jobs:
             with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
           - name: export and create dirs env
             env: { o: "${{ runner.temp }}/sync-output", e: "${{ runner.temp }}/sync-export" }
-            run: printf "sync_output=%s\nsync_export=%s\n" "${o}" "${e}" >> "${GITHUB_ENV}"; mkdir -p "${o}" "${e}"
+            run: printf "sync_output=%s\nsync_export=%s\n" "${o}" "${e}" >> "${GITHUB_ENV}"; mkdir -p "${o}"
           - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -86,4 +86,5 @@ jobs:
           # A fine-grained PAT limited to this repository can trigger PR CI.
           # This token is never passed to the preparation job or its container.
           GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          SYNC_AUTO_MERGE: ${{ secrets.SYNC_TOKEN != '' }}
         run: python3 script/upstream-sync/publish.py "${RUNNER_TEMP}/sync-candidate"
