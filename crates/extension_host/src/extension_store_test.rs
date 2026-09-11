@@ -4030,12 +4030,21 @@ fn create_extension_store_with(
     proxy: Arc<ExtensionHostProxy>,
     cx: &mut TestAppContext,
 ) -> Entity<ExtensionStore> {
+    create_extension_store_at(fs, proxy, PathBuf::from("/extensions"), cx)
+}
+
+fn create_extension_store_at(
+    fs: Arc<FakeFs>,
+    proxy: Arc<ExtensionHostProxy>,
+    directory: PathBuf,
+    cx: &mut TestAppContext,
+) -> Entity<ExtensionStore> {
     let http_client = FakeHttpClient::with_200_response();
     let node_runtime = NodeRuntime::unavailable();
 
     let store = cx.new(|cx| {
         ExtensionStore::new(
-            PathBuf::from("/extensions"),
+            directory,
             None,
             proxy,
             fs,
@@ -4095,6 +4104,56 @@ async fn insert_collision_extension(fs: &Arc<FakeFs>, id: &str, language: &str) 
             "grammars": {"shared.wasm": ""},
         }),
     ).await;
+}
+
+#[gpui::test]
+async fn test_grammar_ownership_through_extension_store_reload_and_uninstall(
+    cx: &mut TestAppContext,
+) {
+    let result: anyhow::Result<()> = async {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let proxy = Arc::new(ExtensionHostProxy::new());
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        language_extension::init(LspAccess::Noop, proxy.clone(), registry.clone());
+        let tree = TempTree::new(json!({"installed": {"html": {"grammars": {}}, "html-jinja": {"grammars": {}}}}));
+        for (extension, name, binary, injections) in [
+            ("html", "HTML", include_bytes!("../../language/test_data/grammars/html.wasm").as_slice(), ""),
+            ("html-jinja", "HTML-Jinja", include_bytes!("../../language/test_data/grammars/html-jinja.wasm").as_slice(), "((jinja) @content (#set! \"language\" \"Jinja-Inline\"))"),
+        ] {
+            let directory = tree.path().join("installed").join(extension);
+            std::fs::write(directory.join("grammars/html.wasm"), binary)?;
+            fs.insert_tree(&directory, json!({
+                "extension.toml": format!("id = \"{extension}\"\nname = \"{name}\"\nversion = \"1.0.0\"\nschema_version = 1\n[grammars.html]\nrepository = \"https://example.com/{extension}\"\nrev = \"revision\"\n"),
+                "grammars": {"html.wasm": ""},
+                "languages": {"html": {
+                    "config.toml": format!("name = \"{name}\"\ngrammar = \"html\"\npath_suffixes = [\"{extension}\"]\n"),
+                    "injections.scm": injections,
+                }},
+            })).await;
+        }
+        let store = create_extension_store_at(fs.clone(), proxy.clone(), tree.path().into(), cx);
+        assert!(store.update(cx, |store, _| store.take_language_collision_warnings()).is_empty());
+        drop(store);
+        let store = create_extension_store_at(fs.clone(), proxy, tree.path().into(), cx);
+
+        store.update(cx, |store, cx| store.reload(Some("html".into()), cx)).await;
+        let jinja = registry.language_for_name("HTML-Jinja").await?;
+        let html = registry.language_for_name("HTML").await?;
+        assert_ne!(jinja.grammar().context("Jinja grammar")?.ts_language, html.grammar().context("HTML grammar")?.ts_language);
+        assert!(store.update(cx, |store, _| store.take_language_collision_warnings()).is_empty());
+
+        fs.remove_dir(&tree.path().join("installed/html"), RemoveOptions {recursive: true, ..Default::default()}).await?;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        registry.reload();
+        registry.language_for_name("HTML-Jinja").await?;
+        assert!(!registry.language_names().contains(&"HTML".into()));
+        fs.remove_dir(&tree.path().join("installed/html-jinja"), RemoveOptions {recursive: true, ..Default::default()}).await?;
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert!(!registry.grammar_names().iter().any(|name| name.as_ref() == "html"));
+        Ok(())
+    }.await;
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[gpui::test]
@@ -4198,16 +4257,15 @@ async fn test_language_collision_install_reload_and_uninstall(cx: &mut TestAppCo
             1
         );
 
-        // Reload the earlier provider so the grammar's registration order reverses.
+        // Reloading one provider must preserve the other provider's grammar.
         store
             .update(cx, |store, cx| store.reload(Some("alpha".into()), cx))
             .await;
-        assert_eq!(
-            store.read_with(cx, |store, _| store
-                .grammar_providers
-                .get("shared")
-                .cloned()),
-            Some("alpha".into())
+        assert!(
+            registry
+                .grammar_names()
+                .iter()
+                .any(|name| name.as_ref() == "shared")
         );
         assert!(
             store
@@ -4224,13 +4282,6 @@ async fn test_language_collision_install_reload_and_uninstall(cx: &mut TestAppCo
         )
         .await?;
         store.update(cx, |store, cx| store.reload(None, cx)).await;
-        assert_eq!(
-            store.read_with(cx, |store, _| store
-                .grammar_providers
-                .get("shared")
-                .cloned()),
-            Some("beta".into())
-        );
         assert!(
             registry
                 .grammar_names()
@@ -4286,7 +4337,7 @@ async fn test_language_collision_native_and_pending_warning_removal(cx: &mut Tes
         let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
         assert_eq!(warnings.len(), 1);
         let warning = warnings.first().context("missing native collision")?;
-        assert_eq!(warning.resources.len(), 2);
+        assert_eq!(warning.resources.len(), 1);
         assert!(
             warning
                 .resources
@@ -4322,8 +4373,6 @@ async fn test_language_collision_native_and_pending_warning_removal(cx: &mut Tes
 
 #[gpui::test]
 async fn test_grammar_collision_sources(cx: &mut TestAppContext) {
-    use crate::LanguageCollisionKey;
-    use collections::BTreeSet;
     let result: anyhow::Result<()> = async {
         init_test(cx);
         for different_source in [
@@ -4351,14 +4400,7 @@ async fn test_grammar_collision_sources(cx: &mut TestAppContext) {
             }
             store.update(cx, |store, cx| store.reload(None, cx)).await;
             let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
-            let pairs: BTreeSet<_> = warnings.iter().map(|warning| warning.key.clone()).collect();
-            assert_eq!(pairs, BTreeSet::from_iter([
-                LanguageCollisionKey::Extensions("alpha".into(), "delta".into()),
-                LanguageCollisionKey::Extensions("alpha".into(), "gamma".into()),
-                LanguageCollisionKey::Extensions("beta".into(), "delta".into()),
-                LanguageCollisionKey::Extensions("beta".into(), "gamma".into()),
-            ]));
-            assert!(warnings.iter().all(|warning| warning.resources.len() == 1 && warning.resources.iter().all(|resource| resource.contains("grammar"))));
+            assert!(warnings.is_empty(), "different sources are safe when their grammars are isolated");
 
             for id in ["gamma", "delta"] {
                 insert_collision_extension(&fs, id, id).await;
@@ -4371,8 +4413,7 @@ async fn test_grammar_collision_sources(cx: &mut TestAppContext) {
             ).into_bytes()).await;
             store.update(cx, |store, cx| store.reload(None, cx)).await;
             let warnings = store.update(cx, |store, _| store.take_language_collision_warnings());
-            assert_eq!(warnings.len(), 1, "only the previously identical pair should warn for the first time");
-            assert_eq!(warnings.first().context("missing new conflict")?.key, LanguageCollisionKey::Extensions("delta".into(), "gamma".into()));
+            assert!(warnings.is_empty(), "changing one provider's source must preserve isolation");
         }
         Ok(())
     }.await;

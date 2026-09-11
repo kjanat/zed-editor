@@ -166,7 +166,6 @@ pub struct ExtensionStore {
     pub extension_index: ExtensionIndex,
     language_collisions: LanguageCollisions,
     registered_languages: BTreeMap<LanguageName, Arc<str>>,
-    grammar_providers: BTreeMap<Arc<str>, Arc<str>>,
     pub fs: Arc<dyn Fs>,
     pub http_client: Arc<HttpClientWithUrl>,
     pub telemetry: Option<Arc<Telemetry>>,
@@ -401,7 +400,6 @@ impl ExtensionStore {
             extension_index: Default::default(),
             language_collisions: Default::default(),
             registered_languages: Default::default(),
-            grammar_providers: Default::default(),
             installed_dir,
             staging_dir,
             index_path,
@@ -1315,12 +1313,8 @@ impl ExtensionStore {
             };
 
         if extensions_to_load.is_empty() && extensions_to_unload.is_empty() {
-            self.language_collisions.update(
-                &new_index,
-                &self.registered_languages,
-                &self.grammar_providers,
-                &self.proxy,
-            );
+            self.language_collisions
+                .update(&new_index, &self.registered_languages, &self.proxy);
             self.extension_index.language_providers = new_index.language_providers;
             cx.notify();
             self.reload_complete_senders.clear();
@@ -1396,13 +1390,11 @@ impl ExtensionStore {
                 _ => languages_to_remove.push(name.clone()),
             }
         }
-        let mut grammars_to_remove = Vec::new();
         let mut server_removal_tasks = Vec::with_capacity(extensions_to_unload.len());
         for extension_id in &extensions_to_unload {
             let Some(extension) = old_index.extensions.get(extension_id) else {
                 continue;
             };
-            grammars_to_remove.extend(extension.manifest.grammars.keys().cloned());
             for (language_server_name, config) in &extension.manifest.language_servers {
                 for language in config.languages() {
                     server_removal_tasks.push(self.proxy.remove_language_server(
@@ -1429,12 +1421,9 @@ impl ExtensionStore {
         self.proxy.remove_user_themes(themes_to_remove);
         self.proxy.remove_icon_themes(icon_themes_to_remove);
         self.proxy
-            .remove_languages(&languages_to_remove, &grammars_to_remove);
+            .remove_languages(&languages_to_remove, &extensions_to_unload);
         for name in &languages_to_remove {
             self.registered_languages.remove(name);
-        }
-        for name in &grammars_to_remove {
-            self.grammar_providers.remove(name);
         }
 
         // Remove semantic token rules for languages being unloaded.
@@ -1460,15 +1449,19 @@ impl ExtensionStore {
                 continue;
             };
 
-            grammars_to_add.extend(extension.manifest.grammars.keys().map(|grammar_name| {
-                self.grammar_providers
-                    .insert(grammar_name.clone(), extension_id.clone());
-                let mut grammar_path = self.installed_dir.clone();
-                grammar_path.extend([extension_id.as_ref(), "grammars"]);
-                grammar_path.push(grammar_name.as_ref());
-                grammar_path.set_extension("wasm");
-                (grammar_name.clone(), grammar_path)
-            }));
+            let grammars = extension
+                .manifest
+                .grammars
+                .keys()
+                .map(|grammar_name| {
+                    let mut grammar_path = self.installed_dir.clone();
+                    grammar_path.extend([extension_id.as_ref(), "grammars"]);
+                    grammar_path.push(grammar_name.as_ref());
+                    grammar_path.set_extension("wasm");
+                    (grammar_name.clone(), grammar_path)
+                })
+                .collect();
+            grammars_to_add.push((extension_id.clone(), grammars));
             themes_to_add.extend(extension.manifest.themes.iter().map(|theme_path| {
                 let mut path = self.installed_dir.clone();
                 path.extend([Path::new(extension_id.as_ref()), theme_path.as_std_path()]);
@@ -1497,61 +1490,9 @@ impl ExtensionStore {
             }));
         }
 
-        for (name, entry) in &languages_to_readd {
-            let Some(grammar_name) = entry.grammar.clone() else {
-                continue;
-            };
-            if !grammars_to_remove.contains(&grammar_name) {
-                continue;
-            }
-            let owner = std::iter::once(&entry.extension)
-                .chain(new_index.extensions.keys())
-                .find(|id| {
-                    new_index
-                        .extensions
-                        .get(id.as_ref())
-                        .is_some_and(|extension| {
-                            extension.manifest.grammars.contains_key(&grammar_name)
-                        })
-                });
-            let Some(owner) = owner else {
-                log::warn!(
-                    "not re-registering grammar {grammar_name} for language {name}: no installed extension provides it"
-                );
-                continue;
-            };
-            let mut grammar_path = self.installed_dir.clone();
-            grammar_path.extend([owner.as_ref(), "grammars"]);
-            grammar_path.push(grammar_name.as_ref());
-            grammar_path.set_extension("wasm");
-            self.grammar_providers
-                .insert(grammar_name.clone(), owner.clone());
-            grammars_to_add.push((grammar_name, grammar_path));
+        for (extension_id, grammars) in grammars_to_add {
+            self.proxy.register_grammars(extension_id, grammars);
         }
-
-        // Unloading an extension removes grammars by name, including grammars
-        // still supplied by another installed extension.
-        for name in &grammars_to_remove {
-            if self.grammar_providers.contains_key(name) {
-                continue;
-            }
-            if let Some((owner, _)) = new_index
-                .extensions
-                .iter()
-                .find(|(_, entry)| entry.manifest.grammars.contains_key(name))
-            {
-                let mut path = self
-                    .installed_dir
-                    .join(owner.as_ref())
-                    .join("grammars")
-                    .join(name.as_ref());
-                path.set_extension("wasm");
-                grammars_to_add.push((name.clone(), path));
-                self.grammar_providers.insert(name.clone(), owner.clone());
-            }
-        }
-
-        self.proxy.register_grammars(grammars_to_add);
         let languages_to_add = new_index
             .languages
             .iter()
@@ -1569,6 +1510,7 @@ impl ExtensionStore {
             let rules_path = language_path.join(SemanticTokenRules::FILE_NAME);
 
             let registered = self.proxy.register_language(
+                language.extension.clone(),
                 language_name.clone(),
                 language.grammar.clone(),
                 language.matcher.clone(),
@@ -1606,7 +1548,6 @@ impl ExtensionStore {
         self.language_collisions.update(
             &self.extension_index,
             &self.registered_languages,
-            &self.grammar_providers,
             &self.proxy,
         );
         cx.notify();

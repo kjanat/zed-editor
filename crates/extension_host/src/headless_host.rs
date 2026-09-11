@@ -333,7 +333,9 @@ impl HeadlessExtensionStore {
                     continue;
                 }
                 match self.surviving_language_config(language) {
-                    Some(config) => register_language_from_config(&self.proxy, config),
+                    Some((provider, config)) => {
+                        register_language_from_config(&self.proxy, provider, config)
+                    }
                     None => languages_to_remove.push(language.clone()),
                 }
             }
@@ -403,7 +405,7 @@ impl HeadlessExtensionStore {
 
         if let Some(current) = &current {
             for (_, config) in &current.languages {
-                register_language_from_config(&self.proxy, config.clone());
+                register_language_from_config(&self.proxy, extension_id.clone(), config.clone());
             }
             if let Some(wasm_extension) = &current.wasm_extension {
                 for (server_name, language) in &current.language_servers {
@@ -433,14 +435,19 @@ impl HeadlessExtensionStore {
         removal_tasks
     }
 
-    fn surviving_language_config(&self, language: &LanguageName) -> Option<LanguageConfig> {
-        self.loaded_extensions.values().find_map(|extension| {
-            extension
-                .languages
-                .iter()
-                .find(|(name, _)| name == language)
-                .map(|(_, config)| config.clone())
-        })
+    fn surviving_language_config(
+        &self,
+        language: &LanguageName,
+    ) -> Option<(Arc<str>, LanguageConfig)> {
+        self.loaded_extensions
+            .iter()
+            .find_map(|(extension_id, extension)| {
+                extension
+                    .languages
+                    .iter()
+                    .find(|(name, _)| name == language)
+                    .map(|(_, config)| (extension_id.clone(), config.clone()))
+            })
     }
 
     fn surviving_language_server(
@@ -784,8 +791,13 @@ fn notify_extensions_changed(cx: &mut App) {
     }
 }
 
-fn register_language_from_config(proxy: &ExtensionHostProxy, config: LanguageConfig) {
+fn register_language_from_config(
+    proxy: &ExtensionHostProxy,
+    extension_id: Arc<str>,
+    config: LanguageConfig,
+) {
     proxy.register_language(
+        extension_id,
         config.name.clone(),
         None,
         config.matcher.clone(),
