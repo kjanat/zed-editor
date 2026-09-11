@@ -27,17 +27,17 @@ settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"TypeScript": {
-			"language_servers": ["typescript-language-server", "!vtsls", "..."]
-		},
-		"TSX": {
-			"language_servers": ["typescript-language-server", "!vtsls", "..."]
-		},
-		"JavaScript": {
-			"language_servers": ["typescript-language-server", "!vtsls", "..."]
-		}
-	}
+  "languages": {
+    "TypeScript": {
+      "language_servers": ["typescript-language-server", "!vtsls", "..."]
+    },
+    "TSX": {
+      "language_servers": ["typescript-language-server", "!vtsls", "..."]
+    },
+    "JavaScript": {
+      "language_servers": ["typescript-language-server", "!vtsls", "..."]
+    }
+  }
 }
 ```
 
@@ -47,12 +47,12 @@ add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"TypeScript": {
-			"prettier": { "allowed": false }
-		}
-		// ...
-	}
+  "languages": {
+    "TypeScript": {
+      "prettier": { "allowed": false }
+    }
+    // ...
+  }
 }
 ```
 
@@ -65,25 +65,25 @@ under it in your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"experimental": {
-					"classRegex": [
-						"\\.className\\s*[+]?=\\s*['\"]([^'\"]*)['\"]",
-						"\\.setAttributeNS\\(.*,\\s*['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
-						"\\.setAttribute\\(['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
-						"\\.classList\\.add\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.remove\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.toggle\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.contains\\(['\"]([^'\"]*)['\"]",
-						"\\.classList\\.replace\\(\\s*['\"]([^'\"]*)['\"]",
-						"\\.classList\\.replace\\([^,)]+,\\s*['\"]([^'\"]*)['\"]"
-					]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "experimental": {
+          "classRegex": [
+            "\\.className\\s*[+]?=\\s*['\"]([^'\"]*)['\"]",
+            "\\.setAttributeNS\\(.*,\\s*['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
+            "\\.setAttribute\\(['\"]class['\"],\\s*['\"]([^'\"]*)['\"]",
+            "\\.classList\\.add\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.remove\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.toggle\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.contains\\(['\"]([^'\"]*)['\"]",
+            "\\.classList\\.replace\\(\\s*['\"]([^'\"]*)['\"]",
+            "\\.classList\\.replace\\([^,)]+,\\s*['\"]([^'\"]*)['\"]"
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -94,16 +94,16 @@ under it in your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"vtsls": {
-			"settings": {
-				// For TypeScript:
-				"typescript": { "tsserver": { "maxTsServerMemory": 16384 } },
-				// For JavaScript:
-				"javascript": { "tsserver": { "maxTsServerMemory": 16384 } }
-			}
-		}
-	}
+  "lsp": {
+    "vtsls": {
+      "settings": {
+        // For TypeScript:
+        "typescript": { "tsserver": { "maxTsServerMemory": 16384 } },
+        // For JavaScript:
+        "javascript": { "tsserver": { "maxTsServerMemory": 16384 } }
+      }
+    }
+  }
 }
 ```
 
@@ -117,22 +117,22 @@ You can override these settings in your Zed `settings.json` when using
 
 ```json [settings]
 {
-	"lsp": {
-		"typescript-language-server": {
-			"initialization_options": {
-				"preferences": {
-					"includeInlayParameterNameHints": "all",
-					"includeInlayParameterNameHintsWhenArgumentMatchesName": true,
-					"includeInlayFunctionParameterTypeHints": true,
-					"includeInlayVariableTypeHints": true,
-					"includeInlayVariableTypeHintsWhenTypeMatchesName": true,
-					"includeInlayPropertyDeclarationTypeHints": true,
-					"includeInlayFunctionLikeReturnTypeHints": true,
-					"includeInlayEnumMemberValueHints": true
-				}
-			}
-		}
-	}
+  "lsp": {
+    "typescript-language-server": {
+      "initialization_options": {
+        "preferences": {
+          "includeInlayParameterNameHints": "all",
+          "includeInlayParameterNameHintsWhenArgumentMatchesName": true,
+          "includeInlayFunctionParameterTypeHints": true,
+          "includeInlayVariableTypeHints": true,
+          "includeInlayVariableTypeHintsWhenTypeMatchesName": true,
+          "includeInlayPropertyDeclarationTypeHints": true,
+          "includeInlayFunctionLikeReturnTypeHints": true,
+          "includeInlayEnumMemberValueHints": true
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -144,62 +144,62 @@ When using `vtsls`:
 
 ```json [settings]
 {
-	"lsp": {
-		"vtsls": {
-			"settings": {
-				// For JavaScript:
-				"javascript": {
-					"inlayHints": {
-						"parameterNames": {
-							"enabled": "all",
-							"suppressWhenArgumentMatchesName": false
-						},
-						"parameterTypes": {
-							"enabled": true
-						},
-						"variableTypes": {
-							"enabled": true,
-							"suppressWhenTypeMatchesName": true
-						},
-						"propertyDeclarationTypes": {
-							"enabled": true
-						},
-						"functionLikeReturnTypes": {
-							"enabled": true
-						},
-						"enumMemberValues": {
-							"enabled": true
-						}
-					}
-				},
-				// For TypeScript:
-				"typescript": {
-					"inlayHints": {
-						"parameterNames": {
-							"enabled": "all",
-							"suppressWhenArgumentMatchesName": false
-						},
-						"parameterTypes": {
-							"enabled": true
-						},
-						"variableTypes": {
-							"enabled": true,
-							"suppressWhenTypeMatchesName": true
-						},
-						"propertyDeclarationTypes": {
-							"enabled": true
-						},
-						"functionLikeReturnTypes": {
-							"enabled": true
-						},
-						"enumMemberValues": {
-							"enabled": true
-						}
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    "vtsls": {
+      "settings": {
+        // For JavaScript:
+        "javascript": {
+          "inlayHints": {
+            "parameterNames": {
+              "enabled": "all",
+              "suppressWhenArgumentMatchesName": false
+            },
+            "parameterTypes": {
+              "enabled": true
+            },
+            "variableTypes": {
+              "enabled": true,
+              "suppressWhenTypeMatchesName": true
+            },
+            "propertyDeclarationTypes": {
+              "enabled": true
+            },
+            "functionLikeReturnTypes": {
+              "enabled": true
+            },
+            "enumMemberValues": {
+              "enabled": true
+            }
+          }
+        },
+        // For TypeScript:
+        "typescript": {
+          "inlayHints": {
+            "parameterNames": {
+              "enabled": "all",
+              "suppressWhenArgumentMatchesName": false
+            },
+            "parameterTypes": {
+              "enabled": true
+            },
+            "variableTypes": {
+              "enabled": true,
+              "suppressWhenTypeMatchesName": true
+            },
+            "propertyDeclarationTypes": {
+              "enabled": true
+            },
+            "functionLikeReturnTypes": {
+              "enabled": true
+            },
+            "enumMemberValues": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -211,7 +211,7 @@ and interfaces. To use them, enable the `code_lens` setting:
 
 ```json [settings]
 {
-	"code_lens": "on"
+  "code_lens": "on"
 }
 ```
 
@@ -219,34 +219,34 @@ You can override the default code lens settings in your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"vtsls": {
-			"settings": {
-				"typescript": {
-					"implementationsCodeLens": {
-						"enabled": true,
-						"showOnAllClassMethods": true,
-						"showOnInterfaceMethods": true
-					},
-					"referencesCodeLens": {
-						"enabled": true,
-						"showOnAllFunctions": true
-					}
-				},
-				"javascript": {
-					"implementationsCodeLens": {
-						"enabled": true,
-						"showOnAllClassMethods": true,
-						"showOnInterfaceMethods": true
-					},
-					"referencesCodeLens": {
-						"enabled": true,
-						"showOnAllFunctions": true
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    "vtsls": {
+      "settings": {
+        "typescript": {
+          "implementationsCodeLens": {
+            "enabled": true,
+            "showOnAllClassMethods": true,
+            "showOnInterfaceMethods": true
+          },
+          "referencesCodeLens": {
+            "enabled": true,
+            "showOnAllFunctions": true
+          }
+        },
+        "javascript": {
+          "implementationsCodeLens": {
+            "enabled": true,
+            "showOnAllClassMethods": true,
+            "showOnInterfaceMethods": true
+          },
+          "referencesCodeLens": {
+            "enabled": true,
+            "showOnAllFunctions": true
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -291,20 +291,20 @@ one can attach to it and open it with a browser.
 
 ```json [debug]
 [
-	{
-		"label": "Launch Chrome (TypeScript)",
-		"adapter": "JavaScript",
-		"type": "chrome",
-		"request": "launch",
-		"url": "http://localhost:5500",
-		"program": "$ZED_FILE",
-		"webRoot": "${ZED_WORKTREE_ROOT}",
-		"build": {
-			"command": "npx",
-			"args": ["tsc"]
-		},
-		"skipFiles": ["<node_internals>/**"]
-	}
+  {
+    "label": "Launch Chrome (TypeScript)",
+    "adapter": "JavaScript",
+    "type": "chrome",
+    "request": "launch",
+    "url": "http://localhost:5500",
+    "program": "$ZED_FILE",
+    "webRoot": "${ZED_WORKTREE_ROOT}",
+    "build": {
+      "command": "npx",
+      "args": ["tsc"]
+    },
+    "skipFiles": ["<node_internals>/**"]
+  }
 ]
 ```
 

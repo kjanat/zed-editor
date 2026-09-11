@@ -20,10 +20,10 @@ project.
 
 ```json
 {
-	"$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
-	"runtime.version": "Lua 5.4",
-	"format.enable": true,
-	"workspace.library": ["../somedir/library"]
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.4",
+  "format.enable": true,
+  "workspace.library": ["../somedir/library"]
 }
 ```
 
@@ -82,30 +82,30 @@ Then in your `.luarc.json`:
 
 ```json
 {
-	"$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
-	"runtime.version": "Lua 5.4",
-	"runtime.nonstandardSymbol": [
-		"+=",
-		"-=",
-		"*=",
-		"/=",
-		"//=",
-		"%=",
-		"<<=",
-		">>=",
-		"&=",
-		"|=",
-		"^="
-	],
-	"diagnostics.severity": { "duplicate-set-field": "Hint" },
-	"diagnostics.globals": ["import"],
-	"workspace.library": ["../playdate-luacats"],
-	"format.defaultConfig": {
-		"indent_style": "space",
-		"indent_size": "4"
-	},
-	"format.enable": true,
-	"runtime.builtin": { "io": "disable", "os": "disable", "package": "disable" }
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.4",
+  "runtime.nonstandardSymbol": [
+    "+=",
+    "-=",
+    "*=",
+    "/=",
+    "//=",
+    "%=",
+    "<<=",
+    ">>=",
+    "&=",
+    "|=",
+    "^="
+  ],
+  "diagnostics.severity": { "duplicate-set-field": "Hint" },
+  "diagnostics.globals": ["import"],
+  "workspace.library": ["../playdate-luacats"],
+  "format.defaultConfig": {
+    "indent_style": "space",
+    "indent_size": "4"
+  },
+  "format.enable": true,
+  "runtime.builtin": { "io": "disable", "os": "disable", "package": "disable" }
 }
 ```
 
@@ -119,16 +119,16 @@ Zed
 
 ```json [settings]
 {
-	"languages": {
-		"Lua": {
-			"inlay_hints": {
-				"enabled": true,
-				"show_type_hints": true,
-				"show_parameter_hints": true,
-				"show_other_hints": true
-			}
-		}
-	}
+  "languages": {
+    "Lua": {
+      "inlay_hints": {
+        "enabled": true,
+        "show_type_hints": true,
+        "show_parameter_hints": true,
+        "show_other_hints": true
+      }
+    }
+  }
 }
 ```
 
@@ -144,8 +144,8 @@ you have `"format.enable": true,` in your .luarc.json:
 
 ```json
 {
-	"$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
-	"format.enable": true
+  "$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
+  "format.enable": true
 }
 ```
 
@@ -154,12 +154,12 @@ Lua, or add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"Lua": {
-			"format_on_save": "on",
-			"formatter": "language_server"
-		}
-	}
+  "languages": {
+    "Lua": {
+      "format_on_save": "on",
+      "formatter": "language_server"
+    }
+  }
 }
 ```
 
@@ -181,23 +181,23 @@ auto-formatting:
 
 ```json [settings]
 {
-	"languages": {
-		"Lua": {
-			"format_on_save": "on",
-			"formatter": {
-				"external": {
-					"command": "stylua",
-					"arguments": [
-						"--syntax=Lua54",
-						"--respect-ignores",
-						"--stdin-filepath",
-						"{buffer_path}",
-						"-"
-					]
-				}
-			}
-		}
-	}
+  "languages": {
+    "Lua": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "stylua",
+          "arguments": [
+            "--syntax=Lua54",
+            "--respect-ignores",
+            "--stdin-filepath",
+            "{buffer_path}",
+            "-"
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 

@@ -290,16 +290,16 @@ example configuration that makes them available when using text object operators
 
 ```json [keymap]
 {
-	"context": "vim_operator == a || vim_operator == i || vim_operator == cs",
-	"bindings": {
-		// Traditional Vim behavior
-		"q": "vim::AnyQuotes",
-		"b": "vim::AnyBrackets",
+  "context": "vim_operator == a || vim_operator == i || vim_operator == cs",
+  "bindings": {
+    // Traditional Vim behavior
+    "q": "vim::AnyQuotes",
+    "b": "vim::AnyBrackets",
 
-		// mini.ai plugin behavior
-		"Q": "vim::MiniQuotes",
-		"B": "vim::MiniBrackets"
-	}
+    // mini.ai plugin behavior
+    "Q": "vim::MiniQuotes",
+    "B": "vim::MiniBrackets"
+  }
 }
 ```
 
@@ -454,15 +454,15 @@ file. Here's an example configuration with useful mnemonics:
 
 ```json [settings]
 {
-	"command_aliases": {
-		"zlog": "zed::OpenLog",
-		"newf": "workspace::NewFile",
-		"diffs": "editor::ToggleSelectedDiffHunks",
-		"crp": "workspace::CopyRelativePath",
-		"cpp": "workspace::CopyPath",
-		"reveal": "editor::RevealInFileManager",
-		"clank": "editor::CancelLanguageServerWork"
-	}
+  "command_aliases": {
+    "zlog": "zed::OpenLog",
+    "newf": "workspace::NewFile",
+    "diffs": "editor::ToggleSelectedDiffHunks",
+    "crp": "workspace::CopyRelativePath",
+    "cpp": "workspace::CopyPath",
+    "reveal": "editor::RevealInFileManager",
+    "clank": "editor::CancelLanguageServerWork"
+  }
 }
 ```
 
@@ -488,10 +488,10 @@ example of a key binding that saves when you're editing a file:
 
 ```json [keymap]
 {
-	"context": "Editor",
-	"bindings": {
-		"ctrl-s": "workspace::Save"
-	}
+  "context": "Editor",
+  "bindings": {
+    "ctrl-s": "workspace::Save"
+  }
 }
 ```
 
@@ -503,10 +503,10 @@ context will work when you're editing a file. Here's an example:
 ```json [keymap]
 // This key binding will work when you're editing a file. It comes built into Zed by default as the workspace: save command.
 {
-	"context": "Workspace",
-	"bindings": {
-		"ctrl-s": "workspace::Save"
-	}
+  "context": "Workspace",
+  "bindings": {
+    "ctrl-s": "workspace::Save"
+  }
 }
 ```
 
@@ -541,32 +541,32 @@ mode key bindings. You can copy it and integrate it into your user keymap.
 
 ```json [keymap]
 [
-	{
-		"context": "VimControl && !menu",
-		"bindings": {
-			// Put key bindings here if you want them to work in normal & visual mode.
-		}
-	},
-	{
-		"context": "vim_mode == normal && !menu",
-		"bindings": {
-			// "shift-y": ["workspace::SendKeystrokes", "y $"] // Use neovim's yank behavior: yank to end of line.
-		}
-	},
-	{
-		"context": "vim_mode == insert",
-		"bindings": {
-			// "j k": "vim::NormalBefore" // In insert mode, make jk escape to normal mode.
-		}
-	},
-	{
-		"context": "EmptyPane || SharedScreen",
-		"bindings": {
-			// Put key bindings here (in addition to the context above) if you want them to
-			// work when no editor exists.
-			// "space f": "file_finder::Toggle"
-		}
-	}
+  {
+    "context": "VimControl && !menu",
+    "bindings": {
+      // Put key bindings here if you want them to work in normal & visual mode.
+    }
+  },
+  {
+    "context": "vim_mode == normal && !menu",
+    "bindings": {
+      // "shift-y": ["workspace::SendKeystrokes", "y $"] // Use neovim's yank behavior: yank to end of line.
+    }
+  },
+  {
+    "context": "vim_mode == insert",
+    "bindings": {
+      // "j k": "vim::NormalBefore" // In insert mode, make jk escape to normal mode.
+    }
+  },
+  {
+    "context": "EmptyPane || SharedScreen",
+    "bindings": {
+      // Put key bindings here (in addition to the context above) if you want them to
+      // work when no editor exists.
+      // "space f": "file_finder::Toggle"
+    }
+  }
 ]
 ```
 
@@ -586,14 +586,14 @@ your user keymap.
 
 ```json [keymap]
 {
-	"context": "Dock",
-	"bindings": {
-		"ctrl-w h": "workspace::ActivatePaneLeft",
-		"ctrl-w l": "workspace::ActivatePaneRight",
-		"ctrl-w k": "workspace::ActivatePaneUp",
-		"ctrl-w j": "workspace::ActivatePaneDown"
-		// ... or other keybindings
-	}
+  "context": "Dock",
+  "bindings": {
+    "ctrl-w h": "workspace::ActivatePaneLeft",
+    "ctrl-w l": "workspace::ActivatePaneRight",
+    "ctrl-w k": "workspace::ActivatePaneUp",
+    "ctrl-w j": "workspace::ActivatePaneDown"
+    // ... or other keybindings
+  }
 }
 ```
 
@@ -603,13 +603,13 @@ bindings to your keymap.
 
 ```json [keymap]
 {
-	"context": "VimControl && !menu && vim_mode != operator",
-	"bindings": {
-		"w": "vim::NextSubwordStart",
-		"b": "vim::PreviousSubwordStart",
-		"e": "vim::NextSubwordEnd",
-		"g e": "vim::PreviousSubwordEnd"
-	}
+  "context": "VimControl && !menu && vim_mode != operator",
+  "bindings": {
+    "w": "vim::NextSubwordStart",
+    "b": "vim::PreviousSubwordStart",
+    "e": "vim::NextSubwordEnd",
+    "g e": "vim::PreviousSubwordEnd"
+  }
 }
 ```
 
@@ -624,10 +624,10 @@ to your keymap.
 
 ```json [keymap]
 {
-	"context": "vim_mode == visual",
-	"bindings": {
-		"shift-s": "vim::PushAddSurrounds"
-	}
+  "context": "vim_mode == visual",
+  "bindings": {
+    "shift-s": "vim::PushAddSurrounds"
+  }
 }
 ```
 
@@ -640,13 +640,13 @@ lines, override these keybindings:
 // In VimScript, this would look like this:
 // set whichwrap+=<,>,[,],h,l
 {
-	"context": "VimControl && !menu",
-	"bindings": {
-		"left": "vim::WrappingLeft",
-		"right": "vim::WrappingRight",
-		"h": "vim::WrappingLeft",
-		"l": "vim::WrappingRight"
-	}
+  "context": "VimControl && !menu",
+  "bindings": {
+    "left": "vim::WrappingLeft",
+    "right": "vim::WrappingRight",
+    "h": "vim::WrappingLeft",
+    "l": "vim::WrappingRight"
+  }
 }
 ```
 
@@ -658,11 +658,11 @@ so ensure this change aligns with your workflow preferences.
 
 ```json [keymap]
 {
-	"context": "vim_mode == normal || vim_mode == visual",
-	"bindings": {
-		"s": "vim::PushSneak",
-		"shift-s": "vim::PushSneakBackward"
-	}
+  "context": "vim_mode == normal || vim_mode == visual",
+  "bindings": {
+    "s": "vim::PushSneak",
+    "shift-s": "vim::PushSneakBackward"
+  }
 }
 ```
 
@@ -673,10 +673,10 @@ binding, but overrides Vim mode's default rewrap binding.
 
 ```json [keymap]
 {
-	"context": "vim_mode == normal || vim_mode == visual",
-	"bindings": {
-		"g w": "vim::HelixJumpToWord"
-	}
+  "context": "vim_mode == normal || vim_mode == visual",
+  "bindings": {
+    "g w": "vim::HelixJumpToWord"
+  }
 }
 ```
 
@@ -688,10 +688,10 @@ keymap:
 
 ```json [keymap]
 {
-	"context": "vim_mode == visual",
-	"bindings": {
-		"shift-x": "vim::Exchange"
-	}
+  "context": "vim_mode == visual",
+  "bindings": {
+    "shift-x": "vim::Exchange"
+  }
 }
 ```
 
@@ -741,11 +741,11 @@ like.
 
 ```json [settings]
 {
-	"vim": {
-		"custom_digraphs": {
-			"fz": "🧟‍♀️"
-		}
-	}
+  "vim": {
+    "custom_digraphs": {
+      "fz": "🧟‍♀️"
+    }
+  }
 }
 ```
 
@@ -753,18 +753,18 @@ Here's an example of these settings changed:
 
 ```json [settings]
 {
-	"vim": {
-		"default_mode": "insert",
-		"use_system_clipboard": "never",
-		"use_smartcase_find": true,
-		"use_regex_search": true,
-		"gdefault": true,
-		"toggle_relative_line_numbers": true,
-		"highlight_on_yank_duration": 50,
-		"custom_digraphs": {
-			"fz": "🧟‍♀️"
-		}
-	}
+  "vim": {
+    "default_mode": "insert",
+    "use_system_clipboard": "never",
+    "use_smartcase_find": true,
+    "use_regex_search": true,
+    "gdefault": true,
+    "toggle_relative_line_numbers": true,
+    "highlight_on_yank_duration": 50,
+    "custom_digraphs": {
+      "fz": "🧟‍♀️"
+    }
+  }
 }
 ```
 
@@ -787,25 +787,25 @@ Here's an example of these settings changed:
 
 ```json [settings]
 {
-	// Disable cursor blink
-	"cursor_blink": false,
-	// Use relative line numbers
-	"relative_line_numbers": "enabled",
-	// Hide the scroll bar
-	"scrollbar": { "show": "never" },
-	// Prevent the buffer from scrolling beyond the last line
-	"scroll_beyond_last_line": "off",
-	// Allow the cursor to reach the edges of the screen
-	"vertical_scroll_margin": 0,
-	"gutter": {
-		// Disable line numbers completely
-		"line_numbers": false
-	},
-	"command_aliases": {
-		"W": "w",
-		"Wq": "wq",
-		"Q": "q"
-	}
+  // Disable cursor blink
+  "cursor_blink": false,
+  // Use relative line numbers
+  "relative_line_numbers": "enabled",
+  // Hide the scroll bar
+  "scrollbar": { "show": "never" },
+  // Prevent the buffer from scrolling beyond the last line
+  "scroll_beyond_last_line": "off",
+  // Allow the cursor to reach the edges of the screen
+  "vertical_scroll_margin": 0,
+  "gutter": {
+    // Disable line numbers completely
+    "line_numbers": false
+  },
+  "command_aliases": {
+    "W": "w",
+    "Wq": "wq",
+    "Q": "q"
+  }
 }
 ```
 

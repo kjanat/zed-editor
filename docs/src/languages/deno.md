@@ -21,44 +21,44 @@ under Languages > JavaScript/TypeScript/TSX, or add to your settings file:
 
 ```json [settings]
 {
-	"lsp": {
-		"deno": {
-			"settings": {
-				"deno": {
-					"enable": true
-				}
-			}
-		}
-	},
-	"languages": {
-		"JavaScript": {
-			"language_servers": [
-				"deno",
-				"!typescript-language-server",
-				"!vtsls",
-				"!eslint"
-			],
-			"formatter": "language_server"
-		},
-		"TypeScript": {
-			"language_servers": [
-				"deno",
-				"!typescript-language-server",
-				"!vtsls",
-				"!eslint"
-			],
-			"formatter": "language_server"
-		},
-		"TSX": {
-			"language_servers": [
-				"deno",
-				"!typescript-language-server",
-				"!vtsls",
-				"!eslint"
-			],
-			"formatter": "language_server"
-		}
-	}
+  "lsp": {
+    "deno": {
+      "settings": {
+        "deno": {
+          "enable": true
+        }
+      }
+    }
+  },
+  "languages": {
+    "JavaScript": {
+      "language_servers": [
+        "deno",
+        "!typescript-language-server",
+        "!vtsls",
+        "!eslint"
+      ],
+      "formatter": "language_server"
+    },
+    "TypeScript": {
+      "language_servers": [
+        "deno",
+        "!typescript-language-server",
+        "!vtsls",
+        "!eslint"
+      ],
+      "formatter": "language_server"
+    },
+    "TSX": {
+      "language_servers": [
+        "deno",
+        "!typescript-language-server",
+        "!vtsls",
+        "!eslint"
+      ],
+      "formatter": "language_server"
+    }
+  }
 }
 ```
 
@@ -107,17 +107,17 @@ To debug deno programs, add this to `.zed/debug.json`
 
 ```json [debug]
 [
-	{
-		"adapter": "JavaScript",
-		"label": "Deno",
-		"request": "launch",
-		"type": "pwa-node",
-		"cwd": "$ZED_WORKTREE_ROOT",
-		"program": "$ZED_FILE",
-		"runtimeExecutable": "deno",
-		"runtimeArgs": ["run", "--allow-all", "--inspect-wait"],
-		"attachSimplePort": 9229
-	}
+  {
+    "adapter": "JavaScript",
+    "label": "Deno",
+    "request": "launch",
+    "type": "pwa-node",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "program": "$ZED_FILE",
+    "runtimeExecutable": "deno",
+    "runtimeArgs": ["run", "--allow-all", "--inspect-wait"],
+    "attachSimplePort": 9229
+  }
 ]
 ```
 
@@ -127,11 +127,11 @@ To run deno tasks like tests from the ui, add this to `.zed/tasks.json`
 
 ```json [tasks]
 [
-	{
-		"label": "deno test",
-		"command": "deno test -A $ZED_FILE",
-		"tags": ["js-test"]
-	}
+  {
+    "label": "deno test",
+    "command": "deno test -A $ZED_FILE",
+    "tags": ["js-test"]
+  }
 ]
 ```
 

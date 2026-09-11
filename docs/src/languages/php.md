@@ -60,17 +60,17 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"PHP": {
-			"language_servers": [
-				"intelephense",
-				"!phpactor",
-				"!phptools",
-				"!phpantom",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "PHP": {
+      "language_servers": [
+        "intelephense",
+        "!phpactor",
+        "!phptools",
+        "!phpantom",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -84,13 +84,13 @@ licence key as an initialization option. To do this, add the following to your
 
 ```json [settings]
 {
-	"lsp": {
-		"intelephense": {
-			"initialization_options": {
-				"licenceKey": "/path/to/licence.txt"
-			}
-		}
-	}
+  "lsp": {
+    "intelephense": {
+      "initialization_options": {
+        "licenceKey": "/path/to/licence.txt"
+      }
+    }
+  }
 }
 ```
 
@@ -107,17 +107,17 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"PHP": {
-			"language_servers": [
-				"phptools",
-				"!intelephense",
-				"!phpactor",
-				"!phpantom",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "PHP": {
+      "language_servers": [
+        "phptools",
+        "!intelephense",
+        "!phpactor",
+        "!phpantom",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -126,13 +126,13 @@ To use the premium features, you can add your license in
 
 ```json [settings]
 {
-	"lsp": {
-		"phptools": {
-			"initialization_options": {
-				"0": "your_license_key"
-			}
-		}
-	}
+  "lsp": {
+    "phptools": {
+      "initialization_options": {
+        "0": "your_license_key"
+      }
+    }
+  }
 }
 ```
 
@@ -154,17 +154,17 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"PHP": {
-			"language_servers": [
-				"phpactor",
-				"!intelephense",
-				"!phptools",
-				"!phpantom",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "PHP": {
+      "language_servers": [
+        "phpactor",
+        "!intelephense",
+        "!phptools",
+        "!phpantom",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -176,17 +176,17 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"PHP": {
-			"language_servers": [
-				"phpantom",
-				"!phpactor",
-				"!intelephense",
-				"!phptools",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "PHP": {
+      "language_servers": [
+        "phpantom",
+        "!phpactor",
+        "!intelephense",
+        "!phptools",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -204,19 +204,19 @@ ways to use it:
 
 ```json
 [
-	{
-		"label": "PHP: Listen to Xdebug",
-		"adapter": "Xdebug",
-		"request": "launch",
-		"port": 9003
-	},
-	{
-		"label": "PHP: Debug this test",
-		"adapter": "Xdebug",
-		"request": "launch",
-		"program": "vendor/bin/phpunit",
-		"args": ["--filter", "$ZED_SYMBOL"]
-	}
+  {
+    "label": "PHP: Listen to Xdebug",
+    "adapter": "Xdebug",
+    "request": "launch",
+    "port": 9003
+  },
+  {
+    "label": "PHP: Debug this test",
+    "adapter": "Xdebug",
+    "request": "launch",
+    "program": "vendor/bin/phpunit",
+    "args": ["--filter", "$ZED_SYMBOL"]
+  }
 ]
 ```
 
@@ -238,22 +238,22 @@ where to look for CSS classes by adding the following to your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"includeLanguages": {
-					"php": "html"
-				},
-				"experimental": {
-					"classRegex": [
-						"class=\"([^\"]*)\"",
-						"class='([^']*)'",
-						"class=\\\"([^\\\"]*)\\\""
-					]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "includeLanguages": {
+          "php": "html"
+        },
+        "experimental": {
+          "classRegex": [
+            "class=\"([^\"]*)\"",
+            "class='([^']*)'",
+            "class=\\\"([^\\\"]*)\\\""
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -276,24 +276,24 @@ directives:
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"includeLanguages": {
-					"php": "html",
-					"blade": "html"
-				},
-				"experimental": {
-					"classRegex": [
-						"class=\"([^\"]*)\"",
-						"class='([^']*)'",
-						"class=\\\"([^\\\"]*)\\\"",
-						"@class\\(\\[([^\\]]*)\\]\\)"
-					]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "includeLanguages": {
+          "php": "html",
+          "blade": "html"
+        },
+        "experimental": {
+          "classRegex": [
+            "class=\"([^\"]*)\"",
+            "class='([^']*)'",
+            "class=\\\"([^\\\"]*)\\\"",
+            "@class\\(\\[([^\\]]*)\\]\\)"
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 

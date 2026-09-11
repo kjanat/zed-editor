@@ -38,7 +38,7 @@ remove all granted capabilities:
 
 ```json
 {
-	"granted_extension_capabilities": []
+  "granted_extension_capabilities": []
 }
 ```
 

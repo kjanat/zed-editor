@@ -44,11 +44,11 @@ systems). To use a different shell:
 
 ```json [settings]
 {
-	"terminal": {
-		"shell": {
-			"program": "/bin/zsh"
-		}
-	}
+  "terminal": {
+    "shell": {
+      "program": "/bin/zsh"
+    }
+  }
 }
 ```
 
@@ -56,14 +56,14 @@ To pass arguments to your shell:
 
 ```json [settings]
 {
-	"terminal": {
-		"shell": {
-			"with_arguments": {
-				"program": "/bin/bash",
-				"args": ["--login"]
-			}
-		}
-	}
+  "terminal": {
+    "shell": {
+      "with_arguments": {
+        "program": "/bin/bash",
+        "args": ["--login"]
+      }
+    }
+  }
 }
 ```
 
@@ -81,9 +81,9 @@ Control where new terminals start:
 
 ```json [settings]
 {
-	"terminal": {
-		"working_directory": "first_project_directory"
-	}
+  "terminal": {
+    "working_directory": "first_project_directory"
+  }
 }
 ```
 
@@ -93,12 +93,12 @@ Add environment variables to all terminal sessions:
 
 ```json [settings]
 {
-	"terminal": {
-		"env": {
-			"EDITOR": "zed --wait",
-			"MY_VAR": "value"
-		}
-	}
+  "terminal": {
+    "env": {
+      "EDITOR": "zed --wait",
+      "MY_VAR": "value"
+    }
+  }
 }
 ```
 
@@ -113,14 +113,14 @@ directories:
 
 ```json [settings]
 {
-	"terminal": {
-		"detect_venv": {
-			"on": {
-				"directories": [".venv", "venv"],
-				"activate_script": "default"
-			}
-		}
-	}
+  "terminal": {
+    "detect_venv": {
+      "on": {
+        "directories": [".venv", "venv"],
+        "activate_script": "default"
+      }
+    }
+  }
 }
 ```
 
@@ -131,9 +131,9 @@ To disable virtual environment detection:
 
 ```json [settings]
 {
-	"terminal": {
-		"detect_venv": "off"
-	}
+  "terminal": {
+    "detect_venv": "off"
+  }
 }
 ```
 
@@ -143,14 +143,14 @@ The terminal can use different fonts from the editor:
 
 ```json [settings]
 {
-	"terminal": {
-		"font_family": "JetBrains Mono",
-		"font_size": 14,
-		"font_features": {
-			"calt": false
-		},
-		"line_height": "comfortable"
-	}
+  "terminal": {
+    "font_family": "JetBrains Mono",
+    "font_size": 14,
+    "font_features": {
+      "calt": false
+    },
+    "line_height": "comfortable"
+  }
 }
 ```
 
@@ -167,10 +167,10 @@ Configure cursor appearance:
 
 ```json [settings]
 {
-	"terminal": {
-		"cursor_shape": "bar",
-		"blinking": "on"
-	}
+  "terminal": {
+    "cursor_shape": "bar",
+    "blinking": "on"
+  }
 }
 ```
 
@@ -186,9 +186,9 @@ exact theme colors:
 
 ```json [settings]
 {
-	"terminal": {
-		"minimum_contrast": 0
-	}
+  "terminal": {
+    "minimum_contrast": 0
+  }
 }
 ```
 
@@ -209,9 +209,9 @@ Adjust scroll speed with:
 
 ```json [settings]
 {
-	"terminal": {
-		"scroll_multiplier": 3.0
-	}
+  "terminal": {
+    "scroll_multiplier": 3.0
+  }
 }
 ```
 
@@ -228,9 +228,9 @@ Automatically copy selected text to the clipboard:
 
 ```json [settings]
 {
-	"terminal": {
-		"copy_on_select": true
-	}
+  "terminal": {
+    "copy_on_select": true
+  }
 }
 ```
 
@@ -240,9 +240,9 @@ By default, text stays selected after copying. To clear the selection:
 
 ```json [settings]
 {
-	"terminal": {
-		"keep_selection_on_copy": false
-	}
+  "terminal": {
+    "keep_selection_on_copy": false
+  }
 }
 ```
 
@@ -270,9 +270,9 @@ Meta:
 
 ```json [settings]
 {
-	"terminal": {
-		"option_as_meta": true
-	}
+  "terminal": {
+    "option_as_meta": true
+  }
 }
 ```
 
@@ -286,9 +286,9 @@ applications like `vim` or `less`:
 
 ```json [settings]
 {
-	"terminal": {
-		"alternate_scroll": "on"
-	}
+  "terminal": {
+    "alternate_scroll": "on"
+  }
 }
 ```
 
@@ -312,9 +312,9 @@ prefer those clicks to be forwarded to the application instead, disable
 
 ```json
 {
-	"terminal": {
-		"open_links_in_mouse_mode": false
-	}
+  "terminal": {
+    "open_links_in_mouse_mode": false
+  }
 }
 ```
 
@@ -324,9 +324,9 @@ prefer those clicks to be forwarded to the application instead, disable
 
 ```json [settings]
 {
-	"terminal": {
-		"dock": "bottom"
-	}
+  "terminal": {
+    "dock": "bottom"
+  }
 }
 ```
 
@@ -336,10 +336,10 @@ Options: `"bottom"` (default), `"left"`, `"right"`
 
 ```json [settings]
 {
-	"terminal": {
-		"default_width": 640,
-		"default_height": 320
-	}
+  "terminal": {
+    "default_width": 640,
+    "default_height": 320
+  }
 }
 ```
 
@@ -349,9 +349,9 @@ Hide the terminal button in the status bar:
 
 ```json [settings]
 {
-	"terminal": {
-		"button": false
-	}
+  "terminal": {
+    "button": false
+  }
 }
 ```
 
@@ -361,11 +361,11 @@ Show the terminal title in a breadcrumb toolbar:
 
 ```json [settings]
 {
-	"terminal": {
-		"toolbar": {
-			"breadcrumbs": true
-		}
-	}
+  "terminal": {
+    "toolbar": {
+      "breadcrumbs": true
+    }
+  }
 }
 ```
 
@@ -398,11 +398,11 @@ the terminal:
 
 ```json [keymap]
 {
-	"context": "Terminal",
-	"bindings": {
-		"alt-left": ["terminal::SendText", "\u001bb"],
-		"ctrl-c": ["terminal::SendKeystroke", "ctrl-c"]
-	}
+  "context": "Terminal",
+  "bindings": {
+    "alt-left": ["terminal::SendText", "\u001bb"],
+    "ctrl-c": ["terminal::SendKeystroke", "ctrl-c"]
+  }
 }
 ```
 

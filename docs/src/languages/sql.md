@@ -59,10 +59,10 @@ To provide these, create a `.sql-formatter.json` file in your project:
 
 ```json
 {
-	"language": "postgresql",
-	"tabWidth": 2,
-	"keywordCase": "upper",
-	"linesBetweenQueries": 2
+  "language": "postgresql",
+  "tabWidth": 2,
+  "keywordCase": "upper",
+  "linesBetweenQueries": 2
 }
 ```
 
@@ -71,14 +71,14 @@ configuration:
 
 ```json [settings]
 {
-	"languages": {
-		"SQL": {
-			"formatter": {
-				"external": {
-					"command": "sql-formatter"
-				}
-			}
-		}
-	}
+  "languages": {
+    "SQL": {
+      "formatter": {
+        "external": {
+          "command": "sql-formatter"
+        }
+      }
+    }
+  }
 }
 ```

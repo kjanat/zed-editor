@@ -97,7 +97,7 @@ You can also add this to your settings file:
 
 ```json [settings]
 {
-	"disable_ai": true
+  "disable_ai": true
 }
 ```
 

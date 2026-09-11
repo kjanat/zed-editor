@@ -66,18 +66,18 @@ Here's how you can customize your settings file
 
 ```json [settings]
 {
-	"agent": {
-		"default_model": {
-			"provider": "zed.dev",
-			"model": "claude-sonnet-4-5"
-		},
-		"inline_alternatives": [
-			{
-				"provider": "zed.dev",
-				"model": "gpt-5-mini"
-			}
-		]
-	}
+  "agent": {
+    "default_model": {
+      "provider": "zed.dev",
+      "model": "claude-sonnet-4-5"
+    },
+    "inline_alternatives": [
+      {
+        "provider": "zed.dev",
+        "model": "gpt-5-mini"
+      }
+    ]
+  }
 }
 ```
 
@@ -95,22 +95,22 @@ and another one with Gemini 3 Flash.
 
 ```json [settings]
 {
-	"agent": {
-		"default_model": {
-			"provider": "zed.dev",
-			"model": "claude-sonnet-4-5"
-		},
-		"inline_alternatives": [
-			{
-				"provider": "zed.dev",
-				"model": "gpt-5-mini"
-			},
-			{
-				"provider": "zed.dev",
-				"model": "gemini-3-flash"
-			}
-		]
-	}
+  "agent": {
+    "default_model": {
+      "provider": "zed.dev",
+      "model": "claude-sonnet-4-5"
+    },
+    "inline_alternatives": [
+      {
+        "provider": "zed.dev",
+        "model": "gpt-5-mini"
+      },
+      {
+        "provider": "zed.dev",
+        "model": "gemini-3-flash"
+      }
+    ]
+  }
 }
 ```
 
@@ -134,14 +134,14 @@ format in your keymap:
 
 ```json [keymap]
 [
-	{
-		"context": "Editor && mode == full",
-		"bindings": {
-			"ctrl-shift-enter": [
-				"assistant::InlineAssist",
-				{ "prompt": "Build a snake game" }
-			]
-		}
-	}
+  {
+    "context": "Editor && mode == full",
+    "bindings": {
+      "ctrl-shift-enter": [
+        "assistant::InlineAssist",
+        { "prompt": "Build a snake game" }
+      ]
+    }
+  }
 ]
 ```

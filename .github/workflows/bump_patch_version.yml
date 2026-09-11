@@ -59,7 +59,7 @@ jobs:
               echo "tag_suffix=$tag_suffix"
           } >> "$GITHUB_OUTPUT"
       - name: steps::install_cargo_edit
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: cargo-edit
       - id: bump-version

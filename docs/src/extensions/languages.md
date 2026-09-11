@@ -607,15 +607,15 @@ your settings file:
 
 ```json [settings]
 {
-	// Enable semantic tokens globally, backed by tree-sitter highlights for each language:
-	"semantic_tokens": "combined",
-	// Or, specify per-language:
-	"languages": {
-		"Rust": {
-			// No tree-sitter, only LSP semantic tokens:
-			"semantic_tokens": "full"
-		}
-	}
+  // Enable semantic tokens globally, backed by tree-sitter highlights for each language:
+  "semantic_tokens": "combined",
+  // Or, specify per-language:
+  "languages": {
+    "Rust": {
+      // No tree-sitter, only LSP semantic tokens:
+      "semantic_tokens": "full"
+    }
+  }
 }
 ```
 
@@ -646,18 +646,18 @@ settings — a JSON array of rule objects:
 
 ```json
 [
-	{
-		"token_type": "lifetime",
-		"style": ["lifetime"]
-	},
-	{
-		"token_type": "builtinType",
-		"style": ["type"]
-	},
-	{
-		"token_type": "selfKeyword",
-		"style": ["variable.special"]
-	}
+  {
+    "token_type": "lifetime",
+    "style": ["lifetime"]
+  },
+  {
+    "token_type": "builtinType",
+    "style": ["type"]
+  },
+  {
+    "token_type": "selfKeyword",
+    "style": ["variable.special"]
+  }
 ]
 ```
 
@@ -676,26 +676,26 @@ styles in your theme.
 
 ```json [settings]
 {
-	"global_lsp_settings": {
-		"semantic_token_rules": [
-			{
-				// Highlight macros as keywords.
-				"token_type": "macro",
-				"style": ["syntax.keyword"]
-			},
-			{
-				// Highlight unresolved references in bold red.
-				"token_type": "unresolvedReference",
-				"foreground_color": "#c93f3f",
-				"font_weight": "bold"
-			},
-			{
-				// Underline all mutable variables/references/etc.
-				"token_modifiers": ["mutable"],
-				"underline": true
-			}
-		]
-	}
+  "global_lsp_settings": {
+    "semantic_token_rules": [
+      {
+        // Highlight macros as keywords.
+        "token_type": "macro",
+        "style": ["syntax.keyword"]
+      },
+      {
+        // Highlight unresolved references in bold red.
+        "token_type": "unresolvedReference",
+        "foreground_color": "#c93f3f",
+        "font_weight": "bold"
+      },
+      {
+        // Underline all mutable variables/references/etc.
+        "token_modifiers": ["mutable"],
+        "underline": true
+      }
+    ]
+  }
 }
 ```
 

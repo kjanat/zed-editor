@@ -54,9 +54,9 @@ whenever Zed creates a Terminal Thread shell:
 
 ```json [settings]
 {
-	"agent": {
-		"terminal_init_command": "claude"
-	}
+  "agent": {
+    "terminal_init_command": "claude"
+  }
 }
 ```
 
@@ -107,7 +107,7 @@ Code user settings:
 
 ```json
 {
-	"preferredNotifChannel": "terminal_bell"
+  "preferredNotifChannel": "terminal_bell"
 }
 ```
 
@@ -132,11 +132,11 @@ your attention. To enable notifications in Zed Terminal Threads, add
 
 ```json [settings]
 {
-	"terminal": {
-		"env": {
-			"AMP_FORCE_BEL": "1"
-		}
-	}
+  "terminal": {
+    "env": {
+      "AMP_FORCE_BEL": "1"
+    }
+  }
 }
 ```
 
@@ -152,15 +152,15 @@ Create `.opencode/plugins/zed-bell.js` in your project, or
 
 ```js
 export const ZedBell = async () => {
-	return {
-		event: async ({ event }) => {
-			if (process.env.OPENCODE_CLIENT === 'acp') return;
+  return {
+    event: async ({ event }) => {
+      if (process.env.OPENCODE_CLIENT === 'acp') return;
 
-			if (event.type === 'session.idle' || event.type === 'permission.asked') {
-				process.stdout.write('\x07');
-			}
-		},
-	};
+      if (event.type === 'session.idle' || event.type === 'permission.asked') {
+        process.stdout.write('\x07');
+      }
+    },
+  };
 };
 ```
 
@@ -176,9 +176,9 @@ Pi can use an extension to emit a notification when it finishes a turn. Create
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 export default function(pi: ExtensionAPI) {
-	pi.on('agent_end', async () => {
-		process.stdout.write('\x07');
-	});
+  pi.on('agent_end', async () => {
+    process.stdout.write('\x07');
+  });
 }
 ```
 

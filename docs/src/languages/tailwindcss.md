@@ -34,16 +34,16 @@ language, you can configure the language server settings and add them to the
 
 ```json [settings]
 {
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"classFunctions": ["cva", "cx"],
-				"experimental": {
-					"classRegex": ["[cls|className]\\s\\:\\=\\s\"([^\"]*)"]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "classFunctions": ["cva", "cx"],
+        "experimental": {
+          "classRegex": ["[cls|className]\\s\\:\\=\\s\"([^\"]*)"]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -60,15 +60,15 @@ zed::OpenSettings}) under Languages > CSS, or add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"CSS": {
-			"language_servers": [
-				"tailwindcss-intellisense-css",
-				"!vscode-css-language-server",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "CSS": {
+      "language_servers": [
+        "tailwindcss-intellisense-css",
+        "!vscode-css-language-server",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -86,6 +86,6 @@ automatically:
 ```json
 // .prettierrc
 {
-	"plugins": ["prettier-plugin-tailwindcss"]
+  "plugins": ["prettier-plugin-tailwindcss"]
 }
 ```

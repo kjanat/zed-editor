@@ -35,11 +35,11 @@ current system mode.
 
 ```json [settings]
 {
-	"icon_theme": {
-		"mode": "system",
-		"light": "Light Icon Theme",
-		"dark": "Dark Icon Theme"
-	}
+  "icon_theme": {
+    "mode": "system",
+    "light": "Light Icon Theme",
+    "dark": "Dark Icon Theme"
+  }
 }
 ```
 

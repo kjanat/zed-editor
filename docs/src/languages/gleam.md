@@ -27,20 +27,20 @@ where it should look for CSS classes by adding the following to your
 
 ```json [settings]
 {
-	"languages": {
-		"Gleam": {
-			"language_servers": ["tailwindcss-language-server", "..."]
-		}
-	},
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"experimental": {
-					"classRegex": ["\"([^\"]*)\""]
-				}
-			}
-		}
-	}
+  "languages": {
+    "Gleam": {
+      "language_servers": ["tailwindcss-language-server", "..."]
+    }
+  },
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "experimental": {
+          "classRegex": ["\"([^\"]*)\""]
+        }
+      }
+    }
+  }
 }
 ```
 

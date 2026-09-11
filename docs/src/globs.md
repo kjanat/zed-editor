@@ -132,10 +132,10 @@ that you wanted to recognize as a Jinja2 template you could use the following:
 
 ```json [settings]
 {
-	"file_types": {
-		"C++": ["[cC]"],
-		"Jinja2": ["**/templates/*.html"]
-	}
+  "file_types": {
+    "C++": ["[cC]"],
+    "Jinja2": ["**/templates/*.html"]
+  }
 }
 ```
 

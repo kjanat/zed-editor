@@ -56,9 +56,9 @@ generated Git commit messages:
 
 ```json [settings]
 {
-	"agent": {
-		"commit_message_instructions": "Use the Conventional Commits format: <type>(<scope>): <description>."
-	}
+  "agent": {
+    "commit_message_instructions": "Use the Conventional Commits format: <type>(<scope>): <description>."
+  }
 }
 ```
 
@@ -77,12 +77,12 @@ automatic compaction in `settings.json`:
 
 ```json [settings]
 {
-	"agent": {
-		"auto_compact": {
-			"enabled": true,
-			"threshold": "90%"
-		}
-	}
+  "agent": {
+    "auto_compact": {
+      "enabled": true,
+      "threshold": "90%"
+    }
+  }
 }
 ```
 
@@ -109,16 +109,16 @@ different model:
 
 ```json [settings]
 {
-	"agent": {
-		"default_model": {
-			"provider": "anthropic",
-			"model": "claude-opus-4-6"
-		},
-		"compaction_model": {
-			"provider": "anthropic",
-			"model": "claude-sonnet-4-5"
-		}
-	}
+  "agent": {
+    "default_model": {
+      "provider": "anthropic",
+      "model": "claude-opus-4-6"
+    },
+    "compaction_model": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5"
+    }
+  }
 }
 ```
 
@@ -191,15 +191,15 @@ model, or a specific provider/model pair.
 
 ```json [settings]
 {
-	"agent": {
-		"model_parameters": [
-			{
-				"provider": "anthropic",
-				"model": "claude-sonnet-4-5",
-				"temperature": 0.2
-			}
-		]
-	}
+  "agent": {
+    "model_parameters": [
+      {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5",
+        "temperature": 0.2
+      }
+    ]
+  }
 }
 ```
 

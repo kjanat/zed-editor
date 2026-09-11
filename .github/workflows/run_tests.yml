@@ -112,7 +112,7 @@ jobs:
             fi
           fi
 
-          check_pattern "run_action_checks" '^\.github/(workflows/|actions/|actionlint.yml)|tooling/xtask|script/' -qP
+          check_pattern "run_action_checks" '^\.github/(workflows/|actions/|actionlint\.ya?ml$)|tooling/xtask|script/' -qP
           check_pattern "run_docs" '^(docs/|crates/.*\.rs)' -qP
           check_pattern "run_licenses" '^(Cargo.lock|script/.*licenses)' -qP
           check_pattern "run_tests" '^(docs/|script/update_top_ranking_issues/|\.github/(ISSUE_TEMPLATE|workflows/(?!run_tests))|extensions/)' -qvP
@@ -157,7 +157,7 @@ jobs:
           cache: rust
           path: ~/.rustup
       - name: steps::setup_pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: "9"
       - name: steps::prettier
@@ -401,7 +401,7 @@ jobs:
           check-latest: true
           package-manager-cache: false
       - name: steps::cargo_install_nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: nextest
       - name: steps::clear_target_dir_if_large
@@ -458,7 +458,7 @@ jobs:
           check-latest: true
           package-manager-cache: false
       - name: steps::cargo_install_nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: nextest
       - name: steps::clear_target_dir_if_large
@@ -703,7 +703,7 @@ jobs:
           cache: rust
           path: ~/.rustup
       - name: run_tests::check_dependencies::install_cargo_shear
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: cargo-shear@1.13.4
       - name: run_tests::check_dependencies::run_cargo_shear
@@ -836,7 +836,7 @@ jobs:
         env:
           ACTIONLINT_BIN: ${{ steps.get_actionlint.outputs.executable }}
       - name: run_tests::check_scripts::run_zizmor
-        uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
           advanced-security: false
           min-severity: high

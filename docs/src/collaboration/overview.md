@@ -49,10 +49,10 @@ with the selected devices.
 
 ```json [settings]
 {
-	"audio": {
-		"experimental.output_audio_device": "Device Name (device-id)",
-		"experimental.input_audio_device": "Device Name (device-id)"
-	}
+  "audio": {
+    "experimental.output_audio_device": "Device Name (device-id)",
+    "experimental.input_audio_device": "Device Name (device-id)"
+  }
 }
 ```
 

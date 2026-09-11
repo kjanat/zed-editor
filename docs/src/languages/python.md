@@ -105,17 +105,17 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"Python": {
-			"language_servers": [
-				// Enable ty, disable basedpyright, and enable all
-				// other registered language servers (ruff, pylsp, pyright).
-				"ty",
-				"!basedpyright",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "Python": {
+      "language_servers": [
+        // Enable ty, disable basedpyright, and enable all
+        // other registered language servers (ruff, pylsp, pyright).
+        "ty",
+        "!basedpyright",
+        "..."
+      ]
+    }
+  }
 }
 ```
 
@@ -179,20 +179,20 @@ You can use the following configuration:
 
 ```json [settings]
 {
-	"lsp": {
-		"basedpyright": {
-			"settings": {
-				"basedpyright": {
-					"analysis": {
-						"diagnosticMode": "workspace",
-						"inlayHints": {
-							"callArgumentNames": false
-						}
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    "basedpyright": {
+      "settings": {
+        "basedpyright": {
+          "analysis": {
+            "diagnosticMode": "workspace",
+            "inlayHints": {
+              "callArgumentNames": false
+            }
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -212,8 +212,8 @@ the `strict` type-checking mode and not to issue diagnostics for any files in
 
 ```json
 {
-	"typeCheckingMode": "strict",
-	"ignore": ["**/__pycache__"]
+  "typeCheckingMode": "strict",
+  "ignore": ["**/__pycache__"]
 }
 ```
 
@@ -297,18 +297,18 @@ Python, or add to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"Python": {
-			"code_actions_on_format": {
-				"source.organizeImports.ruff": true
-			},
-			"formatter": {
-				"language_server": {
-					"name": "ruff"
-				}
-			}
-		}
-	}
+  "languages": {
+    "Python": {
+      "code_actions_on_format": {
+        "source.organizeImports.ruff": true
+      },
+      "formatter": {
+        "language_server": {
+          "name": "ruff"
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -321,21 +321,21 @@ to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"Python": {
-			"code_actions_on_format": {
-				// Phase 1: Ruff still handles organize imports
-				"source.organizeImports.ruff": true
-			},
-			"formatter": {
-				// Phase 2: Black handles formatting
-				"external": {
-					"command": "black",
-					"arguments": ["--stdin-filename", "{buffer_path}", "-"]
-				}
-			}
-		}
-	}
+  "languages": {
+    "Python": {
+      "code_actions_on_format": {
+        // Phase 1: Ruff still handles organize imports
+        "source.organizeImports.ruff": true
+      },
+      "formatter": {
+        // Phase 2: Black handles formatting
+        "external": {
+          "command": "black",
+          "arguments": ["--stdin-filename", "{buffer_path}", "-"]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -351,11 +351,11 @@ to your settings file:
 
 ```json [settings]
 {
-	"languages": {
-		"Python": {
-			"format_on_save": "off"
-		}
-	}
+  "languages": {
+    "Python": {
+      "format_on_save": "off"
+    }
+  }
 }
 ```
 
@@ -374,15 +374,15 @@ disable all Ruff lints in Zed (while still using Ruff as a formatter):
 
 ```json [settings]
 {
-	"lsp": {
-		"ruff": {
-			"initialization_options": {
-				"settings": {
-					"exclude": ["*"]
-				}
-			}
-		}
-	}
+  "lsp": {
+    "ruff": {
+      "initialization_options": {
+        "settings": {
+          "exclude": ["*"]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -453,12 +453,12 @@ gives you more control over how Zed runs and debugs your code.
 
 ```json [debug]
 [
-	{
-		"label": "Python Active File",
-		"adapter": "Debugpy",
-		"program": "$ZED_FILE",
-		"request": "launch"
-	}
+  {
+    "label": "Python Active File",
+    "adapter": "Debugpy",
+    "program": "$ZED_FILE",
+    "request": "launch"
+  }
 ]
 ```
 
@@ -485,27 +485,27 @@ requirements.txt
 
 ```json [debug]
 [
-	{
-		"label": "Python: Flask",
-		"adapter": "Debugpy",
-		"request": "launch",
-		"module": "app",
-		"cwd": "$ZED_WORKTREE_ROOT",
-		"env": {
-			"FLASK_APP": "app",
-			"FLASK_DEBUG": "1"
-		},
-		"args": [
-			"run",
-			"--reload", // Enables Flask reloader that watches for file changes
-			"--debugger" // Enables Flask debugger
-		],
-		"autoReload": {
-			"enable": true
-		},
-		"jinja": true,
-		"justMyCode": true
-	}
+  {
+    "label": "Python: Flask",
+    "adapter": "Debugpy",
+    "request": "launch",
+    "module": "app",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "env": {
+      "FLASK_APP": "app",
+      "FLASK_DEBUG": "1"
+    },
+    "args": [
+      "run",
+      "--reload", // Enables Flask reloader that watches for file changes
+      "--debugger" // Enables Flask debugger
+    ],
+    "autoReload": {
+      "enable": true
+    },
+    "jinja": true,
+    "justMyCode": true
+  }
 ]
 ```
 
@@ -532,14 +532,14 @@ my_django_project/
 
 ```json [debug]
 [
-	{
-		"label": "Python: Django",
-		"adapter": "Debugpy",
-		"request": "launch",
-		"program": "manage.py",
-		"args": ["runserver"],
-		"django": true
-	}
+  {
+    "label": "Python: Django",
+    "adapter": "Debugpy",
+    "request": "launch",
+    "program": "manage.py",
+    "args": ["runserver"],
+    "django": true
+  }
 ]
 ```
 

@@ -111,11 +111,11 @@ settings.json:
 
 ```json
 {
-	"languages": {
-		"Markdown": {
-			"word_diff_enabled": false
-		}
-	}
+  "languages": {
+    "Markdown": {
+      "word_diff_enabled": false
+    }
+  }
 }
 ```
 
@@ -133,7 +133,7 @@ To change the default, add this to your `settings.json`:
 
 ```json
 {
-	"diff_view_style": "unified"
+  "diff_view_style": "unified"
 }
 ```
 
@@ -431,12 +431,12 @@ more information.
 
 ```json [settings]
 {
-	"agent": {
-		"commit_message_model": {
-			"provider": "anthropic",
-			"model": "claude-4-5-haiku"
-		}
-	}
+  "agent": {
+    "commit_message_model": {
+      "provider": "anthropic",
+      "model": "claude-4-5-haiku"
+    }
+  }
 }
 ```
 
@@ -449,9 +449,9 @@ To add custom instructions that apply only to commit message generation, use the
 
 ```json [settings]
 {
-	"agent": {
-		"commit_message_instructions": "Use the Conventional Commits format: <type>(<scope>): <description>."
-	}
+  "agent": {
+    "commit_message_instructions": "Use the Conventional Commits format: <type>(<scope>): <description>."
+  }
 }
 ```
 
@@ -490,13 +490,13 @@ permalinks resolve to your domain:
 
 ```json [settings]
 {
-	"git_hosting_providers": [
-		{
-			"provider": "gitlab",
-			"name": "Corp GitLab",
-			"base_url": "https://git.example.corp"
-		}
-	]
+  "git_hosting_providers": [
+    {
+      "provider": "gitlab",
+      "name": "Corp GitLab",
+      "base_url": "https://git.example.corp"
+    }
+  ]
 }
 ```
 
