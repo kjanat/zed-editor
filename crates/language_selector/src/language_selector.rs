@@ -156,13 +156,14 @@ impl LanguageSelectorDelegate {
         }
     }
 
-    fn language_data_for_match(&self, mat: &StringMatch, cx: &App) -> (String, Option<Icon>) {
+    fn language_data_for_match(
+        &self,
+        mat: &StringMatch,
+        cx: &App,
+    ) -> (String, Option<Icon>, Option<Arc<str>>) {
         let mut label = mat.string.clone();
-        if self
-            .language_registry
-            .language_load_error(&mat.string)
-            .is_some()
-        {
+        let load_error = self.language_registry.language_load_error(&mat.string);
+        if load_error.is_some() {
             label.push_str(" (failed to load)");
         }
         let buffer_language = self.buffer.read(cx).language();
@@ -175,7 +176,7 @@ impl LanguageSelectorDelegate {
             let icon = need_icon
                 .then(|| self.language_icon(&buffer_language.config().matcher, cx))
                 .flatten();
-            (label, icon)
+            (label, icon, load_error)
         } else {
             let icon = need_icon
                 .then(|| {
@@ -187,7 +188,7 @@ impl LanguageSelectorDelegate {
                         })
                 })
                 .flatten();
-            (label, icon)
+            (label, icon, load_error)
         }
     }
 
@@ -326,17 +327,16 @@ impl PickerDelegate for LanguageSelectorDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> Option<Self::ListItem> {
         let mat = &self.matches.get(ix)?;
-        let (label, language_icon) = self.language_data_for_match(mat, cx);
+        let (label, language_icon, load_error) = self.language_data_for_match(mat, cx);
         Some(
             ListItem::new(ix)
                 .inset(true)
                 .spacing(ListItemSpacing::Sparse)
                 .toggle_state(selected)
                 .start_slot::<Icon>(language_icon)
-                .when_some(
-                    self.language_registry.language_load_error(&mat.string),
-                    |item, error| item.tooltip(Tooltip::text(error.to_string())),
-                )
+                .when_some(load_error, |item, error| {
+                    item.tooltip(Tooltip::text(error.to_string()))
+                })
                 .child(HighlightedLabel::new(label, mat.positions.clone())),
         )
     }
@@ -590,17 +590,9 @@ mod tests {
                 .iter()
                 .find(|matched| matched.string == "Broken")
                 .expect("failed language must remain in the picker");
-            assert_eq!(
-                picker.delegate.language_data_for_match(matched, cx).0,
-                "Broken (failed to load)"
-            );
-            assert!(
-                picker
-                    .delegate
-                    .language_registry
-                    .language_load_error("Broken")
-                    .is_some_and(|error| error.contains("missing"))
-            );
+            let (label, _, load_error) = picker.delegate.language_data_for_match(matched, cx);
+            assert_eq!(label, "Broken (failed to load)");
+            assert!(load_error.is_some_and(|error| error.contains("missing")));
         });
         close_selector(&workspace, cx);
         registry.register_test_language(LanguageConfig {
@@ -616,10 +608,9 @@ mod tests {
                 .iter()
                 .find(|matched| matched.string == "Broken")
                 .expect("recovered language must remain in the picker");
-            assert_eq!(
-                picker.delegate.language_data_for_match(matched, cx).0,
-                "Broken"
-            );
+            let (label, _, load_error) = picker.delegate.language_data_for_match(matched, cx);
+            assert_eq!(label, "Broken");
+            assert!(load_error.is_none());
         });
     }
 

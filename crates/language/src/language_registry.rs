@@ -526,13 +526,23 @@ impl LanguageRegistry {
 
         let mut state = self.state.write();
         for (name, path) in grammars {
-            state.grammars.insert(
+            let previous = state.grammars.insert(
                 GrammarKey {
-                    name,
+                    name: name.clone(),
                     extension_id: Some(extension_id.clone()),
                 },
                 AvailableGrammar::Unloaded(path),
             );
+            if let Some(AvailableGrammar::Loading(_, waiters)) = previous {
+                let error = Arc::new(anyhow!(
+                    "grammar {name} from extension {extension_id} was re-registered; retry loading the language"
+                ));
+                for waiter in waiters {
+                    if waiter.send(Err(error.clone())).is_err() {
+                        log::trace!("grammar {name} load waiter was already dropped");
+                    }
+                }
+            }
         }
         state.version += 1;
         state.reload_count += 1;
@@ -1428,6 +1438,39 @@ mod tests {
                     .count(),
                 1
             );
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn reregistered_grammar_notifies_waiters_and_loads_replacement(cx: &mut TestAppContext) {
+        let result: Result<()> = async {
+            let tree = grammar_fixtures()?;
+            let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+            let origin = LanguageOrigin::Extension("html".into());
+            registry.register_wasm_grammars(
+                "html".into(),
+                vec![("html".into(), tree.path().join("missing/html.wasm"))],
+            );
+            let first = registry.get_or_load_grammar("html".into(), &origin);
+            let second = registry.get_or_load_grammar("html".into(), &origin);
+            registry.register_wasm_grammars(
+                "html".into(),
+                vec![("html".into(), tree.path().join("html/html.wasm"))],
+            );
+            for waiter in [first, second] {
+                let error = waiter
+                    .await
+                    .expect_err("replaced load must report an error");
+                assert!(
+                    error.to_string().contains("was re-registered; retry"),
+                    "{error}"
+                );
+            }
+            registry.get_or_load_grammar("html".into(), &origin).await?;
+            registry.get_or_load_grammar("html".into(), &origin).await?;
             Ok(())
         }
         .await;
