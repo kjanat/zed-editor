@@ -77,6 +77,8 @@ icon that appears on hover. In the Threads Sidebar, right-click a Terminal
 Thread and select **Rename Title**, or select it and press {#kb
 agent::RenameSelectedThread}.
 
+To edit the title of the active Terminal Thread from the Agent Panel, custom-map {#action agent::RenameSelectedThread} in your `keymap.json`. Its default binding is scoped to the Threads Sidebar.
+
 ## Notifications {#terminal-thread-notifications}
 
 When a terminal produces a bell character while not in focus, Zed notifies you
