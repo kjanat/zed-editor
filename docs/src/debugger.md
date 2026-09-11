@@ -68,16 +68,16 @@ should be an array of configuration objects:
 
 ```json [debug]
 [
-	{
-		"adapter": "CodeLLDB",
-		"label": "First configuration"
-		// ...
-	},
-	{
-		"adapter": "Debugpy",
-		"label": "Second configuration"
-		// ...
-	}
+  {
+    "adapter": "CodeLLDB",
+    "label": "First configuration"
+    // ...
+  },
+  {
+    "adapter": "Debugpy",
+    "label": "Second configuration"
+    // ...
+  }
 ]
 ```
 
@@ -137,20 +137,20 @@ All other fields are provided by the debug adapter and can contain
 
 ```json [debug]
 [
-	{
-		// The label for the debug configuration and used to identify the debug session inside the debug panel & new process modal
-		"label": "Example Start debugger config",
-		// The debug adapter that Zed should use to debug the program
-		"adapter": "Example adapter name",
-		// Request:
-		//  - launch: Zed will launch the program if specified, or show a debug terminal with the right configuration
-		//  - attach: Zed will attach to a running program to debug it, or when the process_id is not specified, will show a process picker (only supported for node currently)
-		"request": "launch",
-		// The program to debug. This field supports path resolution with ~ or . symbols.
-		"program": "path_to_program",
-		// cwd: defaults to the current working directory of your project ($ZED_WORKTREE_ROOT)
-		"cwd": "$ZED_WORKTREE_ROOT"
-	}
+  {
+    // The label for the debug configuration and used to identify the debug session inside the debug panel & new process modal
+    "label": "Example Start debugger config",
+    // The debug adapter that Zed should use to debug the program
+    "adapter": "Example adapter name",
+    // Request:
+    //  - launch: Zed will launch the program if specified, or show a debug terminal with the right configuration
+    //  - attach: Zed will attach to a running program to debug it, or when the process_id is not specified, will show a process picker (only supported for node currently)
+    "request": "launch",
+    // The program to debug. This field supports path resolution with ~ or . symbols.
+    "program": "path_to_program",
+    // cwd: defaults to the current working directory of your project ($ZED_WORKTREE_ROOT)
+    "cwd": "$ZED_WORKTREE_ROOT"
+  }
 ]
 ```
 
@@ -165,16 +165,16 @@ necessary setup steps before the debugger starts.
 
 ```json [debug]
 [
-	{
-		"label": "Build Binary",
-		"adapter": "CodeLLDB",
-		"program": "path_to_program",
-		"request": "launch",
-		"build": {
-			"command": "make",
-			"args": ["build", "-j8"]
-		}
-	}
+  {
+    "label": "Build Binary",
+    "adapter": "CodeLLDB",
+    "program": "path_to_program",
+    "request": "launch",
+    "build": {
+      "command": "make",
+      "args": ["build", "-j8"]
+    }
+  }
 ]
 ```
 
@@ -182,13 +182,13 @@ Build tasks can also refer to the existing tasks by unsubstituted label:
 
 ```json [debug]
 [
-	{
-		"label": "Build Binary",
-		"adapter": "CodeLLDB",
-		"program": "path_to_program",
-		"request": "launch",
-		"build": "my build task" // Or "my build task for $ZED_FILE"
-	}
+  {
+    "label": "Build Binary",
+    "adapter": "CodeLLDB",
+    "program": "path_to_program",
+    "request": "launch",
+    "build": "my build task" // Or "my build task for $ZED_FILE"
+  }
 ]
 ```
 
@@ -290,9 +290,9 @@ The settings for the debugger are grouped under the `debugger` key in
 
 ```json [settings]
 {
-	"debugger": {
-		"stepping_granularity": "statement"
-	}
+  "debugger": {
+    "stepping_granularity": "statement"
+  }
 }
 ```
 
@@ -301,9 +301,9 @@ The settings for the debugger are grouped under the `debugger` key in
 
 ```json [settings]
 {
-	"debugger": {
-		"stepping_granularity": "line"
-	}
+  "debugger": {
+    "stepping_granularity": "line"
+  }
 }
 ```
 
@@ -312,9 +312,9 @@ The settings for the debugger are grouped under the `debugger` key in
 
 ```json [settings]
 {
-	"debugger": {
-		"stepping_granularity": "instruction"
-	}
+  "debugger": {
+    "stepping_granularity": "instruction"
+  }
 }
 ```
 
@@ -330,9 +330,9 @@ The settings for the debugger are grouped under the `debugger` key in
 
 ```json [settings]
 {
-	"debugger": {
-		"save_breakpoints": true
-	}
+  "debugger": {
+    "save_breakpoints": true
+  }
 }
 ```
 
@@ -348,9 +348,9 @@ The settings for the debugger are grouped under the `debugger` key in
 
 ```json [settings]
 {
-	"debugger": {
-		"button": true
-	}
+  "debugger": {
+    "button": true
+  }
 }
 ```
 
@@ -367,9 +367,9 @@ The settings for the debugger are grouped under the `debugger` key in
 
 ```json [settings]
 {
-	"debugger": {
-		"timeout": 3000
-	}
+  "debugger": {
+    "timeout": 3000
+  }
 }
 ```
 
@@ -384,9 +384,9 @@ The settings for the debugger are grouped under the `debugger` key in
 
 ```json [settings]
 {
-	"inlay_hints": {
-		"show_value_hints": false
-	}
+  "inlay_hints": {
+    "show_value_hints": false
+  }
 }
 ```
 
@@ -406,9 +406,9 @@ editor toolbar.
 
 ```json [settings]
 {
-	"debugger": {
-		"log_dap_communications": true
-	}
+  "debugger": {
+    "log_dap_communications": true
+  }
 }
 ```
 
@@ -425,9 +425,9 @@ editor toolbar.
 
 ```json [settings]
 {
-	"debugger": {
-		"format_dap_log_messages": true
-	}
+  "debugger": {
+    "format_dap_log_messages": true
+  }
 }
 ```
 
@@ -444,12 +444,12 @@ setting overrides any arguments that Zed would otherwise pass to the adapter.
 
 ```json [settings]
 {
-	"dap": {
-		"CodeLLDB": {
-			"binary": "/Users/name/bin/lldb-dap",
-			"args": ["--wait-for-debugger"]
-		}
-	}
+  "dap": {
+    "CodeLLDB": {
+      "binary": "/Users/name/bin/lldb-dap",
+      "args": ["--wait-for-debugger"]
+    }
+  }
 }
 ```
 

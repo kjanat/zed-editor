@@ -94,7 +94,7 @@ files. To use them, enable the `code_lens` setting:
 
 ```json [settings]
 {
-	"code_lens": "on"
+  "code_lens": "on"
 }
 ```
 
@@ -102,20 +102,20 @@ You can override the default code lens settings in your `settings.json`:
 
 ```json [settings]
 {
-	"lsp": {
-		"gopls": {
-			"initialization_options": {
-				"codelenses": {
-					"test": true,
-					"generate": true,
-					"regenerate_cgo": true,
-					"tidy": true,
-					"upgrade_dependency": true,
-					"vendor": true
-				}
-			}
-		}
-	}
+  "lsp": {
+    "gopls": {
+      "initialization_options": {
+        "codelenses": {
+          "test": true,
+          "generate": true,
+          "regenerate_cgo": true,
+          "tidy": true,
+          "upgrade_dependency": true,
+          "vendor": true
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -140,23 +140,23 @@ In this case "program" should be set to the package name.
 
 ```json [debug]
 [
-	{
-		"label": "Go (Delve)",
-		"adapter": "Delve",
-		"program": "$ZED_FILE",
-		"request": "launch",
-		"mode": "debug"
-	},
-	{
-		"label": "Run server",
-		"adapter": "Delve",
-		"request": "launch",
-		"mode": "debug",
-		// For Delve, the program can be a package name
-		"program": "./cmd/server"
-		// "args": [],
-		// "buildFlags": [],
-	}
+  {
+    "label": "Go (Delve)",
+    "adapter": "Delve",
+    "program": "$ZED_FILE",
+    "request": "launch",
+    "mode": "debug"
+  },
+  {
+    "label": "Run server",
+    "adapter": "Delve",
+    "request": "launch",
+    "mode": "debug",
+    // For Delve, the program can be a package name
+    "program": "./cmd/server"
+    // "args": [],
+    // "buildFlags": [],
+  }
 ]
 ```
 
@@ -169,16 +169,16 @@ for more information on doing that).
 
 ```json [debug]
 [
-	{
-		"label": "Run integration tests",
-		"adapter": "Delve",
-		"request": "launch",
-		"mode": "test",
-		"program": ".",
-		"buildFlags": ["-tags", "integration"]
-		// To filter down to just the test your cursor is in:
-		// "args": ["-test.run", "$ZED_SYMBOL"]
-	}
+  {
+    "label": "Run integration tests",
+    "adapter": "Delve",
+    "request": "launch",
+    "mode": "test",
+    "program": ".",
+    "buildFlags": ["-tags", "integration"]
+    // To filter down to just the test your cursor is in:
+    // "args": ["-test.run", "$ZED_SYMBOL"]
+  }
 ]
 ```
 
@@ -190,27 +190,27 @@ the "build" command should build that.
 
 ```json [debug]
 [
-	{
-		"label": "Debug Prebuilt Unit Tests",
-		"adapter": "Delve",
-		"request": "launch",
-		"mode": "exec",
-		"program": "${ZED_WORKTREE_ROOT}/__debug_unit",
-		"args": ["-test.v", "-test.run=${ZED_SYMBOL}"],
-		"build": {
-			"command": "go",
-			"args": [
-				"test",
-				"-c",
-				"-tags",
-				"unit",
-				"-gcflags\"all=-N -l\"",
-				"-o",
-				"__debug_unit",
-				"./pkg/..."
-			]
-		}
-	}
+  {
+    "label": "Debug Prebuilt Unit Tests",
+    "adapter": "Delve",
+    "request": "launch",
+    "mode": "exec",
+    "program": "${ZED_WORKTREE_ROOT}/__debug_unit",
+    "args": ["-test.v", "-test.run=${ZED_SYMBOL}"],
+    "build": {
+      "command": "go",
+      "args": [
+        "test",
+        "-c",
+        "-tags",
+        "unit",
+        "-gcflags\"all=-N -l\"",
+        "-o",
+        "__debug_unit",
+        "./pkg/..."
+      ]
+    }
+  }
 ]
 ```
 
@@ -222,18 +222,18 @@ that's not necessarily running on your machine; in such case, you can use
 
 ```json [debug]
 [
-	{
-		"adapter": "Delve",
-		"label": "Connect to a running Delve instance",
-		"program": "/Users/zed/Projects/language_repositories/golang/hello/hello",
-		"cwd": "/Users/zed/Projects/language_repositories/golang/hello",
-		"args": [],
-		"env": {},
-		"request": "launch",
-		"mode": "exec",
-		"stopOnEntry": false,
-		"tcp_connection": { "host": "127.0.0.1", "port": 53412 }
-	}
+  {
+    "adapter": "Delve",
+    "label": "Connect to a running Delve instance",
+    "program": "/Users/zed/Projects/language_repositories/golang/hello/hello",
+    "cwd": "/Users/zed/Projects/language_repositories/golang/hello",
+    "args": [],
+    "env": {},
+    "request": "launch",
+    "mode": "exec",
+    "stopOnEntry": false,
+    "tcp_connection": { "host": "127.0.0.1", "port": 53412 }
+  }
 ]
 ```
 
@@ -269,23 +269,23 @@ the following to your `settings.json`:
 
 ```json [settings]
 {
-	"languages": {
-		"Templ": {
-			"language_servers": ["tailwindcss-language-server", "..."]
-		}
-	},
-	"lsp": {
-		"tailwindcss-language-server": {
-			"settings": {
-				"includeLanguages": {
-					"templ": "html"
-				},
-				"experimental": {
-					"classRegex": ["class=\"([^\"]*)\""]
-				}
-			}
-		}
-	}
+  "languages": {
+    "Templ": {
+      "language_servers": ["tailwindcss-language-server", "..."]
+    }
+  },
+  "lsp": {
+    "tailwindcss-language-server": {
+      "settings": {
+        "includeLanguages": {
+          "templ": "html"
+        },
+        "experimental": {
+          "classRegex": ["class=\"([^\"]*)\""]
+        }
+      }
+    }
+  }
 }
 ```
 

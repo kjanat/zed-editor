@@ -9,9 +9,9 @@ upstream and formatter/toolchain downloads.
 
 Upstream-controlled formatters, Cargo configuration, and executables may run
 inside that container. Treat everything it produces as untrusted. Runner command
-processing is disabled while its output is logged. After it exits, `export.py`
-copies only bounded regular files; symlinks and special files must never reach
-the artifact uploader.
+processing is disabled while its output is logged. After it exits, the inline
+Perl step copies only bounded regular files; symlinks and special files must
+never reach the artifact uploader.
 
 The publisher runs on a separate runner and checks out only the trusted workflow
 SHA. It imports the bundle as Git objects, verifies descent from that SHA, and

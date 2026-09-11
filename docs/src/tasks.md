@@ -12,56 +12,56 @@ or selected text).
 
 ```json [tasks]
 [
-	{
-		"label": "Example task",
-		"command": "for i in {1..5}; do echo \"Hello $i/5\"; sleep 1; done",
-		// "args": [],
-		// Env overrides for the command, will be appended to the terminal's environment from the settings.
-		"env": { "foo": "bar" },
-		// Current working directory to spawn the command into, defaults to current project root.
-		// "cwd": "/path/to/working/directory",
-		// Whether to use a new terminal tab or reuse the existing one to spawn the process, defaults to `false`.
-		"use_new_terminal": false,
-		// Whether to allow multiple instances of the same task to be run, or rather wait for the existing ones to finish, defaults to `false`.
-		"allow_concurrent_runs": false,
-		// What to do with the terminal pane and tab, after the command was started:
-		// * `always` — always show the task's pane, and focus the corresponding tab in it (default)
-		// * `no_focus` — always show the task's pane, add the task's tab in it, but don't focus it
-		// * `never` — do not alter focus, but still add/reuse the task's tab in its pane
-		"reveal": "always",
-		// What to do with the terminal pane and tab, after the command has finished:
-		// * `never` — Do nothing when the command finishes (default)
-		// * `always` — always hide the terminal tab, hide the pane also if it was the last tab in it
-		// * `on_success` — hide the terminal tab on task success only, otherwise behaves similar to `always`
-		"hide": "never",
-		// Which shell to use when running a task inside the terminal.
-		// May take 3 values:
-		// 1. (default) Use the system's default terminal configuration in /etc/passwd
-		//      "shell": "system"
-		// 2. A program:
-		//      "shell": {
-		//        "program": "sh"
-		//      }
-		// 3. A program with arguments:
-		//     "shell": {
-		//         "with_arguments": {
-		//           "program": "/bin/bash",
-		//           "args": ["--login"]
-		//         }
-		//     }
-		"shell": "system",
-		// Whether to show the task line in the output of the spawned task, defaults to `true`.
-		"show_summary": true,
-		// Whether to show the command line in the output of the spawned task, defaults to `true`.
-		"show_command": true,
-		// Which edited buffers to save before running the task:
-		// * `all` — save all edited buffers
-		// * `current` — save currently active buffer only
-		// * `none` — don't save any buffers
-		"save": "none"
-		// Represents the tags for inline runnable indicators, or spawning multiple tasks at once.
-		// "tags": []
-	}
+  {
+    "label": "Example task",
+    "command": "for i in {1..5}; do echo \"Hello $i/5\"; sleep 1; done",
+    // "args": [],
+    // Env overrides for the command, will be appended to the terminal's environment from the settings.
+    "env": { "foo": "bar" },
+    // Current working directory to spawn the command into, defaults to current project root.
+    // "cwd": "/path/to/working/directory",
+    // Whether to use a new terminal tab or reuse the existing one to spawn the process, defaults to `false`.
+    "use_new_terminal": false,
+    // Whether to allow multiple instances of the same task to be run, or rather wait for the existing ones to finish, defaults to `false`.
+    "allow_concurrent_runs": false,
+    // What to do with the terminal pane and tab, after the command was started:
+    // * `always` — always show the task's pane, and focus the corresponding tab in it (default)
+    // * `no_focus` — always show the task's pane, add the task's tab in it, but don't focus it
+    // * `never` — do not alter focus, but still add/reuse the task's tab in its pane
+    "reveal": "always",
+    // What to do with the terminal pane and tab, after the command has finished:
+    // * `never` — Do nothing when the command finishes (default)
+    // * `always` — always hide the terminal tab, hide the pane also if it was the last tab in it
+    // * `on_success` — hide the terminal tab on task success only, otherwise behaves similar to `always`
+    "hide": "never",
+    // Which shell to use when running a task inside the terminal.
+    // May take 3 values:
+    // 1. (default) Use the system's default terminal configuration in /etc/passwd
+    //      "shell": "system"
+    // 2. A program:
+    //      "shell": {
+    //        "program": "sh"
+    //      }
+    // 3. A program with arguments:
+    //     "shell": {
+    //         "with_arguments": {
+    //           "program": "/bin/bash",
+    //           "args": ["--login"]
+    //         }
+    //     }
+    "shell": "system",
+    // Whether to show the task line in the output of the spawned task, defaults to `true`.
+    "show_summary": true,
+    // Whether to show the command line in the output of the spawned task, defaults to `true`.
+    "show_command": true,
+    // Which edited buffers to save before running the task:
+    // * `all` — save all edited buffers
+    // * `current` — save currently active buffer only
+    // * `none` — don't save any buffers
+    "save": "none"
+    // Represents the tags for inline runnable indicators, or spawning multiple tasks at once.
+    // "tags": []
+  }
 ]
 ```
 
@@ -130,8 +130,8 @@ To use a variable in a task, prefix it with a dollar sign (`$`):
 
 ```json [tasks]
 {
-	"label": "echo current file's path",
-	"command": "echo $ZED_FILE"
+  "label": "echo current file's path",
+  "command": "echo $ZED_FILE"
 }
 ```
 
@@ -150,8 +150,8 @@ For example, instead of this (which will fail if the path has a space):
 
 ```json [tasks]
 {
-	"label": "stat current file",
-	"command": "stat $ZED_FILE"
+  "label": "stat current file",
+  "command": "stat $ZED_FILE"
 }
 ```
 
@@ -159,9 +159,9 @@ Provide the following:
 
 ```json [tasks]
 {
-	"label": "stat current file",
-	"command": "stat",
-	"args": ["$ZED_FILE"]
+  "label": "stat current file",
+  "command": "stat",
+  "args": ["$ZED_FILE"]
 }
 ```
 
@@ -169,8 +169,8 @@ Or explicitly include escaped quotes like so:
 
 ```json [tasks]
 {
-	"label": "stat current file",
-	"command": "stat \"$ZED_FILE\""
+  "label": "stat current file",
+  "command": "stat \"$ZED_FILE\""
 }
 ```
 
@@ -182,8 +182,8 @@ in the spawn modal only if there is a text selection:
 
 ```json [tasks]
 {
-	"label": "selected text",
-	"command": "echo \"$ZED_SELECTED_TEXT\""
+  "label": "selected text",
+  "command": "echo \"$ZED_SELECTED_TEXT\""
 }
 ```
 
@@ -191,8 +191,8 @@ Set default values to such variables to have such tasks always displayed:
 
 ```json [tasks]
 {
-	"label": "selected text with default",
-	"command": "echo \"${ZED_SELECTED_TEXT:no text selected}\""
+  "label": "selected text with default",
+  "command": "echo \"${ZED_SELECTED_TEXT:no text selected}\""
 }
 ```
 
@@ -228,10 +228,10 @@ setting it to `true` will force the task to be reevaluated before each run.
 
 ```json [keymap]
 {
-	"context": "Workspace",
-	"bindings": {
-		"alt-t": ["task::Rerun", { "reevaluate_context": true }]
-	}
+  "context": "Workspace",
+  "bindings": {
+    "alt-t": ["task::Rerun", { "reevaluate_context": true }]
+  }
 }
 ```
 
@@ -244,10 +244,10 @@ path` task to `alt-g`, you would add the following snippet in your
 
 ```json [keymap]
 {
-	"context": "Workspace",
-	"bindings": {
-		"alt-g": ["task::Spawn", { "task_name": "echo current file's path" }]
-	}
+  "context": "Workspace",
+  "bindings": {
+    "alt-g": ["task::Spawn", { "task_name": "echo current file's path" }]
+  }
 }
 ```
 
@@ -258,21 +258,21 @@ application that you want to use in the center area:
 ```json [tasks]
 // In tasks.json
 {
-	"label": "start lazygit",
-	"command": "lazygit -p $ZED_WORKTREE_ROOT"
+  "label": "start lazygit",
+  "command": "lazygit -p $ZED_WORKTREE_ROOT"
 }
 ```
 
 ```json [keymap]
 // In keymap.json
 {
-	"context": "Workspace",
-	"bindings": {
-		"alt-g": [
-			"task::Spawn",
-			{ "task_name": "start lazygit", "reveal_target": "center" }
-		]
-	}
+  "context": "Workspace",
+  "bindings": {
+    "alt-g": [
+      "task::Spawn",
+      { "task_name": "start lazygit", "reveal_target": "center" }
+    ]
+  }
 }
 ```
 
@@ -301,14 +301,14 @@ you can control how much of the terminal UI is shown while it runs.
 
 ```json [tasks]
 [
-	{
-		"label": "copy .env into new worktree",
-		"command": "cp",
-		"args": ["$ZED_MAIN_GIT_WORKTREE/.env", "$ZED_WORKTREE_ROOT/.env"],
-		"hooks": ["create_worktree"],
-		"reveal": "no_focus",
-		"hide": "on_success"
-	}
+  {
+    "label": "copy .env into new worktree",
+    "command": "cp",
+    "args": ["$ZED_MAIN_GIT_WORKTREE/.env", "$ZED_WORKTREE_ROOT/.env"],
+    "hooks": ["create_worktree"],
+    "reveal": "no_focus",
+    "hide": "on_success"
+  }
 ]
 ```
 
@@ -344,18 +344,18 @@ For example:
 
 ```json [tasks]
 [
-	{
-		"label": "Branches containing commit: $ZED_GIT_SHA_SHORT",
-		"command": "git",
-		"args": ["branch", "-a", "--contains", "$ZED_GIT_SHA"],
-		"tags": ["git-command"]
-	},
-	{
-		"label": "Check out $ZED_GIT_REF",
-		"command": "git",
-		"args": ["checkout", "$ZED_GIT_REF"],
-		"tags": ["git-command"]
-	}
+  {
+    "label": "Branches containing commit: $ZED_GIT_SHA_SHORT",
+    "command": "git",
+    "args": ["branch", "-a", "--contains", "$ZED_GIT_SHA"],
+    "tags": ["git-command"]
+  },
+  {
+    "label": "Check out $ZED_GIT_REF",
+    "command": "git",
+    "args": ["checkout", "$ZED_GIT_REF"],
+    "tags": ["git-command"]
+  }
 ]
 ```
 
@@ -374,17 +374,17 @@ Example task file with auto-generated labels:
 
 ```json
 {
-	"version": "2.0.0",
-	"tasks": [
-		{
-			"type": "npm",
-			"script": "start"
-		},
-		{
-			"type": "shell",
-			"command": "cargo build --release"
-		}
-	]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "start"
+    },
+    {
+      "type": "shell",
+      "command": "cargo build --release"
+    }
+  ]
 }
 ```
 
@@ -407,9 +407,9 @@ template:
 
 ```json [tasks]
 {
-	"label": "echo current file's path",
-	"command": "echo $ZED_FILE",
-	"tags": ["rust-test"]
+  "label": "echo current file's path",
+  "command": "echo $ZED_FILE",
+  "tags": ["rust-test"]
 }
 ```
 
@@ -444,12 +444,12 @@ configuration in your `.zed/tasks.json`:
 
 ```json
 [
-	{
-		"label": "run my-script.sh with args",
-		"command": "./my-script.sh",
-		"args": ["--verbose", "--output=results.txt"],
-		"tags": ["bash-script"]
-	}
+  {
+    "label": "run my-script.sh with args",
+    "command": "./my-script.sh",
+    "args": ["--verbose", "--output=results.txt"],
+    "tags": ["bash-script"]
+  }
 ]
 ```
 
@@ -468,11 +468,11 @@ To override the shell used for tasks, configure the `terminal.shell` setting:
 
 ```json
 {
-	"terminal": {
-		"shell": {
-			"program": "/bin/zsh"
-		}
-	}
+  "terminal": {
+    "shell": {
+      "program": "/bin/zsh"
+    }
+  }
 }
 ```
 

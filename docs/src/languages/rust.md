@@ -27,22 +27,22 @@ The following configuration can be used to change the inlay hint settings for
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"inlayHints": {
-					"maxLength": null,
-					"lifetimeElisionHints": {
-						"enable": "skip_trivial",
-						"useParameterNames": true
-					},
-					"closureReturnTypeHints": {
-						"enable": "always"
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "inlayHints": {
+          "maxLength": null,
+          "lifetimeElisionHints": {
+            "enable": "skip_trivial",
+            "useParameterNames": true
+          },
+          "closureReturnTypeHints": {
+            "enable": "always"
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -56,15 +56,15 @@ The `rust-analyzer` target directory can be set in `initialization_options`:
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"rust": {
-					"analyzerTargetDir": true
-				}
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "rust": {
+          "analyzerTargetDir": true
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -87,13 +87,13 @@ instruct Zed to do so by setting `pre_release` to `true` in your
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"fetch": {
-				"pre_release": true
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "fetch": {
+        "pre_release": true
+      }
+    }
+  }
 }
 ```
 
@@ -102,13 +102,13 @@ If you want to disable Zed looking for a `rust-analyzer` binary, you can set
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"binary": {
-				"ignore_system_version": true
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "binary": {
+        "ignore_system_version": true
+      }
+    }
+  }
 }
 ```
 
@@ -117,14 +117,14 @@ optional `arguments`:
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"binary": {
-				"path": "/Users/example/bin/rust-analyzer",
-				"arguments": []
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "binary": {
+        "path": "/Users/example/bin/rust-analyzer",
+        "arguments": []
+      }
+    }
+  }
 }
 ```
 
@@ -138,15 +138,15 @@ following Zed lsp settings:
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"cargo": {
-					"target": "x86_64-pc-windows-msvc"
-				}
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "target": "x86_64-pc-windows-msvc"
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -235,30 +235,30 @@ saved):
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				// get more cargo-less diagnostics from rust-analyzer,
-				// which might include false-positives (those can be turned off by their names)
-				"diagnostics": {
-					"experimental": {
-						"enable": true
-					}
-				},
-				// To disable the checking entirely
-				// (ignores all cargo and check settings below)
-				"checkOnSave": false,
-				// To check the `lib` target only.
-				"cargo": {
-					"allTargets": false
-				},
-				// Use `-p` instead of `--workspace` for cargo check
-				"check": {
-					"workspace": false
-				}
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        // get more cargo-less diagnostics from rust-analyzer,
+        // which might include false-positives (those can be turned off by their names)
+        "diagnostics": {
+          "experimental": {
+            "enable": true
+          }
+        },
+        // To disable the checking entirely
+        // (ignores all cargo and check settings below)
+        "checkOnSave": false,
+        // To check the `lib` target only.
+        "cargo": {
+          "allTargets": false
+        },
+        // Use `-p` instead of `--workspace` for cargo check
+        "check": {
+          "workspace": false
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -270,13 +270,13 @@ that are not listed in `[members]` in the Cargo workspace, you can list them in
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"linkedProjects": ["./path/to/a/Cargo.toml", "./path/to/b/Cargo.toml"]
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": ["./path/to/a/Cargo.toml", "./path/to/b/Cargo.toml"]
+      }
+    }
+  }
 }
 ```
 
@@ -287,52 +287,52 @@ transform the code according to the snippet body:
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"completion": {
-					"snippets": {
-						"custom": {
-							"Arc::new": {
-								"postfix": "arc",
-								"body": ["Arc::new(${receiver})"],
-								"requires": "std::sync::Arc",
-								"scope": "expr"
-							},
-							"Some": {
-								"postfix": "some",
-								"body": ["Some(${receiver})"],
-								"scope": "expr"
-							},
-							"Ok": {
-								"postfix": "ok",
-								"body": ["Ok(${receiver})"],
-								"scope": "expr"
-							},
-							"Rc::new": {
-								"postfix": "rc",
-								"body": ["Rc::new(${receiver})"],
-								"requires": "std::rc::Rc",
-								"scope": "expr"
-							},
-							"Box::pin": {
-								"postfix": "boxpin",
-								"body": ["Box::pin(${receiver})"],
-								"requires": "std::boxed::Box",
-								"scope": "expr"
-							},
-							"vec!": {
-								"postfix": "vec",
-								"body": ["vec![${receiver}]"],
-								"description": "vec![]",
-								"scope": "expr"
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "completion": {
+          "snippets": {
+            "custom": {
+              "Arc::new": {
+                "postfix": "arc",
+                "body": ["Arc::new(${receiver})"],
+                "requires": "std::sync::Arc",
+                "scope": "expr"
+              },
+              "Some": {
+                "postfix": "some",
+                "body": ["Some(${receiver})"],
+                "scope": "expr"
+              },
+              "Ok": {
+                "postfix": "ok",
+                "body": ["Ok(${receiver})"],
+                "scope": "expr"
+              },
+              "Rc::new": {
+                "postfix": "rc",
+                "body": ["Rc::new(${receiver})"],
+                "requires": "std::rc::Rc",
+                "scope": "expr"
+              },
+              "Box::pin": {
+                "postfix": "boxpin",
+                "body": ["Box::pin(${receiver})"],
+                "requires": "std::boxed::Box",
+                "scope": "expr"
+              },
+              "vec!": {
+                "postfix": "vec",
+                "body": ["vec![${receiver}]"],
+                "description": "vec![]",
+                "scope": "expr"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -352,18 +352,18 @@ examples below.
 
 ```json [debug]
 [
-	{
-		"label": "Build & Debug native binary",
-		"build": {
-			"command": "cargo",
-			"args": ["build"]
-		},
-		"program": "$ZED_WORKTREE_ROOT/target/debug/binary",
-		// sourceLanguages is required for CodeLLDB (not GDB) when using Rust
-		"sourceLanguages": ["rust"],
-		"request": "launch",
-		"adapter": "CodeLLDB"
-	}
+  {
+    "label": "Build & Debug native binary",
+    "build": {
+      "command": "cargo",
+      "args": ["build"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/binary",
+    // sourceLanguages is required for CodeLLDB (not GDB) when using Rust
+    "sourceLanguages": ["rust"],
+    "request": "launch",
+    "adapter": "CodeLLDB"
+  }
 ]
 ```
 
@@ -374,15 +374,15 @@ the path to the output binary.
 
 ```json [debug]
 [
-	{
-		"label": "Build & Debug native binary",
-		"adapter": "CodeLLDB",
-		"build": {
-			"command": "cargo",
-			"args": ["build"]
-		},
-		// sourceLanguages is required for CodeLLDB (not GDB) when using Rust
-		"sourceLanguages": ["rust"]
-	}
+  {
+    "label": "Build & Debug native binary",
+    "adapter": "CodeLLDB",
+    "build": {
+      "command": "cargo",
+      "args": ["build"]
+    },
+    // sourceLanguages is required for CodeLLDB (not GDB) when using Rust
+    "sourceLanguages": ["rust"]
+  }
 ]
 ```

@@ -35,7 +35,7 @@ jobs:
           check-latest: true
           package-manager-cache: false
       - name: steps::cargo_install_nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: nextest
       - name: steps::clear_target_dir_if_large
@@ -87,7 +87,7 @@ jobs:
           check-latest: true
           package-manager-cache: false
       - name: steps::cargo_install_nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: nextest
       - name: steps::clear_target_dir_if_large
@@ -284,7 +284,7 @@ jobs:
         env:
           ACTIONLINT_BIN: ${{ steps.get_actionlint.outputs.executable }}
       - name: run_tests::check_scripts::run_zizmor
-        uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
           advanced-security: false
           min-severity: high

@@ -32,9 +32,9 @@ you can override this behavior by adding this to your settings:
 
 ```json [settings]
 {
-	"file_types": {
-		"C": ["C", "H"]
-	}
+  "file_types": {
+    "C": ["C", "H"]
+  }
 }
 ```
 
@@ -103,16 +103,16 @@ can add to `.zed/debug.json`.
 
 ```json [debug]
 [
-	{
-		"label": "Debug native binary",
-		"build": {
-			"command": "make",
-			"args": ["-j8"],
-			"cwd": "$ZED_WORKTREE_ROOT"
-		},
-		"program": "$ZED_WORKTREE_ROOT/build/prog",
-		"request": "launch",
-		"adapter": "CodeLLDB"
-	}
+  {
+    "label": "Debug native binary",
+    "build": {
+      "command": "make",
+      "args": ["-j8"],
+      "cwd": "$ZED_WORKTREE_ROOT"
+    },
+    "program": "$ZED_WORKTREE_ROOT/build/prog",
+    "request": "launch",
+    "adapter": "CodeLLDB"
+  }
 ]
 ```

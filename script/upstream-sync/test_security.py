@@ -2,9 +2,11 @@ import importlib.util
 import os
 import subprocess
 import tempfile
+import textwrap
 import time
 import unittest
 from functools import cached_property
+from itertools import takewhile
 from pathlib import Path
 from typing import Protocol, cast
 from unittest.mock import patch
@@ -25,8 +27,31 @@ class Publisher(Protocol):
     def publish(self, directory: Path) -> None: ...
 
 
-class Exporter(Protocol):
-    def export(self, source: Path, destination: Path) -> None: ...
+class Exporter:
+    @cached_property
+    def script(self) -> str:
+        workflow = (
+            Path(__file__).resolve().parents[2]
+            / ".github/workflows/fork_upstream_sync.yaml"
+        ).read_text()
+        step = workflow.split("      - name: Export container output\n", 1)[1]
+        block = step.split("        run: |\n", 1)[1]
+        return textwrap.dedent(
+            "".join(
+                takewhile(
+                    lambda line: not line.strip() or line.startswith("          "),
+                    block.splitlines(keepends=True),
+                )
+            )
+        )
+
+    def export(self, source: Path, destination: Path) -> None:
+        with patch.dict(
+            os.environ, {"sync_output": str(source), "sync_export": str(destination)}
+        ):
+            _ = subprocess.run(
+                ["perl", "-e", self.script], check=True, capture_output=True
+            )
 
 
 def load(name: str) -> object:
@@ -40,7 +65,7 @@ def load(name: str) -> object:
     return module
 
 
-exporter = cast(Exporter, load("export"))
+exporter = Exporter()
 publisher = cast(Publisher, load("publish"))
 
 
@@ -52,7 +77,7 @@ class ExportTests(unittest.TestCase):
             source.mkdir()
             _ = (root / "private").write_text("synthetic canary")
             (source / "result").symlink_to(root / "private")
-            with self.assertRaises(OSError):
+            with self.assertRaises(subprocess.CalledProcessError):
                 exporter.export(source, root / "export")
             self.assertFalse((root / "export" / "result").exists())
 
@@ -76,7 +101,7 @@ class ExportTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             os.mkfifo(source / "result")
-            with self.assertRaises(ValueError):
+            with self.assertRaises(subprocess.CalledProcessError):
                 exporter.export(source, root / "export")
 
 
@@ -341,7 +366,7 @@ class ReportingTests(unittest.TestCase):
                     metadata.symlink_to(root / "private")
                 else:
                     _ = metadata.write_text("a" * 16001)
-                with self.assertRaises((ValueError, OSError)):
+                with self.assertRaises(subprocess.CalledProcessError):
                     exporter.export(source, root / "export")
 
     def test_failed_checks_alert_before_replacing_the_pr_head(self):

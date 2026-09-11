@@ -73,12 +73,12 @@ that the connection can be established before writing it to the settings file.
 
 ```json [settings]
 {
-	"ssh_connections": [
-		{
-			"host": "192.168.1.10",
-			"projects": [{ "paths": ["~/code/zed/zed"] }]
-		}
-	]
+  "ssh_connections": [
+    {
+      "host": "192.168.1.10",
+      "projects": [{ "paths": ["~/code/zed/zed"] }]
+    }
+  ]
 }
 ```
 
@@ -89,17 +89,17 @@ each connection:
 
 ```json [settings]
 {
-	"ssh_connections": [
-		{
-			"host": "192.168.1.10",
-			"projects": [{ "paths": ["~/code/zed/zed"] }],
-			// any argument to pass to the ssh master process
-			"args": ["-i", "~/.ssh/work_id_file"],
-			"port": 22, // defaults to 22
-			// defaults to your username on your local machine
-			"username": "me"
-		}
-	]
+  "ssh_connections": [
+    {
+      "host": "192.168.1.10",
+      "projects": [{ "paths": ["~/code/zed/zed"] }],
+      // any argument to pass to the ssh master process
+      "args": ["-i", "~/.ssh/work_id_file"],
+      "port": 22, // defaults to 22
+      // defaults to your username on your local machine
+      "username": "me"
+    }
+  ]
 }
 ```
 
@@ -108,18 +108,18 @@ There are two additional Zed-specific options per connection,
 
 ```json [settings]
 {
-	"ssh_connections": [
-		{
-			"host": "192.168.1.10",
-			"projects": [{ "paths": ["~/code/zed/zed"] }],
-			// by default Zed will download the server binary from the internet on the remote.
-			// When this is true, it'll be downloaded to your laptop and uploaded over SSH.
-			// This is useful when your remote server has restricted internet access.
-			"upload_binary_over_ssh": true,
-			// Shown in the Zed UI to help distinguish multiple hosts.
-			"nickname": "lil-linux"
-		}
-	]
+  "ssh_connections": [
+    {
+      "host": "192.168.1.10",
+      "projects": [{ "paths": ["~/code/zed/zed"] }],
+      // by default Zed will download the server binary from the internet on the remote.
+      // When this is true, it'll be downloaded to your laptop and uploaded over SSH.
+      // This is useful when your remote server has restricted internet access.
+      "upload_binary_over_ssh": true,
+      // Shown in the Zed UI to help distinguish multiple hosts.
+      "nickname": "lil-linux"
+    }
+  ]
 }
 ```
 
@@ -175,12 +175,12 @@ browser while working.
 
 ```json [settings]
 {
-	"ssh_connections": [
-		{
-			"host": "192.168.1.10",
-			"port_forwards": [{ "local_port": 8080, "remote_port": 80 }]
-		}
-	]
+  "ssh_connections": [
+    {
+      "host": "192.168.1.10",
+      "port_forwards": [{ "local_port": 8080, "remote_port": 80 }]
+    }
+  ]
 }
 ```
 
@@ -195,18 +195,18 @@ all local interfaces.
 
 ```json [settings]
 {
-	"ssh_connections": [
-		{
-			"host": "192.168.1.10",
-			"port_forwards": [
-				{
-					"local_port": 8080,
-					"remote_port": 80,
-					"local_host": "0.0.0.0"
-				}
-			]
-		}
-	]
+  "ssh_connections": [
+    {
+      "host": "192.168.1.10",
+      "port_forwards": [
+        {
+          "local_port": 8080,
+          "remote_port": 80,
+          "local_host": "0.0.0.0"
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -215,18 +215,18 @@ need to change this, you can also set the remote host:
 
 ```json [settings]
 {
-	"ssh_connections": [
-		{
-			"host": "192.168.1.10",
-			"port_forwards": [
-				{
-					"local_port": 8080,
-					"remote_port": 80,
-					"remote_host": "docker-host"
-				}
-			]
-		}
-	]
+  "ssh_connections": [
+    {
+      "host": "192.168.1.10",
+      "port_forwards": [
+        {
+          "local_port": 8080,
+          "remote_port": 80,
+          "remote_host": "docker-host"
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -279,7 +279,7 @@ Alternatively, you can configure the proxy in the remote machine's
 
 ```json
 {
-	"proxy": "http://proxy.example.com:8080"
+  "proxy": "http://proxy.example.com:8080"
 }
 ```
 

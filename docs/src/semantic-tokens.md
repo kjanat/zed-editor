@@ -18,7 +18,7 @@ semantic tokens are disabled.
 
 ```json [settings]
 {
-	"semantic_tokens": "combined"
+  "semantic_tokens": "combined"
 }
 ```
 
@@ -34,15 +34,15 @@ You can configure this globally or per-language:
 
 ```json [settings]
 {
-	"semantic_tokens": "off",
-	"languages": {
-		"Rust": {
-			"semantic_tokens": "combined"
-		},
-		"TypeScript": {
-			"semantic_tokens": "full"
-		}
-	}
+  "semantic_tokens": "off",
+  "languages": {
+    "Rust": {
+      "semantic_tokens": "combined"
+    },
+    "TypeScript": {
+      "semantic_tokens": "full"
+    }
+  }
 }
 ```
 
@@ -83,15 +83,15 @@ To make unresolved references stand out:
 
 ```json [settings]
 {
-	"global_lsp_settings": {
-		"semantic_token_rules": [
-			{
-				"token_type": "unresolvedReference",
-				"foreground_color": "#c93f3f",
-				"font_weight": "bold"
-			}
-		]
-	}
+  "global_lsp_settings": {
+    "semantic_token_rules": [
+      {
+        "token_type": "unresolvedReference",
+        "foreground_color": "#c93f3f",
+        "font_weight": "bold"
+      }
+    ]
+  }
 }
 ```
 
@@ -101,16 +101,16 @@ To highlight unsafe operations in Rust:
 
 ```json [settings]
 {
-	"global_lsp_settings": {
-		"semantic_token_rules": [
-			{
-				"token_type": "punctuation",
-				"token_modifiers": ["unsafe"],
-				"foreground_color": "#AA1111",
-				"font_weight": "bold"
-			}
-		]
-	}
+  "global_lsp_settings": {
+    "semantic_token_rules": [
+      {
+        "token_type": "punctuation",
+        "token_modifiers": ["unsafe"],
+        "foreground_color": "#AA1111",
+        "font_weight": "bold"
+      }
+    ]
+  }
 }
 ```
 
@@ -120,15 +120,15 @@ Instead of hardcoding colors, reference styles from your theme:
 
 ```json [settings]
 {
-	"global_lsp_settings": {
-		"semantic_token_rules": [
-			{
-				"token_type": "variable",
-				"token_modifiers": ["mutable"],
-				"style": ["variable.mutable", "variable"]
-			}
-		]
-	}
+  "global_lsp_settings": {
+    "semantic_token_rules": [
+      {
+        "token_type": "variable",
+        "token_modifiers": ["mutable"],
+        "style": ["variable.mutable", "variable"]
+      }
+    ]
+  }
 }
 ```
 
@@ -141,13 +141,13 @@ matches it:
 
 ```json [settings]
 {
-	"global_lsp_settings": {
-		"semantic_token_rules": [
-			{
-				"token_type": "comment"
-			}
-		]
-	}
+  "global_lsp_settings": {
+    "semantic_token_rules": [
+      {
+        "token_type": "comment"
+      }
+    ]
+  }
 }
 ```
 

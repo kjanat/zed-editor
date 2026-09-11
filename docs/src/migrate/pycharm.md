@@ -287,18 +287,18 @@ This means:
 
 ```json
 [
-	{
-		"label": "run",
-		"command": "python main.py"
-	},
-	{
-		"label": "test",
-		"command": "pytest"
-	},
-	{
-		"label": "test current file",
-		"command": "pytest $ZED_FILE"
-	}
+  {
+    "label": "run",
+    "command": "python main.py"
+  },
+  {
+    "label": "test",
+    "command": "pytest"
+  },
+  {
+    "label": "test current file",
+    "command": "pytest $ZED_FILE"
+  }
 ]
 ```
 
@@ -369,22 +369,22 @@ For more control, create a `.zed/debug.json` file:
 
 ```json
 [
-	{
-		"label": "Debug Current File",
-		"adapter": "Debugpy",
-		"program": "$ZED_FILE",
-		"request": "launch"
-	},
-	{
-		"label": "Debug Flask App",
-		"adapter": "Debugpy",
-		"request": "launch",
-		"module": "flask",
-		"args": ["run", "--debug"],
-		"env": {
-			"FLASK_APP": "app.py"
-		}
-	}
+  {
+    "label": "Debug Current File",
+    "adapter": "Debugpy",
+    "program": "$ZED_FILE",
+    "request": "launch"
+  },
+  {
+    "label": "Debug Flask App",
+    "adapter": "Debugpy",
+    "request": "launch",
+    "module": "flask",
+    "args": ["run", "--debug"],
+    "env": {
+      "FLASK_APP": "app.py"
+    }
+  }
 ]
 ```
 
@@ -499,14 +499,14 @@ Here are a few useful tweaks:
 
 ```json
 {
-	"terminal": {
-		"detect_venv": {
-			"on": {
-				"directories": [".venv", "venv", ".env", "env"],
-				"activate_script": "default"
-			}
-		}
-	}
+  "terminal": {
+    "detect_venv": {
+      "on": {
+        "directories": [".venv", "venv", ".env", "env"],
+        "activate_script": "default"
+      }
+    }
+  }
 }
 ```
 
@@ -517,7 +517,7 @@ project's `pyrightconfig.json`:
 
 ```json
 {
-	"typeCheckingMode": "basic"
+  "typeCheckingMode": "basic"
 }
 ```
 

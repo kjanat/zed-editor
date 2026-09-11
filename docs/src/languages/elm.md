@@ -35,15 +35,15 @@ Elm language server can be configured in your `settings.json`, e.g.:
 
 ```json [settings]
 {
-	"lsp": {
-		"elm-language-server": {
-			"initialization_options": {
-				"disableElmLSDiagnostics": true,
-				"onlyUpdateDiagnosticsOnSave": false,
-				"elmReviewDiagnostics": "warning"
-			}
-		}
-	}
+  "lsp": {
+    "elm-language-server": {
+      "initialization_options": {
+        "disableElmLSDiagnostics": true,
+        "onlyUpdateDiagnosticsOnSave": false,
+        "elmReviewDiagnostics": "warning"
+      }
+    }
+  }
 }
 ```
 

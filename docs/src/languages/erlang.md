@@ -27,11 +27,11 @@ Configure language servers in Settings ({#kb zed::OpenSettings}) under Languages
 
 ```json [settings]
 {
-	"languages": {
-		"Erlang": {
-			"language_servers": ["elp", "!erlang-ls", "..."]
-		}
-	}
+  "languages": {
+    "Erlang": {
+      "language_servers": ["elp", "!erlang-ls", "..."]
+    }
+  }
 }
 ```
 

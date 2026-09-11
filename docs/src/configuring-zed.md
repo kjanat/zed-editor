@@ -62,9 +62,9 @@ Project settings take precedence over user settings for that project only.
 ```json [settings]
 // .zed/settings.json
 {
-	"tab_size": 2,
-	"formatter": "prettier",
-	"format_on_save": "on"
+  "tab_size": 2,
+  "formatter": "prettier",
+  "format_on_save": "on"
 }
 ```
 
@@ -98,15 +98,15 @@ top-level channel keys:
 
 ```json [settings]
 {
-	"theme": "One Dark",
-	"vim_mode": false,
-	"nightly": {
-		"theme": "Rosé Pine",
-		"vim_mode": true
-	},
-	"preview": {
-		"theme": "Catppuccin Mocha"
-	}
+  "theme": "One Dark",
+  "vim_mode": false,
+  "nightly": {
+    "theme": "Rosé Pine",
+    "vim_mode": true
+  },
+  "preview": {
+    "theme": "Catppuccin Mocha"
+  }
 }
 ```
 
@@ -134,26 +134,26 @@ These are useful for sharing configuration tips or linking from documentation.
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "system",
-		"light": "One Light",
-		"dark": "One Dark"
-	},
-	"buffer_font_family": "JetBrains Mono",
-	"buffer_font_size": 14,
-	"tab_size": 2,
-	"format_on_save": "on",
-	"autosave": "on_focus_change",
-	"vim_mode": false,
-	"terminal": {
-		"font_family": "JetBrains Mono",
-		"font_size": 14
-	},
-	"languages": {
-		"Python": {
-			"tab_size": 4
-		}
-	}
+  "theme": {
+    "mode": "system",
+    "light": "One Light",
+    "dark": "One Dark"
+  },
+  "buffer_font_family": "JetBrains Mono",
+  "buffer_font_size": 14,
+  "tab_size": 2,
+  "format_on_save": "on",
+  "autosave": "on_focus_change",
+  "vim_mode": false,
+  "terminal": {
+    "font_family": "JetBrains Mono",
+    "font_size": 14
+  },
+  "languages": {
+    "Python": {
+      "tab_size": 4
+    }
+  }
 }
 ```
 

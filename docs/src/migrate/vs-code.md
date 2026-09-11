@@ -413,10 +413,10 @@ via command palette: {#action zed::OpenTasks}):
 
 ```json
 [
-	{
-		"label": "build",
-		"command": "cargo build"
-	}
+  {
+    "label": "build",
+    "command": "cargo build"
+  }
 ]
 ```
 

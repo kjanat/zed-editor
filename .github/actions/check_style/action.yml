@@ -1,9 +1,3 @@
 name: "Check formatting"
 description: "Checks code formatting use cargo fmt"
-
-runs:
-  using: "composite"
-  steps:
-    - name: cargo fmt
-      shell: bash -euxo pipefail {0}
-      run: cargo fmt --all -- --check
+runs: { steps: [{ name: cargo-fmt, run: "cargo fmt --all -- --check", shell: "bash -euxo pipefail {0}" }], using: "composite" }

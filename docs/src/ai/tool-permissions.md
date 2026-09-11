@@ -16,21 +16,21 @@ rules directly to your settings file:
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"default": "allow",
-			"tools": {
-				"terminal": {
-					"default": "confirm",
-					"always_allow": [
-						{ "pattern": "^cargo\\s+(build|test|check)" },
-						{ "pattern": "^npm\\s+(install|test|run)" }
-					],
-					"always_confirm": [{ "pattern": "sudo\\s+/" }]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "default": "allow",
+      "tools": {
+        "terminal": {
+          "default": "confirm",
+          "always_allow": [
+            { "pattern": "^cargo\\s+(build|test|check)" },
+            { "pattern": "^npm\\s+(install|test|run)" }
+          ],
+          "always_confirm": [{ "pattern": "sudo\\s+/" }]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -76,19 +76,19 @@ the skill.
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"default": "confirm",
-			"tools": {
-				"<tool_name>": {
-					"default": "confirm",
-					"always_allow": [{ "pattern": "...", "case_sensitive": false }],
-					"always_deny": [{ "pattern": "...", "case_sensitive": false }],
-					"always_confirm": [{ "pattern": "...", "case_sensitive": false }]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "default": "confirm",
+      "tools": {
+        "<tool_name>": {
+          "default": "confirm",
+          "always_allow": [{ "pattern": "...", "case_sensitive": false }],
+          "always_deny": [{ "pattern": "...", "case_sensitive": false }],
+          "always_confirm": [{ "pattern": "...", "case_sensitive": false }]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -105,20 +105,20 @@ the skill.
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"tools": {
-				"edit_file": {
-					"always_allow": [
-						{
-							"pattern": "your-regex-here",
-							"case_sensitive": false
-						}
-					]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "tools": {
+        "edit_file": {
+          "always_allow": [
+            {
+              "pattern": "your-regex-here",
+              "case_sensitive": false
+            }
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -144,11 +144,11 @@ To auto-approve all tool actions:
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"default": "allow"
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "default": "allow"
+    }
+  }
 }
 ```
 
@@ -223,30 +223,30 @@ tool-level option.
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"tools": {
-				"terminal": {
-					"default": "confirm",
-					"always_allow": [
-						{ "pattern": "^cargo\\s+(build|test|check|clippy|fmt)" },
-						{ "pattern": "^npm\\s+(install|test|run|build)" },
-						{ "pattern": "^git\\s+(status|log|diff|branch)" },
-						{ "pattern": "^ls\\b" },
-						{ "pattern": "^cat\\s" }
-					],
-					"always_deny": [
-						{ "pattern": "rm\\s+-rf\\s+(/|~)" },
-						{ "pattern": "sudo\\s+rm" }
-					],
-					"always_confirm": [
-						{ "pattern": "sudo\\s" },
-						{ "pattern": "git\\s+push" }
-					]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "tools": {
+        "terminal": {
+          "default": "confirm",
+          "always_allow": [
+            { "pattern": "^cargo\\s+(build|test|check|clippy|fmt)" },
+            { "pattern": "^npm\\s+(install|test|run|build)" },
+            { "pattern": "^git\\s+(status|log|diff|branch)" },
+            { "pattern": "^ls\\b" },
+            { "pattern": "^cat\\s" }
+          ],
+          "always_deny": [
+            { "pattern": "rm\\s+-rf\\s+(/|~)" },
+            { "pattern": "sudo\\s+rm" }
+          ],
+          "always_confirm": [
+            { "pattern": "sudo\\s" },
+            { "pattern": "git\\s+push" }
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -254,24 +254,24 @@ tool-level option.
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"tools": {
-				"edit_file": {
-					"default": "confirm",
-					"always_allow": [
-						{ "pattern": "\\.(md|txt|json)$" },
-						{ "pattern": "^src/" }
-					],
-					"always_deny": [
-						{ "pattern": "\\.env" },
-						{ "pattern": "secrets?/" },
-						{ "pattern": "\\.(pem|key)$" }
-					]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "tools": {
+        "edit_file": {
+          "default": "confirm",
+          "always_allow": [
+            { "pattern": "\\.(md|txt|json)$" },
+            { "pattern": "^src/" }
+          ],
+          "always_deny": [
+            { "pattern": "\\.env" },
+            { "pattern": "secrets?/" },
+            { "pattern": "\\.(pem|key)$" }
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -279,21 +279,21 @@ tool-level option.
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"tools": {
-				"delete_path": {
-					"default": "confirm",
-					"always_deny": [
-						{ "pattern": "^/etc" },
-						{ "pattern": "^/usr" },
-						{ "pattern": "\\.git/?$" },
-						{ "pattern": "node_modules/?$" }
-					]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "tools": {
+        "delete_path": {
+          "default": "confirm",
+          "always_deny": [
+            { "pattern": "^/etc" },
+            { "pattern": "^/usr" },
+            { "pattern": "\\.git/?$" },
+            { "pattern": "node_modules/?$" }
+          ]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -301,20 +301,20 @@ tool-level option.
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"tools": {
-				"fetch": {
-					"default": "confirm",
-					"always_allow": [
-						{ "pattern": "docs\\.rs" },
-						{ "pattern": "github\\.com" }
-					],
-					"always_deny": [{ "pattern": "internal\\.company\\.com" }]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "tools": {
+        "fetch": {
+          "default": "confirm",
+          "always_allow": [
+            { "pattern": "docs\\.rs" },
+            { "pattern": "github\\.com" }
+          ],
+          "always_deny": [{ "pattern": "internal\\.company\\.com" }]
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -322,18 +322,18 @@ tool-level option.
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"tools": {
-				"mcp:github:create_issue": {
-					"default": "confirm"
-				},
-				"mcp:github:create_pull_request": {
-					"default": "confirm"
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "tools": {
+        "mcp:github:create_issue": {
+          "default": "confirm"
+        },
+        "mcp:github:create_pull_request": {
+          "default": "confirm"
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -344,16 +344,16 @@ Patterns for the `skill` tool match against the absolute path to the skill's
 
 ```json [settings]
 {
-	"agent": {
-		"tool_permissions": {
-			"tools": {
-				"skill": {
-					"default": "confirm",
-					"always_allow": [{ "pattern": "/code-review/SKILL\\.md$" }]
-				}
-			}
-		}
-	}
+  "agent": {
+    "tool_permissions": {
+      "tools": {
+        "skill": {
+          "default": "confirm",
+          "always_allow": [{ "pattern": "/code-review/SKILL\\.md$" }]
+        }
+      }
+    }
+  }
 }
 ```
 

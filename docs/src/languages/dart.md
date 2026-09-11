@@ -34,14 +34,14 @@ specify the `dart` binary in your Zed settings.jsons file:
 
 ```json [settings]
 {
-	"lsp": {
-		"dart": {
-			"binary": {
-				"path": "/opt/homebrew/bin/fvm",
-				"arguments": ["dart", "language-server", "--protocol=lsp"]
-			}
-		}
-	}
+  "lsp": {
+    "dart": {
+      "binary": {
+        "path": "/opt/homebrew/bin/fvm",
+        "arguments": ["dart", "language-server", "--protocol=lsp"]
+      }
+    }
+  }
 }
 ```
 
@@ -53,13 +53,13 @@ following to your Zed settings.json:
 
 ```json [settings]
 {
-	"lsp": {
-		"dart": {
-			"settings": {
-				"lineLength": 140
-			}
-		}
-	}
+  "lsp": {
+    "dart": {
+      "settings": {
+        "lineLength": 140
+      }
+    }
+  }
 }
 ```
 

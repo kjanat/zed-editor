@@ -27,28 +27,28 @@ example:
 
 ```json [settings]
 {
-	"file_types": {
-		"Ansible": [
-			"**.ansible.yml",
-			"**.ansible.yaml",
-			"**/defaults/*.yml",
-			"**/defaults/*.yaml",
-			"**/meta/*.yml",
-			"**/meta/*.yaml",
-			"**/tasks/*.yml",
-			"**/tasks/*.yaml",
-			"**/handlers/*.yml",
-			"**/handlers/*.yaml",
-			"**/group_vars/*.yml",
-			"**/group_vars/*.yaml",
-			"**/host_vars/*.yml",
-			"**/host_vars/*.yaml",
-			"**/playbooks/*.yml",
-			"**/playbooks/*.yaml",
-			"**playbook*.yml",
-			"**playbook*.yaml"
-		]
-	}
+  "file_types": {
+    "Ansible": [
+      "**.ansible.yml",
+      "**.ansible.yaml",
+      "**/defaults/*.yml",
+      "**/defaults/*.yaml",
+      "**/meta/*.yml",
+      "**/meta/*.yaml",
+      "**/tasks/*.yml",
+      "**/tasks/*.yaml",
+      "**/handlers/*.yml",
+      "**/handlers/*.yaml",
+      "**/group_vars/*.yml",
+      "**/group_vars/*.yaml",
+      "**/host_vars/*.yml",
+      "**/host_vars/*.yaml",
+      "**/playbooks/*.yml",
+      "**/playbooks/*.yaml",
+      "**playbook*.yml",
+      "**playbook*.yaml"
+    ]
+  }
 }
 ```
 
@@ -71,20 +71,20 @@ If your inventory file is in the YAML format, you can either:
 
 ```json [settings]
 {
-	"lsp": {
-		"yaml-language-server": {
-			"settings": {
-				"yaml": {
-					"schemas": {
-						"https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/inventory.json": [
-							"./inventory/*.yaml",
-							"hosts.yml"
-						]
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    "yaml-language-server": {
+      "settings": {
+        "yaml": {
+          "schemas": {
+            "https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/inventory.json": [
+              "./inventory/*.yaml",
+              "hosts.yml"
+            ]
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -97,24 +97,24 @@ for the Ansible language server:
 
 ```json
 {
-	"ansible": {
-		"ansible": {
-			"path": "ansible"
-		},
-		"executionEnvironment": {
-			"enabled": false
-		},
-		"python": {
-			"interpreterPath": "python3"
-		},
-		"validation": {
-			"enabled": true,
-			"lint": {
-				"enabled": true,
-				"path": "ansible-lint"
-			}
-		}
-	}
+  "ansible": {
+    "ansible": {
+      "path": "ansible"
+    },
+    "executionEnvironment": {
+      "enabled": false
+    },
+    "python": {
+      "interpreterPath": "python3"
+    },
+    "validation": {
+      "enabled": true,
+      "lint": {
+        "enabled": true,
+        "path": "ansible-lint"
+      }
+    }
+  }
 }
 ```
 
@@ -126,30 +126,30 @@ When desired, any of the above default settings can be overridden under the
 
 ```json [settings]
 {
-	"lsp": {
-		// The Zed Ansible extension prefixes all settings with `ansible`
-		// so use `ansible.path` instead of `ansible.ansible.path`.
-		"ansible-language-server": {
-			"settings": {
-				"ansible": {
-					"path": "ansible"
-				},
-				"executionEnvironment": {
-					"enabled": false
-				},
-				"python": {
-					"interpreterPath": "python3"
-				},
-				"validation": {
-					"enabled": false,
-					"lint": {
-						"enabled": false,
-						"path": "ansible-lint"
-					}
-				}
-			}
-		}
-	}
+  "lsp": {
+    // The Zed Ansible extension prefixes all settings with `ansible`
+    // so use `ansible.path` instead of `ansible.ansible.path`.
+    "ansible-language-server": {
+      "settings": {
+        "ansible": {
+          "path": "ansible"
+        },
+        "executionEnvironment": {
+          "enabled": false
+        },
+        "python": {
+          "interpreterPath": "python3"
+        },
+        "validation": {
+          "enabled": false,
+          "lint": {
+            "enabled": false,
+            "path": "ansible-lint"
+          }
+        }
+      }
+    }
+  }
 }
 ```
 

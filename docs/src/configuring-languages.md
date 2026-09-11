@@ -180,20 +180,20 @@ Suppose you're working with Ruby. The default configuration is:
 
 ```json [settings]
 {
-	"languages": {
-		"Ruby": {
-			"language_servers": [
-				"solargraph",
-				"!ruby-lsp",
-				"!rubocop",
-				"!sorbet",
-				"!steep",
-				"!kanayago",
-				"!fuzzy-ruby-server",
-				"..."
-			]
-		}
-	}
+  "languages": {
+    "Ruby": {
+      "language_servers": [
+        "solargraph",
+        "!ruby-lsp",
+        "!rubocop",
+        "!sorbet",
+        "!steep",
+        "!kanayago",
+        "!fuzzy-ruby-server",
+        "..."
+      ]
+    }
+  }
 }
 ```
 

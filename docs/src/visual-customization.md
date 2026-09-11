@@ -24,8 +24,8 @@ icon_theme_selector::Toggle} which will modify the following settings:
 
 ```json [settings]
 {
-	"theme": "One Dark",
-	"icon_theme": "Zed (Default)"
+  "theme": "One Dark",
+  "icon_theme": "Zed (Default)"
 }
 ```
 
@@ -34,18 +34,18 @@ set with:
 
 ```json [settings]
 {
-	"theme": {
-		"dark": "One Dark",
-		"light": "One Light",
-		// Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
-		"mode": "system"
-	},
-	"icon_theme": {
-		"dark": "Zed (Default)",
-		"light": "Zed (Default)",
-		// Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
-		"mode": "system"
-	}
+  "theme": {
+    "dark": "One Dark",
+    "light": "One Light",
+    // Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
+    "mode": "system"
+  },
+  "icon_theme": {
+    "dark": "Zed (Default)",
+    "light": "Zed (Default)",
+    // Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
+    "mode": "system"
+  }
 }
 ```
 
@@ -111,9 +111,9 @@ To disable this behavior use:
 
 ```json [settings]
 {
-	"buffer_font_features": {
-		"calt": false // Disable ligatures
-	}
+  "buffer_font_features": {
+    "calt": false // Disable ligatures
+  }
 }
 ```
 
@@ -121,21 +121,21 @@ To disable this behavior use:
 
 ```json [settings]
 {
-	// Whether to show full labels in line indicator or short ones
-	//   - `short`: "2 s, 15 l, 32 c"
-	//   - `long`: "2 selections, 15 lines, 32 characters"
-	"line_indicator_format": "long"
+  // Whether to show full labels in line indicator or short ones
+  //   - `short`: "2 s, 15 l, 32 c"
+  //   - `long`: "2 selections, 15 lines, 32 characters"
+  "line_indicator_format": "long"
 
-	// Individual status bar icons can be hidden:
-	// "project_panel": {"button": false },
-	// "outline_panel": {"button": false },
-	// "collaboration_panel": {"button": false },
-	// "git_panel": {"button": false },
+  // Individual status bar icons can be hidden:
+  // "project_panel": {"button": false },
+  // "outline_panel": {"button": false },
+  // "collaboration_panel": {"button": false },
+  // "git_panel": {"button": false },
 
-	// "agent": {"button": false },
-	// "debugger": {"button": false },
-	// "diagnostics": {"button": false },
-	// "search": {"button": false },
+  // "agent": {"button": false },
+  // "debugger": {"button": false },
+  // "diagnostics": {"button": false },
+  // "search": {"button": false },
 }
 ```
 
@@ -160,27 +160,27 @@ To disable this behavior use:
 
 ```json [settings]
 {
-	// Force usage of Zed build in path prompts (file and directory pickers)
-	// instead of OS native pickers (false).
-	"use_system_path_prompts": true,
-	// Force usage of Zed built in confirmation prompts ("Do you want to save?")
-	// instead of OS native prompts (false). On linux this is ignored (always false).
-	"use_system_prompts": true,
+  // Force usage of Zed build in path prompts (file and directory pickers)
+  // instead of OS native pickers (false).
+  "use_system_path_prompts": true,
+  // Force usage of Zed built in confirmation prompts ("Do you want to save?")
+  // instead of OS native prompts (false). On linux this is ignored (always false).
+  "use_system_prompts": true,
 
-	// Active pane styling settings.
-	"active_pane_modifiers": {
-		// Inset border size of the active pane, in pixels.
-		"border_size": 0.0,
-		// Opacity of the inactive panes. 0 means transparent, 1 means opaque.
-		"inactive_opacity": 1.0
-	},
+  // Active pane styling settings.
+  "active_pane_modifiers": {
+    // Inset border size of the active pane, in pixels.
+    "border_size": 0.0,
+    // Opacity of the inactive panes. 0 means transparent, 1 means opaque.
+    "inactive_opacity": 1.0
+  },
 
-	// Layout mode of the bottom dock: contained, full, left_aligned, right_aligned
-	"bottom_dock_layout": "contained",
+  // Layout mode of the bottom dock: contained, full, left_aligned, right_aligned
+  "bottom_dock_layout": "contained",
 
-	// Whether to resize all the panels in a dock when resizing the dock.
-	// Can be a combination of "left", "right" and "bottom".
-	"resize_all_panels_in_dock": ["left"]
+  // Whether to resize all the panels in a dock when resizing the dock.
+  // Can be a combination of "left", "right" and "bottom".
+  "resize_all_panels_in_dock": ["left"]
 }
 ```
 
@@ -388,10 +388,10 @@ TBD: Centered layout related settings
 
 ```json [settings]
 {
-	// The default number of lines to expand excerpts in the multibuffer by.
-	"expand_excerpt_lines": 5,
-	// The default number of lines of context provided for excerpts in the multibuffer by.
-	"excerpt_context_lines": 2
+  // The default number of lines to expand excerpts in the multibuffer by.
+  "expand_excerpt_lines": 5,
+  // The default number of lines of context provided for excerpts in the multibuffer by.
+  "excerpt_context_lines": 2
 }
 ```
 
@@ -441,30 +441,30 @@ TBD: Centered layout related settings
 
 ```json [settings]
 {
-	"inlay_hints": {
-		"enabled": false,
-		// Toggle certain types of hints on and off, all switched on by default.
-		"show_type_hints": true,
-		"show_parameter_hints": true,
-		"show_other_hints": true,
+  "inlay_hints": {
+    "enabled": false,
+    // Toggle certain types of hints on and off, all switched on by default.
+    "show_type_hints": true,
+    "show_parameter_hints": true,
+    "show_other_hints": true,
 
-		// Whether to show a background for inlay hints (theme `hint.background`)
-		"show_background": false, //
+    // Whether to show a background for inlay hints (theme `hint.background`)
+    "show_background": false, //
 
-		// Time to wait after editing before requesting hints (0 to disable debounce)
-		"edit_debounce_ms": 700,
-		// Time to wait after scrolling before requesting hints (0 to disable debounce)
-		"scroll_debounce_ms": 50,
+    // Time to wait after editing before requesting hints (0 to disable debounce)
+    "edit_debounce_ms": 700,
+    // Time to wait after scrolling before requesting hints (0 to disable debounce)
+    "scroll_debounce_ms": 50,
 
-		// A set of modifiers which, when pressed, will toggle the visibility of inlay hints.
-		"toggle_on_modifiers_press": {
-			"control": false,
-			"shift": false,
-			"alt": false,
-			"platform": false,
-			"function": false
-		}
-	}
+    // A set of modifiers which, when pressed, will toggle the visibility of inlay hints.
+    "toggle_on_modifiers_press": {
+      "control": false,
+      "shift": false,
+      "alt": false,
+      "platform": false,
+      "function": false
+    }
+  }
 }
 ```
 
@@ -530,22 +530,22 @@ Project panel can be shown/hidden with {#action project_panel::ToggleFocus}
 
 ```json [settings]
 {
-	"agent": {
-		"enabled": true, // Enable/disable the agent
-		"button": true, // Show/hide the icon in the status bar
-		"dock": "right", // Where to dock: left, right, bottom
-		"default_width": 640, // Default width (left/right docked)
-		"default_height": 320 // Default height (bottom docked)
-	},
-	// Controls the font family and size for agent responses in the agent panel.
-	// If not specified, they fall back to the UI font family and size.
-	"agent_ui_font_family": "Inter",
-	"agent_ui_font_size": 15,
-	// Controls the font family and size for the agent panel's message editor
-	// and user messages.
-	// If not specified, the font family falls back to the buffer font family.
-	"agent_buffer_font_family": "Berkeley Mono",
-	"agent_buffer_font_size": 12
+  "agent": {
+    "enabled": true, // Enable/disable the agent
+    "button": true, // Show/hide the icon in the status bar
+    "dock": "right", // Where to dock: left, right, bottom
+    "default_width": 640, // Default width (left/right docked)
+    "default_height": 320 // Default height (bottom docked)
+  },
+  // Controls the font family and size for agent responses in the agent panel.
+  // If not specified, they fall back to the UI font family and size.
+  "agent_ui_font_family": "Inter",
+  "agent_ui_font_size": 15,
+  // Controls the font family and size for the agent panel's message editor
+  // and user messages.
+  // If not specified, the font family falls back to the buffer font family.
+  "agent_buffer_font_family": "Berkeley Mono",
+  "agent_buffer_font_size": 12
 }
 ```
 
@@ -637,12 +637,12 @@ non-visual customization options.
 
 ```json [settings]
 {
-	// Collaboration Panel
-	"collaboration_panel": {
-		"button": true, // Show/hide status bar icon
-		"dock": "left", // Where to dock: left, right
-		"default_width": 240 // Default width of the collaboration panel.
-	},
-	"show_call_status_icon": true // Shown call status in the OS status bar.
+  // Collaboration Panel
+  "collaboration_panel": {
+    "button": true, // Show/hide status bar icon
+    "dock": "left", // Where to dock: left, right
+    "default_width": 240 // Default width of the collaboration panel.
+  },
+  "show_call_status_icon": true // Shown call status in the OS status bar.
 }
 ```

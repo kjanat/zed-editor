@@ -86,17 +86,17 @@ regardless of opt-in status:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"disabled_globs": [
-			"**/.env*",
-			"**/*.pem",
-			"**/*.key",
-			"**/*.cert",
-			"**/*.crt",
-			"**/.dev.vars",
-			"**/secrets.yml"
-		]
-	}
+  "edit_predictions": {
+    "disabled_globs": [
+      "**/.env*",
+      "**/*.pem",
+      "**/*.key",
+      "**/*.cert",
+      "**/*.crt",
+      "**/.dev.vars",
+      "**/secrets.yml"
+    ]
+  }
 }
 ```
 
@@ -106,9 +106,9 @@ in your Zed settings file ([how to edit](../configuring-zed.md#settings-files)):
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"disabled_globs": ["secret_dir/*", "**/*.log"]
-	}
+  "edit_predictions": {
+    "disabled_globs": ["secret_dir/*", "**/*.log"]
+  }
 }
 ```
 

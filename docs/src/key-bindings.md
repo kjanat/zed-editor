@@ -75,18 +75,18 @@ For example:
 
 ```json [keymap]
 [
-	{
-		"bindings": {
-			"ctrl-right": "editor::SelectLargerSyntaxNode",
-			"ctrl-left": "editor::SelectSmallerSyntaxNode"
-		}
-	},
-	{
-		"context": "ProjectPanel && not_editing",
-		"bindings": {
-			"o": "project_panel::Open"
-		}
-	}
+  {
+    "bindings": {
+      "ctrl-right": "editor::SelectLargerSyntaxNode",
+      "ctrl-left": "editor::SelectSmallerSyntaxNode"
+    }
+  },
+  {
+    "context": "ProjectPanel && not_editing",
+    "bindings": {
+      "o": "project_panel::Open"
+    }
+  }
 ]
 ```
 
@@ -129,12 +129,12 @@ A few examples:
 
 ```json [keymap]
 {
-	"bindings": {
-		"cmd-k cmd-s": "zed::OpenKeymap", // matches ⌘-k then ⌘-s
-		"space e": "editor::ShowCompletions", // type space then e
-		"ç": "editor::ShowCompletions", // matches ⌥-c
-		"shift shift": "file_finder::Toggle" // matches pressing and releasing shift twice
-	}
+  "bindings": {
+    "cmd-k cmd-s": "zed::OpenKeymap", // matches ⌘-k then ⌘-s
+    "space e": "editor::ShowCompletions", // type space then e
+    "ç": "editor::ShowCompletions", // matches ⌥-c
+    "shift shift": "file_finder::Toggle" // matches pressing and releasing shift twice
+  }
 }
 ```
 
@@ -269,9 +269,9 @@ popover is disabled. Or add this to your settings.json:
 
 ```json [settings]
 {
-	"which_key": {
-		"enabled": true
-	}
+  "which_key": {
+    "enabled": true
+  }
 }
 ```
 
@@ -309,12 +309,12 @@ equivalent mapping by setting `use_key_equivalents` to `true` in your keymap:
 
 ```json [keymap]
 [
-	{
-		"use_key_equivalents": true,
-		"bindings": {
-			"ctrl->": "editor::Indent" // parsed as ctrl-: when a German QWERTZ keyboard is active
-		}
-	}
+  {
+    "use_key_equivalents": true,
+    "bindings": {
+      "ctrl->": "editor::Indent" // parsed as ctrl-: when a German QWERTZ keyboard is active
+    }
+  }
 ]
 ```
 
@@ -340,12 +340,12 @@ key.
 
 ```json [keymap]
 [
-	{
-		"context": "Workspace",
-		"bindings": {
-			"cmd-r": null // cmd-r will do nothing when the Workspace context is active
-		}
-	}
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-r": null // cmd-r will do nothing when the Workspace context is active
+    }
+  }
 ]
 ```
 
@@ -363,18 +363,18 @@ happening:
 
 ```json [keymap]
 [
-	{
-		"context": "Workspace",
-		"bindings": {
-			"cmd-r": null // cmd-r will do nothing when the search bar is in view
-		}
-	},
-	{
-		"context": "Workspace",
-		"bindings": {
-			"cmd-r": "buffer_search::DeployReplace" // cmd-r will deploy replace when the search bar is not in view
-		}
-	}
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-r": null // cmd-r will do nothing when the search bar is in view
+    }
+  },
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-r": "buffer_search::DeployReplace" // cmd-r will deploy replace when the search bar is not in view
+    }
+  }
 ]
 ```
 
@@ -385,24 +385,24 @@ can do this with the `workspace::SendKeystrokes` action.
 
 ```json [keymap]
 [
-	{
-		"bindings": {
-			// Move down four times
-			"alt-down": ["workspace::SendKeystrokes", "down down down down"],
-			// Expand the selection (editor::SelectLargerSyntaxNode);
-			// copy to the clipboard; and then undo the selection expansion.
-			"cmd-alt-c": [
-				"workspace::SendKeystrokes",
-				"ctrl-shift-right ctrl-shift-right ctrl-shift-right cmd-c ctrl-shift-left ctrl-shift-left ctrl-shift-left"
-			]
-		}
-	},
-	{
-		"context": "Editor && vim_mode == insert",
-		"bindings": {
-			"j k": ["workspace::SendKeystrokes", "escape"]
-		}
-	}
+  {
+    "bindings": {
+      // Move down four times
+      "alt-down": ["workspace::SendKeystrokes", "down down down down"],
+      // Expand the selection (editor::SelectLargerSyntaxNode);
+      // copy to the clipboard; and then undo the selection expansion.
+      "cmd-alt-c": [
+        "workspace::SendKeystrokes",
+        "ctrl-shift-right ctrl-shift-right ctrl-shift-right cmd-c ctrl-shift-left ctrl-shift-left ctrl-shift-left"
+      ]
+    }
+  },
+  {
+    "context": "Editor && vim_mode == insert",
+    "bindings": {
+      "j k": ["workspace::SendKeystrokes", "escape"]
+    }
+  }
 ]
 ```
 
@@ -437,10 +437,10 @@ keymap:
 
 ```json [keymap]
 {
-	"context": "Terminal",
-	"bindings": {
-		"ctrl-n": ["terminal::SendKeystroke", "ctrl-n"]
-	}
+  "context": "Terminal",
+  "bindings": {
+    "ctrl-n": ["terminal::SendKeystroke", "ctrl-n"]
+  }
 }
 ```
 
@@ -462,15 +462,15 @@ that behavior, add this to your `keymap.json`:
 
 ```json [keymap]
 [
-	{
-		"context": "Editor",
-		"bindings": {
-			"alt-left": "editor::MoveToPreviousSubwordStart",
-			"alt-right": "editor::MoveToNextSubwordEnd",
-			"shift-alt-left": "editor::SelectToPreviousSubwordStart",
-			"shift-alt-right": "editor::SelectToNextSubwordEnd"
-		}
-	}
+  {
+    "context": "Editor",
+    "bindings": {
+      "alt-left": "editor::MoveToPreviousSubwordStart",
+      "alt-right": "editor::MoveToNextSubwordEnd",
+      "shift-alt-left": "editor::SelectToPreviousSubwordStart",
+      "shift-alt-right": "editor::SelectToNextSubwordEnd"
+    }
+  }
 ]
 ```
 
@@ -479,12 +479,12 @@ moving between tabs in editors, add this override:
 
 ```json [keymap]
 [
-	{
-		"context": "Editor",
-		"bindings": {
-			"alt-left": "pane::ActivatePreviousItem",
-			"alt-right": "pane::ActivateNextItem"
-		}
-	}
+  {
+    "context": "Editor",
+    "bindings": {
+      "alt-left": "pane::ActivatePreviousItem",
+      "alt-right": "pane::ActivateNextItem"
+    }
+  }
 ]
 ```

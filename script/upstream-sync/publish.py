@@ -1,4 +1,4 @@
-"""Publish a candidate as Git objects, never as executable checkout contents."""
+"""Publish a candidate as Git objects."""
 
 import html
 import json

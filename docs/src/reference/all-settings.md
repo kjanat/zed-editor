@@ -23,10 +23,10 @@ The sections below document supported Zed settings.
 
 ```json [settings]
 {
-	"active_pane_modifiers": {
-		"border_size": 0.0,
-		"inactive_opacity": 1.0
-	}
+  "active_pane_modifiers": {
+    "border_size": 0.0,
+    "inactive_opacity": 1.0
+  }
 }
 ```
 
@@ -67,7 +67,7 @@ Non-negative `float` values
 
 ```json [settings]
 {
-	"bottom_dock_layout": "contained"
+  "bottom_dock_layout": "contained"
 }
 ```
 
@@ -76,7 +76,7 @@ Non-negative `float` values
 
 ```json [settings]
 {
-	"bottom_dock_layout": "full"
+  "bottom_dock_layout": "full"
 }
 ```
 
@@ -85,7 +85,7 @@ Non-negative `float` values
 
 ```json [settings]
 {
-	"bottom_dock_layout": "left_aligned"
+  "bottom_dock_layout": "left_aligned"
 }
 ```
 
@@ -94,7 +94,7 @@ Non-negative `float` values
 
 ```json [settings]
 {
-	"bottom_dock_layout": "right_aligned"
+  "bottom_dock_layout": "right_aligned"
 }
 ```
 
@@ -122,7 +122,7 @@ Non-negative `float` values
 
 ```json [settings]
 {
-	"allow_rewrap": "in_comments"
+  "allow_rewrap": "in_comments"
 }
 ```
 
@@ -130,7 +130,7 @@ Non-negative `float` values
 
 ```json [settings]
 {
-	"allow_rewrap": "in_selections"
+  "allow_rewrap": "in_selections"
 }
 ```
 
@@ -138,7 +138,7 @@ Non-negative `float` values
 
 ```json [settings]
 {
-	"allow_rewrap": "anywhere"
+  "allow_rewrap": "anywhere"
 }
 ```
 
@@ -202,11 +202,11 @@ Define extensions which should be installed (`true`) or never installed
 
 ```json [settings]
 {
-	"auto_install_extensions": {
-		"html": true,
-		"dockerfile": true,
-		"docker-compose": false
-	}
+  "auto_install_extensions": {
+    "html": true,
+    "dockerfile": true,
+    "docker-compose": false
+  }
 }
 ```
 
@@ -223,9 +223,9 @@ extension here with `false` to pin it to its currently installed version.
 
 ```json [settings]
 {
-	"auto_update_extensions": {
-		"html": false
-	}
+  "auto_update_extensions": {
+    "html": false
+  }
 }
 ```
 
@@ -244,7 +244,7 @@ Extensions page ({#action zed::Extensions}) does this automatically.
 
 ```json [settings]
 {
-	"autosave": "off"
+  "autosave": "off"
 }
 ```
 
@@ -252,7 +252,7 @@ Extensions page ({#action zed::Extensions}) does this automatically.
 
 ```json [settings]
 {
-	"autosave": "on_focus_change"
+  "autosave": "on_focus_change"
 }
 ```
 
@@ -260,7 +260,7 @@ Extensions page ({#action zed::Extensions}) does this automatically.
 
 ```json [settings]
 {
-	"autosave": "on_window_change"
+  "autosave": "on_window_change"
 }
 ```
 
@@ -268,11 +268,11 @@ Extensions page ({#action zed::Extensions}) does this automatically.
 
 ```json [settings]
 {
-	"autosave": {
-		"after_delay": {
-			"milliseconds": 1000
-		}
-	}
+  "autosave": {
+    "after_delay": {
+      "milliseconds": 1000
+    }
+  }
 }
 ```
 
@@ -335,7 +335,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "Zed"
+  "base_keymap": "Zed"
 }
 ```
 
@@ -343,7 +343,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "VSCode"
+  "base_keymap": "VSCode"
 }
 ```
 
@@ -351,7 +351,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "Atom"
+  "base_keymap": "Atom"
 }
 ```
 
@@ -359,7 +359,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "JetBrains"
+  "base_keymap": "JetBrains"
 }
 ```
 
@@ -367,7 +367,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "SublimeText"
+  "base_keymap": "SublimeText"
 }
 ```
 
@@ -375,7 +375,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "TextMate"
+  "base_keymap": "TextMate"
 }
 ```
 
@@ -383,7 +383,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "Emacs"
+  "base_keymap": "Emacs"
 }
 ```
 
@@ -391,7 +391,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "Cursor"
+  "base_keymap": "Cursor"
 }
 ```
 
@@ -399,7 +399,7 @@ is earlier than the configured inactivity period.
 
 ```json [settings]
 {
-	"base_keymap": "None"
+  "base_keymap": "None"
 }
 ```
 
@@ -429,9 +429,9 @@ For example, to disable font ligatures, add the following to your settings:
 
 ```json [settings]
 {
-	"buffer_font_features": {
-		"calt": false
-	}
+  "buffer_font_features": {
+    "calt": false
+  }
 }
 ```
 
@@ -439,9 +439,9 @@ You can also set other OpenType features, like setting `cv01` to `7`:
 
 ```json [settings]
 {
-	"buffer_font_features": {
-		"cv01": 7
-	}
+  "buffer_font_features": {
+    "cv01": 7
+  }
 }
 ```
 
@@ -460,7 +460,7 @@ settings:
 
 ```json [settings]
 {
-	"buffer_font_fallbacks": ["Nerd Font"]
+  "buffer_font_fallbacks": ["Nerd Font"]
 }
 ```
 
@@ -503,10 +503,10 @@ loose)
 
 ```json [settings]
 {
-	"centered_layout": {
-		"left_padding": 0.2,
-		"right_padding": 0.2
-	}
+  "centered_layout": {
+    "left_padding": 0.2,
+    "right_padding": 0.2
+  }
 }
 ```
 
@@ -566,7 +566,7 @@ their tab title.
 
 ```json [settings]
 {
-	"code_lens": "on"
+  "code_lens": "on"
 }
 ```
 
@@ -594,7 +594,7 @@ their tab title.
 
 ```json [settings]
 {
-	"diagnostics_max_severity": "all"
+  "diagnostics_max_severity": "all"
 }
 ```
 
@@ -602,7 +602,7 @@ their tab title.
 
 ```json [settings]
 {
-	"diagnostics_max_severity": "error"
+  "diagnostics_max_severity": "error"
 }
 ```
 
@@ -610,7 +610,7 @@ their tab title.
 
 ```json [settings]
 {
-	"diagnostics_max_severity": "warning"
+  "diagnostics_max_severity": "warning"
 }
 ```
 
@@ -618,7 +618,7 @@ their tab title.
 
 ```json [settings]
 {
-	"diagnostics_max_severity": "info"
+  "diagnostics_max_severity": "info"
 }
 ```
 
@@ -626,7 +626,7 @@ their tab title.
 
 ```json [settings]
 {
-	"diagnostics_max_severity": "hint"
+  "diagnostics_max_severity": "hint"
 }
 ```
 
@@ -690,7 +690,7 @@ There are three options to choose from:
 
 ```json [settings]
 {
-	"double_click_in_multibuffer": "select"
+  "double_click_in_multibuffer": "select"
 }
 ```
 
@@ -698,7 +698,7 @@ There are three options to choose from:
 
 ```json [settings]
 {
-	"double_click_in_multibuffer": "open"
+  "double_click_in_multibuffer": "open"
 }
 ```
 
@@ -770,12 +770,12 @@ the selected provider:
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "open_ai_compatible_api",
-		"open_ai_compatible_api": {
-			"prediction_debounce": 500
-		}
-	}
+  "edit_predictions": {
+    "provider": "open_ai_compatible_api",
+    "open_ai_compatible_api": {
+      "prediction_debounce": 500
+    }
+  }
 }
 ```
 
@@ -798,7 +798,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"edit_predictions_disabled_in": ["comment"]
+  "edit_predictions_disabled_in": ["comment"]
 }
 ```
 
@@ -806,7 +806,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"edit_predictions_disabled_in": ["comment", "string"]
+  "edit_predictions_disabled_in": ["comment", "string"]
 }
 ```
 
@@ -814,11 +814,11 @@ List of `string` values
 
 ```json [settings]
 {
-	"languages": {
-		"Go": {
-			"edit_predictions_disabled_in": ["comment", "string"]
-		}
-	}
+  "languages": {
+    "Go": {
+      "edit_predictions_disabled_in": ["comment", "string"]
+    }
+  }
 }
 ```
 
@@ -834,7 +834,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"current_line_highlight": "none"
+  "current_line_highlight": "none"
 }
 ```
 
@@ -842,7 +842,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"current_line_highlight": "gutter"
+  "current_line_highlight": "gutter"
 }
 ```
 
@@ -850,7 +850,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"current_line_highlight": "line"
+  "current_line_highlight": "line"
 }
 ```
 
@@ -858,7 +858,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"current_line_highlight": "all"
+  "current_line_highlight": "all"
 }
 ```
 
@@ -897,7 +897,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"cursor_shape": "bar"
+  "cursor_shape": "bar"
 }
 ```
 
@@ -905,7 +905,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"cursor_shape": "block"
+  "cursor_shape": "block"
 }
 ```
 
@@ -913,7 +913,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"cursor_shape": "underline"
+  "cursor_shape": "underline"
 }
 ```
 
@@ -921,7 +921,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"cursor_shape": "hollow"
+  "cursor_shape": "hollow"
 }
 ```
 
@@ -933,14 +933,14 @@ List of `string` values
 
 ```json [settings]
 {
-	"gutter": {
-		"line_numbers": true,
-		"runnables": true,
-		"breakpoints": true,
-		"folds": true,
-		"min_line_number_digits": 4,
-		"git_gutter_width": "default"
-	}
+  "gutter": {
+    "line_numbers": true,
+    "runnables": true,
+    "breakpoints": true,
+    "folds": true,
+    "min_line_number_digits": 4,
+    "git_gutter_width": "default"
+  }
 }
 ```
 
@@ -967,7 +967,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"hide_mouse": "never"
+  "hide_mouse": "never"
 }
 ```
 
@@ -975,7 +975,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"hide_mouse": "on_typing"
+  "hide_mouse": "on_typing"
 }
 ```
 
@@ -983,7 +983,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"hide_mouse": "on_typing_and_action"
+  "hide_mouse": "on_typing_and_action"
 }
 ```
 
@@ -1000,7 +1000,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"reduce_motion": "on"
+  "reduce_motion": "on"
 }
 ```
 
@@ -1008,7 +1008,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"reduce_motion": "off"
+  "reduce_motion": "off"
 }
 ```
 
@@ -1025,7 +1025,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"snippet_sort_order": "top"
+  "snippet_sort_order": "top"
 }
 ```
 
@@ -1033,7 +1033,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"snippet_sort_order": "inline"
+  "snippet_sort_order": "inline"
 }
 ```
 
@@ -1041,7 +1041,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"snippet_sort_order": "bottom"
+  "snippet_sort_order": "bottom"
 }
 ```
 
@@ -1049,7 +1049,7 @@ List of `string` values
 
 ```json [settings]
 {
-	"snippet_sort_order": "none"
+  "snippet_sort_order": "none"
 }
 ```
 
@@ -1062,19 +1062,19 @@ List of `string` values
 
 ```json [settings]
 {
-	"scrollbar": {
-		"show": "auto",
-		"cursors": true,
-		"git_diff": true,
-		"search_results": true,
-		"selected_text": true,
-		"selected_symbol": true,
-		"diagnostics": "all",
-		"axes": {
-			"horizontal": true,
-			"vertical": true
-		}
-	}
+  "scrollbar": {
+    "show": "auto",
+    "cursors": true,
+    "git_diff": true,
+    "search_results": true,
+    "selected_text": true,
+    "selected_symbol": true,
+    "diagnostics": "all",
+    "axes": {
+      "horizontal": true,
+      "vertical": true
+    }
+  }
 }
 ```
 
@@ -1091,9 +1091,9 @@ List of `string` values
 
 ```json [settings]
 {
-	"scrollbar": {
-		"show": "auto"
-	}
+  "scrollbar": {
+    "show": "auto"
+  }
 }
 ```
 
@@ -1101,9 +1101,9 @@ List of `string` values
 
 ```json [settings]
 {
-	"scrollbar": {
-		"show": "system"
-	}
+  "scrollbar": {
+    "show": "system"
+  }
 }
 ```
 
@@ -1111,9 +1111,9 @@ List of `string` values
 
 ```json [settings]
 {
-	"scrollbar": {
-		"show": "always"
-	}
+  "scrollbar": {
+    "show": "always"
+  }
 }
 ```
 
@@ -1121,9 +1121,9 @@ List of `string` values
 
 ```json [settings]
 {
-	"scrollbar": {
-		"show": "never"
-	}
+  "scrollbar": {
+    "show": "never"
+  }
 }
 ```
 
@@ -1209,9 +1209,9 @@ file.
 
 ```json [settings]
 {
-	"scrollbar": {
-		"diagnostics": "all"
-	}
+  "scrollbar": {
+    "diagnostics": "all"
+  }
 }
 ```
 
@@ -1219,9 +1219,9 @@ file.
 
 ```json [settings]
 {
-	"scrollbar": {
-		"diagnostics": "none"
-	}
+  "scrollbar": {
+    "diagnostics": "none"
+  }
 }
 ```
 
@@ -1229,9 +1229,9 @@ file.
 
 ```json [settings]
 {
-	"scrollbar": {
-		"diagnostics": "error"
-	}
+  "scrollbar": {
+    "diagnostics": "error"
+  }
 }
 ```
 
@@ -1239,9 +1239,9 @@ file.
 
 ```json [settings]
 {
-	"scrollbar": {
-		"diagnostics": "warning"
-	}
+  "scrollbar": {
+    "diagnostics": "warning"
+  }
 }
 ```
 
@@ -1249,9 +1249,9 @@ file.
 
 ```json [settings]
 {
-	"scrollbar": {
-		"diagnostics": "information"
-	}
+  "scrollbar": {
+    "diagnostics": "information"
+  }
 }
 ```
 
@@ -1263,12 +1263,12 @@ file.
 
 ```json [settings]
 {
-	"scrollbar": {
-		"axes": {
-			"horizontal": true,
-			"vertical": true
-		}
-	}
+  "scrollbar": {
+    "axes": {
+      "horizontal": true,
+      "vertical": true
+    }
+  }
 }
 ```
 
@@ -1303,12 +1303,12 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"show": "never",
-		"thumb": "always",
-		"thumb_border": "left_open",
-		"current_line_highlight": null
-	}
+  "minimap": {
+    "show": "never",
+    "thumb": "always",
+    "thumb_border": "left_open",
+    "current_line_highlight": null
+  }
 }
 ```
 
@@ -1324,9 +1324,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"show": "always"
-	}
+  "minimap": {
+    "show": "always"
+  }
 }
 ```
 
@@ -1334,9 +1334,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"show": "auto"
-	}
+  "minimap": {
+    "show": "auto"
+  }
 }
 ```
 
@@ -1344,9 +1344,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"show": "never"
-	}
+  "minimap": {
+    "show": "never"
+  }
 }
 ```
 
@@ -1363,9 +1363,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"thumb": "hover"
-	}
+  "minimap": {
+    "thumb": "hover"
+  }
 }
 ```
 
@@ -1373,9 +1373,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"thumb": "always"
-	}
+  "minimap": {
+    "thumb": "always"
+  }
 }
 ```
 
@@ -1391,9 +1391,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"thumb_border": "full"
-	}
+  "minimap": {
+    "thumb_border": "full"
+  }
 }
 ```
 
@@ -1401,9 +1401,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"thumb_border": "left_open"
-	}
+  "minimap": {
+    "thumb_border": "left_open"
+  }
 }
 ```
 
@@ -1411,9 +1411,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"thumb_border": "right_open"
-	}
+  "minimap": {
+    "thumb_border": "right_open"
+  }
 }
 ```
 
@@ -1421,9 +1421,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"thumb_border": "left_only"
-	}
+  "minimap": {
+    "thumb_border": "left_only"
+  }
 }
 ```
 
@@ -1431,9 +1431,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"thumb_border": "none"
-	}
+  "minimap": {
+    "thumb_border": "none"
+  }
 }
 ```
 
@@ -1449,9 +1449,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"current_line_highlight": null
-	}
+  "minimap": {
+    "current_line_highlight": null
+  }
 }
 ```
 
@@ -1459,9 +1459,9 @@ file.
 
 ```json [settings]
 {
-	"minimap": {
-		"current_line_highlight": "line"
-	}
+  "minimap": {
+    "current_line_highlight": "line"
+  }
 }
 ```
 
@@ -1469,9 +1469,9 @@ or
 
 ```json [settings]
 {
-	"minimap": {
-		"current_line_highlight": "all"
-	}
+  "minimap": {
+    "current_line_highlight": "all"
+  }
 }
 ```
 
@@ -1479,9 +1479,9 @@ or
 
 ```json [settings]
 {
-	"minimap": {
-		"current_line_highlight": "gutter"
-	}
+  "minimap": {
+    "current_line_highlight": "gutter"
+  }
 }
 ```
 
@@ -1489,9 +1489,9 @@ or
 
 ```json [settings]
 {
-	"minimap": {
-		"current_line_highlight": "none"
-	}
+  "minimap": {
+    "current_line_highlight": "none"
+  }
 }
 ```
 
@@ -1503,11 +1503,11 @@ or
 
 ```json [settings]
 {
-	"tab_bar": {
-		"show": true,
-		"show_nav_history_buttons": true,
-		"show_tab_bar_buttons": true
-	}
+  "tab_bar": {
+    "show": true,
+    "show_nav_history_buttons": true,
+    "show_tab_bar_buttons": true
+  }
 }
 ```
 
@@ -1549,14 +1549,14 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"close_position": "right",
-		"file_icons": false,
-		"git_status": false,
-		"activate_on_close": "history",
-		"show_close_button": "hover",
-		"show_diagnostics": "off"
-	}
+  "tabs": {
+    "close_position": "right",
+    "file_icons": false,
+    "git_status": false,
+    "activate_on_close": "history",
+    "show_close_button": "hover",
+    "show_diagnostics": "off"
+  }
 }
 ```
 
@@ -1572,9 +1572,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"close_position": "right"
-	}
+  "tabs": {
+    "close_position": "right"
+  }
 }
 ```
 
@@ -1582,9 +1582,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"close_position": "left"
-	}
+  "tabs": {
+    "close_position": "left"
+  }
 }
 ```
 
@@ -1612,9 +1612,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"activate_on_close": "history"
-	}
+  "tabs": {
+    "activate_on_close": "history"
+  }
 }
 ```
 
@@ -1622,9 +1622,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"activate_on_close": "neighbour"
-	}
+  "tabs": {
+    "activate_on_close": "neighbour"
+  }
 }
 ```
 
@@ -1632,9 +1632,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"activate_on_close": "left_neighbour"
-	}
+  "tabs": {
+    "activate_on_close": "left_neighbour"
+  }
 }
 ```
 
@@ -1650,9 +1650,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"show_close_button": "hover"
-	}
+  "tabs": {
+    "show_close_button": "hover"
+  }
 }
 ```
 
@@ -1660,9 +1660,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"show_close_button": "always"
-	}
+  "tabs": {
+    "show_close_button": "always"
+  }
 }
 ```
 
@@ -1670,9 +1670,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"show_close_button": "hidden"
-	}
+  "tabs": {
+    "show_close_button": "hidden"
+  }
 }
 ```
 
@@ -1690,9 +1690,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"show_diagnostics": "off"
-	}
+  "tabs": {
+    "show_diagnostics": "off"
+  }
 }
 ```
 
@@ -1700,9 +1700,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"show_diagnostics": "errors"
-	}
+  "tabs": {
+    "show_diagnostics": "errors"
+  }
 }
 ```
 
@@ -1710,9 +1710,9 @@ or
 
 ```json [settings]
 {
-	"tabs": {
-		"show_diagnostics": "all"
-	}
+  "tabs": {
+    "show_diagnostics": "all"
+  }
 }
 ```
 
@@ -1734,10 +1734,10 @@ or
 
 ```json
 {
-	"session": {
-		"restore_unsaved_buffers": true,
-		"trust_all_worktrees": false
-	}
+  "session": {
+    "restore_unsaved_buffers": true,
+    "trust_all_worktrees": false
+  }
 }
 ```
 
@@ -1747,9 +1747,9 @@ or
 
 ```json [settings]
 {
-	"session": {
-		"restore_unsaved_buffers": true
-	}
+  "session": {
+    "restore_unsaved_buffers": true
+  }
 }
 ```
 
@@ -1760,9 +1760,9 @@ closing the application.
 
 ```json [settings]
 {
-	"session": {
-		"trust_all_worktrees": false
-	}
+  "session": {
+    "trust_all_worktrees": false
+  }
 }
 ```
 
@@ -1779,10 +1779,10 @@ servers are downloaded and started automatically.
 
 ```json [settings]
 {
-	"drag_and_drop_selection": {
-		"enabled": true,
-		"delay": 300
-	}
+  "drag_and_drop_selection": {
+    "enabled": true,
+    "delay": 300
+  }
 }
 ```
 
@@ -1794,13 +1794,13 @@ servers are downloaded and started automatically.
 
 ```json [settings]
 {
-	"toolbar": {
-		"breadcrumbs": true,
-		"quick_actions": true,
-		"selections_menu": true,
-		"agent_review": true,
-		"code_actions": false
-	}
+  "toolbar": {
+    "breadcrumbs": true,
+    "quick_actions": true,
+    "selections_menu": true,
+    "agent_review": true,
+    "code_actions": false
+  }
 }
 ```
 
@@ -1838,7 +1838,7 @@ on macOS.
 
 ```json
 {
-	"fullscreen_mode": "native"
+  "fullscreen_mode": "native"
 }
 ```
 
@@ -1847,7 +1847,7 @@ on macOS.
 
 ```json
 {
-	"fullscreen_mode": "simple"
+  "fullscreen_mode": "simple"
 }
 ```
 
@@ -1887,7 +1887,7 @@ on macOS.
 
 ```json [settings]
 {
-	"line_ending": "detect"
+  "line_ending": "detect"
 }
 ```
 
@@ -1896,7 +1896,7 @@ on macOS.
 
 ```json [settings]
 {
-	"line_ending": "prefer_lf"
+  "line_ending": "prefer_lf"
 }
 ```
 
@@ -1905,7 +1905,7 @@ on macOS.
 
 ```json [settings]
 {
-	"line_ending": "prefer_crlf"
+  "line_ending": "prefer_crlf"
 }
 ```
 
@@ -1913,7 +1913,7 @@ on macOS.
 
 ```json [settings]
 {
-	"line_ending": "enforce_lf"
+  "line_ending": "enforce_lf"
 }
 ```
 
@@ -1921,7 +1921,7 @@ on macOS.
 
 ```json [settings]
 {
-	"line_ending": "enforce_crlf"
+  "line_ending": "enforce_crlf"
 }
 ```
 
@@ -1971,14 +1971,14 @@ clamped to this range.
 
 ```json [settings]
 {
-	"status_bar": {
-		"show_active_file": false,
-		"active_language_button": true,
-		"cursor_position_button": true,
-		"line_endings_button": false,
-		"active_encoding_button": "non_utf8",
-		"pending_keystrokes_indicator": true
-	}
+  "status_bar": {
+    "show_active_file": false,
+    "active_language_button": true,
+    "cursor_position_button": true,
+    "line_endings_button": false,
+    "active_encoding_button": "non_utf8",
+    "pending_keystrokes_indicator": true
+  }
 }
 ```
 
@@ -2036,15 +2036,15 @@ configuration:
 
 ```json [settings]
 {
-	"lsp": {
-		"rust-analyzer": {
-			"initialization_options": {
-				"check": {
-					"command": "clippy" // rust-analyzer.check.command (default: "check")
-				}
-			}
-		}
-	}
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "check": {
+          "command": "clippy" // rust-analyzer.check.command (default: "check")
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -2053,15 +2053,15 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-	"lsp": {
-		"yaml-language-server": {
-			"settings": {
-				"yaml": {
-					"keyOrdering": true // Enforces alphabetical ordering of keys in maps
-				}
-			}
-		}
-	}
+  "lsp": {
+    "yaml-language-server": {
+      "settings": {
+        "yaml": {
+          "keyOrdering": true // Enforces alphabetical ordering of keys in maps
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -2074,16 +2074,16 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-	"global_lsp_settings": {
-		"button": true,
-		"request_timeout": 120,
-		"max_buffer_line_length": 20000,
-		"notifications": {
-			// Timeout in milliseconds for automatically dismissing language server notifications.
-			// Set to 0 to disable auto-dismiss.
-			"dismiss_timeout_ms": 5000
-		}
-	}
+  "global_lsp_settings": {
+    "button": true,
+    "request_timeout": 120,
+    "max_buffer_line_length": 20000,
+    "notifications": {
+      // Timeout in milliseconds for automatically dismissing language server notifications.
+      // Set to 0 to disable auto-dismiss.
+      "dismiss_timeout_ms": 5000
+    }
+  }
 }
 ```
 
@@ -2121,9 +2121,9 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "zed"
-	}
+  "edit_predictions": {
+    "provider": "zed"
+  }
 }
 ```
 
@@ -2139,9 +2139,9 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "zed"
-	}
+  "edit_predictions": {
+    "provider": "zed"
+  }
 }
 ```
 
@@ -2149,9 +2149,9 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "copilot"
-	}
+  "edit_predictions": {
+    "provider": "copilot"
+  }
 }
 ```
 
@@ -2159,9 +2159,9 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-	"edit_predictions": {
-		"provider": "none"
-	}
+  "edit_predictions": {
+    "provider": "none"
+  }
 }
 ```
 
@@ -2173,10 +2173,10 @@ While other options may be changed at a runtime and should be placed under
 
 ```json [settings]
 {
-	"focus_follows_mouse": {
-		"enabled": false,
-		"debounce_ms": 250
-	}
+  "focus_follows_mouse": {
+    "enabled": false,
+    "debounce_ms": 250
+  }
 }
 ```
 
@@ -2213,7 +2213,7 @@ Non-negative `integer` values
 
 ```json [settings]
 {
-	"format_on_save": "on"
+  "format_on_save": "on"
 }
 ```
 
@@ -2221,7 +2221,7 @@ Non-negative `integer` values
 
 ```json [settings]
 {
-	"format_on_save": "off"
+  "format_on_save": "off"
 }
 ```
 
@@ -2229,7 +2229,7 @@ Non-negative `integer` values
 
 ```json [settings]
 {
-	"format_on_save": "modifications"
+  "format_on_save": "modifications"
 }
 ```
 
@@ -2243,7 +2243,7 @@ formatting changes in unrelated code.
 
 ```json [settings]
 {
-	"format_on_save": "modifications_if_available"
+  "format_on_save": "modifications_if_available"
 }
 ```
 
@@ -2264,7 +2264,7 @@ a git diff is available but contains no unstaged changes, nothing is formatted.
 
 ```json [settings]
 {
-	"formatter": "language_server"
+  "formatter": "language_server"
 }
 ```
 
@@ -2276,12 +2276,12 @@ a git diff is available but contains no unstaged changes, nothing is formatted.
 
 ```json [settings]
 {
-	"formatter": {
-		"external": {
-			"command": "sed",
-			"arguments": ["-e", "s/ *$//"]
-		}
-	}
+  "formatter": {
+    "external": {
+      "command": "sed",
+      "arguments": ["-e", "s/ *$//"]
+    }
+  }
 }
 ```
 
@@ -2318,12 +2318,12 @@ not read or write files directly.
 
 ```json [settings]
 {
-	"formatter": [
-		// Use ESLint's --fix:
-		{ "code_action": "source.fixAll.eslint" },
-		// Organize imports on save:
-		{ "code_action": "source.organizeImports" }
-	]
+  "formatter": [
+    // Use ESLint's --fix:
+    { "code_action": "source.fixAll.eslint" },
+    // Organize imports on save:
+    { "code_action": "source.organizeImports" }
+  ]
 }
 ```
 
@@ -2331,15 +2331,15 @@ not read or write files directly.
 
 ```json [settings]
 {
-	"formatter": [
-		{ "language_server": { "name": "rust-analyzer" } },
-		{
-			"external": {
-				"command": "sed",
-				"arguments": ["-e", "s/ *$//"]
-			}
-		}
-	]
+  "formatter": [
+    { "language_server": { "name": "rust-analyzer" } },
+    {
+      "external": {
+        "command": "sed",
+        "arguments": ["-e", "s/ *$//"]
+      }
+    }
+  ]
 }
 ```
 
@@ -2353,7 +2353,7 @@ executed.
 
 ```json [settings]
 {
-	"formatter": "none"
+  "formatter": "none"
 }
 ```
 
@@ -2399,19 +2399,19 @@ default.
 
 ```json [settings]
 {
-	"file_scan_exclusions": [
-		"**/.git",
-		"**/.svn",
-		"**/.hg",
-		"**/.jj",
-		"**/.sl",
-		"**/.repo",
-		"**/CVS",
-		"**/.DS_Store",
-		"**/Thumbs.db",
-		"**/.classpath",
-		"**/.settings"
-	]
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/.jj",
+    "**/.sl",
+    "**/.repo",
+    "**/CVS",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/.classpath",
+    "**/.settings"
+  ]
 }
 ```
 
@@ -2420,7 +2420,7 @@ defaults (listed above). Use `"..."` to keep them:
 
 ```json [settings]
 {
-	"file_scan_exclusions": ["**/node_modules", "..."]
+  "file_scan_exclusions": ["**/node_modules", "..."]
 }
 ```
 
@@ -2452,7 +2452,7 @@ the entries you list by name will be used.
 
 ```json [settings]
 {
-	"file_scan_inclusions": [".env*"]
+  "file_scan_inclusions": [".env*"]
 }
 ```
 
@@ -2470,7 +2470,7 @@ the entries you list by name will be used.
 
 ```json [settings]
 {
-	"file_scan_depth": 0
+  "file_scan_depth": 0
 }
 ```
 
@@ -2511,7 +2511,7 @@ depth is measured from each root folder separately.
 
 ```json [settings]
 {
-	"scan_symlinks": "expanded"
+  "scan_symlinks": "expanded"
 }
 ```
 
@@ -2519,7 +2519,7 @@ depth is measured from each root folder separately.
 
 ```json [settings]
 {
-	"scan_symlinks": "always"
+  "scan_symlinks": "always"
 }
 ```
 
@@ -2538,15 +2538,15 @@ projects with many or deeply nested symlinks.
 
 ```json [settings]
 {
-	"file_types": {
-		"JSONC": [
-			"**/.zed/**/*.json",
-			"**/zed/**/*.json",
-			"**/Zed/**/*.json",
-			"**/.vscode/**/*.json"
-		],
-		"Shell Script": [".env.*"]
-	}
+  "file_types": {
+    "JSONC": [
+      "**/.zed/**/*.json",
+      "**/zed/**/*.json",
+      "**/Zed/**/*.json",
+      "**/.vscode/**/*.json"
+    ],
+    "Shell Script": [".env.*"]
+  }
 }
 ```
 
@@ -2557,11 +2557,11 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"file_types": {
-		"C++": ["c"],
-		"TOML": ["MyLockFile"],
-		"Dockerfile": ["Dockerfile*"]
-	}
+  "file_types": {
+    "C++": ["c"],
+    "TOML": ["MyLockFile"],
+    "Dockerfile": ["Dockerfile*"]
+  }
 }
 ```
 
@@ -2573,13 +2573,13 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"diagnostics": {
-		"button": true,
-		"include_warnings": true,
-		"inline": {
-			"enabled": false
-		}
-	}
+  "diagnostics": {
+    "button": true,
+    "include_warnings": true,
+    "inline": {
+      "enabled": false
+    }
+  }
 }
 ```
 
@@ -2596,15 +2596,15 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"diagnostics": {
-		"inline": {
-			"enabled": false,
-			"update_debounce_ms": 150,
-			"padding": 4,
-			"min_column": 0,
-			"max_severity": null
-		}
-	}
+  "diagnostics": {
+    "inline": {
+      "enabled": false,
+      "update_debounce_ms": 150,
+      "padding": 4,
+      "min_column": 0,
+      "max_severity": null
+    }
+  }
 }
 ```
 
@@ -2614,11 +2614,11 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"diagnostics": {
-		"inline": {
-			"enabled": true
-		}
-	}
+  "diagnostics": {
+    "inline": {
+      "enabled": true
+    }
+  }
 }
 ```
 
@@ -2626,12 +2626,12 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"diagnostics": {
-		"inline": {
-			"enabled": true,
-			"update_debounce_ms": 150
-		}
-	}
+  "diagnostics": {
+    "inline": {
+      "enabled": true,
+      "update_debounce_ms": 150
+    }
+  }
 }
 ```
 
@@ -2640,12 +2640,12 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"diagnostics": {
-		"inline": {
-			"enabled": true,
-			"padding": 4
-		}
-	}
+  "diagnostics": {
+    "inline": {
+      "enabled": true,
+      "padding": 4
+    }
+  }
 }
 ```
 
@@ -2653,12 +2653,12 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"diagnostics": {
-		"inline": {
-			"enabled": true,
-			"min_column": 80
-		}
-	}
+  "diagnostics": {
+    "inline": {
+      "enabled": true,
+      "min_column": 80
+    }
+  }
 }
 ```
 
@@ -2666,12 +2666,12 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"diagnostics": {
-		"inline": {
-			"enabled": true,
-			"max_severity": "warning"
-		}
-	}
+  "diagnostics": {
+    "inline": {
+      "enabled": true,
+      "max_severity": "warning"
+    }
+  }
 }
 ```
 
@@ -2683,16 +2683,16 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"git": {
-		"git_gutter": "tracked_files",
-		"inline_blame": {
-			"enabled": true
-		},
-		"branch_picker": {
-			"show_author_name": true
-		},
-		"hunk_style": "staged_hollow"
-	}
+  "git": {
+    "git_gutter": "tracked_files",
+    "inline_blame": {
+      "enabled": true
+    },
+    "branch_picker": {
+      "show_author_name": true
+    },
+    "hunk_style": "staged_hollow"
+  }
 }
 ```
 
@@ -2708,9 +2708,9 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"git": {
-		"git_gutter": "tracked_files"
-	}
+  "git": {
+    "git_gutter": "tracked_files"
+  }
 }
 ```
 
@@ -2718,9 +2718,9 @@ starting with `Dockerfile` as Dockerfile:
 
 ```json [settings]
 {
-	"git": {
-		"git_gutter": "hide"
-	}
+  "git": {
+    "git_gutter": "hide"
+  }
 }
 ```
 
@@ -2739,9 +2739,9 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"gutter_debounce": 100
-	}
+  "git": {
+    "gutter_debounce": 100
+  }
 }
 ```
 
@@ -2754,12 +2754,12 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"inline_blame": {
-			"enabled": true,
-			"location": "inline"
-		}
-	}
+  "git": {
+    "inline_blame": {
+      "enabled": true,
+      "location": "inline"
+    }
+  }
 }
 ```
 
@@ -2769,11 +2769,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"inline_blame": {
-			"enabled": false
-		}
-	}
+  "git": {
+    "inline_blame": {
+      "enabled": false
+    }
+  }
 }
 ```
 
@@ -2782,11 +2782,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"inline_blame": {
-			"delay_ms": 500
-		}
-	}
+  "git": {
+    "inline_blame": {
+      "delay_ms": 500
+    }
+  }
 }
 ```
 
@@ -2794,11 +2794,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"inline_blame": {
-			"location": "status_bar"
-		}
-	}
+  "git": {
+    "inline_blame": {
+      "location": "status_bar"
+    }
+  }
 }
 ```
 
@@ -2806,11 +2806,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"inline_blame": {
-			"show_commit_summary": true
-		}
-	}
+  "git": {
+    "inline_blame": {
+      "show_commit_summary": true
+    }
+  }
 }
 ```
 
@@ -2818,11 +2818,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"inline_blame": {
-			"min_column": 80
-		}
-	}
+  "git": {
+    "inline_blame": {
+      "min_column": 80
+    }
+  }
 }
 ```
 
@@ -2831,11 +2831,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"inline_blame": {
-			"padding": 10
-		}
-	}
+  "git": {
+    "inline_blame": {
+      "padding": 10
+    }
+  }
 }
 ```
 
@@ -2847,11 +2847,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"branch_picker": {
-			"show_author_name": false
-		}
-	}
+  "git": {
+    "branch_picker": {
+      "show_author_name": false
+    }
+  }
 }
 ```
 
@@ -2861,11 +2861,11 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"branch_picker": {
-			"show_author_name": true
-		}
-	}
+  "git": {
+    "branch_picker": {
+      "show_author_name": true
+    }
+  }
 }
 ```
 
@@ -2877,9 +2877,9 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"hunk_style": "staged_hollow"
-	}
+  "git": {
+    "hunk_style": "staged_hollow"
+  }
 }
 ```
 
@@ -2889,9 +2889,9 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"hunk_style": "staged_hollow"
-	}
+  "git": {
+    "hunk_style": "staged_hollow"
+  }
 }
 ```
 
@@ -2899,9 +2899,9 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"hunk_style": "unstaged_hollow"
-	}
+  "git": {
+    "hunk_style": "unstaged_hollow"
+  }
 }
 ```
 
@@ -2915,9 +2915,9 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"diff_base": "head"
-	}
+  "git": {
+    "diff_base": "head"
+  }
 }
 ```
 
@@ -2927,9 +2927,9 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"diff_base": "head"
-	}
+  "git": {
+    "diff_base": "head"
+  }
 }
 ```
 
@@ -2938,9 +2938,9 @@ Example:
 
 ```json [settings]
 {
-	"git": {
-		"diff_base": "default_branch"
-	}
+  "git": {
+    "diff_base": "default_branch"
+  }
 }
 ```
 
@@ -2957,7 +2957,7 @@ Example:
 
 ```json [settings]
 {
-	"go_to_definition_fallback": "none"
+  "go_to_definition_fallback": "none"
 }
 ```
 
@@ -2965,7 +2965,7 @@ Example:
 
 ```json [settings]
 {
-	"go_to_definition_fallback": "find_all_references"
+  "go_to_definition_fallback": "find_all_references"
 }
 ```
 
@@ -2983,7 +2983,7 @@ Example:
 
 ```json [settings]
 {
-	"go_to_definition_scroll_strategy": "center"
+  "go_to_definition_scroll_strategy": "center"
 }
 ```
 
@@ -2991,7 +2991,7 @@ Example:
 
 ```json [settings]
 {
-	"go_to_definition_scroll_strategy": "minimum"
+  "go_to_definition_scroll_strategy": "minimum"
 }
 ```
 
@@ -2999,7 +2999,7 @@ Example:
 
 ```json [settings]
 {
-	"go_to_definition_scroll_strategy": "top"
+  "go_to_definition_scroll_strategy": "top"
 }
 ```
 
@@ -3008,7 +3008,7 @@ Example:
 
 ```json [settings]
 {
-	"go_to_definition_scroll_strategy": "preserve"
+  "go_to_definition_scroll_strategy": "preserve"
 }
 ```
 
@@ -3043,13 +3043,13 @@ Example:
 
 ```json [settings]
 {
-	"indent_guides": {
-		"enabled": true,
-		"line_width": 1,
-		"active_line_width": 1,
-		"coloring": "fixed",
-		"background_coloring": "disabled"
-	}
+  "indent_guides": {
+    "enabled": true,
+    "line_width": 1,
+    "active_line_width": 1,
+    "coloring": "fixed",
+    "background_coloring": "disabled"
+  }
 }
 ```
 
@@ -3059,9 +3059,9 @@ Example:
 
 ```json [settings]
 {
-	"indent_guides": {
-		"enabled": false
-	}
+  "indent_guides": {
+    "enabled": false
+  }
 }
 ```
 
@@ -3069,13 +3069,13 @@ Example:
 
 ```json [settings]
 {
-	"languages": {
-		"Python": {
-			"indent_guides": {
-				"enabled": true
-			}
-		}
-	}
+  "languages": {
+    "Python": {
+      "indent_guides": {
+        "enabled": true
+      }
+    }
+  }
 }
 ```
 
@@ -3085,10 +3085,10 @@ Example:
 
 ```json [settings]
 {
-	"indent_guides": {
-		"enabled": true,
-		"coloring": "indent_aware"
-	}
+  "indent_guides": {
+    "enabled": true,
+    "coloring": "indent_aware"
+  }
 }
 ```
 
@@ -3098,11 +3098,11 @@ Example:
 
 ```json [settings]
 {
-	"indent_guides": {
-		"enabled": true,
-		"coloring": "indent_aware",
-		"background_coloring": "indent_aware"
-	}
+  "indent_guides": {
+    "enabled": true,
+    "coloring": "indent_aware",
+    "background_coloring": "indent_aware"
+  }
 }
 ```
 
@@ -3169,11 +3169,11 @@ Example:
 
 ```json [settings]
 {
-	"icon_theme": {
-		"mode": "system",
-		"dark": "Zed (Default)",
-		"light": "Zed (Default)"
-	}
+  "icon_theme": {
+    "mode": "system",
+    "dark": "Zed (Default)",
+    "light": "Zed (Default)"
+  }
 }
 ```
 
@@ -3189,11 +3189,11 @@ Example:
 
 ```json [settings]
 {
-	"icon_theme": {
-		"mode": "dark",
-		"dark": "Zed (Default)",
-		"light": "Zed (Default)"
-	}
+  "icon_theme": {
+    "mode": "dark",
+    "dark": "Zed (Default)",
+    "light": "Zed (Default)"
+  }
 }
 ```
 
@@ -3201,11 +3201,11 @@ Example:
 
 ```json [settings]
 {
-	"icon_theme": {
-		"mode": "light",
-		"dark": "Zed (Default)",
-		"light": "Zed (Default)"
-	}
+  "icon_theme": {
+    "mode": "light",
+    "dark": "Zed (Default)",
+    "light": "Zed (Default)"
+  }
 }
 ```
 
@@ -3213,11 +3213,11 @@ Example:
 
 ```json [settings]
 {
-	"icon_theme": {
-		"mode": "system",
-		"dark": "Zed (Default)",
-		"light": "Zed (Default)"
-	}
+  "icon_theme": {
+    "mode": "system",
+    "dark": "Zed (Default)",
+    "light": "Zed (Default)"
+  }
 }
 ```
 
@@ -3251,9 +3251,9 @@ see a current list of valid icon theme names.
 
 ```json [settings]
 {
-	"image_viewer": {
-		"unit": "binary"
-	}
+  "image_viewer": {
+    "unit": "binary"
+  }
 }
 ```
 
@@ -3271,9 +3271,9 @@ see a current list of valid icon theme names.
 
 ```json [settings]
 {
-	"image_viewer": {
-		"unit": "binary"
-	}
+  "image_viewer": {
+    "unit": "binary"
+  }
 }
 ```
 
@@ -3281,9 +3281,9 @@ see a current list of valid icon theme names.
 
 ```json [settings]
 {
-	"image_viewer": {
-		"unit": "decimal"
-	}
+  "image_viewer": {
+    "unit": "decimal"
+  }
 }
 ```
 
@@ -3295,16 +3295,16 @@ see a current list of valid icon theme names.
 
 ```json [settings]
 {
-	"inlay_hints": {
-		"enabled": false,
-		"show_type_hints": true,
-		"show_parameter_hints": true,
-		"show_other_hints": true,
-		"show_background": false,
-		"edit_debounce_ms": 700,
-		"scroll_debounce_ms": 50,
-		"toggle_on_modifiers_press": null
-	}
+  "inlay_hints": {
+    "enabled": false,
+    "show_type_hints": true,
+    "show_parameter_hints": true,
+    "show_other_hints": true,
+    "show_background": false,
+    "edit_debounce_ms": 700,
+    "scroll_debounce_ms": 50,
+    "toggle_on_modifiers_press": null
+  }
 }
 ```
 
@@ -3334,15 +3334,15 @@ All possible config values for `toggle_on_modifiers_press` are:
 
 ```json [settings]
 {
-	"inlay_hints": {
-		"toggle_on_modifiers_press": {
-			"control": true,
-			"shift": true,
-			"alt": true,
-			"platform": true,
-			"function": true
-		}
-	}
+  "inlay_hints": {
+    "toggle_on_modifiers_press": {
+      "control": true,
+      "shift": true,
+      "alt": true,
+      "platform": true,
+      "function": true
+    }
+  }
 }
 ```
 
@@ -3357,10 +3357,10 @@ modifiers are `false` or not all the modifiers are pressed.
 
 ```json [settings]
 {
-	"journal": {
-		"path": "~",
-		"hour_format": "hour12"
-	}
+  "journal": {
+    "path": "~",
+    "hour_format": "hour12"
+  }
 }
 ```
 
@@ -3388,9 +3388,9 @@ modifiers are `false` or not all the modifiers are pressed.
 
 ```json [settings]
 {
-	"journal": {
-		"hour_format": "hour12"
-	}
+  "journal": {
+    "hour_format": "hour12"
+  }
 }
 ```
 
@@ -3398,9 +3398,9 @@ modifiers are `false` or not all the modifiers are pressed.
 
 ```json [settings]
 {
-	"journal": {
-		"hour_format": "hour24"
-	}
+  "journal": {
+    "hour_format": "hour24"
+  }
 }
 ```
 
@@ -3412,9 +3412,9 @@ modifiers are `false` or not all the modifiers are pressed.
 
 ```json [settings]
 {
-	"jsx_tag_auto_close": {
-		"enabled": true
-	}
+  "jsx_tag_auto_close": {
+    "enabled": true
+  }
 }
 ```
 
@@ -3447,16 +3447,16 @@ the `languages` value. Example:
 
 ```json [settings]
 {
-	"languages": {
-		"C": {
-			"format_on_save": "off",
-			"preferred_line_length": 64,
-			"soft_wrap": "bounded"
-		},
-		"JSON": {
-			"tab_size": 4
-		}
-	}
+  "languages": {
+    "C": {
+      "format_on_save": "off",
+      "preferred_line_length": 64,
+      "soft_wrap": "bounded"
+    },
+    "JSON": {
+      "tab_size": 4
+    }
+  }
 }
 ```
 
@@ -3504,11 +3504,11 @@ Example:
 
 ```json [settings]
 {
-	"languages": {
-		"TypeScript": {
-			"document_symbols": "on"
-		}
-	}
+  "languages": {
+    "TypeScript": {
+      "document_symbols": "on"
+    }
+  }
 }
 ```
 
@@ -3520,20 +3520,20 @@ Example:
 
 ```json [settings]
 {
-	"language_models": {
-		"anthropic": {
-			"api_url": "https://api.anthropic.com"
-		},
-		"google": {
-			"api_url": "https://generativelanguage.googleapis.com"
-		},
-		"ollama": {
-			"api_url": "http://localhost:11434"
-		},
-		"openai": {
-			"api_url": "https://api.openai.com/v1"
-		}
-	}
+  "language_models": {
+    "anthropic": {
+      "api_url": "https://api.anthropic.com"
+    },
+    "google": {
+      "api_url": "https://generativelanguage.googleapis.com"
+    },
+    "ollama": {
+      "api_url": "http://localhost:11434"
+    },
+    "openai": {
+      "api_url": "https://api.openai.com/v1"
+    }
+  }
 }
 ```
 
@@ -3554,7 +3554,7 @@ authentication settings.
 
 ```json [settings]
 {
-	"line_indicator_format": "short"
+  "line_indicator_format": "short"
 }
 ```
 
@@ -3562,7 +3562,7 @@ authentication settings.
 
 ```json [settings]
 {
-	"line_indicator_format": "long"
+  "line_indicator_format": "long"
 }
 ```
 
@@ -3637,7 +3637,7 @@ Positive `integer` values or `null` for unlimited tabs
 
 ```json [settings]
 {
-	"multi_cursor_modifier": "alt"
+  "multi_cursor_modifier": "alt"
 }
 ```
 
@@ -3645,7 +3645,7 @@ Positive `integer` values or `null` for unlimited tabs
 
 ```json [settings]
 {
-	"multi_cursor_modifier": "cmd_or_ctrl" // alias: "cmd", "ctrl"
+  "multi_cursor_modifier": "cmd_or_ctrl" // alias: "cmd", "ctrl"
 }
 ```
 
@@ -3657,11 +3657,11 @@ Positive `integer` values or `null` for unlimited tabs
 
 ```json [settings]
 {
-	"node": {
-		"ignore_system_version": false,
-		"path": null,
-		"npm_path": null
-	}
+  "node": {
+    "ignore_system_version": false,
+    "path": null,
+    "npm_path": null
+  }
 }
 ```
 
@@ -3700,7 +3700,7 @@ For example, to set an `http` proxy, add the following to your settings:
 
 ```json [settings]
 {
-	"proxy": "http://127.0.0.1:10809"
+  "proxy": "http://127.0.0.1:10809"
 }
 ```
 
@@ -3708,7 +3708,7 @@ Or to set a `socks5` proxy:
 
 ```json [settings]
 {
-	"proxy": "socks5h://localhost:10808"
+  "proxy": "socks5h://localhost:10808"
 }
 ```
 
@@ -3733,7 +3733,7 @@ for more.
 
 ```json [settings]
 {
-	"on_last_window_closed": "platform_default"
+  "on_last_window_closed": "platform_default"
 }
 ```
 
@@ -3741,7 +3741,7 @@ for more.
 
 ```json [settings]
 {
-	"on_last_window_closed": "quit_app"
+  "on_last_window_closed": "quit_app"
 }
 ```
 
@@ -3757,7 +3757,7 @@ for more.
 
 ```json [settings]
 {
-	"on_new_window": "empty_tab"
+  "on_new_window": "empty_tab"
 }
 ```
 
@@ -3765,7 +3765,7 @@ for more.
 
 ```json [settings]
 {
-	"on_new_window": "launchpad"
+  "on_new_window": "launchpad"
 }
 ```
 
@@ -3778,11 +3778,11 @@ for more.
 
 ```json
 {
-	"instrumentation": {
-		"performance_profiler": {
-			"enabled": false
-		}
-	}
+  "instrumentation": {
+    "performance_profiler": {
+      "enabled": false
+    }
+  }
 }
 ```
 
@@ -3820,21 +3820,21 @@ Examples:
 
 ```json [settings]
 {
-	"profiles": {
-		"Presentation": {
-			"settings": {
-				"buffer_font_size": 20,
-				"ui_font_size": 18,
-				"theme": "One Light"
-			}
-		},
-		"Clean Slate": {
-			"base": "default",
-			"settings": {
-				"theme": "Ayu Dark"
-			}
-		}
-	}
+  "profiles": {
+    "Presentation": {
+      "settings": {
+        "buffer_font_size": 20,
+        "ui_font_size": 18,
+        "theme": "One Light"
+      }
+    },
+    "Clean Slate": {
+      "base": "default",
+      "settings": {
+        "theme": "Ayu Dark"
+      }
+    }
+  }
 }
 ```
 
@@ -3860,15 +3860,15 @@ Examples:
 
 ```json [settings]
 {
-	"preview_tabs": {
-		"enabled": true,
-		"enable_preview_from_project_panel": true,
-		"enable_preview_from_file_finder": false,
-		"enable_preview_from_multibuffer": true,
-		"enable_preview_multibuffer_from_code_navigation": false,
-		"enable_preview_file_from_code_navigation": true,
-		"enable_keep_preview_on_code_navigation": false
-	}
+  "preview_tabs": {
+    "enabled": true,
+    "enable_preview_from_project_panel": true,
+    "enable_preview_from_file_finder": false,
+    "enable_preview_from_multibuffer": true,
+    "enable_preview_multibuffer_from_code_navigation": false,
+    "enable_preview_file_from_code_navigation": true,
+    "enable_keep_preview_on_code_navigation": false
+  }
 }
 ```
 
@@ -3985,7 +3985,7 @@ Examples:
 
 ```json [settings]
 {
-	"pane_split_direction_horizontal": "up"
+  "pane_split_direction_horizontal": "up"
 }
 ```
 
@@ -3993,7 +3993,7 @@ Examples:
 
 ```json [settings]
 {
-	"pane_split_direction_horizontal": "down"
+  "pane_split_direction_horizontal": "down"
 }
 ```
 
@@ -4009,7 +4009,7 @@ Examples:
 
 ```json [settings]
 {
-	"pane_split_direction_vertical": "left"
+  "pane_split_direction_vertical": "left"
 }
 ```
 
@@ -4017,7 +4017,7 @@ Examples:
 
 ```json [settings]
 {
-	"pane_split_direction_vertical": "right"
+  "pane_split_direction_vertical": "right"
 }
 ```
 
@@ -4087,7 +4087,7 @@ List of `string` glob patterns
 
 ```json [settings]
 {
-	"relative_line_numbers": "enabled"
+  "relative_line_numbers": "enabled"
 }
 ```
 
@@ -4096,7 +4096,7 @@ List of `string` glob patterns
 
 ```json [settings]
 {
-	"relative_line_numbers": "wrapped"
+  "relative_line_numbers": "wrapped"
 }
 ```
 
@@ -4104,7 +4104,7 @@ List of `string` glob patterns
 
 ```json [settings]
 {
-	"relative_line_numbers": "disabled"
+  "relative_line_numbers": "disabled"
 }
 ```
 
@@ -4157,7 +4157,7 @@ List of strings containing any combination of:
 
 ```json [settings]
 {
-	"restore_on_startup": "last_session"
+  "restore_on_startup": "last_session"
 }
 ```
 
@@ -4165,7 +4165,7 @@ List of strings containing any combination of:
 
 ```json [settings]
 {
-	"restore_on_startup": "last_workspace"
+  "restore_on_startup": "last_workspace"
 }
 ```
 
@@ -4173,7 +4173,7 @@ List of strings containing any combination of:
 
 ```json [settings]
 {
-	"restore_on_startup": "empty_tab"
+  "restore_on_startup": "empty_tab"
 }
 ```
 
@@ -4181,7 +4181,7 @@ List of strings containing any combination of:
 
 ```json [settings]
 {
-	"restore_on_startup": "launchpad"
+  "restore_on_startup": "launchpad"
 }
 ```
 
@@ -4197,7 +4197,7 @@ List of strings containing any combination of:
 
 ```json [settings]
 {
-	"scroll_beyond_last_line": "one_page"
+  "scroll_beyond_last_line": "one_page"
 }
 ```
 
@@ -4206,7 +4206,7 @@ List of strings containing any combination of:
 
 ```json [settings]
 {
-	"scroll_beyond_last_line": "vertical_scroll_margin"
+  "scroll_beyond_last_line": "vertical_scroll_margin"
 }
 ```
 
@@ -4214,7 +4214,7 @@ List of strings containing any combination of:
 
 ```json [settings]
 {
-	"scroll_beyond_last_line": "off"
+  "scroll_beyond_last_line": "off"
 }
 ```
 
@@ -4288,15 +4288,15 @@ Non-negative `integer` values
 
 ```json [settings]
 {
-	"search": {
-		"button": true,
-		"whole_word": false,
-		"case_sensitive": false,
-		"include_ignored": false,
-		"regex": false,
-		"center_on_match": false,
-		"search_on_type": true
-	}
+  "search": {
+    "button": true,
+    "whole_word": false,
+    "case_sensitive": false,
+    "include_ignored": false,
+    "regex": false,
+    "center_on_match": false,
+    "search_on_type": true
+  }
 }
 ```
 
@@ -4384,7 +4384,7 @@ To enable semantic tokens globally:
 
 ```json [settings]
 {
-	"semantic_tokens": "combined"
+  "semantic_tokens": "combined"
 }
 ```
 
@@ -4392,11 +4392,11 @@ To enable semantic tokens for a specific language:
 
 ```json [settings]
 {
-	"languages": {
-		"Rust": {
-			"semantic_tokens": "full"
-		}
-	}
+  "languages": {
+    "Rust": {
+      "semantic_tokens": "full"
+    }
+  }
 }
 ```
 
@@ -4421,7 +4421,7 @@ To enable LSP folding ranges globally:
 
 ```json [settings]
 {
-	"document_folding_ranges": "on"
+  "document_folding_ranges": "on"
 }
 ```
 
@@ -4429,11 +4429,11 @@ To enable LSP folding ranges for a specific language:
 
 ```json [settings]
 {
-	"languages": {
-		"Rust": {
-			"document_folding_ranges": "on"
-		}
-	}
+  "languages": {
+    "Rust": {
+      "document_folding_ranges": "on"
+    }
+  }
 }
 ```
 
@@ -4456,7 +4456,7 @@ To enable LSP document symbols globally:
 
 ```json [settings]
 {
-	"document_symbols": "on"
+  "document_symbols": "on"
 }
 ```
 
@@ -4464,11 +4464,11 @@ To enable LSP document symbols for a specific language:
 
 ```json [settings]
 {
-	"languages": {
-		"Rust": {
-			"document_symbols": "on"
-		}
-	}
+  "languages": {
+    "Rust": {
+      "document_symbols": "on"
+    }
+  }
 }
 ```
 
@@ -4510,13 +4510,13 @@ Examples:
 
 ```json [settings]
 {
-	"completions": {
-		"words": "fallback",
-		"words_min_length": 3,
-		"lsp": true,
-		"lsp_fetch_timeout_ms": 0,
-		"lsp_insert_mode": "replace_suffix"
-	}
+  "completions": {
+    "words": "fallback",
+    "words_min_length": 3,
+    "lsp": true,
+    "lsp_fetch_timeout_ms": 0,
+    "lsp_insert_mode": "replace_suffix"
+  }
 }
 ```
 
@@ -4641,10 +4641,10 @@ Positive integer values
 
 ```json [settings]
 {
-	"whitespace_map": {
-		"space": "•",
-		"tab": "→"
-	}
+  "whitespace_map": {
+    "space": "•",
+    "tab": "→"
+  }
 }
 ```
 
@@ -4753,11 +4753,11 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"tasks": {
-		"variables": {},
-		"enabled": true,
-		"prefer_lsp": false
-	}
+  "tasks": {
+    "variables": {},
+    "enabled": true,
+    "prefer_lsp": false
+  }
 }
 ```
 
@@ -4776,10 +4776,10 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"telemetry": {
-		"diagnostics": true,
-		"metrics": true
-	}
+  "telemetry": {
+    "diagnostics": true,
+    "metrics": true
+  }
 }
 ```
 
@@ -4814,40 +4814,40 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"alternate_scroll": "off",
-		"blinking": "terminal_controlled",
-		"copy_on_select": false,
-		"keep_selection_on_copy": true,
-		"open_links_in_mouse_mode": true,
-		"dock": "bottom",
-		"starts_open": false,
-		"default_width": 640,
-		"default_height": 320,
-		"detect_venv": {
-			"on": {
-				"directories": [".env", "env", ".venv", "venv"],
-				"activate_script": "default"
-			}
-		},
-		"env": {},
-		"font_family": null,
-		"font_features": null,
-		"font_size": null,
-		"line_height": "comfortable",
-		"minimum_contrast": 45,
-		"option_as_meta": false,
-		"button": true,
-		"shell": "system",
-		"scroll_multiplier": 3.0,
-		"toolbar": {
-			"breadcrumbs": false
-		},
-		"working_directory": "current_project_directory",
-		"scrollbar": {
-			"show": null
-		}
-	}
+  "terminal": {
+    "alternate_scroll": "off",
+    "blinking": "terminal_controlled",
+    "copy_on_select": false,
+    "keep_selection_on_copy": true,
+    "open_links_in_mouse_mode": true,
+    "dock": "bottom",
+    "starts_open": false,
+    "default_width": 640,
+    "default_height": 320,
+    "detect_venv": {
+      "on": {
+        "directories": [".env", "env", ".venv", "venv"],
+        "activate_script": "default"
+      }
+    },
+    "env": {},
+    "font_family": null,
+    "font_features": null,
+    "font_size": null,
+    "line_height": "comfortable",
+    "minimum_contrast": 45,
+    "option_as_meta": false,
+    "button": true,
+    "shell": "system",
+    "scroll_multiplier": 3.0,
+    "toolbar": {
+      "breadcrumbs": false
+    },
+    "working_directory": "current_project_directory",
+    "scrollbar": {
+      "show": null
+    }
+  }
 }
 ```
 
@@ -4873,9 +4873,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"starts_open": true
-	}
+  "terminal": {
+    "starts_open": true
+  }
 }
 ```
 
@@ -4895,9 +4895,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"alternate_scroll": "off"
-	}
+  "terminal": {
+    "alternate_scroll": "off"
+  }
 }
 ```
 
@@ -4905,9 +4905,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"alternate_scroll": "on"
-	}
+  "terminal": {
+    "alternate_scroll": "on"
+  }
 }
 ```
 
@@ -4923,9 +4923,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"blinking": "off"
-	}
+  "terminal": {
+    "blinking": "off"
+  }
 }
 ```
 
@@ -4933,9 +4933,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"blinking": "terminal_controlled"
-	}
+  "terminal": {
+    "blinking": "terminal_controlled"
+  }
 }
 ```
 
@@ -4943,9 +4943,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"blinking": "on"
-	}
+  "terminal": {
+    "blinking": "on"
+  }
 }
 ```
 
@@ -4964,9 +4964,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"copy_on_select": true
-	}
+  "terminal": {
+    "copy_on_select": true
+  }
 }
 ```
 
@@ -4983,9 +4983,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"cursor_shape": "block"
-	}
+  "terminal": {
+    "cursor_shape": "block"
+  }
 }
 ```
 
@@ -4993,9 +4993,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"cursor_shape": "bar"
-	}
+  "terminal": {
+    "cursor_shape": "bar"
+  }
 }
 ```
 
@@ -5003,9 +5003,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"cursor_shape": "underline"
-	}
+  "terminal": {
+    "cursor_shape": "underline"
+  }
 }
 ```
 
@@ -5013,9 +5013,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"cursor_shape": "hollow"
-	}
+  "terminal": {
+    "cursor_shape": "hollow"
+  }
 }
 ```
 
@@ -5034,9 +5034,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"keep_selection_on_copy": false
-	}
+  "terminal": {
+    "keep_selection_on_copy": false
+  }
 }
 ```
 
@@ -5058,9 +5058,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"open_links_in_mouse_mode": false
-	}
+  "terminal": {
+    "open_links_in_mouse_mode": false
+  }
 }
 ```
 
@@ -5076,12 +5076,12 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"env": {
-			"ZED": "1",
-			"KEY": "value1:value2"
-		}
-	}
+  "terminal": {
+    "env": {
+      "ZED": "1",
+      "KEY": "value1:value2"
+    }
+  }
 }
 ```
 
@@ -5098,9 +5098,9 @@ List of `integer` column numbers
 
 ```json [settings]
 {
-	"terminal": {
-		"font_size": 15
-	}
+  "terminal": {
+    "font_size": 15
+  }
 }
 ```
 
@@ -5117,9 +5117,9 @@ The name of any font family installed on the user's system
 
 ```json [settings]
 {
-	"terminal": {
-		"font_family": "Berkeley Mono"
-	}
+  "terminal": {
+    "font_family": "Berkeley Mono"
+  }
 }
 ```
 
@@ -5136,9 +5136,9 @@ For example, to use Nerd Font as a fallback, add the following to your settings:
 
 ```json [settings]
 {
-	"terminal": {
-		"font_fallbacks": ["Nerd Font"]
-	}
+  "terminal": {
+    "font_fallbacks": ["Nerd Font"]
+  }
 }
 ```
 
@@ -5156,12 +5156,12 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"font_features": {
-			"calt": false
-			// See Buffer Font Features for more features
-		}
-	}
+  "terminal": {
+    "font_features": {
+      "calt": false
+      // See Buffer Font Features for more features
+    }
+  }
 }
 ```
 
@@ -5177,9 +5177,9 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"line_height": "comfortable"
-	}
+  "terminal": {
+    "line_height": "comfortable"
+  }
 }
 ```
 
@@ -5188,9 +5188,9 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"line_height": "standard"
-	}
+  "terminal": {
+    "line_height": "standard"
+  }
 }
 ```
 
@@ -5198,11 +5198,11 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"line_height": {
-			"custom": 2
-		}
-	}
+  "terminal": {
+    "line_height": {
+      "custom": 2
+    }
+  }
 }
 ```
 
@@ -5226,9 +5226,9 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"minimum_contrast": 45
-	}
+  "terminal": {
+    "minimum_contrast": 45
+  }
 }
 ```
 
@@ -5245,9 +5245,9 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"option_as_meta": true
-	}
+  "terminal": {
+    "option_as_meta": true
+  }
 }
 ```
 
@@ -5264,9 +5264,9 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"shell": "system"
-	}
+  "terminal": {
+    "shell": "system"
+  }
 }
 ```
 
@@ -5274,11 +5274,11 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"shell": {
-			"program": "sh"
-		}
-	}
+  "terminal": {
+    "shell": {
+      "program": "sh"
+    }
+  }
 }
 ```
 
@@ -5286,14 +5286,14 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"shell": {
-			"with_arguments": {
-				"program": "/bin/bash",
-				"args": ["--login"]
-			}
-		}
-	}
+  "terminal": {
+    "shell": {
+      "with_arguments": {
+        "program": "/bin/bash",
+        "args": ["--login"]
+      }
+    }
+  }
 }
 ```
 
@@ -5309,18 +5309,18 @@ See Buffer Font Features
 
 ```json [settings]
 {
-	"terminal": {
-		"detect_venv": {
-			"on": {
-				// Default directories to search for virtual environments, relative
-				// to the current working directory. We recommend overriding this
-				// in your project's settings, rather than globally.
-				"directories": [".env", "env", ".venv", "venv"],
-				// Can also be `csh`, `fish`, and `nushell`
-				"activate_script": "default"
-			}
-		}
-	}
+  "terminal": {
+    "detect_venv": {
+      "on": {
+        // Default directories to search for virtual environments, relative
+        // to the current working directory. We recommend overriding this
+        // in your project's settings, rather than globally.
+        "directories": [".env", "env", ".venv", "venv"],
+        // Can also be `csh`, `fish`, and `nushell`
+        "activate_script": "default"
+      }
+    }
+  }
 }
 ```
 
@@ -5328,9 +5328,9 @@ Disable with:
 
 ```json [settings]
 {
-	"terminal": {
-		"detect_venv": "off"
-	}
+  "terminal": {
+    "detect_venv": "off"
+  }
 }
 ```
 
@@ -5350,9 +5350,9 @@ to a minimum of 0.01.
 
 ```json
 {
-	"terminal": {
-		"scroll_multiplier": 5.0
-	}
+  "terminal": {
+    "scroll_multiplier": 5.0
+  }
 }
 ```
 
@@ -5364,11 +5364,11 @@ to a minimum of 0.01.
 
 ```json [settings]
 {
-	"terminal": {
-		"toolbar": {
-			"breadcrumbs": false
-		}
-	}
+  "terminal": {
+    "toolbar": {
+      "breadcrumbs": false
+    }
+  }
 }
 ```
 
@@ -5395,9 +5395,9 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"terminal": {
-		"button": false
-	}
+  "terminal": {
+    "button": false
+  }
 }
 ```
 
@@ -5414,9 +5414,9 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"terminal": {
-		"working_directory": "current_file_directory"
-	}
+  "terminal": {
+    "working_directory": "current_file_directory"
+  }
 }
 ```
 
@@ -5425,9 +5425,9 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"terminal": {
-		"working_directory": "current_project_directory"
-	}
+  "terminal": {
+    "working_directory": "current_project_directory"
+  }
 }
 ```
 
@@ -5436,9 +5436,9 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"terminal": {
-		"working_directory": "first_project_directory"
-	}
+  "terminal": {
+    "working_directory": "first_project_directory"
+  }
 }
 ```
 
@@ -5446,9 +5446,9 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"terminal": {
-		"working_directory": "always_home"
-	}
+  "terminal": {
+    "working_directory": "always_home"
+  }
 }
 ```
 
@@ -5458,13 +5458,13 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"terminal": {
-		"working_directory": {
-			"always": {
-				"directory": "~/zed/projects/"
-			}
-		}
-	}
+  "terminal": {
+    "working_directory": {
+      "always": {
+        "directory": "~/zed/projects/"
+      }
+    }
+  }
 }
 ```
 
@@ -5478,36 +5478,36 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"terminal": {
-		"path_hyperlink_regexes": [
-			// Python-style diagnostics
-			"File \"(?<path>[^\"]+)\", line (?<line>[0-9]+)",
-			// Common path syntax with optional line, column, description, trailing punctuation, or
-			// surrounding symbols or quotes
-			[
-				"(?x)",
-				"# optionally starts with 0-2 opening prefix symbols",
-				"[({\\[<]{0,2}",
-				"# which may be followed by an opening quote",
-				"(?<quote>[\"'`])?",
-				"# `path` is the shortest sequence of any non-space character",
-				"(?<link>(?<path>[^ ]+?",
-				"    # which may end with a line and optionally a column,",
-				"    (?<line_column>:+[0-9]+(:[0-9]+)?|:?\\([0-9]+([,:][0-9]+)?\\))?",
-				"))",
-				"# which must be followed by a matching quote",
-				"(?(<quote>)\\k<quote>)",
-				"# and optionally a single closing symbol",
-				"[)}\\]>]?",
-				"# if line/column matched, may be followed by a description",
-				"(?(<line_column>):[^ 0-9][^ ]*)?",
-				"# which may be followed by trailing punctuation",
-				"[.,:)}\\]>]*",
-				"# and always includes trailing whitespace or end of line",
-				"([ ]+|$)"
-			]
-		]
-	}
+  "terminal": {
+    "path_hyperlink_regexes": [
+      // Python-style diagnostics
+      "File \"(?<path>[^\"]+)\", line (?<line>[0-9]+)",
+      // Common path syntax with optional line, column, description, trailing punctuation, or
+      // surrounding symbols or quotes
+      [
+        "(?x)",
+        "# optionally starts with 0-2 opening prefix symbols",
+        "[({\\[<]{0,2}",
+        "# which may be followed by an opening quote",
+        "(?<quote>[\"'`])?",
+        "# `path` is the shortest sequence of any non-space character",
+        "(?<link>(?<path>[^ ]+?",
+        "    # which may end with a line and optionally a column,",
+        "    (?<line_column>:+[0-9]+(:[0-9]+)?|:?\\([0-9]+([,:][0-9]+)?\\))?",
+        "))",
+        "# which must be followed by a matching quote",
+        "(?(<quote>)\\k<quote>)",
+        "# and optionally a single closing symbol",
+        "[)}\\]>]?",
+        "# if line/column matched, may be followed by a description",
+        "(?(<line_column>):[^ 0-9][^ ]*)?",
+        "# which may be followed by trailing punctuation",
+        "[.,:)}\\]>]*",
+        "# and always includes trailing whitespace or end of line",
+        "([ ]+|$)"
+      ]
+    ]
+  }
 }
 ```
 
@@ -5526,14 +5526,14 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"repl": {
-		// Maximum number of columns to keep in REPL's scrollback buffer.
-		// Clamped with [20, 512] range.
-		"max_columns": 128,
-		// Maximum number of lines to keep in REPL's scrollback buffer.
-		// Clamped with [4, 256] range.
-		"max_lines": 32
-	}
+  "repl": {
+    // Maximum number of columns to keep in REPL's scrollback buffer.
+    // Clamped with [20, 512] range.
+    "max_columns": 128,
+    // Maximum number of lines to keep in REPL's scrollback buffer.
+    // Clamped with [4, 256] range.
+    "max_lines": 32
+  }
 }
 ```
 
@@ -5554,11 +5554,11 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "system",
-		"dark": "One Dark",
-		"light": "One Light"
-	}
+  "theme": {
+    "mode": "system",
+    "dark": "One Dark",
+    "light": "One Light"
+  }
 }
 ```
 
@@ -5574,11 +5574,11 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "dark",
-		"dark": "One Dark",
-		"light": "One Light"
-	}
+  "theme": {
+    "mode": "dark",
+    "dark": "One Dark",
+    "light": "One Light"
+  }
 }
 ```
 
@@ -5586,11 +5586,11 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "light",
-		"dark": "One Dark",
-		"light": "One Light"
-	}
+  "theme": {
+    "mode": "light",
+    "dark": "One Dark",
+    "light": "One Light"
+  }
 }
 ```
 
@@ -5598,11 +5598,11 @@ Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ```json [settings]
 {
-	"theme": {
-		"mode": "system",
-		"dark": "One Dark",
-		"light": "One Light"
-	}
+  "theme": {
+    "mode": "system",
+    "dark": "One Dark",
+    "light": "One Light"
+  }
 }
 ```
 
@@ -5636,18 +5636,18 @@ current list of valid theme names.
 
 ```json [settings]
 {
-	"title_bar": {
-		"show_branch_status_icon": false,
-		"show_branch_name": true,
-		"show_worktree_name": true,
-		"show_project_items": true,
-		"show_onboarding_banner": true,
-		"show_user_picture": true,
-		"show_user_menu": true,
-		"show_sign_in": true,
-		"show_menus": false,
-		"button_layout": "platform_default"
-	}
+  "title_bar": {
+    "show_branch_status_icon": false,
+    "show_branch_name": true,
+    "show_worktree_name": true,
+    "show_project_items": true,
+    "show_onboarding_banner": true,
+    "show_user_picture": true,
+    "show_user_menu": true,
+    "show_sign_in": true,
+    "show_menus": false,
+    "button_layout": "platform_default"
+  }
 }
 ```
 
@@ -5698,7 +5698,7 @@ Available variables:
 
 ```json [settings]
 {
-	"window_title_format": "${projectName}${separator}${fileName}"
+  "window_title_format": "${projectName}${separator}${fileName}"
 }
 ```
 
@@ -5711,7 +5711,7 @@ Available variables:
 
 ```json [settings]
 {
-	"window_title_separator": " — "
+  "window_title_separator": " — "
 }
 ```
 
@@ -5728,7 +5728,7 @@ Available variables:
 
 ```json [settings]
 {
-	"window_decorations": "client"
+  "window_decorations": "client"
 }
 ```
 
@@ -5737,7 +5737,7 @@ Available variables:
 
 ```json [settings]
 {
-	"window_decorations": "server"
+  "window_decorations": "server"
 }
 ```
 
@@ -5759,10 +5759,10 @@ Available variables:
 
 ```json [settings]
 {
-	"which_key": {
-		"enabled": false,
-		"delay_ms": 1000
-	}
+  "which_key": {
+    "enabled": false,
+    "delay_ms": 1000
+  }
 }
 ```
 
@@ -5786,7 +5786,7 @@ Available variables:
 
 ```json [settings]
 {
-	"when_closing_with_no_tabs": "platform_default"
+  "when_closing_with_no_tabs": "platform_default"
 }
 ```
 
@@ -5794,7 +5794,7 @@ Available variables:
 
 ```json [settings]
 {
-	"when_closing_with_no_tabs": "close_window"
+  "when_closing_with_no_tabs": "close_window"
 }
 ```
 
@@ -5802,7 +5802,7 @@ Available variables:
 
 ```json [settings]
 {
-	"when_closing_with_no_tabs": "keep_window_open"
+  "when_closing_with_no_tabs": "keep_window_open"
 }
 ```
 
@@ -5814,38 +5814,38 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"button": true,
-		"default_width": 240,
-		"dock": "right",
-		"entry_spacing": "comfortable",
-		"file_icons": true,
-		"folder_indicator": "icon",
-		"git_status": true,
-		"indent_size": 20,
-		"auto_reveal_entries": true,
-		"auto_fold_dirs": true,
-		"bold_folder_labels": false,
-		"drag_and_drop": true,
-		"scrollbar": {
-			"show": null,
-			"horizontal_scroll": true
-		},
-		"sticky_scroll": true,
-		"show_diagnostics": "all",
-		"indent_guides": {
-			"show": "always"
-		},
-		"sort_mode": "directories_first",
-		"hide_root": false,
-		"hide_hidden": false,
-		"starts_open": true,
-		"auto_open": {
-			"on_create": true,
-			"on_paste": true,
-			"on_drop": true
-		}
-	}
+  "project_panel": {
+    "button": true,
+    "default_width": 240,
+    "dock": "right",
+    "entry_spacing": "comfortable",
+    "file_icons": true,
+    "folder_indicator": "icon",
+    "git_status": true,
+    "indent_size": 20,
+    "auto_reveal_entries": true,
+    "auto_fold_dirs": true,
+    "bold_folder_labels": false,
+    "drag_and_drop": true,
+    "scrollbar": {
+      "show": null,
+      "horizontal_scroll": true
+    },
+    "sticky_scroll": true,
+    "show_diagnostics": "all",
+    "indent_guides": {
+      "show": "always"
+    },
+    "sort_mode": "directories_first",
+    "hide_root": false,
+    "hide_hidden": false,
+    "starts_open": true,
+    "auto_open": {
+      "on_create": true,
+      "on_paste": true,
+      "on_drop": true
+    }
+  }
 }
 ```
 
@@ -5861,9 +5861,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"dock": "left"
-	}
+  "project_panel": {
+    "dock": "left"
+  }
 }
 ```
 
@@ -5871,9 +5871,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"dock": "right"
-	}
+  "project_panel": {
+    "dock": "right"
+  }
 }
 ```
 
@@ -5889,9 +5889,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"entry_spacing": "comfortable"
-	}
+  "project_panel": {
+    "entry_spacing": "comfortable"
+  }
 }
 ```
 
@@ -5899,9 +5899,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"entry_spacing": "standard"
-	}
+  "project_panel": {
+    "entry_spacing": "standard"
+  }
 }
 ```
 
@@ -5917,9 +5917,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"git_status": true
-	}
+  "project_panel": {
+    "git_status": true
+  }
 }
 ```
 
@@ -5927,9 +5927,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"git_status": false
-	}
+  "project_panel": {
+    "git_status": false
+  }
 }
 ```
 
@@ -5957,9 +5957,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"auto_reveal_entries": true
-	}
+  "project_panel": {
+    "auto_reveal_entries": true
+  }
 }
 ```
 
@@ -5967,9 +5967,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"auto_reveal_entries": false
-	}
+  "project_panel": {
+    "auto_reveal_entries": false
+  }
 }
 ```
 
@@ -5986,9 +5986,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"auto_fold_dirs": true
-	}
+  "project_panel": {
+    "auto_fold_dirs": true
+  }
 }
 ```
 
@@ -5996,9 +5996,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"auto_fold_dirs": false
-	}
+  "project_panel": {
+    "auto_fold_dirs": false
+  }
 }
 ```
 
@@ -6014,9 +6014,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"bold_folder_labels": true
-	}
+  "project_panel": {
+    "bold_folder_labels": true
+  }
 }
 ```
 
@@ -6024,9 +6024,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"bold_folder_labels": false
-	}
+  "project_panel": {
+    "bold_folder_labels": false
+  }
 }
 ```
 
@@ -6044,11 +6044,11 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"indent_guides": {
-			"show": "always"
-		}
-	}
+  "project_panel": {
+    "indent_guides": {
+      "show": "always"
+    }
+  }
 }
 ```
 
@@ -6058,11 +6058,11 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"indent_guides": {
-			"show": "always"
-		}
-	}
+  "project_panel": {
+    "indent_guides": {
+      "show": "always"
+    }
+  }
 }
 ```
 
@@ -6070,11 +6070,11 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"indent_guides": {
-			"show": "never"
-		}
-	}
+  "project_panel": {
+    "indent_guides": {
+      "show": "never"
+    }
+  }
 }
 ```
 
@@ -6086,12 +6086,12 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"scrollbar": {
-			"show": null,
-			"horizontal_scroll": true
-		}
-	}
+  "project_panel": {
+    "scrollbar": {
+      "show": null,
+      "horizontal_scroll": true
+    }
+  }
 }
 ```
 
@@ -6116,9 +6116,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"sort_mode": "directories_first"
-	}
+  "project_panel": {
+    "sort_mode": "directories_first"
+  }
 }
 ```
 
@@ -6126,9 +6126,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"sort_mode": "mixed"
-	}
+  "project_panel": {
+    "sort_mode": "mixed"
+  }
 }
 ```
 
@@ -6136,9 +6136,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"sort_mode": "files_first"
-	}
+  "project_panel": {
+    "sort_mode": "files_first"
+  }
 }
 ```
 
@@ -6160,9 +6160,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"sort_order": "default"
-	}
+  "project_panel": {
+    "sort_order": "default"
+  }
 }
 ```
 
@@ -6173,9 +6173,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"sort_order": "upper"
-	}
+  "project_panel": {
+    "sort_order": "upper"
+  }
 }
 ```
 
@@ -6184,9 +6184,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"sort_order": "lower"
-	}
+  "project_panel": {
+    "sort_order": "lower"
+  }
 }
 ```
 
@@ -6198,9 +6198,9 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"sort_order": "unicode"
-	}
+  "project_panel": {
+    "sort_order": "unicode"
+  }
 }
 ```
 
@@ -6213,13 +6213,13 @@ Available variables:
 
 ```json [settings]
 {
-	"project_panel": {
-		"auto_open": {
-			"on_create": true,
-			"on_paste": true,
-			"on_drop": true
-		}
-	}
+  "project_panel": {
+    "auto_open": {
+      "on_create": true,
+      "on_paste": true,
+      "on_drop": true
+    }
+  }
 }
 ```
 
@@ -6255,11 +6255,11 @@ about AI setup.
 
 ```json [settings]
 {
-	"collaboration_panel": {
-		"button": true,
-		"dock": "left",
-		"default_width": 240
-	}
+  "collaboration_panel": {
+    "button": true,
+    "dock": "left",
+    "default_width": 240
+  }
 }
 ```
 
@@ -6277,12 +6277,12 @@ about AI setup.
 
 ```json [settings]
 {
-	"debugger": {
-		"stepping_granularity": "line",
-		"save_breakpoints": true,
-		"dock": "bottom",
-		"button": true
-	}
+  "debugger": {
+    "stepping_granularity": "line",
+    "save_breakpoints": true,
+    "dock": "bottom",
+    "button": true
+  }
 }
 ```
 
@@ -6297,20 +6297,20 @@ support within Zed.
 
 ```json [settings]
 {
-	"git_panel": {
-		"button": true,
-		"dock": "left",
-		"default_width": 360,
-		"status_style": "icon",
-		"fallback_branch_name": "main",
-		"sort_by": "path",
-		"group_by": "status",
-		"collapse_untracked_diff": false,
-		"scrollbar": {
-			"show": null
-		},
-		"starts_open": false
-	}
+  "git_panel": {
+    "button": true,
+    "dock": "left",
+    "default_width": 360,
+    "status_style": "icon",
+    "fallback_branch_name": "main",
+    "sort_by": "path",
+    "group_by": "status",
+    "collapse_untracked_diff": false,
+    "scrollbar": {
+      "show": null
+    },
+    "starts_open": false
+  }
 }
 ```
 
@@ -6354,9 +6354,9 @@ Trailing slashes are ignored.
 
 ```json [settings]
 {
-	"git": {
-		"worktree_directory": "../worktrees"
-	}
+  "git": {
+    "worktree_directory": "../worktrees"
+  }
 }
 ```
 
@@ -6380,13 +6380,13 @@ top of user settings.
 
 ```json [settings]
 {
-	"git_hosting_providers": [
-		{
-			"provider": "github",
-			"name": "BigCorp GitHub",
-			"base_url": "https://git.example.corp"
-		}
-	]
+  "git_hosting_providers": [
+    {
+      "provider": "github",
+      "name": "BigCorp GitHub",
+      "base_url": "https://git.example.corp"
+    }
+  ]
 }
 ```
 
@@ -6398,24 +6398,24 @@ top of user settings.
 
 ```json [settings]
 {
-	"outline_panel": {
-		"button": true,
-		"default_width": 300,
-		"dock": "left",
-		"file_icons": true,
-		"folder_indicator": "icon",
-		"git_status": true,
-		"indent_size": 20,
-		"auto_reveal_entries": true,
-		"auto_fold_dirs": true,
-		"indent_guides": {
-			"show": "always"
-		},
-		"scrollbar": {
-			"show": null
-		},
-		"multi_buffer_hide_symbols": false
-	}
+  "outline_panel": {
+    "button": true,
+    "default_width": 300,
+    "dock": "left",
+    "file_icons": true,
+    "folder_indicator": "icon",
+    "git_status": true,
+    "indent_size": 20,
+    "auto_reveal_entries": true,
+    "auto_fold_dirs": true,
+    "indent_guides": {
+      "show": "always"
+    },
+    "scrollbar": {
+      "show": null
+    },
+    "multi_buffer_hide_symbols": false
+  }
 }
 ```
 
@@ -6427,12 +6427,12 @@ top of user settings.
 
 ```json [settings]
 {
-	"calls": {
-		// Join calls with the microphone live by default
-		"mute_on_join": false,
-		// Share your project when you are the first to join a channel
-		"share_on_join": false
-	}
+  "calls": {
+    // Join calls with the microphone live by default
+    "mute_on_join": false,
+    // Share your project when you are the first to join a channel
+    "share_on_join": false
+  }
 }
 ```
 
@@ -6467,7 +6467,7 @@ Float values between `0.0` and `0.9`, where:
 
 ```json [settings]
 {
-	"unnecessary_code_fade": 0.5
+  "unnecessary_code_fade": 0.5
 }
 ```
 
@@ -6492,9 +6492,9 @@ Zed-provided default, or `".SystemUIFont"` to use the system's default UI font
 
 ```json [settings]
 {
-	"ui_font_features": {
-		"calt": false
-	}
+  "ui_font_features": {
+    "calt": false
+  }
 }
 ```
 
@@ -6509,9 +6509,9 @@ For example, to disable font ligatures, add the following to your settings:
 
 ```json [settings]
 {
-	"ui_font_features": {
-		"calt": false
-	}
+  "ui_font_features": {
+    "calt": false
+  }
 }
 ```
 
@@ -6519,9 +6519,9 @@ You can also set other OpenType features, like setting `cv01` to `7`:
 
 ```json [settings]
 {
-	"ui_font_features": {
-		"cv01": 7
-	}
+  "ui_font_features": {
+    "cv01": 7
+  }
 }
 ```
 
@@ -6539,7 +6539,7 @@ settings:
 
 ```json [settings]
 {
-	"ui_font_fallbacks": ["Nerd Font"]
+  "ui_font_fallbacks": ["Nerd Font"]
 }
 ```
 
@@ -6579,34 +6579,34 @@ Example:
 
 ```json [settings]
 {
-	"profiles": {
-		"Presenting (Dark)": {
-			"settings": {
-				"agent_buffer_font_size": 18.0,
-				"buffer_font_size": 18.0,
-				"theme": "One Dark",
-				"ui_font_size": 18.0
-			}
-		},
-		"Presenting (Light)": {
-			"settings": {
-				"agent_buffer_font_size": 18.0,
-				"buffer_font_size": 18.0,
-				"theme": "One Light",
-				"ui_font_size": 18.0
-			}
-		},
-		"Writing": {
-			"settings": {
-				"agent_buffer_font_size": 15.0,
-				"buffer_font_size": 15.0,
-				"theme": "Catppuccin Frappé - No Italics",
-				"ui_font_size": 15.0,
-				"tab_bar": { "show": false },
-				"toolbar": { "breadcrumbs": false }
-			}
-		}
-	}
+  "profiles": {
+    "Presenting (Dark)": {
+      "settings": {
+        "agent_buffer_font_size": 18.0,
+        "buffer_font_size": 18.0,
+        "theme": "One Dark",
+        "ui_font_size": 18.0
+      }
+    },
+    "Presenting (Light)": {
+      "settings": {
+        "agent_buffer_font_size": 18.0,
+        "buffer_font_size": 18.0,
+        "theme": "One Light",
+        "ui_font_size": 18.0
+      }
+    },
+    "Writing": {
+      "settings": {
+        "agent_buffer_font_size": 15.0,
+        "buffer_font_size": 15.0,
+        "theme": "Catppuccin Frappé - No Italics",
+        "ui_font_size": 15.0,
+        "tab_bar": { "show": false },
+        "toolbar": { "breadcrumbs": false }
+      }
+    }
+  }
 }
 ```
 
@@ -6619,28 +6619,28 @@ settings_profile_selector::Toggle}.
 ```json [settings]
 // ~/.config/zed/settings.json
 {
-	"theme": "cave-light",
-	"tab_size": 2,
-	"preferred_line_length": 80,
-	"soft_wrap": "none",
+  "theme": "cave-light",
+  "tab_size": 2,
+  "preferred_line_length": 80,
+  "soft_wrap": "none",
 
-	"buffer_font_size": 18,
-	"buffer_font_family": ".ZedMono",
+  "buffer_font_size": 18,
+  "buffer_font_family": ".ZedMono",
 
-	"autosave": "on_focus_change",
-	"format_on_save": "off",
-	"vim_mode": false,
-	"terminal": {
-		"font_family": "FiraCode Nerd Font Mono",
-		"blinking": "off"
-	},
-	"languages": {
-		"C": {
-			"format_on_save": "on",
-			"formatter": "language_server",
-			"preferred_line_length": 64,
-			"soft_wrap": "bounded"
-		}
-	}
+  "autosave": "on_focus_change",
+  "format_on_save": "off",
+  "vim_mode": false,
+  "terminal": {
+    "font_family": "FiraCode Nerd Font Mono",
+    "blinking": "off"
+  },
+  "languages": {
+    "C": {
+      "format_on_save": "on",
+      "formatter": "language_server",
+      "preferred_line_length": 64,
+      "soft_wrap": "bounded"
+    }
+  }
 }
 ```

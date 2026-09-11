@@ -23,12 +23,12 @@ The following example configures `jsonnet-language-server` to resolve
 
 ```json [settings]
 {
-	"lsp": {
-		"jsonnet-language-server": {
-			"settings": {
-				"resolve_paths_with_tanka": true
-			}
-		}
-	}
+  "lsp": {
+    "jsonnet-language-server": {
+      "settings": {
+        "resolve_paths_with_tanka": true
+      }
+    }
+  }
 }
 ```

@@ -1,7 +1,7 @@
 # Zed
 
 [![Zed:badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/kjanat/zed-editor/HEAD/assets/badge/v0.json)][zed]
-[![CI:badge](https://github.com/kjanat/zed-editor/actions/workflows/fork_ci.yml/badge.svg)][CI:workflow]
+[![CI:badge](https://github.com/kjanat/zed-editor/actions/workflows/fork_ci.yaml/badge.svg)][CI:workflow]
 
 Welcome to Zed, a high-performance, multiplayer code editor from the creators of
 [Atom] and [Tree-sitter].
@@ -61,7 +61,7 @@ are no perks or entitlements associated with sponsorship.
 
 [kjanat]: https://github.com/kjanat
 [zed]: https://zed.dev
-[CI:workflow]: https://github.com/kjanat/zed-editor/actions/workflows/fork_ci.yml
+[CI:workflow]: https://github.com/kjanat/zed-editor/actions/workflows/fork_ci.yaml
 [Atom]: https://github.com/atom/atom
 [Tree-sitter]: https://github.com/tree-sitter/tree-sitter
 [download]: https://zed.dev/download

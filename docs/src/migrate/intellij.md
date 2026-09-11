@@ -242,18 +242,18 @@ This means:
 
 ```json
 [
-	{
-		"label": "build",
-		"command": "./gradlew build"
-	},
-	{
-		"label": "run",
-		"command": "./gradlew bootRun"
-	},
-	{
-		"label": "test current file",
-		"command": "./gradlew test --tests $ZED_STEM"
-	}
+  {
+    "label": "build",
+    "command": "./gradlew build"
+  },
+  {
+    "label": "run",
+    "command": "./gradlew bootRun"
+  },
+  {
+    "label": "test current file",
+    "command": "./gradlew test --tests $ZED_STEM"
+  }
 ]
 ```
 
@@ -425,13 +425,13 @@ settings:
 
 ```json
 {
-	"lsp": {
-		"jdtls": {
-			"settings": {
-				"java_home": "/path/to/jdk"
-			}
-		}
-	}
+  "lsp": {
+    "jdtls": {
+      "settings": {
+        "java_home": "/path/to/jdk"
+      }
+    }
+  }
 }
 ```
 
