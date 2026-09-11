@@ -1252,6 +1252,216 @@ Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}"; ValueType: e
 Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}"; ValueType: expandsz; ValueName: "Icon"; ValueData: "{app}\{#AppExeName}.exe"; Tasks: addcontextmenufolders; Check: not IsWindows11OrLater
 Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}\command"; ValueType: expandsz; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%V"""; Tasks: addcontextmenufolders; Check: not IsWindows11OrLater
 
+; Additional Zed language file associations
+Root: HKCU; Subkey: "Software\Classes\.zig\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.zig\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.zig"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.zig"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Zig}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.zig"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.zig\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.zig\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.zig\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.ex\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.ex\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.ex"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.ex"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Elixir}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.ex"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.ex\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.ex\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.ex\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.exs\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.exs\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.exs"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.exs"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Elixir Script}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.exs"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.exs\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.exs\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.exs\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.erl\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.erl\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.erl"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.erl"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Erlang}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.erl"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.erl\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.erl\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.erl\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.hs\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.hs\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.hs"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hs"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Haskell}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hs"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hs\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hs\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hs\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.kt\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.kt\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.kt"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kt"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Kotlin}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kt"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kt\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kt\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kt\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.kts\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.kts\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.kts"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kts"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Kotlin Script}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kts"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kts\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kts\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.kts\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.swift\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.swift\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.swift"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.swift"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Swift}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.swift"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.swift\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.swift\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.swift\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.scala\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.scala\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.scala"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.scala"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Scala}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.scala"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.scala\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.scala\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.scala\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.jl\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.jl\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.jl"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.jl"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Julia}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.jl"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.jl\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.jl\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.jl\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.nim\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.nim\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.nim"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nim"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Nim}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nim"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nim\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nim\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nim\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.nix\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.nix\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.nix"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nix"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Nix}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nix"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nix\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nix\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.nix\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.hcl\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.hcl\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.hcl"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hcl"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,HCL}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hcl"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hcl\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hcl\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.hcl\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.tf\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.tf\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.tf"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.tf"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Terraform}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.tf"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.tf\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.tf\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.tf\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.svelte\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.svelte\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.svelte"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.svelte"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Svelte}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.svelte"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.svelte\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.svelte\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.svelte\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.astro\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.astro\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.astro"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.astro"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Astro}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.astro"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.astro\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.astro\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.astro\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.proto\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.proto\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.proto"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.proto"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Protocol Buffers}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.proto"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.proto\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.proto\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.proto\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.graphql\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.graphql\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.graphql"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.graphql"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,GraphQL}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.graphql"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.graphql\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.graphql\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.graphql\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.prisma\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.prisma\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.prisma"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.prisma"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Prisma}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.prisma"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.prisma\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.prisma\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.prisma\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.sol\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.sol\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.sol"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.sol"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Solidity}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.sol"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.sol\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.sol\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.sol\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.cljc\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.cljc\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.cljc"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cljc"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Clojure}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cljc"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cljc\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cljc\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cljc\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.cr\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.cr\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.cr"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cr"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Crystal}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cr"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cr\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cr\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cr\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.d\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.d\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.d"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.d"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,D}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.d"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.d\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.d\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.d\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.elm\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.elm\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.elm"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.elm"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,Elm}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.elm"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.elm\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.elm\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.elm\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.mts\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.mts\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.mts"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.mts"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,TypeScript}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.mts"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.mts\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.mts\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.mts\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\Classes\.cts\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\.cts\OpenWithProgids"; ValueType: string; ValueName: "{#RegValueName}.cts"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cts"; ValueType: string; ValueName: ""; ValueData: "{cm:SourceFile,TypeScript}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cts"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppUserId}"; Flags: uninsdeletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cts\DefaultIcon"; ValueType: none; Flags: deletekey; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cts\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#AppExeName}.exe"""; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\Classes\{#RegValueName}.cts\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""; Tasks: associatewithfiles
+
+
 ; Environment
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{code:AddToPath|{app}\bin}"; Tasks: addtopath; Check: NeedsAddToPath(ExpandConstant('{app}\bin'))
 
@@ -1260,6 +1470,184 @@ Root: HKCU; Subkey: "Software\Classes\zed"; ValueType: "string"; ValueData: "URL
 Root: HKCU; Subkey: "Software\Classes\zed"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\zed\DefaultIcon"; ValueType: "string"; ValueData: "{app}\Zed.exe,1"
 Root: HKCU; Subkey: "Software\Classes\zed\shell\open\command"; ValueType: "string"; ValueData: """{app}\Zed.exe"" ""%1"""
+
+; ------------------------------------------------------------
+; Default Programs registration (Settings > Default apps / link types)
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#AppDisplayName}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "A high-performance, multiplayer code editor"
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: "{app}\{#AppExeName}.exe,0"
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\URLAssociations"; ValueType: string; ValueName: "zed"; ValueData: "zed"
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ascx"; ValueData: "{#RegValueName}.ascx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".asp"; ValueData: "{#RegValueName}.asp"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".aspx"; ValueData: "{#RegValueName}.aspx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bash"; ValueData: "{#RegValueName}.bash"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bash_login"; ValueData: "{#RegValueName}.bash_login"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bash_logout"; ValueData: "{#RegValueName}.bash_logout"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bash_profile"; ValueData: "{#RegValueName}.bash_profile"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bashrc"; ValueData: "{#RegValueName}.bashrc"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bib"; ValueData: "{#RegValueName}.bib"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bowerrc"; ValueData: "{#RegValueName}.bowerrc"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".c"; ValueData: "{#RegValueName}.c"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".c++"; ValueData: "{#RegValueName}.c++"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cc"; ValueData: "{#RegValueName}.cc"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cfg"; ValueData: "{#RegValueName}.cfg"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cjs"; ValueData: "{#RegValueName}.cjs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".clj"; ValueData: "{#RegValueName}.clj"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cljs"; ValueData: "{#RegValueName}.cljs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cljx"; ValueData: "{#RegValueName}.cljx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".clojure"; ValueData: "{#RegValueName}.clojure"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cls"; ValueData: "{#RegValueName}.cls"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cmake"; ValueData: "{#RegValueName}.cmake"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".code-workspace"; ValueData: "{#RegValueName}.code-workspace"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".coffee"; ValueData: "{#RegValueName}.coffee"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".config"; ValueData: "{#RegValueName}.config"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".containerfile"; ValueData: "{#RegValueName}.containerfile"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cpp"; ValueData: "{#RegValueName}.cpp"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cs"; ValueData: "{#RegValueName}.cs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cshtml"; ValueData: "{#RegValueName}.cshtml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".csproj"; ValueData: "{#RegValueName}.csproj"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".css"; ValueData: "{#RegValueName}.css"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".csv"; ValueData: "{#RegValueName}.csv"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".csx"; ValueData: "{#RegValueName}.csx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ctp"; ValueData: "{#RegValueName}.ctp"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cxx"; ValueData: "{#RegValueName}.cxx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".dart"; ValueData: "{#RegValueName}.dart"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".diff"; ValueData: "{#RegValueName}.diff"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".dockerfile"; ValueData: "{#RegValueName}.dockerfile"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".dot"; ValueData: "{#RegValueName}.dot"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".dtd"; ValueData: "{#RegValueName}.dtd"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".editorconfig"; ValueData: "{#RegValueName}.editorconfig"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".edn"; ValueData: "{#RegValueName}.edn"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".erb"; ValueData: "{#RegValueName}.erb"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".eyaml"; ValueData: "{#RegValueName}.eyaml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".eyml"; ValueData: "{#RegValueName}.eyml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".fs"; ValueData: "{#RegValueName}.fs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".fsi"; ValueData: "{#RegValueName}.fsi"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".fsscript"; ValueData: "{#RegValueName}.fsscript"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".fsx"; ValueData: "{#RegValueName}.fsx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gemspec"; ValueData: "{#RegValueName}.gemspec"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gitattributes"; ValueData: "{#RegValueName}.gitattributes"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gitconfig"; ValueData: "{#RegValueName}.gitconfig"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gitignore"; ValueData: "{#RegValueName}.gitignore"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".go"; ValueData: "{#RegValueName}.go"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gradle"; ValueData: "{#RegValueName}.gradle"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".groovy"; ValueData: "{#RegValueName}.groovy"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".h"; ValueData: "{#RegValueName}.h"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".h++"; ValueData: "{#RegValueName}.h++"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".handlebars"; ValueData: "{#RegValueName}.handlebars"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hbs"; ValueData: "{#RegValueName}.hbs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hh"; ValueData: "{#RegValueName}.hh"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hpp"; ValueData: "{#RegValueName}.hpp"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".htm"; ValueData: "{#RegValueName}.htm"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".html"; ValueData: "{#RegValueName}.html"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hxx"; ValueData: "{#RegValueName}.hxx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ini"; ValueData: "{#RegValueName}.ini"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ipynb"; ValueData: "{#RegValueName}.ipynb"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jade"; ValueData: "{#RegValueName}.jade"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jav"; ValueData: "{#RegValueName}.jav"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".java"; ValueData: "{#RegValueName}.java"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".js"; ValueData: "{#RegValueName}.js"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jscsrc"; ValueData: "{#RegValueName}.jscsrc"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jshintrc"; ValueData: "{#RegValueName}.jshintrc"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jshtm"; ValueData: "{#RegValueName}.jshtm"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".json"; ValueData: "{#RegValueName}.json"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jsp"; ValueData: "{#RegValueName}.jsp"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jsx"; ValueData: "{#RegValueName}.jsx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".less"; ValueData: "{#RegValueName}.less"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".log"; ValueData: "{#RegValueName}.log"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".lua"; ValueData: "{#RegValueName}.lua"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".m"; ValueData: "{#RegValueName}.m"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".makefile"; ValueData: "{#RegValueName}.makefile"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".markdown"; ValueData: "{#RegValueName}.markdown"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".md"; ValueData: "{#RegValueName}.md"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mdoc"; ValueData: "{#RegValueName}.mdoc"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mdown"; ValueData: "{#RegValueName}.mdown"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mdtext"; ValueData: "{#RegValueName}.mdtext"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mdtxt"; ValueData: "{#RegValueName}.mdtxt"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mdwn"; ValueData: "{#RegValueName}.mdwn"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mjs"; ValueData: "{#RegValueName}.mjs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mk"; ValueData: "{#RegValueName}.mk"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mkd"; ValueData: "{#RegValueName}.mkd"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mkdn"; ValueData: "{#RegValueName}.mkdn"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ml"; ValueData: "{#RegValueName}.ml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mli"; ValueData: "{#RegValueName}.mli"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".npmignore"; ValueData: "{#RegValueName}.npmignore"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".php"; ValueData: "{#RegValueName}.php"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".phtml"; ValueData: "{#RegValueName}.phtml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pl"; ValueData: "{#RegValueName}.pl"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pl6"; ValueData: "{#RegValueName}.pl6"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".plist"; ValueData: "{#RegValueName}.plist"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pm"; ValueData: "{#RegValueName}.pm"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pm6"; ValueData: "{#RegValueName}.pm6"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pod"; ValueData: "{#RegValueName}.pod"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pp"; ValueData: "{#RegValueName}.pp"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".profile"; ValueData: "{#RegValueName}.profile"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".properties"; ValueData: "{#RegValueName}.properties"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ps1"; ValueData: "{#RegValueName}.ps1"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".psd1"; ValueData: "{#RegValueName}.psd1"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".psgi"; ValueData: "{#RegValueName}.psgi"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".psm1"; ValueData: "{#RegValueName}.psm1"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".py"; ValueData: "{#RegValueName}.py"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pyi"; ValueData: "{#RegValueName}.pyi"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".r"; ValueData: "{#RegValueName}.r"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rb"; ValueData: "{#RegValueName}.rb"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rhistory"; ValueData: "{#RegValueName}.rhistory"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rprofile"; ValueData: "{#RegValueName}.rprofile"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rs"; ValueData: "{#RegValueName}.rs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rst"; ValueData: "{#RegValueName}.rst"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rt"; ValueData: "{#RegValueName}.rt"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".sass"; ValueData: "{#RegValueName}.sass"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".scss"; ValueData: "{#RegValueName}.scss"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".sh"; ValueData: "{#RegValueName}.sh"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".shtml"; ValueData: "{#RegValueName}.shtml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".sql"; ValueData: "{#RegValueName}.sql"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".svg"; ValueData: "{#RegValueName}.svg"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".t"; ValueData: "{#RegValueName}.t"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tex"; ValueData: "{#RegValueName}.tex"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".toml"; ValueData: "{#RegValueName}.toml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ts"; ValueData: "{#RegValueName}.ts"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tsx"; ValueData: "{#RegValueName}.tsx"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".txt"; ValueData: "{#RegValueName}.txt"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".vb"; ValueData: "{#RegValueName}.vb"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".vue"; ValueData: "{#RegValueName}.vue"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".wxi"; ValueData: "{#RegValueName}.wxi"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".wxl"; ValueData: "{#RegValueName}.wxl"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".wxs"; ValueData: "{#RegValueName}.wxs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".xaml"; ValueData: "{#RegValueName}.xaml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".xhtml"; ValueData: "{#RegValueName}.xhtml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".xml"; ValueData: "{#RegValueName}.xml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".yaml"; ValueData: "{#RegValueName}.yaml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".yml"; ValueData: "{#RegValueName}.yml"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".zsh"; ValueData: "{#RegValueName}.zsh"; Tasks: associatewithfiles
+; Additional Zed language file associations
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".zig"; ValueData: "{#RegValueName}.zig"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ex"; ValueData: "{#RegValueName}.ex"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".exs"; ValueData: "{#RegValueName}.exs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".erl"; ValueData: "{#RegValueName}.erl"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hs"; ValueData: "{#RegValueName}.hs"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".kt"; ValueData: "{#RegValueName}.kt"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".kts"; ValueData: "{#RegValueName}.kts"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".swift"; ValueData: "{#RegValueName}.swift"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".scala"; ValueData: "{#RegValueName}.scala"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jl"; ValueData: "{#RegValueName}.jl"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".nim"; ValueData: "{#RegValueName}.nim"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".nix"; ValueData: "{#RegValueName}.nix"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hcl"; ValueData: "{#RegValueName}.hcl"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tf"; ValueData: "{#RegValueName}.tf"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".svelte"; ValueData: "{#RegValueName}.svelte"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".astro"; ValueData: "{#RegValueName}.astro"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".proto"; ValueData: "{#RegValueName}.proto"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".graphql"; ValueData: "{#RegValueName}.graphql"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".prisma"; ValueData: "{#RegValueName}.prisma"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".sol"; ValueData: "{#RegValueName}.sol"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cljc"; ValueData: "{#RegValueName}.cljc"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cr"; ValueData: "{#RegValueName}.cr"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".d"; ValueData: "{#RegValueName}.d"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".elm"; ValueData: "{#RegValueName}.elm"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mts"; ValueData: "{#RegValueName}.mts"; Tasks: associatewithfiles
+Root: HKCU; Subkey: "Software\{#RegValueName}\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cts"; ValueData: "{#RegValueName}.cts"; Tasks: associatewithfiles
+
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "{#AppName}"; ValueData: "Software\{#RegValueName}\Capabilities"; Flags: uninsdeletevalue
 
 [Code]
 function WizardNotSilent(): Boolean;
