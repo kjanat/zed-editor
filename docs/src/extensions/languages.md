@@ -599,6 +599,36 @@ are styled using the `label_for_completion` method. For a complete list of
 methods, see the
 [API docs for the Zed extension API](https://docs.rs/zed_extension_api).
 
+### Clipboard Commands
+
+Code actions and code lenses can use the client command
+`editor.copyToClipboard` to copy text when the user selects the action:
+
+```json
+{
+  "title": "Copy SVG as data URI",
+  "command": "editor.copyToClipboard",
+  "arguments": [
+    {
+      "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDgiIGhlaWdodD0iNzIiIHZpZXdCb3g9IjAgMCAyMDggNzIiPjxyZWN0IHdpZHRoPSIyMDgiIGhlaWdodD0iNzIiIHJ4PSI4IiBmaWxsPSJ3aGl0ZSIvPjxpbWFnZSBocmVmPSJodHRwczovL2Nkbi5qc2RlbGl2ci5uZXQvZ2gvemVkLWluZHVzdHJpZXMvemVkQDg3YTFlYTMwZTgxOWUxOTNmOGUzZmNiNTE3YzY4ODRmOTFlZTdhOWMvYXNzZXRzL2ltYWdlcy96ZWRfbG9nby5zdmciIHg9IjgiIHk9IjgiIHdpZHRoPSI1NiIgaGVpZ2h0PSI1NiIvPjx0ZXh0IHg9IjgwIiB5PSI1MyIgZm9udC1zaXplPSI0OCI+8J+krDwvdGV4dD48dGV4dCB4PSIxNDQiIHk9IjUzIiBmb250LXNpemU9IjQ4Ij7wn6u1PC90ZXh0Pjwvc3ZnPg=="
+    }
+  ]
+}
+```
+
+The first argument must be a string or an object with a string `text` field.
+Empty strings are supported; additional object fields are ignored. Invalid
+arguments fail the action without changing the clipboard or applying edits.
+
+Zed resolves the action first, applies any accompanying workspace edits, then
+writes to the user's local clipboard, including in remote projects. The command
+is handled by Zed and does not need to appear in the language server's
+`executeCommandProvider`. It is not sent to `workspace/executeCommand`.
+
+This hook applies to individually selected actions, not completion commands or
+bulk code actions such as actions run on save. It does not advertise a client
+capability or set server-specific initialization options.
+
 ### Syntax Highlighting with Semantic Tokens
 
 Zed supports syntax highlighting using semantic tokens from the attached
