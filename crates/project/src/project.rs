@@ -86,8 +86,8 @@ use image_store::{ImageItemEvent, ImageStoreEvent};
 
 use ::git::{blame::Blame, status::FileStatus};
 use gpui::{
-    App, AppContext, AsyncApp, BorrowAppContext, Context, Entity, EventEmitter, Hsla, SharedString,
-    Task, TaskExt, WeakEntity, Window,
+    App, AppContext, AsyncApp, BorrowAppContext, ClipboardItem, Context, Entity, EventEmitter,
+    Hsla, SharedString, Task, TaskExt, WeakEntity, Window,
 };
 use language::{
     Buffer, BufferEditSource, BufferEvent, Capability, CodeLabel, CursorShape, DiskState, Language,
@@ -4693,8 +4693,52 @@ impl Project {
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<ProjectTransaction>> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.apply_code_action(buffer_handle, action, push_to_history, cx)
+        let resolve = self.lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.resolve_code_action(&buffer_handle, action, cx)
+        });
+        let lsp_store = self.lsp_store.clone();
+        cx.spawn(async move |_, cx| {
+            let mut action = resolve.await?;
+            let clipboard_text = action
+                .lsp_action
+                .command()
+                .filter(|command| command.command == "editor.copyToClipboard")
+                .map(|command| {
+                    command
+                        .arguments
+                        .as_ref()
+                        .and_then(|arguments| arguments.first())
+                        .and_then(|argument| {
+                            argument
+                                .as_str()
+                                .or_else(|| argument.get("text").and_then(serde_json::Value::as_str))
+                        })
+                        .map(str::to_owned)
+                        .context("editor.copyToClipboard requires a string or an object with a text string as its first argument")
+                })
+                .transpose()?;
+
+            // Keep client commands out of ApplyCodeAction RPCs, including actions with edits.
+            if clipboard_text.is_some()
+                && let LspAction::Action(action) = &mut action.lsp_action
+            {
+                action.command = None;
+            }
+
+            let transaction = if clipboard_text.is_none() || action.lsp_action.edit().is_some() {
+                lsp_store
+                    .update(cx, |lsp_store, cx| {
+                        lsp_store.apply_code_action(buffer_handle, action, push_to_history, cx)
+                    })
+                    .await?
+            } else {
+                ProjectTransaction::default()
+            };
+
+            if let Some(text) = clipboard_text {
+                cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
+            }
+            Ok(transaction)
         })
     }
 

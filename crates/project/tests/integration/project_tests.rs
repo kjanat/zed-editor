@@ -8343,6 +8343,282 @@ async fn test_range_formatting_prefers_range_capable_current_server(cx: &mut gpu
     );
 }
 
+#[gpui::test]
+async fn test_client_clipboard_code_actions(cx: &mut TestAppContext) {
+    let (project, buffer, _handle, fake_server) = code_action_project_with(
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                execute_command_provider: Some(lsp::ExecuteCommandOptions {
+                    commands: vec!["editor.copyToClipboard".into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+    fake_server.set_request_handler::<lsp::request::ExecuteCommand, _, _>(|_, _| async {
+        anyhow::bail!("client clipboard command reached the language server")
+    });
+
+    for text in ["data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=", "", "λ\n🦀"] {
+        for argument in [
+            json!(text),
+            json!({ "text": text, "mimeType": "image/svg+xml" }),
+        ] {
+            let command = lsp::Command {
+                title: "Copy".into(),
+                command: "editor.copyToClipboard".into(),
+                arguments: Some(vec![argument]),
+            };
+            for lsp_action in [
+                LspAction::Command(command.clone()),
+                LspAction::Action(Box::new(lsp::CodeAction {
+                    title: "Copy".into(),
+                    command: Some(command.clone()),
+                    ..Default::default()
+                })),
+                LspAction::CodeLens(lsp::CodeLens {
+                    range: Default::default(),
+                    command: Some(command.clone()),
+                    data: None,
+                }),
+            ] {
+                cx.update(|cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into()))
+                });
+                let action = CodeAction {
+                    server_id: fake_server.server.server_id(),
+                    range: buffer.read_with(cx, |buffer, _| {
+                        Anchor::min_min_range_for_buffer(buffer.remote_id())
+                    }),
+                    lsp_action,
+                    resolved: true,
+                };
+                let transaction = project
+                    .update(cx, |project, cx| {
+                        project.apply_code_action(buffer.clone(), action, true, cx)
+                    })
+                    .await
+                    .expect("clipboard action should succeed");
+                assert!(transaction.0.is_empty());
+                assert_eq!(
+                    cx.read_from_clipboard(),
+                    Some(gpui::ClipboardItem::new_string(text.into()))
+                );
+            }
+        }
+    }
+}
+
+#[gpui::test]
+async fn test_client_clipboard_invalid_arguments(cx: &mut TestAppContext) {
+    let (project, buffer, _handle, fake_server) =
+        code_action_project_with(FakeLspAdapter::default(), cx).await;
+    let original_text = buffer.read_with(cx, |buffer, _| buffer.text());
+    cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into())));
+
+    for arguments in [
+        None,
+        Some(vec![]),
+        Some(vec![json!(null)]),
+        Some(vec![json!(42)]),
+        Some(vec![json!(true)]),
+        Some(vec![json!({})]),
+        Some(vec![json!({ "text": 42 })]),
+        Some(vec![json!(["text"])]),
+    ] {
+        let action = CodeAction {
+            server_id: fake_server.server.server_id(),
+            range: buffer.read_with(cx, |buffer, _| {
+                Anchor::min_min_range_for_buffer(buffer.remote_id())
+            }),
+            lsp_action: LspAction::Action(Box::new(lsp::CodeAction {
+                title: "Copy".into(),
+                edit: Some(lsp::WorkspaceEdit {
+                    changes: Some(std::collections::HashMap::from_iter([(
+                        lsp::Uri::from_file_path(path!("/dir/a.ts")).expect("valid test URI"),
+                        vec![lsp::TextEdit::new(Default::default(), "changed".into())],
+                    )])),
+                    ..Default::default()
+                }),
+                command: Some(lsp::Command {
+                    title: "Copy".into(),
+                    command: "editor.copyToClipboard".into(),
+                    arguments,
+                }),
+                ..Default::default()
+            })),
+            resolved: true,
+        };
+        let error = project
+            .update(cx, |project, cx| {
+                project.apply_code_action(buffer.clone(), action, true, cx)
+            })
+            .await
+            .expect_err("malformed clipboard action should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("editor.copyToClipboard requires")
+        );
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("before".into())
+        );
+        assert_eq!(
+            buffer.read_with(cx, |buffer, _| buffer.text()),
+            original_text
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_client_clipboard_failed_edit(cx: &mut TestAppContext) {
+    let (project, buffer, _handle, fake_server) =
+        code_action_project_with(FakeLspAdapter::default(), cx).await;
+    cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into())));
+    let action = CodeAction {
+        server_id: fake_server.server.server_id(),
+        range: buffer.read_with(cx, |buffer, _| {
+            Anchor::min_min_range_for_buffer(buffer.remote_id())
+        }),
+        lsp_action: LspAction::Action(Box::new(lsp::CodeAction {
+            title: "Copy".into(),
+            edit: Some(lsp::WorkspaceEdit {
+                document_changes: Some(lsp::DocumentChanges::Operations(vec![
+                    lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Create(lsp::CreateFile {
+                        uri: "untitled:copy".parse().expect("valid non-file URI"),
+                        options: None,
+                        annotation_id: None,
+                    })),
+                ])),
+                ..Default::default()
+            }),
+            command: Some(lsp::Command {
+                title: "Copy".into(),
+                command: "editor.copyToClipboard".into(),
+                arguments: Some(vec![json!("after")]),
+            }),
+            ..Default::default()
+        })),
+        resolved: true,
+    };
+    let error = project
+        .update(cx, |project, cx| {
+            project.apply_code_action(buffer.clone(), action, true, cx)
+        })
+        .await
+        .expect_err("invalid resource operation should fail");
+    assert!(error.to_string().contains("can't convert URI to path"));
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("before".into())
+    );
+}
+
+#[gpui::test]
+async fn test_client_clipboard_resolved_actions(cx: &mut TestAppContext) {
+    let (project, buffer, _handle, fake_server) = code_action_project_with(
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                code_action_provider: Some(lsp::CodeActionProviderCapability::Options(
+                    lsp::CodeActionOptions {
+                        resolve_provider: Some(true),
+                        ..Default::default()
+                    },
+                )),
+                code_lens_provider: Some(lsp::CodeLensOptions {
+                    resolve_provider: Some(true),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+    fake_server.set_request_handler::<lsp::request::CodeActionResolveRequest, _, _>(
+        |mut action, _| async move {
+            action.command = Some(lsp::Command {
+                title: "Copy".into(),
+                command: "editor.copyToClipboard".into(),
+                arguments: Some(vec![json!({ "text": "resolved action" })]),
+            });
+            action.edit = Some(lsp::WorkspaceEdit {
+                changes: Some(std::collections::HashMap::from_iter([(
+                    lsp::Uri::from_file_path(path!("/dir/a.ts")).expect("valid test URI"),
+                    vec![lsp::TextEdit::new(Default::default(), "edited ".into())],
+                )])),
+                ..Default::default()
+            });
+            Ok(action)
+        },
+    );
+    fake_server.set_request_handler::<lsp::request::CodeLensResolve, _, _>(
+        |mut lens, _| async move {
+            lens.command = Some(lsp::Command {
+                title: "Copy".into(),
+                command: "editor.copyToClipboard".into(),
+                arguments: Some(vec![json!("resolved lens")]),
+            });
+            Ok(lens)
+        },
+    );
+    fake_server.set_request_handler::<lsp::request::ExecuteCommand, _, _>(|_, _| async {
+        anyhow::bail!("client clipboard command reached the language server")
+    });
+
+    for (lsp_action, expected_text, expected_transactions) in [
+        (
+            LspAction::Action(Box::new(lsp::CodeAction {
+                title: "Copy".into(),
+                command: Some(lsp::Command {
+                    title: "Copy".into(),
+                    command: "editor.copyToClipboard".into(),
+                    arguments: Some(vec![json!("stale text")]),
+                }),
+                data: Some(json!({ "id": "copy" })),
+                ..Default::default()
+            })),
+            "resolved action",
+            1,
+        ),
+        (
+            LspAction::CodeLens(lsp::CodeLens {
+                range: Default::default(),
+                command: None,
+                data: Some(json!({ "id": "copy" })),
+            }),
+            "resolved lens",
+            0,
+        ),
+    ] {
+        let action = CodeAction {
+            server_id: fake_server.server.server_id(),
+            range: buffer.read_with(cx, |buffer, _| {
+                Anchor::min_min_range_for_buffer(buffer.remote_id())
+            }),
+            lsp_action,
+            resolved: false,
+        };
+        let transaction = project
+            .update(cx, |project, cx| {
+                project.apply_code_action(buffer.clone(), action, true, cx)
+            })
+            .await
+            .expect("resolved clipboard action should succeed");
+        assert_eq!(transaction.0.len(), expected_transactions);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some(expected_text.into())
+        );
+        assert!(buffer.read_with(cx, |buffer, _| buffer.text().starts_with("edited ")));
+    }
+}
+
 #[gpui::test(iterations = 10)]
 async fn test_apply_code_actions_with_commands(cx: &mut gpui::TestAppContext) {
     init_test(cx);

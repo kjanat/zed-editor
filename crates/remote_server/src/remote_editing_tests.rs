@@ -1392,6 +1392,22 @@ async fn test_remote_call_hierarchy(cx: &mut TestAppContext, server_cx: &mut Tes
 
 #[gpui::test]
 async fn test_remote_code_action_resolve(cx: &mut TestAppContext, server_cx: &mut TestAppContext) {
+    remote_code_action_resolve(false, cx, server_cx).await;
+}
+
+#[gpui::test]
+async fn test_remote_client_clipboard_code_action(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    remote_code_action_resolve(true, cx, server_cx).await;
+}
+
+async fn remote_code_action_resolve(
+    copy_to_clipboard: bool,
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
     cx.update(|cx| {
         let settings_store = SettingsStore::test(cx);
         cx.set_global(settings_store);
@@ -1415,6 +1431,12 @@ async fn test_remote_code_action_resolve(cx: &mut TestAppContext, server_cx: &mu
     .await;
 
     let (project, headless) = init_test(&fs, cx, server_cx).await;
+    server_cx.update(|cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("host clipboard".into()));
+    });
+    cx.update(|cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("client clipboard".into()));
+    });
 
     let capabilities = lsp::ServerCapabilities {
         code_action_provider: Some(lsp::CodeActionProviderCapability::Options(
@@ -1450,7 +1472,7 @@ async fn test_remote_code_action_resolve(cx: &mut TestAppContext, server_cx: &mu
         headless.read(cx).languages.register_fake_lsp_server(
             LanguageServerName("rust-analyzer".into()),
             capabilities,
-            Some(Box::new(|fake_lsp| {
+            Some(Box::new(move |fake_lsp| {
                 fake_lsp.set_request_handler::<lsp::request::CodeActionRequest, _, _>(
                     |_, _| async move {
                         Ok(Some(vec![lsp::CodeActionOrCommand::CodeAction(
@@ -1463,7 +1485,14 @@ async fn test_remote_code_action_resolve(cx: &mut TestAppContext, server_cx: &mu
                     },
                 );
                 fake_lsp.set_request_handler::<lsp::request::CodeActionResolveRequest, _, _>(
-                    |mut action, _| async move {
+                    move |mut action, _| async move {
+                        if copy_to_clipboard {
+                            action.command = Some(lsp::Command {
+                                title: "Copy".into(),
+                                command: "editor.copyToClipboard".into(),
+                                arguments: Some(vec![json!({ "text": "copied from remote" })]),
+                            });
+                        }
                         action.edit = Some(lsp::WorkspaceEdit {
                             changes: Some(
                                 [(
@@ -1485,6 +1514,9 @@ async fn test_remote_code_action_resolve(cx: &mut TestAppContext, server_cx: &mu
                         Ok(action)
                     },
                 );
+                fake_lsp.set_request_handler::<lsp::request::ExecuteCommand, _, _>(|_, _| async {
+                    anyhow::bail!("client clipboard command reached the remote language server")
+                });
             })),
         );
     });
@@ -1555,6 +1587,21 @@ async fn test_remote_code_action_resolve(cx: &mut TestAppContext, server_cx: &mu
     buffer.read_with(cx, |buffer, _| {
         assert_eq!(buffer.text(), "fn two() -> usize { 1 }");
     });
+    assert_eq!(
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+        Some(
+            if copy_to_clipboard {
+                "copied from remote"
+            } else {
+                "client clipboard"
+            }
+            .into()
+        ),
+    );
+    assert_eq!(
+        server_cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("host clipboard".into()),
+    );
 }
 
 #[gpui::test]
