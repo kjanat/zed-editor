@@ -3671,6 +3671,17 @@ Positive `integer` values or `null` for unlimited tabs
 - `path`: Custom path to Node.js binary
 - `npm_path`: Custom path to npm binary
 
+When no usable Node.js installation is found on PATH, Zed tries Deno 2.9 or newer
+on PATH before downloading managed Node.js. Deno supplies its Node-compatible
+launcher and runs the npm CLI, so a separate Node.js or npm installation is not
+required. Leave `node.ignore_system_version` set to `false` to enable this lookup.
+Explicit `node.path` and `node.npm_path` settings select Node.js instead.
+
+On FreeBSD, install Deno 2.9 or newer, or Node.js 22 or newer with npm, on the host
+running the extension (the server for remote projects). Zed cannot download a
+managed Node.js runtime for FreeBSD. Extension support for FreeBSD release assets
+does not provide a JavaScript runtime itself.
+
 ## Network Proxy
 
 - Description: Configure a network proxy for Zed.

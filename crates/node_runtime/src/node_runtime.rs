@@ -23,6 +23,8 @@ use std::{
 use util::ResultExt;
 use util::archive::extract_zip;
 
+mod deno_runtime;
+
 const NODE_CA_CERTS_ENV_VAR: &str = "NODE_EXTRA_CA_CERTS";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -85,6 +87,10 @@ impl NodeRuntime {
     }
 
     async fn instance(&self) -> Box<dyn NodeRuntimeTrait> {
+        self.instance_for_os(consts::OS).await
+    }
+
+    async fn instance_for_os(&self, os: &str) -> Box<dyn NodeRuntimeTrait> {
         let mut state = self.0.lock().await;
 
         let options = loop {
@@ -147,6 +153,46 @@ impl NodeRuntime {
             None
         };
 
+        let deno_error = if options.allow_path_lookup {
+            match deno_runtime::DenoRuntime::detect().await {
+                Ok(instance) => {
+                    log::info!("using Deno found on PATH for Node.js compatibility");
+                    state.instance = Some(instance.boxed_clone());
+                    state.last_options = Some(options);
+                    return Box::new(instance);
+                }
+                Err(error) => {
+                    log::debug!("Deno fallback unavailable: {error:#}");
+                    Some(error)
+                }
+            }
+        } else {
+            None
+        };
+
+        if os == "freebsd" {
+            let reason = match system_node_error {
+                Some(error) => error.to_string(),
+                None => "system Node.js lookup is disabled".to_string(),
+            };
+            return Box::new(UnavailableNodeRuntime {
+                error_message: format!(
+                    "No usable Node.js or Deno runtime on FreeBSD: {reason}. \
+                    Install Deno 2.9 or newer on PATH, or Node.js {} or newer and npm, \
+                    on the host running the extension \
+                    (the server for remote projects). Enable PATH lookup with \
+                    `node.ignore_system_version` set to false, or configure a Node.js installation \
+                    with `node.path` and `node.npm_path`. \
+                    Zed managed Node.js downloads are not available for FreeBSD.{}",
+                    SystemNodeRuntime::MIN_VERSION,
+                    deno_error
+                        .map(|error| format!(" Deno lookup failed: {error:#}"))
+                        .unwrap_or_default()
+                )
+                .into(),
+            });
+        }
+
         let instance = if options.allow_binary_download {
             let (log_level, why_using_managed) = match system_node_error {
                 Some(err @ DetectError::Other(_)) => (Level::Warn, err.to_string()),
@@ -189,8 +235,11 @@ impl NodeRuntime {
             // error message.
             return Box::new(UnavailableNodeRuntime {
                 error_message: format!(
-                    "failure while checking system Node.js from PATH: {}",
-                    system_node_error
+                    "failure while checking system Node.js from PATH: {}{}",
+                    system_node_error,
+                    deno_error
+                        .map(|error| format!("; Deno fallback failed: {error:#}"))
+                        .unwrap_or_default()
                 )
                 .into(),
             });
@@ -1200,6 +1249,58 @@ mod tests {
         NpmInfo, VersionStrategy, build_npm_command_args, deserialize_npm_info_from_response,
         proxy_argument, select_npm_package_version, should_install_npm_package_version,
     };
+
+    #[test]
+    fn test_freebsd_requires_system_runtime_without_downloading() {
+        smol::block_on(async {
+            for allow_binary_download in [false, true] {
+                let runtime = super::NodeRuntime::new(
+                    std::sync::Arc::new(http_client::BlockedHttpClient),
+                    None,
+                    watch::channel(Some(super::NodeBinaryOptions {
+                        allow_binary_download,
+                        ..Default::default()
+                    }))
+                    .1,
+                );
+                let instance = runtime.instance_for_os("freebsd").await;
+                let error = instance.binary_path().expect_err("Node.js is unavailable");
+                let message = error.to_string();
+                assert!(message.contains("No usable Node.js or Deno runtime on FreeBSD"));
+                assert!(message.contains("Deno 2.9 or newer on PATH"));
+                assert!(message.contains("node.path"));
+                assert!(message.contains("node.npm_path"));
+                assert!(message.contains("server for remote projects"));
+                assert!(message.contains("lookup is disabled"));
+                assert!(runtime.0.lock().await.instance.is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn test_freebsd_checks_configured_node_before_rejecting_downloads() {
+        smol::block_on(async {
+            let runtime = super::NodeRuntime::new(
+                std::sync::Arc::new(http_client::BlockedHttpClient),
+                None,
+                watch::channel(Some(super::NodeBinaryOptions {
+                    allow_binary_download: true,
+                    use_paths: Some((Path::new("").into(), Path::new("").into())),
+                    ..Default::default()
+                }))
+                .1,
+            );
+            let instance = runtime.instance_for_os("freebsd").await;
+            let error = instance
+                .binary_path()
+                .expect_err("empty Node.js path must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("failure checking Node.js from `node.path`")
+            );
+        });
+    }
 
     // Map localhost to 127.0.0.1
     // NodeRuntime without environment information can not parse `localhost` correctly.

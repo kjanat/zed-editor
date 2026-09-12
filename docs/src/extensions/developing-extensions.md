@@ -145,6 +145,16 @@ zed::register_extension!(MyExtension);
 > [`Worktree` struct and its methods](https://docs.rs/zed_extension_api/latest/zed_extension_api/struct.Worktree.html)
 > for reading environment variables and finding binaries in the user's `PATH`.
 
+`current_platform()` describes the host executing the extension, including the
+server when the extension runs remotely. Use that platform when selecting release
+assets. This fork's unreleased extension API 0.9.0 adds `Os::Freebsd`; extensions
+must adopt that API and provide a compatible asset to support FreeBSD downloads.
+Earlier API versions retain their existing platform enums and cannot report
+FreeBSD. API 0.9.0 requires a development or nightly build.
+
+Node-based language servers also need a user-installed Node.js or compatible
+Deno runtime on FreeBSD; see [Node settings](../reference/all-settings.md#node).
+
 ### Debugging your Rust extension
 
 `stdout`/`stderr` is forwarded directly to the Zed process. In order to see

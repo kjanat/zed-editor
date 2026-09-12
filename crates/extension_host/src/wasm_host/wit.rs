@@ -8,6 +8,7 @@ mod since_v0_4_0;
 mod since_v0_5_0;
 mod since_v0_6_0;
 mod since_v0_8_0;
+mod since_v0_9_0;
 use dap::DebugRequest;
 use extension::{DebugTaskDefinition, KeyValueStoreDelegate, WorktreeDelegate};
 use gpui::BackgroundExecutor;
@@ -62,7 +63,7 @@ pub fn wasm_api_version_range(release_channel: ReleaseChannel) -> RangeInclusive
     let _ = release_channel;
 
     let max_version = match release_channel {
-        ReleaseChannel::Dev | ReleaseChannel::Nightly => latest::MAX_VERSION,
+        ReleaseChannel::Dev | ReleaseChannel::Nightly => since_v0_9_0::MAX_VERSION,
         ReleaseChannel::Stable | ReleaseChannel::Preview => since_v0_6_0::MAX_VERSION,
     };
 
@@ -115,7 +116,19 @@ impl Extension {
         // Note: The release channel can be used to stage a new version of the extension API.
         let _ = release_channel;
 
-        if version >= latest::MIN_VERSION {
+        if version >= since_v0_9_0::MIN_VERSION {
+            authorize_access_to_unreleased_wasm_api_version(release_channel)?;
+
+            let extension = latest::Extension::instantiate_async(
+                store,
+                component,
+                since_v0_9_0::linker(executor),
+            )
+            .await
+            .map_err(anyhow::Error::from)
+            .context("failed to instantiate wasm extension")?;
+            Ok(Self::V0_8_0(extension))
+        } else if version >= latest::MIN_VERSION {
             authorize_access_to_unreleased_wasm_api_version(release_channel)?;
 
             let extension =

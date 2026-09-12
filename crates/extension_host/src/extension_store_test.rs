@@ -897,6 +897,14 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
                                     {
                                         "name": format!("gleam-{version}-x86_64-pc-windows-msvc.tar.gz"),
                                         "browser_download_url": asset_download_uri
+                                    },
+                                    {
+                                        "name": format!("gleam-{version}-x86_64-unknown-freebsd.tar.gz"),
+                                        "browser_download_url": asset_download_uri
+                                    },
+                                    {
+                                        "name": format!("gleam-{version}-aarch64-unknown-freebsd.tar.gz"),
+                                        "browser_download_url": asset_download_uri
                                     }
                                 ]
                             }
