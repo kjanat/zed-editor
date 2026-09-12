@@ -55,7 +55,7 @@ mach2.workspace = true
 [target."cfg(unix)".dependencies]
 command-fds    = "0.3.1"
 libc.workspace = true
-nix            = { workspace = true, features = ["user"] }
+nix            = { workspace = true, features = ["resource", "user"] }
 
 [target."cfg(windows)".dependencies]
 tendril           = "0.5"

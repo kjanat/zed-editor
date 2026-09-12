@@ -7687,6 +7687,7 @@ dependencies = [
  "log",
  "metal",
  "objc",
+ "objc2 0.6.4",
  "parking_lot",
 ]
 
@@ -11121,7 +11122,6 @@ dependencies = [
  "streaming-iterator",
  "tree-sitter",
  "tree-sitter-json",
- "unindent",
 ]
 
 [[package]]
