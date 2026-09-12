@@ -45,13 +45,30 @@ The sandbox assumes the GitHub-hosted runner, Docker/kernel, pinned tool image,
 and trusted workflow revision are not compromised. Do not pass Actions runtime
 credentials or mount host caches into the container to speed it up.
 
+The tool image preloads the root `.dprint.jsonc`, its plugins, and the Tombi
+and rustfmt setup commands. It includes `tombi.toml`, `rustfmt.toml`,
+`.cargo/config.toml`, and `rust-toolchain.toml` while warming the cache at
+`/tmp/work`, the same path used during preparation. The Rust toolchain has its
+own layer so formatter configuration changes do not reinstall it.
+
+The exec plugin runs setup commands once per process. The root Tombi setup
+checks that the executable works before installing it; rustup already reuses an
+installed rustfmt component. Repeated dprint invocations reuse those tools.
+
+`DPRINT_CACHE_DIR=/opt/dprint-cache` and the installed tools are writable by the
+runner's numeric user inside the container. Buildx caches the image layers;
+runtime writes disappear with the container and are never exported to a host
+cache. Formatting uses the candidate checkout's root configuration, so changed
+plugins or setup keys can still trigger downloads in the isolated container.
+
 Run the security tests with:
 
 ```sh
-docker build -t upstream-sync-test script/upstream-sync
+docker build -f script/upstream-sync/Dockerfile -t upstream-sync-test .
 SYNC_TEST_IMAGE=upstream-sync-test python3 -m unittest discover -s script/upstream-sync -p 'test_*.py'
 ```
 
-The container regression runs an upstream-supplied formatter against synthetic
-token canaries. Other tests exercise bundle validation and hostile artifact file
-types without contacting GitHub or publishing anything.
+The container regressions run an upstream-supplied formatter against synthetic
+token canaries and verify that the root JSON, TOML, and Rust formatters work
+without network access as the runner user. Other tests exercise bundle validation
+and hostile artifact file types without contacting GitHub or publishing anything.

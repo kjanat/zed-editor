@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
+format_merge_input() (
+	set -euo pipefail
+	case "$1" in
+		*.json | *.jsonc)
+			# The normal formatter preserves array line breaks and trailing commas,
+			# which can turn adjacent, independent changes into merge conflicts.
+			configuration=$(mktemp .sync-merge-format.XXXXXX.json)
+			trap 'rm -f "$configuration"' EXIT
+			printf '%s\n' '{"extends":"./.dprint.jsonc","json":{"array.preferSingleLine":true,"trailingCommas":"always"}}' >"$configuration"
+			dprint fmt --config "$configuration" --stdin "$1"
+			;;
+		*) dprint fmt --stdin "$1" ;;
+	esac
+)
+if [[ "${1:-}" == --format-merge-input ]]; then
+	format_merge_input "$2"
+	exit 0
+fi
 # Only /source (read-only) and /output cross the container boundary.
 # Do not pass runner credentials or mount a host home directory here.
 git clone --no-local /source /tmp/work
@@ -57,7 +75,7 @@ attempt_merge() {
 		MASTER_FORMATTED="$(mktemp)"
 		UPSTREAM_FORMATTED="$(mktemp)"
 		MERGED_FILE="$(mktemp)"
-		if git show "${BASE}:${FILE}" | dprint fmt --stdin "${FILE}" >"${BASE_FORMATTED}" \
+		if git show "${BASE}:${FILE}" | format_merge_input "${FILE}" >"${BASE_FORMATTED}" \
 			&& git show "master:${FILE}" >"${MASTER_FILE}"; then
 			if cmp -s "${BASE_FORMATTED}" "${MASTER_FILE}"; then
 				if git checkout --theirs -- "${FILE}" && dprint fmt "${FILE}" && dprint check "${FILE}"; then
@@ -67,8 +85,8 @@ attempt_merge() {
 					git checkout --conflict=merge -- "${FILE}"
 					printf '%s\n' "${FILE}" >>/tmp/human.txt
 				fi
-			elif git show "master:${FILE}" | dprint fmt --stdin "${FILE}" >"${MASTER_FORMATTED}" \
-				&& git show "upstream/main:${FILE}" | dprint fmt --stdin "${FILE}" >"${UPSTREAM_FORMATTED}" \
+			elif git show "master:${FILE}" | format_merge_input "${FILE}" >"${MASTER_FORMATTED}" \
+				&& git show "upstream/main:${FILE}" | format_merge_input "${FILE}" >"${UPSTREAM_FORMATTED}" \
 				&& git merge-file -p "${MASTER_FORMATTED}" "${BASE_FORMATTED}" "${UPSTREAM_FORMATTED}" >"${MERGED_FILE}"; then
 				cp "${MERGED_FILE}" "${FILE}"
 				if dprint fmt "${FILE}" && dprint check "${FILE}"; then
@@ -188,9 +206,9 @@ attempt_merge() {
 			printf "  upstream_formatted=\"\$(mktemp)\"\n"
 			printf "  merged_file=\"\$(mktemp)\"\n"
 			printf "  trap 'rm -f \"\${base_formatted}\" \"\${master_formatted}\" \"\${upstream_formatted}\" \"\${merged_file}\"' EXIT\n"
-			printf "  git show \"\${BASE}:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${base_formatted}\"\n"
-			printf "  git show \"master:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${master_formatted}\"\n"
-			printf "  git show \"upstream/main:\${file}\" | dprint fmt --stdin \"\${file}\" > \"\${upstream_formatted}\"\n"
+			printf "  git show \"\${BASE}:\${file}\" | bash script/upstream-sync/prepare.sh --format-merge-input \"\${file}\" > \"\${base_formatted}\"\n"
+			printf "  git show \"master:\${file}\" | bash script/upstream-sync/prepare.sh --format-merge-input \"\${file}\" > \"\${master_formatted}\"\n"
+			printf "  git show \"upstream/main:\${file}\" | bash script/upstream-sync/prepare.sh --format-merge-input \"\${file}\" > \"\${upstream_formatted}\"\n"
 			printf "  git merge-file -p \"\${master_formatted}\" \"\${base_formatted}\" \"\${upstream_formatted}\" > \"\${merged_file}\"\n"
 			printf "  cp \"\${merged_file}\" \"\${file}\"\n"
 			printf "  dprint fmt \"\${file}\" && git add \"\${file}\"\n"

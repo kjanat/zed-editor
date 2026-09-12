@@ -14,6 +14,46 @@ from pathlib import Path
     "Set SYNC_TEST_IMAGE to run the container regression",
 )
 class ContainerTests(unittest.TestCase):
+    def test_root_formatters_work_offline_as_the_runner_user(self):
+        repository = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network=none",
+                "--user",
+                f"{os.getuid()}:{os.getgid()}",
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                "--mount",
+                f"type=bind,src={repository},dst=/source,readonly",
+                os.environ["SYNC_TEST_IMAGE"],
+                "bash",
+                "-euo",
+                "pipefail",
+                "-c",
+                """
+mkdir -p /tmp/work/.cargo
+cd /tmp/work
+cp /source/.dprint.jsonc /source/tombi.toml /source/rustfmt.toml /source/rust-toolchain.toml .
+cp /source/.cargo/config.toml .cargo/
+test "$DPRINT_CACHE_DIR" = /opt/dprint-cache
+test -w "$DPRINT_CACHE_DIR"
+dprint output-resolved-config >/dev/null
+printf '{"value":1}\n' | dprint fmt --stdin probe.json >/dev/null
+printf 'value=1\n' | dprint fmt --stdin probe.toml >/dev/null
+printf 'fn main(){}\n' | dprint fmt --stdin probe.rs >/dev/null
+tombi --version
+rustfmt --version
+""",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_formatter_cannot_read_runner_credentials_or_modify_trusted_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
