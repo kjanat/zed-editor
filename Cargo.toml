@@ -1163,6 +1163,10 @@ zed = { codegen-units = 16 }
 [profile.test]
 opt-level = 1
 
+# The larger collab integration binary needs more optimization to fit macOS compact-unwind limits.
+[profile.test.package.collab]
+opt-level = 2
+
 # "debug" is a reserved profile name.
 [profile.dbg]
 inherits = "dev"
