@@ -1,0 +1,29 @@
+interface platform {
+    /// An operating system.
+    enum os {
+        /// macOS.
+        mac,
+        /// Linux.
+        linux,
+        /// Windows.
+        windows,
+        /// FreeBSD.
+        freebsd,
+    }
+
+    /// A platform architecture.
+    enum architecture {
+        /// AArch64 (e.g., Apple Silicon).
+        aarch64,
+        /// x86-64.
+        x8664,
+    }
+
+    /// Gets the operating system and architecture of the host executing the extension.
+    /// For remote projects, this is the server host.
+    current-platform: func() -> tuple<os, architecture>;
+}
+
+world platform-host {
+    import platform;
+}
