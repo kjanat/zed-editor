@@ -152,8 +152,8 @@ must adopt that API and provide a compatible asset to support FreeBSD downloads.
 Earlier API versions retain their existing platform enums and cannot report
 FreeBSD. API 0.9.0 requires a development or nightly build.
 
-Node-based language servers also need a user-installed Node.js or compatible
-Deno runtime on FreeBSD; see [Node settings](../reference/all-settings.md#node).
+Node-based language servers also need a user-installed Node.js, Deno, or Bun
+runtime on FreeBSD; see [Node settings](../reference/all-settings.md#node).
 
 ### Debugging your Rust extension
 

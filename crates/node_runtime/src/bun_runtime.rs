@@ -10,115 +10,87 @@ use std::{
 };
 
 use super::{
-    NODE_CA_CERTS_ENV_VAR, NodeRuntimeTrait, NpmCommand, SystemNodeRuntime, build_npm_command_args,
-    npm_command_env, proxy_argument, read_package_installed_version,
-    runtime_adapter::prepare_node_adapter,
+    NodeRuntimeTrait, NpmCommand, SystemNodeRuntime, build_npm_command_args, npm_command_env,
+    proxy_argument, read_package_installed_version, runtime_adapter::prepare_node_adapter,
 };
 
-const MIN_DENO_VERSION: Version = Version::new(2, 9, 0);
-const NPM_PACKAGE: &str = "npm:npm@10.9.4/npm";
+const MIN_BUN_VERSION: Version = Version::new(1, 3, 0);
+const NPM_PACKAGE: &str = "npm@10.9.4";
 
 #[derive(Clone, Debug)]
-pub(super) struct DenoRuntime {
-    deno: PathBuf,
+pub(super) struct BunRuntime {
+    bun: PathBuf,
     node: PathBuf,
     scratch_dir: PathBuf,
 }
 
-impl DenoRuntime {
+impl BunRuntime {
     pub(super) async fn detect() -> Result<Self> {
-        let deno =
-            fs::canonicalize(which::which("deno").context("Deno was not found on PATH")?).await?;
-        let output = util::command::new_command(&deno)
+        let bun =
+            fs::canonicalize(which::which("bun").context("Bun was not found on PATH")?).await?;
+        let output = util::command::new_command(&bun)
             .arg("--version")
             .output()
             .await
-            .with_context(|| format!("checking Deno version at {}", deno.display()))?;
+            .with_context(|| format!("checking Bun version at {}", bun.display()))?;
         ensure!(
             output.status.success(),
-            "Deno --version failed at {}:\nstdout: {}\nstderr: {}",
-            deno.display(),
+            "Bun --version failed at {}:\nstdout: {}\nstderr: {}",
+            bun.display(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        let version = parse_deno_version(&output.stdout)
-            .with_context(|| format!("invalid version from Deno at {}", deno.display()))?;
+        let version = Version::parse(std::str::from_utf8(&output.stdout)?.trim())
+            .with_context(|| format!("invalid version from Bun at {}", bun.display()))?;
         ensure!(
-            version >= MIN_DENO_VERSION,
-            "Deno {MIN_DENO_VERSION} or newer is required for Node.js compatibility; found {version}"
+            version >= MIN_BUN_VERSION,
+            "Bun {MIN_BUN_VERSION} or newer is required for npm package execution; found {version}"
         );
-
-        // Deno 2.9 translates Node CLI arguments when invoked through a file named `node`.
-        // Keep the real executable so callers using Node flags and child processes share that mode.
-        let (node, scratch_dir) = prepare_node_adapter(&deno, "deno", &version).await?;
+        // Child processes invoking `node` must use the same runtime as their parent.
+        let (node, scratch_dir) = prepare_node_adapter(&bun, "bun", &version).await?;
         let output = util::command::new_command(&node)
             .args([
                 "-p",
-                "JSON.stringify({deno: process.versions.deno, node: process.versions.node})",
+                "JSON.stringify({bun: process.versions.bun, node: process.versions.node})",
             ])
             .output()
             .await
-            .context("checking Deno Node.js adapter")?;
+            .context("checking Bun Node.js adapter")?;
         ensure!(
             output.status.success(),
-            "Deno Node.js adapter failed at {}:\nstdout: {}\nstderr: {}",
+            "Bun Node.js adapter failed at {}:\nstdout: {}\nstderr: {}",
             node.display(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
         validate_adapter_versions(&output.stdout, &version)?;
         Ok(Self {
-            deno,
+            bun,
             node,
             scratch_dir,
         })
     }
 }
 
-fn parse_deno_version(output: &[u8]) -> Result<Version> {
-    let output = std::str::from_utf8(output)?;
-    let version = output
-        .lines()
-        .next()
-        .and_then(|line| line.strip_prefix("deno "))
-        .and_then(|line| line.split_whitespace().next())
-        .context("invalid Deno version output")?;
-    Ok(Version::parse(version)?)
-}
-
 fn validate_adapter_versions(output: &[u8], expected: &Version) -> Result<()> {
     #[derive(serde::Deserialize)]
     struct Versions {
-        deno: Version,
+        bun: Version,
         node: Version,
     }
     let versions: Versions = serde_json::from_slice(output)
-        .context("Deno does not support the Node.js executable adapter")?;
-    ensure!(
-        versions.deno == *expected,
-        "Deno executable adapter is stale"
-    );
+        .context("Bun does not support the Node.js executable adapter")?;
+    ensure!(versions.bun == *expected, "Bun executable adapter is stale");
     ensure!(
         versions.node >= SystemNodeRuntime::MIN_VERSION,
-        "Deno must support Node.js {} or newer; found {}",
+        "Bun must support Node.js {} or newer; found {}",
         SystemNodeRuntime::MIN_VERSION,
         versions.node
     );
     Ok(())
 }
 
-fn deno_npm_environment(node: &Path, proxy: Option<&Url>) -> HashMap<String, String> {
-    let mut environment = npm_command_env(node);
-    configure_deno_download_environment(&mut environment, proxy);
-    for name in ["DENO_DIR", "DENO_TLS_CA_STORE", "DENO_CERT", "NO_PROXY"] {
-        if let Ok(value) = env::var(name) {
-            environment.insert(name.into(), value);
-        }
-    }
-    environment
-}
-
-fn configure_deno_download_environment(
+fn configure_bun_download_environment(
     environment: &mut HashMap<String, String>,
     proxy: Option<&Url>,
 ) {
@@ -126,13 +98,21 @@ fn configure_deno_download_environment(
         environment.insert("HTTP_PROXY".into(), proxy.clone());
         environment.insert("HTTPS_PROXY".into(), proxy);
     }
-    if let Some(certificates) = environment.get(NODE_CA_CERTS_ENV_VAR).cloned() {
-        environment.insert("DENO_CERT".into(), certificates);
+}
+
+fn bun_npm_environment(node: &Path, proxy: Option<&Url>) -> HashMap<String, String> {
+    let mut environment = npm_command_env(node);
+    configure_bun_download_environment(&mut environment, proxy);
+    for name in ["BUN_INSTALL_CACHE_DIR", "NO_PROXY"] {
+        if let Ok(value) = env::var(name) {
+            environment.insert(name.into(), value);
+        }
     }
+    environment
 }
 
 #[async_trait::async_trait]
-impl NodeRuntimeTrait for DenoRuntime {
+impl NodeRuntimeTrait for BunRuntime {
     fn boxed_clone(&self) -> Box<dyn NodeRuntimeTrait> {
         Box::new(self.clone())
     }
@@ -157,7 +137,7 @@ impl NodeRuntimeTrait for DenoRuntime {
         let output = command.output().await?;
         if !output.status.success() {
             bail!(
-                "failed to execute npm {subcommand} through Deno:\nstdout: {}\nstderr: {}",
+                "failed to execute npm {subcommand} through Bun:\nstdout: {}\nstderr: {}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
@@ -172,16 +152,10 @@ impl NodeRuntimeTrait for DenoRuntime {
         subcommand: &str,
         args: &[&str],
     ) -> Result<NpmCommand> {
-        let mut command_args = [
-            "run",
-            "-A",
-            "--no-config",
-            "--no-lock",
-            "--node-modules-dir=none",
-            NPM_PACKAGE,
-        ]
-        .map(String::from)
-        .to_vec();
+        // Preserve npm's flags and output contract; Bun only bootstraps and runs the npm CLI.
+        let mut command_args = ["x", "--bun", "--package", NPM_PACKAGE, "npm"]
+            .map(String::from)
+            .to_vec();
         command_args.extend(build_npm_command_args(
             None,
             prefix_dir,
@@ -193,9 +167,9 @@ impl NodeRuntimeTrait for DenoRuntime {
             args,
         ));
         Ok(NpmCommand {
-            path: self.deno.clone(),
+            path: self.bun.clone(),
             args: command_args,
-            env: deno_npm_environment(&self.node, proxy),
+            env: bun_npm_environment(&self.node, proxy),
         })
     }
 
@@ -211,6 +185,21 @@ impl NodeRuntimeTrait for DenoRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NODE_CA_CERTS_ENV_VAR;
+
+    #[test]
+    fn adapter_requires_bun_and_supported_node_versions() -> Result<()> {
+        let version = Version::new(1, 4, 3);
+        validate_adapter_versions(br#"{"bun":"1.4.3","node":"26.3.0"}"#, &version)?;
+        assert!(validate_adapter_versions(br#"{"node":"26.3.0"}"#, &version).is_err());
+        assert!(
+            validate_adapter_versions(br#"{"bun":"1.4.3","node":"20.0.0"}"#, &version).is_err()
+        );
+        assert!(
+            validate_adapter_versions(br#"{"bun":"1.4.2","node":"26.3.0"}"#, &version).is_err()
+        );
+        Ok(())
+    }
 
     #[test]
     fn npm_bootstrap_preserves_ca_and_path() -> Result<()> {
@@ -222,16 +211,16 @@ mod tests {
             ("PATH".to_string(), "adapter".to_string()),
         ]);
         let proxy = Url::parse("http://localhost:8080")?;
-        configure_deno_download_environment(&mut environment, Some(&proxy));
-        assert_eq!(
-            environment.get("DENO_CERT").map(String::as_str),
-            Some("corporate-ca.pem")
-        );
+        configure_bun_download_environment(&mut environment, Some(&proxy));
         assert_eq!(
             environment.get(NODE_CA_CERTS_ENV_VAR).map(String::as_str),
             Some("corporate-ca.pem")
         );
         assert_eq!(environment.get("PATH").map(String::as_str), Some("adapter"));
+        assert_eq!(
+            environment.get("HTTP_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:8080/")
+        );
         assert_eq!(
             environment.get("HTTP_PROXY"),
             environment.get("HTTPS_PROXY")
@@ -240,24 +229,10 @@ mod tests {
     }
 
     #[test]
-    fn adapter_requires_deno_and_supported_node_versions() -> Result<()> {
-        let version = Version::new(2, 9, 4);
-        validate_adapter_versions(br#"{"deno":"2.9.4","node":"24.0.0"}"#, &version)?;
-        assert!(validate_adapter_versions(br#"{"node":"24.0.0"}"#, &version).is_err());
-        assert!(
-            validate_adapter_versions(br#"{"deno":"2.9.4","node":"20.0.0"}"#, &version).is_err()
-        );
-        assert!(
-            validate_adapter_versions(br#"{"deno":"2.9.3","node":"24.0.0"}"#, &version).is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn npm_arguments_keep_deno_options_before_npm_options() -> Result<()> {
+    fn npm_arguments_keep_bun_options_before_npm_options() -> Result<()> {
         smol::block_on(async {
-            let runtime = DenoRuntime {
-                deno: PathBuf::from("deno"),
+            let runtime = BunRuntime {
+                bun: PathBuf::from("bun"),
                 node: PathBuf::from("adapter/node"),
                 scratch_dir: PathBuf::from("runtime"),
             };
@@ -270,7 +245,7 @@ mod tests {
                     &["--", "tool"],
                 )
                 .await?;
-            assert_eq!(command.path, runtime.deno);
+            assert_eq!(command.path, runtime.bun);
             let path = command.env.get("PATH").context("npm PATH is missing")?;
             assert_eq!(
                 env::split_paths(path).next().as_deref(),
@@ -279,12 +254,11 @@ mod tests {
             assert_eq!(
                 command.args,
                 vec![
-                    "run".to_string(),
-                    "-A".to_string(),
-                    "--no-config".to_string(),
-                    "--no-lock".to_string(),
-                    "--node-modules-dir=none".to_string(),
+                    "x".to_string(),
+                    "--bun".to_string(),
+                    "--package".to_string(),
                     NPM_PACKAGE.to_string(),
+                    "npm".to_string(),
                     "--prefix".to_string(),
                     "prefix".to_string(),
                     "exec".to_string(),

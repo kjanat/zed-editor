@@ -23,7 +23,9 @@ use std::{
 use util::ResultExt;
 use util::archive::extract_zip;
 
+mod bun_runtime;
 mod deno_runtime;
+mod runtime_adapter;
 
 const NODE_CA_CERTS_ENV_VAR: &str = "NODE_EXTRA_CA_CERTS";
 
@@ -170,6 +172,37 @@ impl NodeRuntime {
             None
         };
 
+        let bun_error = if options.allow_path_lookup {
+            match bun_runtime::BunRuntime::detect().await {
+                Ok(instance) => {
+                    log::info!("using Bun found on PATH for Node.js compatibility");
+                    state.instance = Some(instance.boxed_clone());
+                    state.last_options = Some(options);
+                    return Box::new(instance);
+                }
+                Err(error) => {
+                    log::debug!("Bun fallback unavailable: {error:#}");
+                    Some(error)
+                }
+            }
+        } else {
+            None
+        };
+
+        let fallback_errors = [
+            deno_error.map(|error| format!("Deno fallback failed: {error:#}")),
+            bun_error.map(|error| format!("Bun fallback failed: {error:#}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("; ");
+        let fallback_errors = if fallback_errors.is_empty() {
+            String::new()
+        } else {
+            format!(" {fallback_errors}")
+        };
+
         if os == "freebsd" {
             let reason = match system_node_error {
                 Some(error) => error.to_string(),
@@ -177,17 +210,15 @@ impl NodeRuntime {
             };
             return Box::new(UnavailableNodeRuntime {
                 error_message: format!(
-                    "No usable Node.js or Deno runtime on FreeBSD: {reason}. \
-                    Install Deno 2.9 or newer on PATH, or Node.js {} or newer and npm, \
+                    "No usable Node.js, Deno, or Bun runtime on FreeBSD: {reason}. \
+                    Install Deno 2.9 or newer or Bun 1.3 or newer on PATH, \
+                    or Node.js {} or newer and npm, \
                     on the host running the extension \
                     (the server for remote projects). Enable PATH lookup with \
                     `node.ignore_system_version` set to false, or configure a Node.js installation \
                     with `node.path` and `node.npm_path`. \
-                    Zed managed Node.js downloads are not available for FreeBSD.{}",
-                    SystemNodeRuntime::MIN_VERSION,
-                    deno_error
-                        .map(|error| format!(" Deno lookup failed: {error:#}"))
-                        .unwrap_or_default()
+                    Zed managed Node.js downloads are not available for FreeBSD.{fallback_errors}",
+                    SystemNodeRuntime::MIN_VERSION
                 )
                 .into(),
             });
@@ -235,11 +266,7 @@ impl NodeRuntime {
             // error message.
             return Box::new(UnavailableNodeRuntime {
                 error_message: format!(
-                    "failure while checking system Node.js from PATH: {}{}",
-                    system_node_error,
-                    deno_error
-                        .map(|error| format!("; Deno fallback failed: {error:#}"))
-                        .unwrap_or_default()
+                    "failure while checking system Node.js from PATH: {system_node_error}.{fallback_errors}"
                 )
                 .into(),
             });
@@ -1266,8 +1293,9 @@ mod tests {
                 let instance = runtime.instance_for_os("freebsd").await;
                 let error = instance.binary_path().expect_err("Node.js is unavailable");
                 let message = error.to_string();
-                assert!(message.contains("No usable Node.js or Deno runtime on FreeBSD"));
-                assert!(message.contains("Deno 2.9 or newer on PATH"));
+                assert!(message.contains("No usable Node.js, Deno, or Bun runtime on FreeBSD"));
+                assert!(message.contains("Deno 2.9 or newer"));
+                assert!(message.contains("Bun 1.3 or newer on PATH"));
                 assert!(message.contains("node.path"));
                 assert!(message.contains("node.npm_path"));
                 assert!(message.contains("server for remote projects"));
