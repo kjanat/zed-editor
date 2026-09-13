@@ -78,9 +78,6 @@ jobs:
 
   tests:
     if: github.repository == 'kjanat/zed-editor'
-    # Reduce macOS unwind-table size across the test binaries and their dependencies.
-    env:
-      CARGO_PROFILE_TEST_OPT_LEVEL: ${{ matrix.os == 'macos-latest' && 's' || '1' }}
     strategy:
       fail-fast: false
       matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
@@ -103,20 +100,30 @@ jobs:
               ./script/linux
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
             with: { shared-key: fork-ci-tests, cache-on-failure: false }
+      - name: Test remote save file identity conflicts
+        shell: bash
+        run: cargo nextest run --no-fail-fast -p collab --features test-support --test remote_save_tests 2>&1 | tee collab-tests.log
+      - name: Check remote-save linker diagnostics
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        shell: bash
+        run: |
+          if grep -E 'LNK4217|__eh_frame section too large' collab-tests.log; then
+            echo "::error::Remote-save test build emitted linker warnings"
+            exit 1
+          else
+            test "$?" -eq 1
+          fi
       - name: Test the crates this fork changes
         shell: bash
         run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update 2>&1 | tee fork-tests.log
       - name: Test save-backup conflict decisions
         shell: bash
         run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_)' 2>&1 | tee editor-tests.log
-      - name: Test remote save file identity conflicts
-        shell: bash
-        run: cargo nextest run --no-fail-fast -p collab --features test-support --test collab_tests -E 'test(test_remote_save_detects_missed_file_replacement)' 2>&1 | tee collab-tests.log
       - name: Check native linker diagnostics
         if: runner.os == 'Windows' || runner.os == 'macOS'
         shell: bash
         run: |
-          if grep -E 'LNK4217|__eh_frame section too large' fork-tests.log editor-tests.log collab-tests.log; then
+          if grep -E 'LNK4217|__eh_frame section too large' fork-tests.log editor-tests.log; then
             echo "::error::Native test build emitted linker warnings"
             exit 1
           else
