@@ -83,6 +83,26 @@ pub use worktree_settings::WorktreeSettings;
 
 pub const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 
+#[derive(Debug)]
+pub enum WriteFileError {
+    DiskChanged {
+        expected: DiskState,
+        found: DiskState,
+    },
+}
+
+impl fmt::Display for WriteFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DiskChanged { .. } => {
+                formatter.write_str("The file changed on disk. Save again to resolve the conflict.")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WriteFileError {}
+
 const RECONCILE_BATCH_SIZE: usize = 64;
 const RECONCILE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const RECONCILE_MAX_INTERVAL: Duration = Duration::from_secs(300);
@@ -995,11 +1015,12 @@ impl Worktree {
         line_ending: LineEnding,
         encoding: &'static Encoding,
         has_bom: bool,
+        expected: Option<DiskState>,
         cx: &Context<Worktree>,
     ) -> Task<Result<Arc<File>>> {
         match self {
             Worktree::Local(this) => {
-                this.write_file(path, text, line_ending, encoding, has_bom, cx)
+                this.write_file(path, text, line_ending, encoding, has_bom, expected, cx)
             }
             Worktree::Remote(_) => {
                 Task::ready(Err(anyhow!("remote worktree can't yet write files")))
@@ -1920,6 +1941,7 @@ impl LocalWorktree {
         line_ending: LineEnding,
         encoding: &'static Encoding,
         has_bom: bool,
+        expected: Option<DiskState>,
         cx: &Context<Worktree>,
     ) -> Task<Result<Arc<File>>> {
         let fs = self.fs.clone();
@@ -1930,6 +1952,23 @@ impl LocalWorktree {
             let fs = fs.clone();
             let abs_path = abs_path.clone();
             async move {
+                if let Some(expected) = expected {
+                    let found = match fs.metadata(&abs_path).await? {
+                        Some(metadata) => DiskState::Present {
+                            mtime: metadata.mtime,
+                            size: Some(metadata.len),
+                            inode: Some(metadata.inode),
+                        },
+                        None => match expected {
+                            DiskState::New => DiskState::New,
+                            _ => DiskState::Deleted,
+                        },
+                    };
+                    // Watchers may miss a replacement. Validate before either encoding path writes.
+                    if expected.differs_from(found) {
+                        return Err(WriteFileError::DiskChanged { expected, found }.into());
+                    }
+                }
                 // For UTF-8, use the optimized `fs.save` which writes Rope chunks directly to disk
                 // without allocating a contiguous string.
                 if encoding == encoding_rs::UTF_8 && !has_bom {

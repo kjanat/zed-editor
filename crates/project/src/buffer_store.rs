@@ -20,7 +20,7 @@ use language::{
     },
 };
 use rpc::{
-    AnyProtoClient, ErrorCode, ErrorExt as _, TypedEnvelope,
+    AnyProtoClient, ErrorCode, ErrorCodeExt as _, ErrorExt as _, TypedEnvelope,
     proto::{self, PeerId},
 };
 
@@ -28,7 +28,9 @@ use settings::Settings;
 use std::{io, sync::Arc, time::Instant};
 use text::{BufferId, ReplicaId};
 use util::{ResultExt as _, TryFutureExt, debug_panic, maybe, rel_path::RelPath};
-use worktree::{File, PathChange, ProjectEntryId, Worktree, WorktreeId, WorktreeSettings};
+use worktree::{
+    File, PathChange, ProjectEntryId, Worktree, WorktreeId, WorktreeSettings, WriteFileError,
+};
 
 /// A set of open buffers.
 pub struct BufferStore {
@@ -151,7 +153,19 @@ impl RemoteBufferStore {
                     new_path,
                     version: serialize_version(&version),
                 })
-                .await?;
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    if error.error_code() == ErrorCode::FileChangedOnDisk {
+                        buffer_handle.update(cx, |buffer, cx| {
+                            buffer.set_conflict();
+                            cx.notify();
+                        });
+                    }
+                    return Err(error);
+                }
+            };
             let version = deserialize_version(&response.version);
             let mtime = response.mtime.map(|mtime| mtime.into());
 
@@ -402,6 +416,11 @@ impl LocalBufferStore {
         let version = buffer.version();
         let buffer_id = buffer.remote_id();
         let file = buffer.file().cloned();
+        let expected = if has_changed_file {
+            None
+        } else {
+            buffer.disk_state_for_save()
+        };
         if file
             .as_ref()
             .is_some_and(|file| file.disk_state() == DiskState::New)
@@ -410,11 +429,32 @@ impl LocalBufferStore {
         }
 
         let save = worktree.update(cx, |worktree, cx| {
-            worktree.write_file(path, text, line_ending, encoding, has_bom, cx)
+            worktree.write_file(path, text, line_ending, encoding, has_bom, expected, cx)
         });
 
         cx.spawn(async move |this, cx| {
-            let new_file = save.await?;
+            let new_file = match save.await {
+                Ok(file) => file,
+                Err(error) => {
+                    if let Some(WriteFileError::DiskChanged { found, .. }) =
+                        error.downcast_ref::<WriteFileError>()
+                    {
+                        buffer_handle.update(cx, |buffer, cx| {
+                            let dirty = buffer.is_dirty();
+                            if let Some(file) = File::from_dyn(buffer.file()) {
+                                let mut file = file.clone();
+                                file.disk_state = *found;
+                                buffer.file_updated(Arc::new(file), cx);
+                            }
+                            if dirty {
+                                buffer.set_conflict();
+                                cx.notify();
+                            }
+                        });
+                    }
+                    return Err(error);
+                }
+            };
             let mtime = new_file.disk_state().mtime();
             this.update(cx, |this, cx| {
                 if let Some((downstream_client, project_id)) = this.downstream_client.clone() {
@@ -438,10 +478,7 @@ impl LocalBufferStore {
                 }
             })?;
             buffer_handle.update(cx, |buffer, cx| {
-                if has_changed_file {
-                    buffer.file_updated(new_file, cx);
-                }
-                buffer.did_save(version.clone(), mtime, cx);
+                buffer.did_save_with_file(version.clone(), new_file, cx);
             });
             Ok(())
         })
@@ -1473,7 +1510,16 @@ impl BufferStore {
             .await?;
         } else {
             this.update(&mut cx, |this, cx| this.save_buffer(buffer.clone(), cx))
-                .await?;
+                .await
+                .map_err(|error| {
+                    if error.downcast_ref::<WriteFileError>().is_some() {
+                        ErrorCode::FileChangedOnDisk
+                            .message(error.to_string())
+                            .into()
+                    } else {
+                        error
+                    }
+                })?;
         }
 
         Ok(buffer.read_with(&cx, |buffer, _| proto::BufferSaved {

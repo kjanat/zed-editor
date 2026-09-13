@@ -1595,6 +1595,21 @@ impl Buffer {
         self.saved_disk_state.and_then(DiskState::mtime)
     }
 
+    pub fn disk_state_for_save(&self) -> Option<DiskState> {
+        let observed = self.file.as_ref()?.disk_state();
+        // A delayed watcher must not make our own completed save look like an external write.
+        if !self.has_conflict
+            && self
+                .superseded_disk_states
+                .iter()
+                .any(|state| !state.differs_from(observed))
+        {
+            self.saved_disk_state.or(Some(observed))
+        } else {
+            Some(observed)
+        }
+    }
+
     /// Returns the character encoding of the buffer's file.
     pub fn encoding(&self) -> &'static Encoding {
         self.encoding
@@ -1763,6 +1778,18 @@ impl Buffer {
         cx.notify();
     }
 
+    pub fn did_save_with_file(
+        &mut self,
+        version: clock::Global,
+        file: Arc<dyn File>,
+        cx: &mut Context<Self>,
+    ) {
+        let disk_state = file.disk_state();
+        self.did_save(version, disk_state.mtime(), cx);
+        self.file_updated_impl(file, false, cx);
+        self.saved_disk_state = Some(disk_state);
+    }
+
     /// Reloads the contents of the buffer from disk.
     pub fn reload(&mut self, cx: &Context<Self>) -> oneshot::Receiver<Option<Transaction>> {
         self.reload_impl(None, cx)
@@ -1891,6 +1918,15 @@ impl Buffer {
     /// Updates the [`File`] backing this buffer. This should be called when
     /// the file has changed or has been deleted.
     pub fn file_updated(&mut self, new_file: Arc<dyn File>, cx: &mut Context<Self>) {
+        self.file_updated_impl(new_file, true, cx);
+    }
+
+    fn file_updated_impl(
+        &mut self,
+        new_file: Arc<dyn File>,
+        reload_if_clean: bool,
+        cx: &mut Context<Self>,
+    ) {
         let was_dirty = self.is_dirty();
         let mut file_changed = false;
 
@@ -1903,7 +1939,7 @@ impl Buffer {
             let new_state = new_file.disk_state();
             if old_state.differs_from(new_state) {
                 file_changed = true;
-                if !was_dirty && matches!(new_state, DiskState::Present { .. }) {
+                if reload_if_clean && !was_dirty && matches!(new_state, DiskState::Present { .. }) {
                     cx.emit(BufferEvent::ReloadNeeded)
                 }
             }
@@ -1911,7 +1947,8 @@ impl Buffer {
             file_changed = true;
         };
 
-        if new_file.disk_state().mtime().is_some()
+        if reload_if_clean
+            && new_file.disk_state().mtime().is_some()
             && new_file.disk_state().mtime() == self.saved_mtime()
         {
             self.superseded_disk_states.clear();

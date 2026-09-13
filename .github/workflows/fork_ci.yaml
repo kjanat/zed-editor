@@ -106,11 +106,14 @@ jobs:
       - name: Test save-backup conflict decisions
         shell: bash
         run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_)' 2>&1 | tee editor-tests.log
+      - name: Test remote save file identity conflicts
+        shell: bash
+        run: cargo nextest run --no-fail-fast -p collab --features test-support --test collab_tests -E 'test(test_remote_save_detects_missed_file_replacement)' 2>&1 | tee collab-tests.log
       - name: Check native linker diagnostics
         if: runner.os == 'Windows' || runner.os == 'macOS'
         shell: bash
         run: |
-          if grep -E 'LNK4217|__eh_frame section too large' fork-tests.log editor-tests.log; then
+          if grep -E 'LNK4217|__eh_frame section too large' fork-tests.log editor-tests.log collab-tests.log; then
             echo "::error::Native test build emitted linker warnings"
             exit 1
           else

@@ -6022,6 +6022,61 @@ fn test_consecutive_receipts_accept_intermediate_observations(cx: &mut App) {
 }
 
 #[gpui::test]
+fn test_save_receipt_preserves_identity_and_lagging_observations(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let old_mtime = MTime::from_seconds_and_nanos(100, 0);
+    let saved_mtime = MTime::from_seconds_and_nanos(200, 0);
+    let buffer = cx.new(|cx| Buffer::local("old", cx));
+    buffer.update(cx, |buffer, cx| {
+        buffer.file_updated(observed_file(old_mtime, Some(3), Some(1)), cx);
+        buffer.did_save_with_file(
+            buffer.version(),
+            observed_file(saved_mtime, Some(3), Some(2)),
+            cx,
+        );
+        buffer.edit([(0..0, "edit")], None, cx);
+        assert!(!buffer.has_conflict());
+        buffer.file_updated(observed_file(old_mtime, Some(3), Some(1)), cx);
+        assert!(
+            !buffer.has_conflict(),
+            "a delayed watcher must remain exempt"
+        );
+        assert_eq!(
+            buffer.disk_state_for_save(),
+            Some(DiskState::Present {
+                mtime: saved_mtime,
+                size: Some(3),
+                inode: Some(2),
+            }),
+        );
+        buffer.set_conflict();
+        assert_eq!(
+            buffer.disk_state_for_save(),
+            Some(DiskState::Present {
+                mtime: old_mtime,
+                size: Some(3),
+                inode: Some(1),
+            }),
+        );
+        buffer.did_save_with_file(
+            buffer.version(),
+            observed_file(saved_mtime, Some(3), Some(2)),
+            cx,
+        );
+        buffer.edit([(0..0, "another edit")], None, cx);
+        buffer.file_updated(observed_file(saved_mtime, Some(3), Some(2)), cx);
+        assert!(!buffer.has_conflict());
+        buffer.file_updated(observed_file(saved_mtime, Some(3), Some(3)), cx);
+        assert!(
+            buffer.has_conflict(),
+            "the full save identity must be retained"
+        );
+        buffer.file_updated(observed_file(old_mtime, Some(3), Some(1)), cx);
+        assert!(buffer.has_conflict(), "catch-up must expire the exemption");
+    });
+}
+
+#[gpui::test]
 fn test_superseded_observations_evict_oldest(cx: &mut App) {
     init_settings(cx, |_| {});
     for reload in [false, true] {

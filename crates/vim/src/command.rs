@@ -454,7 +454,7 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                                     return;
                                 };
                                 worktree
-                                    .write_file(path.into_arc(), text.clone(), line_ending, encoding, has_bom, cx)
+                                    .write_file(path.into_arc(), text.clone(), line_ending, encoding, has_bom, None, cx)
                                     .detach_and_prompt_err("Failed to write lines", window, cx, |_, _, _| None);
                             });
                         })

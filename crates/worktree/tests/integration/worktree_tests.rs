@@ -2490,6 +2490,7 @@ async fn test_write_file(cx: &mut TestAppContext) {
                 Default::default(),
                 encoding_rs::UTF_8,
                 false,
+                None,
                 cx,
             )
         })
@@ -2503,6 +2504,7 @@ async fn test_write_file(cx: &mut TestAppContext) {
                 Default::default(),
                 encoding_rs::UTF_8,
                 false,
+                None,
                 cx,
             )
         })
@@ -2563,6 +2565,7 @@ async fn test_write_file_during_rescan(cx: &mut TestAppContext) {
                 Default::default(),
                 encoding_rs::UTF_8,
                 false,
+                None,
                 cx,
             )
         })
@@ -2577,6 +2580,7 @@ async fn test_write_file_during_rescan(cx: &mut TestAppContext) {
                 Default::default(),
                 encoding_rs::UTF_8,
                 false,
+                None,
                 cx,
             )
         })
@@ -4063,6 +4067,7 @@ fn randomly_mutate_worktree(
                     Default::default(),
                     encoding_rs::UTF_8,
                     false,
+                    None,
                     cx,
                 );
                 cx.background_spawn(async move {
@@ -6503,6 +6508,7 @@ async fn test_write_file_encoding(cx: &mut gpui::TestAppContext) {
                 text::LineEnding::Unix,
                 case.encoding,
                 case.has_bom,
+                None,
                 cx,
             )
         });
@@ -6580,6 +6586,7 @@ async fn test_write_file_encoding_replaces_existing_file(cx: &mut gpui::TestAppC
                     text::LineEnding::Unix,
                     encoding,
                     has_bom,
+                    None,
                     cx,
                 )
             })

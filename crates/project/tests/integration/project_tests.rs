@@ -8910,6 +8910,173 @@ async fn test_save_file(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    for (encoding, has_bom) in [
+        (encoding_rs::UTF_8, false),
+        (encoding_rs::UTF_8, true),
+        (encoding_rs::UTF_16LE, true),
+    ] {
+        for dirty in [false, true] {
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(path!("/dir"), json!({})).await;
+            let file_path = Path::new(path!("/dir/file.txt"));
+            fs.insert_file(
+                file_path,
+                language::encode_text("original".into(), encoding, has_bom),
+            )
+            .await;
+            let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+            let buffer = project
+                .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+                .await
+                .expect("open buffer");
+            if dirty {
+                buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+            }
+            cx.run_until_parked();
+            let original = fs
+                .metadata(file_path)
+                .await
+                .expect("metadata")
+                .expect("file");
+            fs.pause_events();
+            let replacement = language::encode_text("replaced".into(), encoding, has_bom);
+            fs.insert_file(file_path, replacement.clone()).await;
+            fs.set_mtime(file_path, original.mtime)
+                .expect("preserve timestamp");
+            assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+
+            let error = project
+                .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                .await
+                .expect_err("save must detect replacement without watcher events");
+            assert!(matches!(
+                error.downcast_ref::<worktree::WriteFileError>(),
+                Some(worktree::WriteFileError::DiskChanged {
+                    expected: DiskState::Present { mtime, size, inode },
+                    found: DiskState::Present { mtime: found_mtime, size: found_size, inode: found_inode },
+                }) if mtime == found_mtime && size == found_size && inode != found_inode
+            ));
+            assert_eq!(
+                fs.load_bytes(file_path).await.expect("read disk"),
+                replacement
+            );
+            cx.run_until_parked();
+            buffer.read_with(cx, |buffer, _| {
+                assert_eq!(buffer.has_conflict(), dirty);
+                assert_eq!(
+                    buffer.text(),
+                    if dirty { "edited original" } else { "replaced" }
+                );
+            });
+
+            // The conflict prompt's Overwrite action saves against the newly observed identity.
+            project
+                .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                .await
+                .expect("save after resolving conflict");
+            assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+            assert_eq!(
+                fs.load_bytes(file_path).await.expect("read saved file"),
+                language::encode_text(
+                    if dirty { "edited original" } else { "replaced" }.into(),
+                    encoding,
+                    has_bom,
+                ),
+            );
+        }
+    }
+}
+
+#[gpui::test]
+async fn test_save_detects_missed_file_creation_and_deletion(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    for existed in [false, true] {
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/dir"), json!({})).await;
+        let file_path = Path::new(path!("/dir/file.txt"));
+        if existed {
+            fs.insert_file(file_path, b"original".to_vec()).await;
+        }
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let buffer = project
+            .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+            .await
+            .expect("open buffer");
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+        cx.run_until_parked();
+        fs.pause_events();
+        if existed {
+            fs.remove_file(file_path, Default::default())
+                .await
+                .expect("delete file");
+        } else {
+            fs.insert_file(file_path, b"external".to_vec()).await;
+        }
+        let error = project
+            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .await
+            .expect_err("save must observe creation or deletion");
+        assert!(error.downcast_ref::<worktree::WriteFileError>().is_some());
+        assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+        if existed {
+            assert!(fs.metadata(file_path).await.expect("metadata").is_none());
+        } else {
+            assert_eq!(fs.load(file_path).await.expect("read disk"), "external");
+        }
+        project
+            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .await
+            .expect("explicit retry can overwrite or recreate");
+        assert_eq!(
+            fs.load(file_path).await.expect("read saved file"),
+            if existed {
+                "edited original"
+            } else {
+                "edited "
+            },
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_save_excluded_file_twice(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.file_scan_exclusions =
+                    Some(SplicingVec::from(vec!["**/file.txt".to_string()]));
+            });
+        });
+    });
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "file.txt": "original" }))
+        .await;
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let file_path = Path::new(path!("/dir/file.txt"));
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+        .await
+        .expect("open excluded file");
+    cx.run_until_parked();
+    fs.pause_events();
+    for text in ["first", "second"] {
+        buffer.update(cx, |buffer, cx| {
+            buffer.edit([(0..buffer.len(), text)], None, cx)
+        });
+        project
+            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .await
+            .expect("save must use the previous save receipt");
+        assert_eq!(fs.load(file_path).await.expect("read saved file"), text);
+        assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+    }
+}
+
+#[gpui::test]
 async fn test_buffer_does_not_follow_save_backup(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 
