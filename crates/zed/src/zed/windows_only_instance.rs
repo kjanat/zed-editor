@@ -7,7 +7,10 @@ use release_channel::app_identifier;
 use util::ResultExt;
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GENERIC_WRITE, GetLastError, HANDLE},
+        Foundation::{
+            CloseHandle, ERROR_ALREADY_EXISTS, ERROR_PIPE_CONNECTED, GENERIC_WRITE, GetLastError,
+            HANDLE,
+        },
         Storage::FileSystem::{
             CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING,
             PIPE_ACCESS_INBOUND, ReadFile, WriteFile,
@@ -92,7 +95,13 @@ fn with_pipe(f: &dyn Fn(String)) {
 }
 
 fn retrieve_message_from_pipe(pipe: HANDLE) -> anyhow::Result<String> {
-    unsafe { ConnectNamedPipe(pipe, None)? };
+    // A client can connect between CreateNamedPipeW and ConnectNamedPipe.
+    // https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-connectnamedpipe
+    if let Err(error) = unsafe { ConnectNamedPipe(pipe, None) }
+        && error.code() != ERROR_PIPE_CONNECTED.to_hresult()
+    {
+        return Err(error.into());
+    }
     let message = retrieve_message_from_pipe_inner(pipe);
     unsafe { DisconnectNamedPipe(pipe).log_err() };
     message
@@ -221,4 +230,51 @@ fn write_message_to_instance_pipe(message: &[u8]) -> anyhow::Result<()> {
         CloseHandle(pipe)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::core::Owned;
+
+    #[test]
+    fn reads_and_disconnects_an_early_connection() -> anyhow::Result<()> {
+        let name = HSTRING::from(format!("\\\\.\\pipe\\zed-test-{}", uuid::Uuid::new_v4()));
+        let pipe = unsafe {
+            CreateNamedPipeW(
+                &name,
+                PIPE_ACCESS_INBOUND,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                1,
+                128,
+                128,
+                0,
+                None,
+            )
+        };
+        anyhow::ensure!(!pipe.is_invalid(), "create test pipe: {:?}", unsafe {
+            GetLastError()
+        });
+        let pipe = unsafe { Owned::new(pipe) };
+
+        let message = "zed-cli://first";
+        let client = unsafe {
+            Owned::new(CreateFileW(
+                &name,
+                GENERIC_WRITE.0,
+                FILE_SHARE_MODE::default(),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES::default(),
+                None,
+            )?)
+        };
+        unsafe { WriteFile(*client, Some(message.as_bytes()), None, None)? };
+        assert_eq!(retrieve_message_from_pipe(*pipe)?, message);
+        assert!(
+            unsafe { WriteFile(*client, Some(message.as_bytes()), None, None) }.is_err(),
+            "client must be disconnected after reading"
+        );
+        Ok(())
+    }
 }
