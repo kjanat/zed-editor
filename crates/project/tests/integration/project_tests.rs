@@ -8909,6 +8909,39 @@ async fn test_save_file(cx: &mut gpui::TestAppContext) {
     assert_eq!(new_text, buffer.update(cx, |buffer, _| buffer.text()));
 }
 
+#[gpui::test(iterations = 20)]
+async fn test_overlapping_saves_use_latest_receipt(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "file.txt": "original" }))
+        .await;
+    let file_path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+        .await
+        .expect("open buffer");
+    cx.run_until_parked();
+    fs.pause_events();
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+    let store = project.read_with(cx, |project, _| project.buffer_store().clone());
+    let first = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let second = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let third = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let (first, second, third) = futures::join!(first, second, third);
+    first.expect("first save");
+    second.expect("overlapping second save");
+    third.expect("overlapping third save");
+    assert_eq!(
+        fs.load(file_path).await.expect("read file"),
+        "edited original"
+    );
+    buffer.read_with(cx, |buffer, _| {
+        assert!(!buffer.has_conflict());
+        assert!(!buffer.is_dirty());
+    });
+}
+
 #[gpui::test]
 async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext) {
     init_test(cx);
@@ -8959,11 +8992,13 @@ async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext
                     found: DiskState::Present { mtime: found_mtime, size: found_size, inode: found_inode },
                 }) if mtime == found_mtime && size == found_size && inode != found_inode
             ));
+            if !dirty {
+                assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "replaced");
+            }
             assert_eq!(
                 fs.load_bytes(file_path).await.expect("read disk"),
                 replacement
             );
-            cx.run_until_parked();
             buffer.read_with(cx, |buffer, _| {
                 assert_eq!(buffer.has_conflict(), dirty);
                 assert_eq!(
@@ -9420,6 +9455,15 @@ async fn test_save_as(cx: &mut gpui::TestAppContext) {
         assert!(!buffer.has_conflict());
         assert_eq!(buffer.language().unwrap().name(), "Plain Text");
     });
+    let save_events = Arc::new(Mutex::new(Vec::new()));
+    let _subscription = cx.subscribe(&buffer, {
+        let save_events = save_events.clone();
+        move |_, event, _| {
+            if matches!(event, BufferEvent::FileHandleChanged | BufferEvent::Saved) {
+                save_events.lock().push(event.clone());
+            }
+        }
+    });
     project
         .update(cx, |project, cx| {
             let worktree_id = project.worktrees(cx).next().unwrap().read(cx).id();
@@ -9431,6 +9475,10 @@ async fn test_save_as(cx: &mut gpui::TestAppContext) {
         })
         .await
         .unwrap();
+    assert_eq!(
+        *save_events.lock(),
+        vec![BufferEvent::FileHandleChanged, BufferEvent::Saved]
+    );
     assert_eq!(fs.load(Path::new("/dir/file1.rs")).await.unwrap(), "abc");
 
     cx.executor().run_until_parked();

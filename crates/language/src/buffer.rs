@@ -1769,10 +1769,14 @@ impl Buffer {
         mtime: Option<MTime>,
         cx: &mut Context<Self>,
     ) {
+        self.record_saved_mtime(mtime);
+        self.finish_save(version, cx);
+    }
+
+    fn finish_save(&mut self, version: clock::Global, cx: &mut Context<Self>) {
         self.saved_version = version.clone();
         self.has_unsaved_edits.set((version, false));
         self.has_conflict = false;
-        self.record_saved_mtime(mtime);
         self.was_changed();
         cx.emit(BufferEvent::Saved);
         cx.notify();
@@ -1785,9 +1789,10 @@ impl Buffer {
         cx: &mut Context<Self>,
     ) {
         let disk_state = file.disk_state();
-        self.did_save(version, disk_state.mtime(), cx);
+        self.record_saved_mtime(disk_state.mtime());
         self.file_updated_impl(file, false, cx);
         self.saved_disk_state = Some(disk_state);
+        self.finish_save(version, cx);
     }
 
     /// Reloads the contents of the buffer from disk.
@@ -1906,6 +1911,9 @@ impl Buffer {
         mtime: Option<MTime>,
         cx: &mut Context<Self>,
     ) {
+        if self.version() == version {
+            self.has_conflict = false;
+        }
         self.saved_version = version;
         self.has_unsaved_edits
             .set((self.saved_version.clone(), false));
@@ -1919,6 +1927,16 @@ impl Buffer {
     /// the file has changed or has been deleted.
     pub fn file_updated(&mut self, new_file: Arc<dyn File>, cx: &mut Context<Self>) {
         self.file_updated_impl(new_file, true, cx);
+    }
+
+    pub fn reload_from_file(
+        &mut self,
+        file: Arc<dyn File>,
+        cx: &mut Context<Self>,
+    ) -> oneshot::Receiver<Option<Transaction>> {
+        // The caller awaits this reload, so do not also emit a detached ReloadNeeded.
+        self.file_updated_impl(file, false, cx);
+        self.reload(cx)
     }
 
     fn file_updated_impl(

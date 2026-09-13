@@ -37,6 +37,7 @@ pub struct BufferStore {
     state: BufferStoreState,
     #[allow(clippy::type_complexity)]
     loading_buffers: HashMap<ProjectPath, Shared<Task<Result<Entity<Buffer>, Arc<anyhow::Error>>>>>,
+    pending_saves: HashMap<BufferId, Shared<oneshot::Receiver<bool>>>,
     worktree_store: Entity<WorktreeStore>,
     opened_buffers: HashMap<BufferId, OpenBuffer>,
     path_to_buffer_id: HashMap<ProjectPath, BufferId>,
@@ -439,18 +440,27 @@ impl LocalBufferStore {
                     if let Some(WriteFileError::DiskChanged { found, .. }) =
                         error.downcast_ref::<WriteFileError>()
                     {
-                        buffer_handle.update(cx, |buffer, cx| {
+                        let reload = buffer_handle.update(cx, |buffer, cx| {
                             let dirty = buffer.is_dirty();
                             if let Some(file) = File::from_dyn(buffer.file()) {
                                 let mut file = file.clone();
                                 file.disk_state = *found;
+                                if !dirty && matches!(found, DiskState::Present { .. }) {
+                                    return Some(buffer.reload_from_file(Arc::new(file), cx));
+                                }
                                 buffer.file_updated(Arc::new(file), cx);
                             }
                             if dirty {
                                 buffer.set_conflict();
                                 cx.notify();
                             }
+                            None
                         });
+                        if let Some(reload) = reload {
+                            reload
+                                .await
+                                .context("reload after detecting a disk change")?;
+                        }
                     }
                     return Err(error);
                 }
@@ -889,6 +899,7 @@ impl BufferStore {
             path_to_buffer_id: Default::default(),
             shared_buffers: Default::default(),
             loading_buffers: Default::default(),
+            pending_saves: Default::default(),
             non_searchable_buffers: Default::default(),
             worktree_store,
             project_search: Default::default(),
@@ -914,6 +925,7 @@ impl BufferStore {
             opened_buffers: Default::default(),
             path_to_buffer_id: Default::default(),
             loading_buffers: Default::default(),
+            pending_saves: Default::default(),
             shared_buffers: Default::default(),
             non_searchable_buffers: Default::default(),
             worktree_store,
@@ -1014,6 +1026,14 @@ impl BufferStore {
         buffer: Entity<Buffer>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.enqueue_save(buffer, None, cx)
+    }
+
+    fn save_buffer_impl(
+        &mut self,
+        buffer: Entity<Buffer>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         match &mut self.state {
             BufferStoreState::Local(this) => this.save_buffer(buffer, cx),
             BufferStoreState::Remote(this) => this.save_remote_buffer(buffer, None, cx),
@@ -1021,6 +1041,58 @@ impl BufferStore {
     }
 
     pub fn save_buffer_as(
+        &mut self,
+        buffer: Entity<Buffer>,
+        path: ProjectPath,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.enqueue_save(buffer, Some(path), cx)
+    }
+
+    fn enqueue_save(
+        &mut self,
+        buffer: Entity<Buffer>,
+        path: Option<ProjectPath>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let buffer_id = buffer.read(cx).remote_id();
+        let (sender, receiver) = oneshot::channel();
+        let completion = receiver.shared();
+        let previous = self.pending_saves.insert(buffer_id, completion.clone());
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                if let Some(previous) = previous {
+                    anyhow::ensure!(
+                        previous.await.context("preceding save was cancelled")?,
+                        "preceding save failed; resolve its error before retrying"
+                    );
+                }
+                // Snapshot text, path and disk identity only after the preceding receipt is applied.
+                this.update(cx, |this, cx| match path {
+                    Some(path) => this.save_buffer_as_impl(buffer, path, cx),
+                    None => this.save_buffer_impl(buffer, cx),
+                })?
+                .await
+            }
+            .await;
+            this.update(cx, |this, _| {
+                if this
+                    .pending_saves
+                    .get(&buffer_id)
+                    .is_some_and(|pending| pending.ptr_eq(&completion))
+                {
+                    this.pending_saves.remove(&buffer_id);
+                }
+            })
+            .log_err();
+            if sender.send(result.is_ok()).is_err() {
+                log::debug!("save completion receiver dropped");
+            }
+            result
+        })
+    }
+
+    fn save_buffer_as_impl(
         &mut self,
         buffer: Entity<Buffer>,
         path: ProjectPath,

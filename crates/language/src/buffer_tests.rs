@@ -6077,6 +6077,23 @@ fn test_save_receipt_preserves_identity_and_lagging_observations(cx: &mut App) {
 }
 
 #[gpui::test]
+fn test_reload_clears_conflict_only_for_current_version(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let buffer = cx.new(|cx| Buffer::local("original", cx));
+    buffer.update(cx, |buffer, cx| {
+        let previous = buffer.version();
+        buffer.edit([(0..0, "edit ")], None, cx);
+        buffer.set_conflict();
+        buffer.did_reload(previous, buffer.line_ending(), None, cx);
+        assert!(buffer.has_conflict());
+        assert!(buffer.is_dirty());
+        buffer.did_reload(buffer.version(), buffer.line_ending(), None, cx);
+        assert!(!buffer.has_conflict());
+        assert!(!buffer.is_dirty());
+    });
+}
+
+#[gpui::test]
 fn test_superseded_observations_evict_oldest(cx: &mut App) {
     init_settings(cx, |_| {});
     for reload in [false, true] {

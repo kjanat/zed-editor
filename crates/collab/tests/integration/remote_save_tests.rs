@@ -90,4 +90,25 @@ async fn test_remote_save_detects_missed_file_replacement(
         fs.load(file_path).await.expect("read disk"),
         "edited original"
     );
+
+    buffer.update(cx_b, |buffer, cx| {
+        buffer.edit([(0..0, "discard ")], None, cx)
+    });
+    fs.insert_file(file_path, b"external again".to_vec()).await;
+    project_b
+        .update(cx_b, |project, cx| project.save_buffer(buffer.clone(), cx))
+        .await
+        .expect_err("detect the second replacement");
+    assert!(buffer.read_with(cx_b, |buffer, _| buffer.has_conflict()));
+    project_b
+        .update(cx_b, |project, cx| {
+            project.reload_buffers(collections::HashSet::from_iter([buffer.clone()]), true, cx)
+        })
+        .await
+        .expect("discard remote edits");
+    buffer.read_with(cx_b, |buffer, _| {
+        assert_eq!(buffer.text(), "external again");
+        assert!(!buffer.has_conflict());
+        assert!(!buffer.is_dirty());
+    });
 }
