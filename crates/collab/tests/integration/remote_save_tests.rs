@@ -14,6 +14,26 @@ fn init_logger() {
     zlog::init_test();
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn test_dwarf_panic_unwinding() {
+    struct DropGuard<'a>(&'a std::cell::Cell<bool>);
+
+    impl Drop for DropGuard<'_> {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+
+    let dropped = std::cell::Cell::new(false);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = DropGuard(&dropped);
+        panic!("verify DWARF unwinding in the macOS test binary");
+    }));
+    assert!(result.is_err());
+    assert!(dropped.get());
+}
+
 #[gpui::test]
 async fn test_remote_save_detects_missed_file_replacement(
     executor: BackgroundExecutor,
