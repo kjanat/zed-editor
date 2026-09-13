@@ -29,6 +29,18 @@ pub fn new_command_with_env(
 
     let mut command = new_command(program);
     command.current_dir(working_directory).envs(env);
+    #[cfg(target_os = "windows")]
+    {
+        let environment = WindowsCommandEnvironment {
+            working_directory,
+            env,
+        };
+        for name in ["PATH", "PATHEXT"] {
+            if let Some(value) = environment.var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
     Ok(command)
 }
 
@@ -61,13 +73,11 @@ struct WindowsCommandEnvironment<'a> {
 #[cfg(target_os = "windows")]
 impl WindowsCommandEnvironment<'_> {
     fn var_os(&self, name: &str) -> Option<std::ffi::OsString> {
-        // Match Command::envs: Windows keys are case-insensitive, and the last
-        // override wins if the map contains multiple spellings of the same key.
+        // Use the first case-insensitive match for both resolution and launch.
         self.env
             .iter()
-            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| std::ffi::OsString::from(value))
-            .last()
             .or_else(|| std::env::var_os(name))
     }
 }
@@ -234,6 +244,7 @@ impl Command {
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
     use collections::HashMap;
 
     #[test]
@@ -329,6 +340,58 @@ mod tests {
             assert!(output.status.success(), "{output:?}");
             assert_eq!(String::from_utf8(output.stdout)?.trim(), expected);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_windows_path_keys_use_first_match_for_resolution_and_launch() -> anyhow::Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        for name in ["first", "second"] {
+            let bin = directory.path().join(name);
+            std::fs::create_dir_all(&bin)?;
+            for extension in ["cmd", "bat"] {
+                std::fs::write(
+                    bin.join(format!("zed-test-server.{extension}")),
+                    "@echo off\r\necho %PATH%\r\necho %PATHEXT%\r\n",
+                )?;
+            }
+        }
+        let env = HashMap::from_iter([
+            ("PATH".into(), "first".into()),
+            ("Path".into(), "second".into()),
+            ("PATHEXT".into(), ".CMD".into()),
+            ("PathExt".into(), ".BAT".into()),
+        ]);
+        let first_value = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+                .context("test environment key missing")
+        };
+        let path = first_value("PATH")?;
+        let extensions = first_value("PATHEXT")?;
+        let mut command = new_command_with_env("zed-test-server", directory.path(), &env)?;
+        assert!(
+            command
+                .get_program()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(
+                    &directory
+                        .path()
+                        .join(path)
+                        .join(format!("zed-test-server{extensions}"))
+                        .to_string_lossy()
+                )
+        );
+        let output = smol::block_on(command.output())?;
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout)?
+                .lines()
+                .collect::<Vec<_>>(),
+            [path, extensions]
+        );
         Ok(())
     }
 

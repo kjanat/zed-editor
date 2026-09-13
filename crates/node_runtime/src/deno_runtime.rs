@@ -141,6 +141,10 @@ impl NodeRuntimeTrait for DenoRuntime {
         Ok(self.node.clone())
     }
 
+    fn node_adapter_path(&self) -> Option<&Path> {
+        Some(&self.node)
+    }
+
     async fn run_npm_subcommand(
         &self,
         directory: Option<&Path>,

@@ -121,6 +121,10 @@ impl NodeRuntimeTrait for BunRuntime {
         Ok(self.node.clone())
     }
 
+    fn node_adapter_path(&self) -> Option<&Path> {
+        Some(&self.node)
+    }
+
     async fn run_npm_subcommand(
         &self,
         directory: Option<&Path>,
@@ -185,7 +189,98 @@ impl NodeRuntimeTrait for BunRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NODE_CA_CERTS_ENV_VAR;
+    use crate::{NODE_CA_CERTS_ENV_VAR, NodeRuntime};
+
+    #[test]
+    fn direct_launch_preserves_shell_path_and_selects_adapter_for_children() -> Result<()> {
+        smol::block_on(async {
+            let runtime = NodeRuntime::unavailable();
+            let node = PathBuf::from("adapter/node");
+            let original = env::join_paths(["old-node", "shell-tools"])?
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("invalid test PATH"))?;
+            let mut environment = HashMap::from([
+                ("PATH".to_string(), original.clone()),
+                ("CUSTOM".to_string(), "preserved".to_string()),
+            ]);
+            runtime
+                .configure_server_env(&node, &mut environment)
+                .await?;
+            assert_eq!(environment["PATH"], original);
+            runtime.0.lock().await.instance = Some(Box::new(BunRuntime {
+                bun: PathBuf::from("bun"),
+                node: node.clone(),
+                scratch_dir: PathBuf::from("runtime"),
+            }));
+            runtime
+                .configure_server_env(Path::new("other-server"), &mut environment)
+                .await?;
+            assert_eq!(environment["PATH"], original);
+            runtime
+                .configure_server_env(&node, &mut environment)
+                .await?;
+            runtime
+                .configure_server_env(&node, &mut environment)
+                .await?;
+            assert_eq!(
+                env::split_paths(&environment["PATH"]).collect::<Vec<_>>(),
+                [
+                    PathBuf::from("adapter"),
+                    PathBuf::from("old-node"),
+                    PathBuf::from("shell-tools")
+                ]
+            );
+            assert_eq!(environment["CUSTOM"], "preserved");
+            environment.insert("PATH".into(), String::new());
+            runtime
+                .configure_server_env(&node, &mut environment)
+                .await?;
+            assert_eq!(
+                env::split_paths(&environment["PATH"]).next(),
+                Some(PathBuf::from("adapter"))
+            );
+            #[cfg(windows)]
+            {
+                environment.remove("PATH");
+                environment.insert("Path".into(), original);
+                runtime
+                    .configure_server_env(&node, &mut environment)
+                    .await?;
+                assert!(!environment.contains_key("PATH"));
+                assert_eq!(
+                    env::split_paths(&environment["Path"]).next(),
+                    Some(PathBuf::from("adapter"))
+                );
+                environment.insert("PATH".into(), "extension-tools".into());
+                environment.insert("pAtH".into(), "stale-tools".into());
+                let (first_key, first_path) = environment
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .context("test PATH is missing")?;
+                let expected = std::iter::once(PathBuf::from("adapter"))
+                    .chain(
+                        env::split_paths(&first_path).filter(|entry| entry != Path::new("adapter")),
+                    )
+                    .collect::<Vec<_>>();
+                runtime
+                    .configure_server_env(&node, &mut environment)
+                    .await?;
+                assert_eq!(
+                    environment
+                        .keys()
+                        .filter(|key| key.eq_ignore_ascii_case("PATH"))
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    env::split_paths(&environment[&first_key]).collect::<Vec<_>>(),
+                    expected
+                );
+            }
+            Ok(())
+        })
+    }
 
     #[test]
     fn adapter_requires_bun_and_supported_node_versions() -> Result<()> {

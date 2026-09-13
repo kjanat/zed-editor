@@ -291,6 +291,57 @@ impl NodeRuntime {
         self.instance().await.binary_path()
     }
 
+    /// Keep child processes on the selected compatibility runtime without initializing Node
+    /// for servers that do not use it.
+    pub async fn configure_server_env<S: std::hash::BuildHasher>(
+        &self,
+        binary_path: &Path,
+        environment: &mut HashMap<String, String, S>,
+    ) -> Result<()> {
+        let state = self.0.lock().await;
+        let Some(adapter) = state
+            .instance
+            .as_ref()
+            .and_then(|runtime| runtime.node_adapter_path())
+        else {
+            return Ok(());
+        };
+        if adapter != binary_path {
+            return Ok(());
+        }
+        let directory = adapter
+            .parent()
+            .context("Node adapter has no parent directory")?;
+        let path_key = environment
+            .keys()
+            .find(|key| {
+                if cfg!(windows) {
+                    key.eq_ignore_ascii_case("PATH")
+                } else {
+                    *key == "PATH"
+                }
+            })
+            .cloned()
+            .unwrap_or_else(|| "PATH".to_string());
+        let existing = environment
+            .get(&path_key)
+            .map(OsString::from)
+            .or_else(|| env::var_os("PATH"))
+            .unwrap_or_default();
+        let path = env::join_paths(
+            std::iter::once(directory.to_path_buf())
+                .chain(env::split_paths(&existing).filter(|entry| entry != directory)),
+        )?;
+        let path = path
+            .into_string()
+            .map_err(|_| anyhow!("Node adapter PATH is not UTF-8"))?;
+        if cfg!(windows) {
+            environment.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
+        }
+        environment.insert(path_key, path);
+        Ok(())
+    }
+
     pub async fn run_npm_subcommand(
         &self,
         directory: Option<&Path>,
@@ -650,6 +701,10 @@ fn npm_version_was_published_before(
 trait NodeRuntimeTrait: Send + Sync {
     fn boxed_clone(&self) -> Box<dyn NodeRuntimeTrait>;
     fn binary_path(&self) -> Result<PathBuf>;
+
+    fn node_adapter_path(&self) -> Option<&Path> {
+        None
+    }
 
     async fn run_npm_subcommand(
         &self,
