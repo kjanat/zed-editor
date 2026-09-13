@@ -105,7 +105,7 @@ use lsp::{
     RenameFilesParams, TextEdit, Uri, WillRenameFiles, WorkDoneProgressCancelParams,
     notification::DidRenameFiles,
 };
-use node_runtime::read_package_installed_version;
+use node_runtime::{NodeRuntime, read_package_installed_version};
 use parking_lot::Mutex;
 use postage::{mpsc, sink::Sink, stream::Stream, watch};
 use rand::prelude::*;
@@ -311,6 +311,7 @@ struct DocumentSelectorContext {
 
 pub struct LocalLspStore {
     weak: WeakEntity<LspStore>,
+    node_runtime: NodeRuntime,
     pub worktree_store: Entity<WorktreeStore>,
     toolchain_store: Entity<LocalToolchainStore>,
     http_client: Arc<dyn HttpClient>,
@@ -726,6 +727,7 @@ impl LocalLspStore {
             && let Some(path) = settings.path.as_ref().map(PathBuf::from)
         {
             let settings = settings.clone();
+            let node_runtime = self.node_runtime.clone();
             return cx.background_spawn(async move {
                 if let Some(mut wait_until_worktree_trust) = wait_until_worktree_trust {
                     let already_trusted =  *wait_until_worktree_trust.borrow();
@@ -746,11 +748,13 @@ impl LocalLspStore {
                     }
                     delegate.update_status(adapter.name(), BinaryStatus::Starting);
                 }
+                let path = delegate.resolve_relative_path(path);
                 let mut env = delegate.shell_env().await;
+                node_runtime.configure_server_env(&path, &mut env).await?;
                 env.extend(settings.env.unwrap_or_default());
 
                 Ok(LanguageServerBinary {
-                    path: delegate.resolve_relative_path(path),
+                    path,
                     env: Some(env),
                     arguments: settings
                         .arguments
@@ -816,6 +820,7 @@ impl LocalLspStore {
                 .unwrap_or(false),
         };
 
+        let node_runtime = self.node_runtime.clone();
         cx.spawn(async move |cx| {
             if let Some(mut wait_until_worktree_trust) = wait_until_worktree_trust {
                 let already_trusted = *wait_until_worktree_trust.borrow();
@@ -870,6 +875,9 @@ impl LocalLspStore {
             let mut shell_env = delegate.shell_env().await;
 
             shell_env.extend(binary.env.unwrap_or_default());
+            node_runtime
+                .configure_server_env(&binary.path, &mut shell_env)
+                .await?;
 
             if let Some(settings) = settings.binary.as_ref() {
                 if let Some(arguments) = &settings.arguments {
@@ -4906,6 +4914,7 @@ impl LspStore {
     }
 
     pub fn new_local(
+        node_runtime: NodeRuntime,
         buffer_store: Entity<BufferStore>,
         worktree_store: Entity<WorktreeStore>,
         prettier_store: Entity<PrettierStore>,
@@ -4938,6 +4947,7 @@ impl LspStore {
         Self {
             mode: LspStoreMode::Local(LocalLspStore {
                 weak: cx.weak_entity(),
+                node_runtime,
                 worktree_store: worktree_store.clone(),
 
                 supplementary_language_servers: Default::default(),
