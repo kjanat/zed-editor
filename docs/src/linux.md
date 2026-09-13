@@ -74,6 +74,26 @@ distribution, but you may be able to install Zed using one of these packages:
 See [Repology](https://repology.org/project/zed-editor/versions) for a current
 list of Zed packages in various repositories.
 
+### Arch / Manjaro
+
+To install the `kjanat/zed-editor` fork, add this repository to `/etc/pacman.conf`.
+Use `[zed-kjanat-aarch64]` instead of `[zed-kjanat]` on aarch64:
+
+```ini
+[zed-kjanat]
+SigLevel = Optional TrustAll
+Server = https://github.com/kjanat/zed-editor/releases/latest/download
+```
+
+Then install the package:
+
+```sh
+sudo pacman -Syu zed-kjanat
+```
+
+The package provides and conflicts with `zed`. In-app auto-update is disabled;
+pacman manages updates.
+
 ### Community
 
 When installing a third-party package please be aware that it may not be

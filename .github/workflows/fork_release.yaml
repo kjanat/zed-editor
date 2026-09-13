@@ -31,6 +31,47 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: { contents: write }
+    outputs: { tag: "${{ steps.resolve.outputs.tag }}" }
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        id: resolve
+        with:
+          script: |
+            const inputs = context.payload.inputs ?? {};
+            let tag = inputs.tag || (context.eventName === 'push' ? context.ref.slice('refs/tags/'.length) : '');
+            if (!tag) {
+              const tags = await github.paginate(github.rest.repos.listTags, { ...context.repo, per_page: 100 });
+              const latest = tags.map(({ name }) => name)
+                .filter(name => /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(name))
+                .sort(new Intl.Collator('en', { numeric: true }).compare).at(-1);
+              if (!latest) throw new Error('No stable version tag exists; provide an explicit tag.');
+              const component = ['major', 'minor', 'patch'].indexOf(inputs.bump || 'patch');
+              if (component < 0) throw new Error('Bump must be patch, minor, or major.');
+              tag = 'v' + latest.slice(1).split('.').map(BigInt)
+                .map((value, index) => index < component ? value : index === component ? value + 1n : 0n).join('.');
+            }
+            core.setOutput('tag', tag);
+            if (context.eventName !== 'push' && String(inputs.upload) !== 'true') return;
+            let release;
+            try {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              ({ data: release } = await github.rest.repos.createRelease({
+                ...context.repo, tag_name: tag, target_commitish: context.sha,
+                name: tag, draft: true, prerelease: !/^v[0-9]/.test(tag), generate_release_notes: true,
+              }));
+            }
+            const assetParams = { ...context.repo, release_id: release.id };
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { ...assetParams, per_page: 100 });
+            for (const asset of assets.filter(asset => asset.name === 'notes.json')) {
+              await github.rest.repos.deleteReleaseAsset({ ...context.repo, asset_id: asset.id });
+            }
+            const data = Buffer.from(JSON.stringify({ title: release.name || release.tag_name, release_notes: release.body ?? '' }));
+            await github.rest.repos.uploadReleaseAsset({
+              ...assetParams, name: 'notes.json', label: 'Release notes (JSON)', data,
+              headers: { 'content-type': 'application/json', 'content-length': data.length },
+            });
 
   bundle_linux:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.linux)
