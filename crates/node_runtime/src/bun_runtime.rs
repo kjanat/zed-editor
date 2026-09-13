@@ -251,6 +251,32 @@ mod tests {
                     env::split_paths(&environment["Path"]).next(),
                     Some(PathBuf::from("adapter"))
                 );
+                environment.insert("PATH".into(), "extension-tools".into());
+                environment.insert("pAtH".into(), "stale-tools".into());
+                let (first_key, first_path) = environment
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .context("test PATH is missing")?;
+                let expected = std::iter::once(PathBuf::from("adapter"))
+                    .chain(
+                        env::split_paths(&first_path).filter(|entry| entry != Path::new("adapter")),
+                    )
+                    .collect::<Vec<_>>();
+                runtime
+                    .configure_server_env(&node, &mut environment)
+                    .await?;
+                assert_eq!(
+                    environment
+                        .keys()
+                        .filter(|key| key.eq_ignore_ascii_case("PATH"))
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    env::split_paths(&environment[&first_key]).collect::<Vec<_>>(),
+                    expected
+                );
             }
             Ok(())
         })

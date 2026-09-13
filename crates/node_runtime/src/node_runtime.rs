@@ -332,11 +332,13 @@ impl NodeRuntime {
             std::iter::once(directory.to_path_buf())
                 .chain(env::split_paths(&existing).filter(|entry| entry != directory)),
         )?;
-        environment.insert(
-            path_key,
-            path.into_string()
-                .map_err(|_| anyhow!("Node adapter PATH is not UTF-8"))?,
-        );
+        let path = path
+            .into_string()
+            .map_err(|_| anyhow!("Node adapter PATH is not UTF-8"))?;
+        if cfg!(windows) {
+            environment.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
+        }
+        environment.insert(path_key, path);
         Ok(())
     }
 
