@@ -3442,10 +3442,21 @@ impl Project {
         buffers: HashSet<Entity<Buffer>>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.save_buffers_with_overwrite(buffers, false, cx)
+    }
+
+    pub fn save_buffers_with_overwrite(
+        &self,
+        buffers: HashSet<Entity<Buffer>>,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         cx.spawn(async move |this, cx| {
             let save_tasks = buffers.into_iter().filter_map(|buffer| {
-                this.update(cx, |this, cx| this.save_buffer(buffer, cx))
-                    .ok()
+                this.update(cx, |this, cx| {
+                    this.save_buffer_with_overwrite(buffer, overwrite, cx)
+                })
+                .ok()
             });
             try_join_all(save_tasks).await?;
             Ok(())
@@ -3453,8 +3464,18 @@ impl Project {
     }
 
     pub fn save_buffer(&self, buffer: Entity<Buffer>, cx: &mut Context<Self>) -> Task<Result<()>> {
-        self.buffer_store
-            .update(cx, |buffer_store, cx| buffer_store.save_buffer(buffer, cx))
+        self.save_buffer_with_overwrite(buffer, false, cx)
+    }
+
+    pub fn save_buffer_with_overwrite(
+        &self,
+        buffer: Entity<Buffer>,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.buffer_store.update(cx, |store, cx| {
+            store.save_buffer_with_overwrite(buffer, overwrite, cx)
+        })
     }
 
     pub fn save_buffer_as(

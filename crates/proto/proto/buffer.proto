@@ -49,6 +49,7 @@ message SaveBuffer {
   uint64 buffer_id = 2;
   repeated VectorClockEntry version = 3;
   optional ProjectPath new_path = 4;
+  bool overwrite = 5;
 }
 
 message CloseBuffer {

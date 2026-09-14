@@ -6053,9 +6053,9 @@ fn test_save_receipt_preserves_identity_and_lagging_observations(cx: &mut App) {
         assert_eq!(
             buffer.disk_state_for_save(),
             Some(DiskState::Present {
-                mtime: old_mtime,
+                mtime: saved_mtime,
                 size: Some(3),
-                inode: Some(1),
+                inode: Some(2),
             }),
         );
         buffer.did_save_with_file(
@@ -6077,7 +6077,7 @@ fn test_save_receipt_preserves_identity_and_lagging_observations(cx: &mut App) {
 }
 
 #[gpui::test]
-fn test_reload_clears_conflict_only_for_current_version(cx: &mut App) {
+fn test_reload_clears_conflict_without_discarding_newer_edits(cx: &mut App) {
     init_settings(cx, |_| {});
     let buffer = cx.new(|cx| Buffer::local("original", cx));
     buffer.update(cx, |buffer, cx| {
@@ -6085,7 +6085,7 @@ fn test_reload_clears_conflict_only_for_current_version(cx: &mut App) {
         buffer.edit([(0..0, "edit ")], None, cx);
         buffer.set_conflict();
         buffer.did_reload(previous, buffer.line_ending(), None, cx);
-        assert!(buffer.has_conflict());
+        assert!(!buffer.has_conflict());
         assert!(buffer.is_dirty());
         buffer.did_reload(buffer.version(), buffer.line_ending(), None, cx);
         assert!(!buffer.has_conflict());

@@ -38,6 +38,7 @@ pub const LEADER_UPDATE_THROTTLE: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug)]
 pub struct SaveOptions {
+    pub overwrite: bool,
     pub format: bool,
     pub force_format: bool,
     pub autosave: bool,
@@ -46,6 +47,7 @@ pub struct SaveOptions {
 impl Default for SaveOptions {
     fn default() -> Self {
         Self {
+            overwrite: false,
             format: true,
             force_format: false,
             autosave: false,

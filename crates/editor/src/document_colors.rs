@@ -602,6 +602,7 @@ mod tests {
             editor.handle_input("dirty", window, cx);
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: true,
@@ -693,6 +694,7 @@ mod tests {
             editor.handle_input("dirty_again", window, cx);
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: false,
                     force_format: false,
                     autosave: true,

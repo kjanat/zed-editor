@@ -1596,18 +1596,8 @@ impl Buffer {
     }
 
     pub fn disk_state_for_save(&self) -> Option<DiskState> {
-        let observed = self.file.as_ref()?.disk_state();
-        // A delayed watcher must not make our own completed save look like an external write.
-        if !self.has_conflict
-            && self
-                .superseded_disk_states
-                .iter()
-                .any(|state| !state.differs_from(observed))
-        {
-            self.saved_disk_state.or(Some(observed))
-        } else {
-            Some(observed)
-        }
+        self.saved_disk_state
+            .or_else(|| self.file.as_ref().map(|file| file.disk_state()))
     }
 
     /// Returns the character encoding of the buffer's file.
@@ -1894,7 +1884,7 @@ impl Buffer {
                         this.has_conflict = true;
                     }
 
-                    this.did_reload(prev_version, this.line_ending(), this.saved_mtime(), cx);
+                    this.record_reload(prev_version, this.line_ending(), this.saved_mtime(), cx);
                 }
 
                 this.reload_task.take();
@@ -1911,9 +1901,17 @@ impl Buffer {
         mtime: Option<MTime>,
         cx: &mut Context<Self>,
     ) {
-        if self.version() == version {
-            self.has_conflict = false;
-        }
+        self.has_conflict = false;
+        self.record_reload(version, line_ending, mtime, cx);
+    }
+
+    fn record_reload(
+        &mut self,
+        version: clock::Global,
+        line_ending: LineEnding,
+        mtime: Option<MTime>,
+        cx: &mut Context<Self>,
+    ) {
         self.saved_version = version;
         self.has_unsaved_edits
             .set((self.saved_version.clone(), false));

@@ -5044,6 +5044,7 @@ mod tests {
                     editor.move_down(&Default::default(), window, cx);
                     editor.save(
                         SaveOptions {
+                            overwrite: false,
                             format: true,
                             force_format: false,
                             autosave: false,

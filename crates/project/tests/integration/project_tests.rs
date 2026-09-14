@@ -8932,6 +8932,19 @@ async fn test_overlapping_saves_use_latest_receipt(cx: &mut gpui::TestAppContext
     first.expect("first save");
     second.expect("overlapping second save");
     third.expect("overlapping third save");
+    let first = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let canceled = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let last = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    drop(canceled);
+    let (first, last) = futures::join!(first, last);
+    first.expect("save preceding canceled queue entry");
+    last.expect("canceled queue entry must not break ordering");
+    let canceled = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    drop(canceled);
+    store
+        .update(cx, |store, cx| store.save_buffer(buffer.clone(), cx))
+        .await
+        .expect("retry after a canceled save");
     assert_eq!(
         fs.load(file_path).await.expect("read file"),
         "edited original"
@@ -9009,7 +9022,9 @@ async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext
 
             // The conflict prompt's Overwrite action saves against the newly observed identity.
             project
-                .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                .update(cx, |project, cx| {
+                    project.save_buffer_with_overwrite(buffer.clone(), true, cx)
+                })
                 .await
                 .expect("save after resolving conflict");
             assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
@@ -9062,7 +9077,9 @@ async fn test_save_detects_missed_file_creation_and_deletion(cx: &mut gpui::Test
             assert_eq!(fs.load(file_path).await.expect("read disk"), "external");
         }
         project
-            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .update(cx, |project, cx| {
+                project.save_buffer_with_overwrite(buffer.clone(), true, cx)
+            })
             .await
             .expect("explicit retry can overwrite or recreate");
         assert_eq!(
@@ -9456,13 +9473,15 @@ async fn test_save_as(cx: &mut gpui::TestAppContext) {
         assert_eq!(buffer.language().unwrap().name(), "Plain Text");
     });
     let save_events = Arc::new(Mutex::new(Vec::new()));
-    let _subscription = cx.subscribe(&buffer, {
-        let save_events = save_events.clone();
-        move |_, event, _| {
-            if matches!(event, BufferEvent::FileHandleChanged | BufferEvent::Saved) {
-                save_events.lock().push(event.clone());
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&buffer, {
+            let save_events = save_events.clone();
+            move |_, event, _| {
+                if matches!(event, BufferEvent::FileHandleChanged | BufferEvent::Saved) {
+                    save_events.lock().push(event.clone());
+                }
             }
-        }
+        })
     });
     project
         .update(cx, |project, cx| {

@@ -1916,6 +1916,7 @@ impl ProjectSearchView {
                     this.update_in(cx, |this, window, cx| {
                         this.save(
                             SaveOptions {
+                                overwrite: false,
                                 format: true,
                                 force_format: false,
                                 autosave: false,

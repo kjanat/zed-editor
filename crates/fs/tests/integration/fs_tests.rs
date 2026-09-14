@@ -524,6 +524,72 @@ async fn test_realfs_save_replaces_contents(executor: BackgroundExecutor) {
     assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "Fresh");
 }
 
+#[gpui::test]
+async fn test_checked_save_rejects_replacements_during_publication(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    for phase in [
+        DurableSavePhase::ClassifyDestination,
+        DurableSavePhase::Publish,
+    ] {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "old").expect("original file");
+        let original = fs.metadata(&path).await.expect("metadata").expect("file");
+        let result = save_checked_with_checkpoint_for_test(
+            &path,
+            SaveExpectation::Present {
+                mtime: original.mtime,
+                len: Some(original.len),
+                inode: Some(original.inode),
+            },
+            |file| file.write_all(b"zed"),
+            |current| {
+                if current == phase {
+                    let replacement = directory.path().join("replacement");
+                    std::fs::write(&replacement, "external")?;
+                    std::fs::rename(replacement, &path)?;
+                }
+                Ok(())
+            },
+        );
+        assert!(
+            result
+                .expect_err("replacement must prevent publication")
+                .downcast_ref::<SaveConflict>()
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "external"
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_checked_save_receipt_precedes_external_refresh(executor: BackgroundExecutor) {
+    let fs = RealFs::new(None, executor);
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("file.txt");
+    let receipt = save_checked_with_checkpoint_for_test(
+        &path,
+        SaveExpectation::Absent,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::SyncParent {
+                let replacement = directory.path().join("replacement");
+                std::fs::write(&replacement, "external")?;
+                std::fs::rename(replacement, &path)?;
+            }
+            Ok(())
+        },
+    )
+    .expect("save");
+    let found = fs.metadata(&path).await.expect("metadata").expect("file");
+    assert_eq!(receipt.len, 3);
+    assert_ne!(receipt.inode, found.inode);
+    assert_eq!(found.len, 8);
+}
+
 #[test]
 fn test_durable_save_writer_failure_preserves_destination() {
     let temp_dir = TempDir::new().unwrap();

@@ -1848,6 +1848,7 @@ impl Editor {
         if let Some(project) = self.project.clone() {
             self.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -1897,6 +1898,7 @@ impl Editor {
         if let Some(project) = self.project.clone() {
             self.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,

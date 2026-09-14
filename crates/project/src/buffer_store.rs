@@ -37,7 +37,7 @@ pub struct BufferStore {
     state: BufferStoreState,
     #[allow(clippy::type_complexity)]
     loading_buffers: HashMap<ProjectPath, Shared<Task<Result<Entity<Buffer>, Arc<anyhow::Error>>>>>,
-    pending_saves: HashMap<BufferId, Shared<oneshot::Receiver<bool>>>,
+    pending_saves: HashMap<BufferId, Shared<futures::future::BoxFuture<'static, bool>>>,
     worktree_store: Entity<WorktreeStore>,
     opened_buffers: HashMap<BufferId, OpenBuffer>,
     path_to_buffer_id: HashMap<ProjectPath, BufferId>,
@@ -139,6 +139,7 @@ impl RemoteBufferStore {
         &self,
         buffer_handle: Entity<Buffer>,
         new_path: Option<proto::ProjectPath>,
+        overwrite: bool,
         cx: &Context<BufferStore>,
     ) -> Task<Result<()>> {
         let buffer = buffer_handle.read(cx);
@@ -152,6 +153,7 @@ impl RemoteBufferStore {
                     project_id,
                     buffer_id,
                     new_path,
+                    overwrite,
                     version: serialize_version(&version),
                 })
                 .await;
@@ -406,6 +408,7 @@ impl LocalBufferStore {
         worktree: Entity<Worktree>,
         path: Arc<RelPath>,
         mut has_changed_file: bool,
+        overwrite: bool,
         cx: &mut Context<BufferStore>,
     ) -> Task<Result<()>> {
         let buffer = buffer_handle.read(cx);
@@ -419,6 +422,8 @@ impl LocalBufferStore {
         let file = buffer.file().cloned();
         let expected = if has_changed_file {
             None
+        } else if overwrite {
+            buffer.file().map(|file| file.disk_state())
         } else {
             buffer.disk_state_for_save()
         };
@@ -700,13 +705,14 @@ impl LocalBufferStore {
     fn save_buffer(
         &self,
         buffer: Entity<Buffer>,
+        overwrite: bool,
         cx: &mut Context<BufferStore>,
     ) -> Task<Result<()>> {
         let Some(file) = File::from_dyn(buffer.read(cx).file()) else {
             return Task::ready(Err(anyhow!("buffer doesn't have a file")));
         };
         let worktree = file.worktree.clone();
-        self.save_local_buffer(buffer, worktree, file.path.clone(), false, cx)
+        self.save_local_buffer(buffer, worktree, file.path.clone(), false, overwrite, cx)
     }
 
     fn save_buffer_as(
@@ -722,7 +728,7 @@ impl LocalBufferStore {
         else {
             return Task::ready(Err(anyhow!("no such worktree")));
         };
-        self.save_local_buffer(buffer, worktree, path.path, true, cx)
+        self.save_local_buffer(buffer, worktree, path.path, true, true, cx)
     }
 
     #[ztracing::instrument(skip_all)]
@@ -1026,17 +1032,27 @@ impl BufferStore {
         buffer: Entity<Buffer>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        self.enqueue_save(buffer, None, cx)
+        self.save_buffer_with_overwrite(buffer, false, cx)
+    }
+
+    pub fn save_buffer_with_overwrite(
+        &mut self,
+        buffer: Entity<Buffer>,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.enqueue_save(buffer, None, overwrite, cx)
     }
 
     fn save_buffer_impl(
         &mut self,
         buffer: Entity<Buffer>,
+        overwrite: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         match &mut self.state {
-            BufferStoreState::Local(this) => this.save_buffer(buffer, cx),
-            BufferStoreState::Remote(this) => this.save_remote_buffer(buffer, None, cx),
+            BufferStoreState::Local(this) => this.save_buffer(buffer, overwrite, cx),
+            BufferStoreState::Remote(this) => this.save_remote_buffer(buffer, None, overwrite, cx),
         }
     }
 
@@ -1046,31 +1062,47 @@ impl BufferStore {
         path: ProjectPath,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        self.enqueue_save(buffer, Some(path), cx)
+        self.enqueue_save(buffer, Some(path), true, cx)
     }
 
     fn enqueue_save(
         &mut self,
         buffer: Entity<Buffer>,
         path: Option<ProjectPath>,
+        overwrite: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let buffer_id = buffer.read(cx).remote_id();
         let (sender, receiver) = oneshot::channel();
-        let completion = receiver.shared();
-        let previous = self.pending_saves.insert(buffer_id, completion.clone());
+        let previous = self.pending_saves.remove(&buffer_id);
+        let completion = {
+            let previous = previous.clone();
+            async move {
+                match receiver.await {
+                    Ok(success) => success,
+                    // Canceling a queued save must preserve the preceding save's place in line.
+                    Err(_) => match previous {
+                        Some(previous) => previous.await,
+                        None => true,
+                    },
+                }
+            }
+            .boxed()
+            .shared()
+        };
+        self.pending_saves.insert(buffer_id, completion.clone());
         cx.spawn(async move |this, cx| {
             let result = async {
                 if let Some(previous) = previous {
                     anyhow::ensure!(
-                        previous.await.context("preceding save was cancelled")?,
+                        previous.await,
                         "preceding save failed; resolve its error before retrying"
                     );
                 }
                 // Snapshot text, path and disk identity only after the preceding receipt is applied.
                 this.update(cx, |this, cx| match path {
                     Some(path) => this.save_buffer_as_impl(buffer, path, cx),
-                    None => this.save_buffer_impl(buffer, cx),
+                    None => this.save_buffer_impl(buffer, overwrite, cx),
                 })?
                 .await
             }
@@ -1102,7 +1134,7 @@ impl BufferStore {
         let task = match &self.state {
             BufferStoreState::Local(this) => this.save_buffer_as(buffer.clone(), path, cx),
             BufferStoreState::Remote(this) => {
-                this.save_remote_buffer(buffer.clone(), Some(path.to_proto()), cx)
+                this.save_remote_buffer(buffer.clone(), Some(path.to_proto()), true, cx)
             }
         };
         cx.spawn(async move |this, cx| {
@@ -1136,7 +1168,8 @@ impl BufferStore {
         buffer_entity.update(cx, move |_, cx| {
             cx.on_release(move |buffer, cx| {
                 handle
-                    .update(cx, |_, cx| {
+                    .update(cx, |this, cx| {
+                        this.pending_saves.remove(&buffer.remote_id());
                         cx.emit(BufferStoreEvent::BufferDropped(buffer.remote_id()))
                     })
                     .ok();
@@ -1581,17 +1614,19 @@ impl BufferStore {
             })
             .await?;
         } else {
-            this.update(&mut cx, |this, cx| this.save_buffer(buffer.clone(), cx))
-                .await
-                .map_err(|error| {
-                    if error.downcast_ref::<WriteFileError>().is_some() {
-                        ErrorCode::FileChangedOnDisk
-                            .message(error.to_string())
-                            .into()
-                    } else {
-                        error
-                    }
-                })?;
+            this.update(&mut cx, |this, cx| {
+                this.save_buffer_with_overwrite(buffer.clone(), envelope.payload.overwrite, cx)
+            })
+            .await
+            .map_err(|error| {
+                if error.downcast_ref::<WriteFileError>().is_some() {
+                    ErrorCode::FileChangedOnDisk
+                        .message(error.to_string())
+                        .into()
+                } else {
+                    error
+                }
+            })?;
         }
 
         Ok(buffer.read_with(&cx, |buffer, _| proto::BufferSaved {

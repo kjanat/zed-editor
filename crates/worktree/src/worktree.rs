@@ -94,9 +94,9 @@ pub enum WriteFileError {
 impl fmt::Display for WriteFileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DiskChanged { .. } => {
-                formatter.write_str("The file changed on disk. Save again to resolve the conflict.")
-            }
+            Self::DiskChanged { .. } => formatter.write_str(
+                "The file changed on disk. Reload it or explicitly confirm overwriting it.",
+            ),
         }
     }
 }
@@ -1952,27 +1952,30 @@ impl LocalWorktree {
             let fs = fs.clone();
             let abs_path = abs_path.clone();
             async move {
-                if let Some(expected) = expected {
-                    let found = match fs.metadata(&abs_path).await? {
-                        Some(metadata) => DiskState::Present {
-                            mtime: metadata.mtime,
-                            size: Some(metadata.len),
-                            inode: Some(metadata.inode),
-                        },
-                        None => match expected {
-                            DiskState::New => DiskState::New,
-                            _ => DiskState::Deleted,
-                        },
-                    };
-                    // Watchers may miss a replacement. Validate before either encoding path writes.
-                    if expected.differs_from(found) {
-                        return Err(WriteFileError::DiskChanged { expected, found }.into());
+                let expectation = match expected {
+                    Some(DiskState::Present { mtime, size, inode }) => {
+                        Some(fs::SaveExpectation::Present {
+                            mtime,
+                            len: size,
+                            inode,
+                        })
                     }
-                }
-                // For UTF-8, use the optimized `fs.save` which writes Rope chunks directly to disk
+                    Some(DiskState::New | DiskState::Deleted) => Some(fs::SaveExpectation::Absent),
+                    Some(DiskState::Historic { .. }) => {
+                        anyhow::bail!("Cannot save a historic file without choosing a destination")
+                    }
+                    None => None,
+                };
+                // For UTF-8, write Rope chunks directly to disk
                 // without allocating a contiguous string.
                 if encoding == encoding_rs::UTF_8 && !has_bom {
-                    return fs.save(&abs_path, &text, line_ending).await;
+                    return fs
+                        .save_checked(
+                            &abs_path,
+                            fs::SaveContent::Text(&text, line_ending),
+                            expectation,
+                        )
+                        .await;
                 }
 
                 // For legacy encodings (e.g. Shift-JIS), we fall back to converting the entire Rope
@@ -1988,12 +1991,39 @@ impl LocalWorktree {
                 };
 
                 let bytes = encode_text(normalized_text, encoding, has_bom);
-                fs.save_bytes(&abs_path, &bytes).await
+                fs.save_checked(&abs_path, fs::SaveContent::Bytes(&bytes), expectation)
+                    .await
             }
         });
 
         cx.spawn(async move |this, cx| {
-            write.await?;
+            let receipt = write.await.map_err(|error| {
+                if let Some(conflict) = error.downcast_ref::<fs::SaveConflict>() {
+                    let expected = expected.unwrap_or(DiskState::New);
+                    let found = conflict
+                        .found
+                        .map(|receipt| DiskState::Present {
+                            mtime: receipt.mtime,
+                            size: Some(receipt.len),
+                            inode: Some(receipt.inode),
+                        })
+                        .unwrap_or_else(|| {
+                            if expected == DiskState::New {
+                                DiskState::New
+                            } else {
+                                DiskState::Deleted
+                            }
+                        });
+                    WriteFileError::DiskChanged { expected, found }.into()
+                } else {
+                    error
+                }
+            })?;
+            let saved = DiskState::Present {
+                mtime: receipt.mtime,
+                size: Some(receipt.len),
+                inode: Some(receipt.inode),
+            };
             let entry = this
                 .update(cx, |this, cx| {
                     this.as_local_mut()
@@ -2002,8 +2032,8 @@ impl LocalWorktree {
                 })?
                 .await?;
             let worktree = this.upgrade().context("worktree dropped")?;
-            if let Some(entry) = entry {
-                Ok(File::for_entry(entry, worktree))
+            let file = if let Some(entry) = entry {
+                File::for_entry(entry, worktree)
             } else {
                 let metadata = fs
                     .metadata(&abs_path)
@@ -2014,7 +2044,7 @@ impl LocalWorktree {
                     .with_context(|| {
                         format!("Excluded buffer {path:?} got removed during saving")
                     })?;
-                Ok(Arc::new(File {
+                Arc::new(File {
                     worktree,
                     path,
                     disk_state: DiskState::Present {
@@ -2025,8 +2055,17 @@ impl LocalWorktree {
                     entry_id: None,
                     is_local: true,
                     is_private,
-                }))
+                })
+            };
+            let found = file.disk_state;
+            if saved.differs_from(found) {
+                return Err(WriteFileError::DiskChanged {
+                    expected: saved,
+                    found,
+                }
+                .into());
             }
+            Ok(file)
         })
     }
 

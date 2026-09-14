@@ -2334,6 +2334,7 @@ impl Pane {
                         pane.update_in(cx, |_, window, cx| {
                             item.save(
                                 SaveOptions {
+                                    overwrite: true,
                                     format: should_format,
                                     force_format,
                                     autosave: false,
@@ -2369,6 +2370,7 @@ impl Pane {
                         pane.update_in(cx, |_, window, cx| {
                             item.save(
                                 SaveOptions {
+                                    overwrite: true,
                                     format: should_format,
                                     force_format,
                                     autosave: false,
@@ -2451,6 +2453,7 @@ impl Pane {
                     pane.unpreview_item_if_preview(item.item_id());
                     item.save(
                         SaveOptions {
+                            overwrite: save_intent == SaveIntent::Overwrite,
                             format: should_format,
                             force_format,
                             autosave: false,
@@ -2512,6 +2515,7 @@ impl Pane {
                         pane.unpreview_item_if_preview(item.item_id());
                         item.save(
                             SaveOptions {
+                                overwrite: false,
                                 format: true,
                                 autosave: false,
                                 force_format,
@@ -2549,6 +2553,7 @@ impl Pane {
         if item.can_autosave(cx) {
             item.save(
                 SaveOptions {
+                    overwrite: false,
                     format,
                     force_format: false,
                     autosave: true,

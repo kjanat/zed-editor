@@ -1017,7 +1017,11 @@ impl Item for Editor {
             if !buffers_to_save.is_empty() {
                 project
                     .update(cx, |project, cx| {
-                        project.save_buffers(buffers_to_save.clone(), cx)
+                        project.save_buffers_with_overwrite(
+                            buffers_to_save.clone(),
+                            options.overwrite,
+                            cx,
+                        )
                     })
                     .await?;
             }
@@ -3476,6 +3480,7 @@ mod tests {
         let save = editor.update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: false,
                     force_format: false,
                     autosave: false,

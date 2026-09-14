@@ -1833,6 +1833,7 @@ mod tests {
             buffer_editor.set_text("different\n", window, cx);
             buffer_editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: false,
                     force_format: false,
                     autosave: false,
