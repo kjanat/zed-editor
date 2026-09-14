@@ -76,11 +76,11 @@ jobs:
         shell: bash
         run: df -h /
 
-  tests:
+  test_suites:
     if: github.repository == 'kjanat/zed-editor'
     strategy:
       fail-fast: false
-      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
+      matrix: { os: [ubuntu-latest, windows-latest, macos-latest], suite: [remote-save, fork-crates, editor-backup] }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -99,31 +99,24 @@ jobs:
               sudo rm -f /etc/apt/sources.list.d/google-chrome.{list,sources}
               ./script/linux
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-            with: { shared-key: fork-ci-tests, cache-on-failure: false }
+            with: { shared-key: fork-ci-tests, key: "${{ matrix.suite }}", cache-on-failure: false }
       - name: Test remote save file identity conflicts
+        if: matrix.suite == 'remote-save'
         shell: bash
-        run: cargo nextest run --no-fail-fast -p collab --features test-support --test remote_save_tests 2>&1 | tee collab-tests.log
-      - name: Check remote-save linker diagnostics
-        if: runner.os == 'Windows' || runner.os == 'macOS'
-        shell: bash
-        run: |
-          if grep -E 'LNK4217|__eh_frame section too large' collab-tests.log; then
-            echo "::error::Remote-save test build emitted linker warnings"
-            exit 1
-          else
-            test "$?" -eq 1
-          fi
+        run: cargo nextest run --no-fail-fast -p collab --features test-support --test remote_save_tests 2>&1 | tee tests.log
       - name: Test the crates this fork changes
+        if: matrix.suite == 'fork-crates'
         shell: bash
-        run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update 2>&1 | tee fork-tests.log
+        run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update 2>&1 | tee tests.log
       - name: Test save-backup conflict decisions
+        if: matrix.suite == 'editor-backup'
         shell: bash
-        run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_)' 2>&1 | tee editor-tests.log
+        run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_)' 2>&1 | tee tests.log
       - name: Check native linker diagnostics
         if: runner.os == 'Windows' || runner.os == 'macOS'
         shell: bash
         run: |
-          if grep -E 'LNK4217|__eh_frame section too large' fork-tests.log editor-tests.log; then
+          if grep -E 'LNK4217|__eh_frame section too large' tests.log; then
             echo "::error::Native test build emitted linker warnings"
             exit 1
           else
@@ -132,3 +125,16 @@ jobs:
       - name: Show disk usage
         if: always() && runner.os != 'Windows'
         run: df -h /
+
+  # Preserve the check names required by branch protection after splitting the suites.
+  tests:
+    if: always() && github.repository == 'kjanat/zed-editor'
+    needs: test_suites
+    strategy:
+      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all test suites to pass
+        env: { TEST_RESULT: "${{ needs.test_suites.result }}" }
+        run: test "${TEST_RESULT}" = success
