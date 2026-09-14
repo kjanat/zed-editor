@@ -17,14 +17,14 @@ trunk serve
 
 Open <http://localhost:8080/> to choose an example:
 
-| Path | Example |
-| --- | --- |
-| `/hello-world` | Hello world |
-| `/text` | Styled text |
-| `/text-layout` | Alignment and decorations |
-| `/text-wrapper` | Wrapping and truncation |
-| `/input` | Text input and selection |
-| `/prime-sieve` | Background task demo |
+| Path            | Example                   |
+| --------------- | ------------------------- |
+| `/hello-world`  | Hello world               |
+| `/text`         | Styled text               |
+| `/text-layout`  | Alignment and decorations |
+| `/text-wrapper` | Wrapping and truncation   |
+| `/input`        | Text input and selection  |
+| `/prime-sieve`  | Background task demo      |
 
 The server supports direct links and reloads at each path. Only the selected
 example's WASM module is loaded. Follow **All examples** to return to the gallery;

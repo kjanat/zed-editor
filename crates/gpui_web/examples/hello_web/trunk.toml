@@ -1,17 +1,17 @@
 [build]
 # The gallery imports only the selected example instead of starting or preloading the main binary.
-pattern_script = ""
+pattern_script  = ""
 pattern_preload = ""
-filehash = false
+filehash        = false
 
 [watch]
 watch = [
-    ".",
-    "../../../gpui/examples",
-    "../../../gpui/src",
-    "../../../gpui_platform/src",
-    "../../../gpui_web/src",
-    "../../../gpui_wgpu/src",
+  ".",
+  "../../../gpui/examples",
+  "../../../gpui/src",
+  "../../../gpui_platform/src",
+  "../../../gpui_web/src",
+  "../../../gpui_wgpu/src",
 ]
 
 [serve]
