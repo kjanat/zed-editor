@@ -21,6 +21,11 @@ name              = "collab_tests"
 path              = "tests/integration/collab_tests.rs"
 required-features = ["test-support"]
 
+[[test]]
+name              = "remote_save_tests"
+path              = "tests/integration/remote_save_tests.rs"
+required-features = ["test-support"]
+
 [dependencies]
 anyhow.workspace           = true
 async-trait.workspace      = true

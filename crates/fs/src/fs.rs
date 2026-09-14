@@ -143,11 +143,19 @@ pub trait Fs: Send + Sync {
     async fn atomic_write(&self, path: PathBuf, text: String) -> Result<()>;
     async fn save(&self, path: &Path, text: &Rope, line_ending: LineEnding) -> Result<()>;
     async fn save_bytes(&self, path: &Path, content: &[u8]) -> Result<()>;
+    async fn save_checked(
+        &self,
+        path: &Path,
+        content: SaveContent<'_>,
+        expected: Option<SaveExpectation>,
+    ) -> Result<SaveReceipt>;
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()>;
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
     async fn is_file(&self, path: &Path) -> bool;
     async fn is_dir(&self, path: &Path) -> bool;
     async fn metadata(&self, path: &Path) -> Result<Option<Metadata>>;
+    /// Save expectations describe the target, never a dangling symlink itself.
+    async fn metadata_for_save(&self, path: &Path) -> Result<Option<Metadata>>;
     async fn read_link(&self, path: &Path) -> Result<PathBuf>;
     async fn read_dir(
         &self,
@@ -323,6 +331,8 @@ pub struct RemoveOptions {
 #[derive(Copy, Clone, Debug)]
 pub struct Metadata {
     pub inode: u64,
+    /// Filesystem device ID, or volume serial number on Windows.
+    pub device: u64,
     pub mtime: MTime,
     pub is_symlink: bool,
     pub is_dir: bool,
@@ -330,6 +340,64 @@ pub struct Metadata {
     pub is_fifo: bool,
     pub is_executable: bool,
     pub is_writable: bool,
+}
+
+pub enum SaveContent<'a> {
+    Text(&'a Rope, LineEnding),
+    Bytes(&'a [u8]),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SaveReceipt {
+    /// Filesystem device ID, or volume serial number on Windows.
+    pub device: u64,
+    pub mtime: MTime,
+    pub len: u64,
+    pub inode: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SaveExpectation {
+    Absent,
+    Present {
+        mtime: MTime,
+        len: Option<u64>,
+        inode: Option<u64>,
+        device: Option<u64>,
+    },
+}
+
+impl SaveExpectation {
+    fn check(self, found: Option<SaveReceipt>) -> Result<()> {
+        let matches = match (self, found) {
+            (Self::Absent, None) => true,
+            (
+                Self::Present {
+                    mtime,
+                    len,
+                    inode,
+                    device,
+                },
+                Some(found),
+            ) => {
+                mtime == found.mtime
+                    && len.is_none_or(|len| len == found.len)
+                    && inode.is_none_or(|inode| inode == found.inode)
+                    && device.is_none_or(|device| device == found.device)
+            }
+            _ => false,
+        };
+        if !matches {
+            return Err(SaveConflict { found }.into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("file changed before save publication")]
+pub struct SaveConflict {
+    pub found: Option<SaveReceipt>,
 }
 
 /// Filesystem modification time. The purpose of this newtype is to discourage use of operations
@@ -1046,6 +1114,36 @@ impl Fs for RealFs {
         smol::unblock(move || save_durably(&path, |file| file.write_all(&content))).await
     }
 
+    async fn save_checked(
+        &self,
+        path: &Path,
+        content: SaveContent<'_>,
+        expected: Option<SaveExpectation>,
+    ) -> Result<SaveReceipt> {
+        let path = path.to_owned();
+        match content {
+            SaveContent::Text(text, line_ending) => {
+                let text = text.clone();
+                smol::unblock(move || {
+                    save_durably_checked(
+                        &path,
+                        expected,
+                        |file| write_rope(file, &text, line_ending),
+                        |_| Ok(()),
+                    )
+                })
+                .await
+            }
+            SaveContent::Bytes(bytes) => {
+                let bytes = bytes.to_vec();
+                smol::unblock(move || {
+                    save_durably_checked(&path, expected, |file| file.write_all(&bytes), |_| Ok(()))
+                })
+                .await
+            }
+        }
+    }
+
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
         if let Some(path) = path.parent() {
             self.create_dir(path)
@@ -1089,6 +1187,23 @@ impl Fs for RealFs {
         self.executor
             .spawn(async move { std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) })
             .await
+    }
+
+    async fn metadata_for_save(&self, path: &Path) -> Result<Option<Metadata>> {
+        match self.canonicalize(path).await {
+            Ok(target) => self.metadata(&target).await,
+            Err(error)
+                if error.downcast_ref::<io::Error>().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    )
+                }) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn metadata(&self, path: &Path) -> Result<Option<Metadata>> {
@@ -1135,10 +1250,10 @@ impl Fs for RealFs {
         };
 
         #[cfg(unix)]
-        let inode = metadata.ino();
+        let (inode, device) = (metadata.ino(), metadata.dev());
 
         #[cfg(windows)]
-        let inode = file_id(path).await?;
+        let (inode, device) = file_id(path).await?;
 
         #[cfg(windows)]
         let is_fifo = false;
@@ -1159,6 +1274,7 @@ impl Fs for RealFs {
 
         Ok(Some(Metadata {
             inode,
+            device,
             mtime: MTime(metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
             len: metadata.len(),
             is_symlink,
@@ -3351,6 +3467,48 @@ impl Fs for FakeFs {
         Ok(())
     }
 
+    async fn save_checked(
+        &self,
+        path: &Path,
+        content: SaveContent<'_>,
+        expected: Option<SaveExpectation>,
+    ) -> Result<SaveReceipt> {
+        self.simulate_random_delay().await;
+        let path = normalize_path(path);
+        if let Some(parent) = path.parent() {
+            self.create_dir(parent).await?;
+        }
+        let receipt = || -> Result<Option<SaveReceipt>> {
+            let mut state = self.state.lock();
+            Ok(state
+                .try_entry(&path, true)
+                .and_then(|(entry, _)| match &*entry {
+                    FakeFsEntry::File {
+                        inode, mtime, len, ..
+                    } => Some(SaveReceipt {
+                        inode: *inode,
+                        device: 0,
+                        mtime: *mtime,
+                        len: *len,
+                    }),
+                    _ => None,
+                }))
+        };
+        if let Some(expected) = expected {
+            expected.check(receipt()?)?;
+        }
+        let bytes = match content {
+            SaveContent::Text(text, line_ending) => {
+                text::chunks_with_line_ending(text, line_ending)
+                    .collect::<String>()
+                    .into_bytes()
+            }
+            SaveContent::Bytes(bytes) => bytes.to_vec(),
+        };
+        self.write_file_internal(path.clone(), bytes, false)?;
+        receipt()?.context("saved file is missing")
+    }
+
     async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
         self.simulate_random_delay().await;
         let path = normalize_path(path);
@@ -3388,6 +3546,10 @@ impl Fs for FakeFs {
             .is_ok_and(|metadata| metadata.is_some_and(|metadata| metadata.is_dir))
     }
 
+    async fn metadata_for_save(&self, path: &Path) -> Result<Option<Metadata>> {
+        self.metadata(path).await
+    }
+
     async fn metadata(&self, path: &Path) -> Result<Option<Metadata>> {
         self.simulate_random_delay().await;
         let path = normalize_path(path);
@@ -3408,6 +3570,7 @@ impl Fs for FakeFs {
                     inode, mtime, len, ..
                 } => Metadata {
                     inode: *inode,
+                    device: 0,
                     mtime: *mtime,
                     len: *len,
                     is_dir: false,
@@ -3420,6 +3583,7 @@ impl Fs for FakeFs {
                     inode, mtime, len, ..
                 } => Metadata {
                     inode: *inode,
+                    device: 0,
                     mtime: *mtime,
                     len: *len,
                     is_dir: true,
@@ -3700,7 +3864,7 @@ fn read_recursive<'a>(
 // can we get file id not open the file twice?
 // https://github.com/rust-lang/rust/issues/63010
 #[cfg(target_os = "windows")]
-async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
+async fn file_id(path: impl AsRef<Path>) -> Result<(u64, u64)> {
     use std::os::windows::io::AsRawHandle;
 
     use smol::fs::windows::OpenOptionsExt;
@@ -3723,7 +3887,10 @@ async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
     smol::unblock(move || {
         unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle() as _), &mut info)? };
 
-        Ok(((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64))
+        Ok((
+            ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64),
+            u64::from(info.dwVolumeSerialNumber),
+        ))
     })
     .await
 }
@@ -3842,10 +4009,49 @@ enum ReplacementMetadata {
 fn save_durably_with_checkpoint(
     path: &Path,
     write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
-    mut checkpoint: impl FnMut(DurableSavePhase) -> Result<()>,
+    checkpoint: impl FnMut(DurableSavePhase) -> Result<()>,
 ) -> Result<()> {
+    save_durably_checked(path, None, write_contents, checkpoint).map(|_| ())
+}
+
+fn save_receipt(file: &std::fs::File) -> Result<SaveReceipt> {
+    let metadata = file.metadata()?;
+    #[cfg(unix)]
+    let (inode, device) = (metadata.ino(), metadata.dev());
+    #[cfg(windows)]
+    let identity = windows_file_information(file)?.identity;
+    #[cfg(windows)]
+    let (inode, device) = (
+        identity.file_index,
+        u64::from(identity.volume_serial_number),
+    );
+    Ok(SaveReceipt {
+        mtime: MTime(metadata.modified()?),
+        len: metadata.len(),
+        inode,
+        device,
+    })
+}
+
+fn save_durably_checked(
+    path: &Path,
+    expected: Option<SaveExpectation>,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+    mut checkpoint: impl FnMut(DurableSavePhase) -> Result<()>,
+) -> Result<SaveReceipt> {
     checkpoint(DurableSavePhase::ClassifyDestination)?;
     let destination = classify_save_destination(path)?;
+    if let Some(expected) = expected {
+        match &destination {
+            SaveDestination::New(_) => expected.check(None)?,
+            SaveDestination::Replaceable { source, .. } => {
+                expected.check(Some(save_receipt(source)?))?;
+            }
+            // In-place saves validate their write handle before truncating. A read open
+            // here would deadlock a FIFO whose peer is waiting for our writer.
+            SaveDestination::MustWriteInPlace { .. } => {}
+        }
+    }
     let destination_path = match &destination {
         SaveDestination::New(path)
         | SaveDestination::Replaceable { path, .. }
@@ -3866,6 +4072,7 @@ fn save_durably_with_checkpoint(
             &path,
             source,
             identity,
+            expected,
             write_contents,
             &created_directories,
             &mut checkpoint,
@@ -3878,7 +4085,7 @@ fn save_durably_with_checkpoint(
         } => {
             log::debug!("saving {path:?} in place because {reason:?}");
             checkpoint(DurableSavePhase::WriteContents)?;
-            save_in_place(&path, identity, regular_file, write_contents)
+            save_in_place(&path, identity, regular_file, expected, write_contents)
                 .with_context(|| format!("Failed to write file at {path:?}"))
         }
     }
@@ -3892,6 +4099,17 @@ pub fn save_durably_with_checkpoint_for_test(
     checkpoint: impl FnMut(DurableSavePhase) -> Result<()>,
 ) -> Result<()> {
     save_durably_with_checkpoint(path, write_contents, checkpoint)
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn save_checked_with_checkpoint_for_test(
+    path: &Path,
+    expected: SaveExpectation,
+    write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+    checkpoint: impl FnMut(DurableSavePhase) -> Result<()>,
+) -> Result<SaveReceipt> {
+    save_durably_checked(path, Some(expected), write_contents, checkpoint)
 }
 
 fn classify_save_destination(path: &Path) -> Result<SaveDestination> {
@@ -4032,7 +4250,7 @@ fn save_new_file(
     write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
     created_directories: &[PathBuf],
     checkpoint: &mut impl FnMut(DurableSavePhase) -> Result<()>,
-) -> Result<()> {
+) -> Result<SaveReceipt> {
     checkpoint(DurableSavePhase::Stage)?;
     let mut temp_file = create_save_temp_file(path, true)?;
 
@@ -4046,21 +4264,25 @@ fn save_new_file(
         .sync_all()
         .with_context(|| format!("failed to sync temporary file for {path:?}"))?;
 
+    let receipt = save_receipt(temp_file.as_file())?;
     checkpoint(DurableSavePhase::Publish)?;
     publish_new_file(path, temp_file)?;
 
     checkpoint(DurableSavePhase::SyncParent)?;
-    sync_parent_directories(path, created_directories)
+    sync_parent_directories(path, created_directories)?;
+    Ok(receipt)
 }
 
 fn save_replaceable_file(
     path: &Path,
     source: std::fs::File,
     identity: FileIdentity,
+    expected: Option<SaveExpectation>,
     write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
     created_directories: &[PathBuf],
     checkpoint: &mut impl FnMut(DurableSavePhase) -> Result<()>,
-) -> Result<()> {
+) -> Result<SaveReceipt> {
+    let original = save_receipt(&source)?;
     checkpoint(DurableSavePhase::Stage)?;
     let mut temp_file = create_save_temp_file(path, false)?;
 
@@ -4082,8 +4304,27 @@ fn save_replaceable_file(
         .sync_all()
         .with_context(|| format!("failed to sync temporary file for {path:?}"))?;
 
+    let receipt = save_receipt(temp_file.as_file())?;
     checkpoint(DurableSavePhase::Publish)?;
+    if let Some(expected) = expected {
+        let found = match std::fs::File::open(path) {
+            Ok(file) => Some(save_receipt(&file)?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        expected.check(found)?;
+    }
     ensure_path_identity(path, identity)?;
+    if let Some(expected) = expected {
+        expected.check(Some(save_receipt(&source)?))?;
+    }
+    SaveExpectation::Present {
+        mtime: original.mtime,
+        len: Some(original.len),
+        inode: Some(original.inode),
+        device: Some(original.device),
+    }
+    .check(Some(save_receipt(&source)?))?;
     anyhow::ensure!(
         hard_link_count_for_file(&source)? == 1,
         "destination gained a hard link while saving {path:?}"
@@ -4091,15 +4332,17 @@ fn save_replaceable_file(
     publish_replacement(path, temp_file)?;
 
     checkpoint(DurableSavePhase::SyncParent)?;
-    sync_parent_directories(path, created_directories)
+    sync_parent_directories(path, created_directories)?;
+    Ok(receipt)
 }
 
 fn save_in_place(
     path: &Path,
     identity: FileIdentity,
     regular_file: bool,
+    expected: Option<SaveExpectation>,
     write_contents: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
-) -> Result<()> {
+) -> Result<SaveReceipt> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true);
     #[cfg(unix)]
@@ -4112,13 +4355,16 @@ fn save_in_place(
         file_identity_for_file(&file)? == identity,
         "destination changed before writing {path:?}"
     );
+    if let Some(expected) = expected {
+        expected.check(Some(save_receipt(&file)?))?;
+    }
     if regular_file {
         file.set_len(0)?;
     }
     write_contents(&mut file)?;
     file.sync_all()?;
     ensure_path_identity(path, identity)?;
-    Ok(())
+    save_receipt(&file)
 }
 
 fn create_save_temp_file(path: &Path, new_file: bool) -> Result<tempfile::NamedTempFile> {

@@ -524,6 +524,201 @@ async fn test_realfs_save_replaces_contents(executor: BackgroundExecutor) {
     assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "Fresh");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_checked_fifo_save_does_not_open_a_reader() {
+    use std::os::unix::{
+        ffi::OsStrExt as _,
+        fs::{MetadataExt as _, OpenOptionsExt as _},
+    };
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("fifo");
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("FIFO path");
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let _reader = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .expect("FIFO reader");
+    let metadata = std::fs::metadata(&path).expect("FIFO metadata");
+    let modified = metadata
+        .modified()
+        .expect("mtime")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("mtime after epoch");
+    let expected = SaveExpectation::Present {
+        mtime: MTime::from_seconds_and_nanos(modified.as_secs(), modified.subsec_nanos()),
+        len: Some(metadata.len()),
+        inode: Some(metadata.ino()),
+        device: Some(metadata.dev()),
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let save_path = path.clone();
+    let save = std::thread::spawn(move || {
+        save_checked_with_checkpoint_for_test(
+            &save_path,
+            expected,
+            |_| Ok(()),
+            |phase| {
+                if phase == DurableSavePhase::WriteContents {
+                    sender.send(()).expect("checkpoint receiver");
+                    anyhow::bail!("stop at write checkpoint");
+                }
+                Ok(())
+            },
+        )
+    });
+    let blocked = receiver.recv_timeout(Duration::from_secs(2)).is_err();
+    // Release a regressed read open so a failing test can still join its worker.
+    let _rescue_writer = blocked.then(|| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .expect("release blocked reader")
+    });
+    let error = save
+        .join()
+        .expect("save worker")
+        .expect_err("checkpoint stops save");
+    assert!(error.to_string().contains("stop at write checkpoint"));
+    assert!(!blocked, "save blocked opening another FIFO reader");
+}
+
+#[cfg(unix)]
+#[gpui::test]
+async fn test_checked_save_creates_dangling_symlink_target(executor: BackgroundExecutor) {
+    executor.allow_parking();
+    let fs = RealFs::new(None, executor);
+    let directory = TempDir::new().expect("temporary directory");
+    let link = directory.path().join("link");
+    let target = directory.path().join("target");
+    std::os::unix::fs::symlink("target", &link).expect("dangling symlink");
+    assert!(fs.metadata(&link).await.expect("link metadata").is_some());
+    assert!(
+        fs.metadata_for_save(&link)
+            .await
+            .expect("target metadata")
+            .is_none()
+    );
+    fs.save_checked(
+        &link,
+        SaveContent::Bytes(b"saved"),
+        Some(SaveExpectation::Absent),
+    )
+    .await
+    .expect("create symlink target");
+    assert_eq!(std::fs::read(target).expect("saved target"), b"saved");
+    assert!(
+        std::fs::symlink_metadata(link)
+            .expect("link preserved")
+            .is_symlink()
+    );
+}
+
+#[gpui::test]
+async fn test_checked_save_rejects_different_device(executor: BackgroundExecutor) {
+    executor.allow_parking();
+    let fs = RealFs::new(None, executor);
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("file");
+    std::fs::write(&path, b"original").expect("original file");
+    let metadata = fs
+        .metadata_for_save(&path)
+        .await
+        .expect("metadata")
+        .expect("present");
+    let expected = SaveExpectation::Present {
+        mtime: metadata.mtime,
+        len: Some(metadata.len),
+        inode: Some(metadata.inode),
+        device: Some(metadata.device.wrapping_add(1)),
+    };
+    let error = fs
+        .save_checked(&path, SaveContent::Bytes(b"overwrite"), Some(expected))
+        .await
+        .expect_err("same inode on another device must not authorize an overwrite");
+    let receipt = error
+        .downcast_ref::<SaveConflict>()
+        .expect("save conflict")
+        .found
+        .expect("present target");
+    assert_eq!(receipt.device, metadata.device);
+    assert_eq!(receipt.inode, metadata.inode);
+    assert_eq!(std::fs::read(path).expect("unchanged file"), b"original");
+}
+
+#[gpui::test]
+async fn test_checked_save_rejects_replacements_during_publication(executor: BackgroundExecutor) {
+    // Real filesystem metadata can await OS work outside the deterministic scheduler.
+    executor.allow_parking();
+    let fs = RealFs::new(None, executor);
+    for phase in [
+        DurableSavePhase::ClassifyDestination,
+        DurableSavePhase::Publish,
+    ] {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "old").expect("original file");
+        let original = fs.metadata(&path).await.expect("metadata").expect("file");
+        let result = save_checked_with_checkpoint_for_test(
+            &path,
+            SaveExpectation::Present {
+                mtime: original.mtime,
+                len: Some(original.len),
+                inode: Some(original.inode),
+                device: Some(original.device),
+            },
+            |file| file.write_all(b"zed"),
+            |current| {
+                if current == phase {
+                    let replacement = directory.path().join("replacement");
+                    std::fs::write(&replacement, "external")?;
+                    std::fs::rename(replacement, &path)?;
+                }
+                Ok(())
+            },
+        );
+        assert!(
+            result
+                .expect_err("replacement must prevent publication")
+                .downcast_ref::<SaveConflict>()
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "external"
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_checked_save_receipt_precedes_external_refresh(executor: BackgroundExecutor) {
+    // Real filesystem metadata can await OS work outside the deterministic scheduler.
+    executor.allow_parking();
+    let fs = RealFs::new(None, executor);
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("file.txt");
+    let receipt = save_checked_with_checkpoint_for_test(
+        &path,
+        SaveExpectation::Absent,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::SyncParent {
+                let replacement = directory.path().join("replacement");
+                std::fs::write(&replacement, "external")?;
+                std::fs::rename(replacement, &path)?;
+            }
+            Ok(())
+        },
+    )
+    .expect("save");
+    let found = fs.metadata(&path).await.expect("metadata").expect("file");
+    assert_eq!(receipt.len, 3);
+    assert_ne!(receipt.inode, found.inode);
+    assert_eq!(found.len, 8);
+}
+
 #[test]
 fn test_durable_save_writer_failure_preserves_destination() {
     let temp_dir = TempDir::new().unwrap();

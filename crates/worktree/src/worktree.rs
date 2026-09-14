@@ -83,6 +83,26 @@ pub use worktree_settings::WorktreeSettings;
 
 pub const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 
+#[derive(Clone, Debug)]
+pub enum WriteFileError {
+    DiskChanged {
+        expected: DiskState,
+        found: DiskState,
+    },
+}
+
+impl fmt::Display for WriteFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DiskChanged { .. } => formatter.write_str(
+                "The file changed on disk. Reload it or explicitly confirm overwriting it.",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WriteFileError {}
+
 const RECONCILE_BATCH_SIZE: usize = 64;
 const RECONCILE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const RECONCILE_MAX_INTERVAL: Duration = Duration::from_secs(300);
@@ -995,11 +1015,12 @@ impl Worktree {
         line_ending: LineEnding,
         encoding: &'static Encoding,
         has_bom: bool,
+        expected: Option<DiskState>,
         cx: &Context<Worktree>,
     ) -> Task<Result<Arc<File>>> {
         match self {
             Worktree::Local(this) => {
-                this.write_file(path, text, line_ending, encoding, has_bom, cx)
+                this.write_file(path, text, line_ending, encoding, has_bom, expected, cx)
             }
             Worktree::Remote(_) => {
                 Task::ready(Err(anyhow!("remote worktree can't yet write files")))
@@ -1762,6 +1783,7 @@ impl LocalWorktree {
                             mtime: metadata.mtime,
                             size: Some(metadata.len),
                             inode: Some(metadata.inode),
+                            device: Some(metadata.device),
                         },
                         is_local: true,
                         is_private,
@@ -1821,6 +1843,7 @@ impl LocalWorktree {
                             mtime: metadata.mtime,
                             size: Some(metadata.len),
                             inode: Some(metadata.inode),
+                            device: Some(metadata.device),
                         },
                         is_local: true,
                         is_private,
@@ -1920,6 +1943,7 @@ impl LocalWorktree {
         line_ending: LineEnding,
         encoding: &'static Encoding,
         has_bom: bool,
+        expected: Option<DiskState>,
         cx: &Context<Worktree>,
     ) -> Task<Result<Arc<File>>> {
         let fs = self.fs.clone();
@@ -1930,10 +1954,34 @@ impl LocalWorktree {
             let fs = fs.clone();
             let abs_path = abs_path.clone();
             async move {
-                // For UTF-8, use the optimized `fs.save` which writes Rope chunks directly to disk
+                let expectation = match expected {
+                    Some(DiskState::Present {
+                        mtime,
+                        size,
+                        inode,
+                        device,
+                    }) => Some(fs::SaveExpectation::Present {
+                        mtime,
+                        len: size,
+                        inode,
+                        device,
+                    }),
+                    Some(DiskState::New | DiskState::Deleted) => Some(fs::SaveExpectation::Absent),
+                    Some(DiskState::Historic { .. }) => {
+                        anyhow::bail!("Cannot save a historic file without choosing a destination")
+                    }
+                    None => None,
+                };
+                // For UTF-8, write Rope chunks directly to disk
                 // without allocating a contiguous string.
                 if encoding == encoding_rs::UTF_8 && !has_bom {
-                    return fs.save(&abs_path, &text, line_ending).await;
+                    return fs
+                        .save_checked(
+                            &abs_path,
+                            fs::SaveContent::Text(&text, line_ending),
+                            expectation,
+                        )
+                        .await;
                 }
 
                 // For legacy encodings (e.g. Shift-JIS), we fall back to converting the entire Rope
@@ -1949,22 +1997,64 @@ impl LocalWorktree {
                 };
 
                 let bytes = encode_text(normalized_text, encoding, has_bom);
-                fs.save_bytes(&abs_path, &bytes).await
+                fs.save_checked(&abs_path, fs::SaveContent::Bytes(&bytes), expectation)
+                    .await
             }
         });
 
         cx.spawn(async move |this, cx| {
-            write.await?;
+            let receipt = write.await.map_err(|error| {
+                if let Some(conflict) = error.downcast_ref::<fs::SaveConflict>() {
+                    let expected = expected.unwrap_or(DiskState::New);
+                    let found = conflict
+                        .found
+                        .map(|receipt| DiskState::Present {
+                            mtime: receipt.mtime,
+                            size: Some(receipt.len),
+                            inode: Some(receipt.inode),
+                            device: Some(receipt.device),
+                        })
+                        .unwrap_or_else(|| {
+                            if expected == DiskState::New {
+                                DiskState::New
+                            } else {
+                                DiskState::Deleted
+                            }
+                        });
+                    WriteFileError::DiskChanged { expected, found }.into()
+                } else {
+                    error
+                }
+            })?;
+            let saved = DiskState::Present {
+                mtime: receipt.mtime,
+                size: Some(receipt.len),
+                inode: Some(receipt.inode),
+                device: Some(receipt.device),
+            };
             let entry = this
                 .update(cx, |this, cx| {
                     this.as_local_mut()
                         .unwrap()
                         .refresh_entry(path.clone(), None, cx)
                 })?
-                .await?;
+                .await;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    if fs.metadata(&abs_path).await?.is_none() {
+                        return Err(WriteFileError::DiskChanged {
+                            expected: saved,
+                            found: DiskState::Deleted,
+                        }
+                        .into());
+                    }
+                    return Err(error);
+                }
+            };
             let worktree = this.upgrade().context("worktree dropped")?;
-            if let Some(entry) = entry {
-                Ok(File::for_entry(entry, worktree))
+            let file = if let Some(entry) = entry {
+                File::for_entry(entry, worktree)
             } else {
                 let metadata = fs
                     .metadata(&abs_path)
@@ -1972,22 +2062,33 @@ impl LocalWorktree {
                     .with_context(|| {
                         format!("Fetching metadata after saving the excluded buffer {abs_path:?}")
                     })?
-                    .with_context(|| {
-                        format!("Excluded buffer {path:?} got removed during saving")
+                    .ok_or(WriteFileError::DiskChanged {
+                        expected: saved,
+                        found: DiskState::Deleted,
                     })?;
-                Ok(Arc::new(File {
+                Arc::new(File {
                     worktree,
                     path,
                     disk_state: DiskState::Present {
                         mtime: metadata.mtime,
                         size: Some(metadata.len),
                         inode: Some(metadata.inode),
+                        device: Some(metadata.device),
                     },
                     entry_id: None,
                     is_local: true,
                     is_private,
-                }))
+                })
+            };
+            let found = file.disk_state;
+            if saved.differs_from(found) {
+                return Err(WriteFileError::DiskChanged {
+                    expected: saved,
+                    found,
+                }
+                .into());
             }
+            Ok(file)
         })
     }
 
@@ -3945,6 +4046,9 @@ impl language::File for File {
             mtime: self.disk_state.mtime().map(|time| time.into()),
             is_deleted: self.disk_state.is_deleted(),
             is_historic: matches!(self.disk_state, DiskState::Historic { .. }),
+            size: self.disk_state.size(),
+            inode: self.disk_state.inode(),
+            device: self.disk_state.device(),
         }
     }
 
@@ -3991,6 +4095,7 @@ impl File {
                     mtime,
                     size: Some(entry.size),
                     inode: Some(entry.inode),
+                    device: entry.device,
                 }
             } else {
                 DiskState::New
@@ -4020,19 +4125,18 @@ impl File {
         } else if proto.is_deleted {
             DiskState::Deleted
         } else if let Some(mtime) = proto.mtime.map(&Into::into) {
-            // `proto::File` carries no size or identity, but `proto::Entry` carries both and
-            // the worktree they belong to is already here, so recover them from the entry
-            // rather than leaving this observation blind to every same-mtime rewrite. The
-            // entry is missing when its worktree update has not arrived yet, and both fields
-            // stay unknown until it does.
+            // Older peers omit size and identity, so recover missing fields from the worktree.
             let entry = proto
                 .entry_id
                 .map(ProjectEntryId::from_proto)
                 .and_then(|entry_id| worktree.read(cx).entry_for_id(entry_id));
             DiskState::Present {
                 mtime,
-                size: entry.map(|entry| entry.size),
-                inode: entry.map(|entry| entry.inode),
+                size: proto.size.or_else(|| entry.map(|entry| entry.size)),
+                inode: proto.inode.or_else(|| entry.map(|entry| entry.inode)),
+                device: proto
+                    .device
+                    .or_else(|| entry.and_then(|entry| entry.device)),
             }
         } else {
             DiskState::New
@@ -4076,6 +4180,7 @@ pub struct Entry {
     pub kind: EntryKind,
     pub path: Arc<RelPath>,
     pub inode: u64,
+    pub device: Option<u64>,
     pub mtime: Option<MTime>,
 
     pub canonical_path: Option<Arc<Path>>,
@@ -4259,6 +4364,7 @@ impl Entry {
             },
             path,
             inode: metadata.inode,
+            device: Some(metadata.device),
             mtime: Some(metadata.mtime),
             size: metadata.len,
             canonical_path,
@@ -7412,6 +7518,7 @@ impl<'a> From<&'a Entry> for proto::Entry {
             is_dir: entry.is_dir(),
             path: entry.path.as_ref().as_unix_str().to_owned(),
             inode: entry.inode,
+            device: entry.device,
             mtime: entry.mtime.map(|time| time.into()),
             is_ignored: entry.is_ignored,
             is_hidden: entry.is_hidden,
@@ -7452,6 +7559,7 @@ impl TryFrom<(&CharBag, &PathMatcher, proto::Entry)> for Entry {
             kind,
             path: path.into(),
             inode: entry.inode,
+            device: entry.device,
             mtime: entry.mtime.map(|time| time.into()),
             size: entry.size.unwrap_or(0),
             canonical_path: entry

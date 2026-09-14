@@ -49,6 +49,8 @@ message SaveBuffer {
   uint64 buffer_id = 2;
   repeated VectorClockEntry version = 3;
   optional ProjectPath new_path = 4;
+  bool overwrite = 5;
+  optional File overwrite_file = 6;
 }
 
 message CloseBuffer {
@@ -62,6 +64,9 @@ message BufferSaved {
   repeated VectorClockEntry version = 3;
   Timestamp mtime = 4;
   reserved 5;
+  optional uint64 size = 6;
+  optional uint64 inode = 7;
+  optional uint64 device = 8;
 }
 
 message BufferReloaded {
@@ -71,6 +76,9 @@ message BufferReloaded {
   Timestamp mtime = 4;
   reserved 5;
   LineEnding line_ending = 6;
+  optional uint64 size = 7;
+  optional uint64 inode = 8;
+  optional uint64 device = 9;
 }
 
 message ReloadBuffers {

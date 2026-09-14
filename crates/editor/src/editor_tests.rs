@@ -16194,6 +16194,7 @@ async fn test_read_only_buffer_is_not_formatted_or_saved(cx: &mut TestAppContext
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -16255,6 +16256,7 @@ async fn test_read_only_buffer_can_be_saved_as(cx: &mut TestAppContext) {
                 worktree_id,
                 path: rel_path("copy.rs").into(),
             },
+            None,
             window,
             cx,
         )
@@ -16388,6 +16390,7 @@ async fn test_format_and_save_skip_read_only_buffers_in_multi_buffer(cx: &mut Te
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: false,
                     force_format: false,
                     autosave: false,
@@ -16469,6 +16472,82 @@ async fn test_save_actions_are_hidden_for_read_only_files(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+async fn test_overwrite_confirmation_survives_formatting(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let path = Path::new(path!("/file.rs"));
+    fs.insert_file(path, b"original".to_vec()).await;
+    let project = Project::test(fs.clone(), [path], cx).await;
+    let registry = project.read_with(cx, |project, _| project.languages().clone());
+    registry.add(rust_lang());
+    let mut servers = registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        build_editor_with_project(project.clone(), multi_buffer, window, cx)
+    });
+    editor.update_in(cx, |editor, window, cx| {
+        editor.set_text("edited", window, cx)
+    });
+    fs.insert_file(path, b"first replacement".to_vec()).await;
+    cx.run_until_parked();
+    assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+    let server = servers.next().await.expect("language server");
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = std::sync::Arc::new(parking_lot::Mutex::new(Some(wait)));
+    let (started, formatting) = futures::channel::oneshot::channel();
+    let mut started = Some(started);
+    server.set_request_handler::<lsp::request::Formatting, _, _>(move |_, _| {
+        started
+            .take()
+            .expect("one request")
+            .send(())
+            .expect("signal formatting");
+        let wait = wait.lock().take().expect("one formatting request");
+        async move {
+            wait.await.expect("release formatter");
+            Ok(None)
+        }
+    });
+    let save = editor.update_in(cx, |editor, window, cx| {
+        editor.save(
+            SaveOptions {
+                overwrite: true,
+                format: true,
+                force_format: false,
+                autosave: false,
+            },
+            project.clone(),
+            window,
+            cx,
+        )
+    });
+    formatting.await.expect("formatting has started");
+    fs.insert_file(path, b"second replacement".to_vec()).await;
+    cx.run_until_parked();
+    release.send(()).expect("finish formatting");
+    save.await
+        .expect_err("later replacement must reject overwrite");
+    assert_eq!(
+        fs.read_file_sync(path).expect("external bytes"),
+        b"second replacement"
+    );
+    assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+}
+
+#[gpui::test]
 async fn test_document_format_during_save(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
@@ -16526,6 +16605,7 @@ async fn test_document_format_during_save(cx: &mut TestAppContext) {
             .update_in(cx, |editor, window, cx| {
                 editor.save(
                     SaveOptions {
+                        overwrite: false,
                         format: true,
                         force_format: false,
                         autosave: false,
@@ -16566,6 +16646,7 @@ async fn test_document_format_during_save(cx: &mut TestAppContext) {
             .update_in(cx, |editor, window, cx| {
                 editor.save(
                     SaveOptions {
+                        overwrite: false,
                         format: true,
                         force_format: false,
                         autosave: false,
@@ -16613,6 +16694,7 @@ async fn test_document_format_during_save(cx: &mut TestAppContext) {
             .update_in(cx, |editor, window, cx| {
                 editor.save(
                     SaveOptions {
+                        overwrite: false,
                         format: true,
                         force_format: false,
                         autosave: false,
@@ -16700,6 +16782,7 @@ async fn test_auto_formatter_skips_server_without_formatting(cx: &mut TestAppCon
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -16771,6 +16854,7 @@ async fn test_redo_after_noop_format(cx: &mut TestAppContext) {
             .update_in(cx, |editor, window, cx| {
                 editor.save(
                     SaveOptions {
+                        overwrite: false,
                         format: true,
                         force_format: false,
                         autosave: false,
@@ -16991,6 +17075,7 @@ async fn test_multibuffer_format_during_save(cx: &mut TestAppContext) {
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -17344,6 +17429,7 @@ async fn test_autosave_with_dirty_buffers(cx: &mut TestAppContext) {
     let save_task = editor.update_in(cx, |editor, window, cx| {
         editor.save(
             SaveOptions {
+                overwrite: false,
                 format: true,
                 force_format: false,
                 autosave: true,
@@ -17381,6 +17467,7 @@ async fn test_autosave_with_dirty_buffers(cx: &mut TestAppContext) {
     let save_task = editor.update_in(cx, |editor, window, cx| {
         editor.save(
             SaveOptions {
+                overwrite: false,
                 format: true,
                 force_format: false,
                 autosave: false,
@@ -17541,6 +17628,7 @@ async fn test_range_format_on_save_success(cx: &mut TestAppContext) {
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -17597,6 +17685,7 @@ async fn test_range_format_on_save_timeout(cx: &mut TestAppContext) {
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -17634,6 +17723,7 @@ async fn test_modifications_format_on_save(cx: &mut TestAppContext) {
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -17696,6 +17786,7 @@ async fn test_modifications_format_skips_without_git_diff(cx: &mut TestAppContex
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -17799,6 +17890,7 @@ async fn test_modifications_format_lsp_no_range_support(cx: &mut TestAppContext)
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -17836,6 +17928,7 @@ async fn test_modifications_format_lsp_returns_empty_edits(cx: &mut TestAppConte
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -17908,6 +18001,7 @@ async fn test_modifications_format_multiple_hunks(cx: &mut TestAppContext) {
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18086,6 +18180,7 @@ async fn test_modifications_format_excludes_staged_changes(cx: &mut TestAppConte
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18135,6 +18230,7 @@ async fn test_modifications_format_range_excludes_staged_hunk(cx: &mut TestAppCo
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18189,6 +18285,7 @@ async fn test_modifications_format_pure_unstaged_with_git(cx: &mut TestAppContex
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18236,6 +18333,7 @@ async fn test_modifications_format_no_unstaged_changes_with_git(cx: &mut TestApp
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18275,6 +18373,7 @@ async fn test_modifications_format_no_changes_with_git(cx: &mut TestAppContext) 
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18383,6 +18482,7 @@ async fn test_modifications_format_crlf_line_endings(cx: &mut TestAppContext) {
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18433,6 +18533,7 @@ async fn test_modifications_format_merge_boundary_one_row_gap(cx: &mut TestAppCo
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18484,6 +18585,7 @@ async fn test_modifications_if_available_empty_diff_skips_formatting(cx: &mut Te
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18541,6 +18643,7 @@ async fn test_modifications_if_available_no_git_falls_back_to_full_format(cx: &m
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18654,6 +18757,7 @@ async fn test_modifications_if_available_lsp_no_range_support_falls_back_to_full
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,
@@ -18682,6 +18786,7 @@ async fn test_range_format_not_called_for_clean_buffer(cx: &mut TestAppContext) 
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: false,
                     force_format: false,
                     autosave: false,
@@ -18724,6 +18829,7 @@ async fn test_range_format_respects_language_tab_size_override(cx: &mut TestAppC
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -19175,6 +19281,7 @@ async fn test_markdown_save_respects_disabled_trailing_whitespace_removal(cx: &m
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -40527,6 +40634,7 @@ async fn test_format_echoing_received_line_endings_keeps_cursor(cx: &mut TestApp
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,
@@ -40634,6 +40742,7 @@ async fn test_race_in_multibuffer_save(cx: &mut TestAppContext) {
 
         editor.save(
             SaveOptions {
+                overwrite: false,
                 format: true,
                 force_format: false,
                 autosave: true,
@@ -46191,6 +46300,7 @@ async fn assert_range_format_merge(
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     autosave: false,
                     force_format: false,

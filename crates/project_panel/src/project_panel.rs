@@ -4333,6 +4333,7 @@ impl ProjectPanel {
                     .join(RelPath::from_unix_str("\0").unwrap())
                     .into(),
                 inode: 0,
+                device: None,
                 mtime: parent_entry.mtime,
                 size: parent_entry.size,
                 is_ignored: parent_entry.is_ignored,

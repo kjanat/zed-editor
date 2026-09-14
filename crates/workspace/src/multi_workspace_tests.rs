@@ -1170,6 +1170,7 @@ async fn test_remote_project_root_dir_changes_update_groups(cx: &mut TestAppCont
                     is_dir: true,
                     path: "".to_string(),
                     inode: 1,
+                    device: None,
                     mtime: Some(proto::Timestamp {
                         seconds: 0,
                         nanos: 0,

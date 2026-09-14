@@ -20,7 +20,7 @@ use language::{
     },
 };
 use rpc::{
-    AnyProtoClient, ErrorCode, ErrorExt as _, TypedEnvelope,
+    AnyProtoClient, ErrorCode, ErrorCodeExt as _, ErrorExt as _, TypedEnvelope,
     proto::{self, PeerId},
 };
 
@@ -28,13 +28,20 @@ use settings::Settings;
 use std::{io, sync::Arc, time::Instant};
 use text::{BufferId, ReplicaId};
 use util::{ResultExt as _, TryFutureExt, debug_panic, maybe, rel_path::RelPath};
-use worktree::{File, PathChange, ProjectEntryId, Worktree, WorktreeId, WorktreeSettings};
+use worktree::{
+    File, PathChange, ProjectEntryId, Worktree, WorktreeId, WorktreeSettings, WriteFileError,
+};
 
 /// A set of open buffers.
 pub struct BufferStore {
     state: BufferStoreState,
     #[allow(clippy::type_complexity)]
     loading_buffers: HashMap<ProjectPath, Shared<Task<Result<Entity<Buffer>, Arc<anyhow::Error>>>>>,
+    #[allow(clippy::type_complexity)]
+    pending_saves: HashMap<
+        BufferId,
+        Shared<futures::future::BoxFuture<'static, Result<(), Option<WriteFileError>>>>,
+    >,
     worktree_store: Entity<WorktreeStore>,
     opened_buffers: HashMap<BufferId, OpenBuffer>,
     path_to_buffer_id: HashMap<ProjectPath, BufferId>,
@@ -136,27 +143,76 @@ impl RemoteBufferStore {
         &self,
         buffer_handle: Entity<Buffer>,
         new_path: Option<proto::ProjectPath>,
-        cx: &Context<BufferStore>,
+        overwrite: Option<proto::File>,
+        cx: &mut Context<BufferStore>,
     ) -> Task<Result<()>> {
         let buffer = buffer_handle.read(cx);
         let buffer_id = buffer.remote_id().into();
         let version = buffer.version();
         let rpc = self.upstream_client.clone();
         let project_id = self.project_id;
+        let reloaded = std::rc::Rc::new(std::cell::Cell::new(None));
+        let subscription = cx.subscribe(&buffer_handle, {
+            let reloaded = reloaded.clone();
+            move |_, buffer, event, cx| {
+                if matches!(event, BufferEvent::Reloaded) {
+                    reloaded.set(buffer.read(cx).disk_state_for_save());
+                }
+            }
+        });
         cx.spawn(async move |_, cx| {
+            let _subscription = subscription;
             let response = rpc
                 .request(proto::SaveBuffer {
                     project_id,
                     buffer_id,
                     new_path,
+                    overwrite: overwrite.is_some(),
+                    overwrite_file: overwrite,
                     version: serialize_version(&version),
                 })
-                .await?;
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    if error.error_code() == ErrorCode::FileChangedOnDisk {
+                        let found = conflict_disk_state(&error);
+                        if let Ok(Some(found)) = found.as_ref()
+                            && reloaded
+                                .get()
+                                .is_some_and(|reloaded| !reloaded.differs_from(*found))
+                        {
+                            return Err(error);
+                        }
+                        buffer_handle.update(cx, |buffer, cx| {
+                            buffer.set_conflict();
+                            if let Ok(Some(found)) = found.as_ref()
+                                && let Some(file) = File::from_dyn(buffer.file())
+                            {
+                                let mut file = file.clone();
+                                file.disk_state = *found;
+                                buffer.file_updated(Arc::new(file), cx);
+                            }
+                            cx.notify();
+                        });
+                        found.context("Invalid disk identity in save conflict response")?;
+                    }
+                    return Err(error);
+                }
+            };
             let version = deserialize_version(&response.version);
             let mtime = response.mtime.map(|mtime| mtime.into());
 
             buffer_handle.update(cx, |buffer, cx| {
-                buffer.did_save(version.clone(), mtime, cx);
+                apply_save_receipt(
+                    buffer,
+                    version.clone(),
+                    mtime,
+                    response.size,
+                    response.inode,
+                    response.device,
+                    cx,
+                );
             });
 
             Ok(())
@@ -391,6 +447,7 @@ impl LocalBufferStore {
         worktree: Entity<Worktree>,
         path: Arc<RelPath>,
         mut has_changed_file: bool,
+        overwrite: Option<proto::File>,
         cx: &mut Context<BufferStore>,
     ) -> Task<Result<()>> {
         let buffer = buffer_handle.read(cx);
@@ -402,6 +459,35 @@ impl LocalBufferStore {
         let version = buffer.version();
         let buffer_id = buffer.remote_id();
         let file = buffer.file().cloned();
+        let same_path = file.as_ref().is_some_and(|file| {
+            file.worktree_id(cx) == worktree.read(cx).id() && file.path() == &path
+        });
+        let expected = if let Some(confirmed) = overwrite {
+            if confirmed.worktree_id != worktree.read(cx).id().to_proto()
+                || confirmed.path != path.as_unix_str()
+                || confirmed.is_historic
+            {
+                return Task::ready(Err(anyhow!(
+                    "Overwrite confirmation belongs to a different file"
+                )));
+            }
+            Some(if confirmed.is_deleted {
+                DiskState::Deleted
+            } else if let Some(mtime) = confirmed.mtime {
+                DiskState::Present {
+                    mtime: mtime.into(),
+                    size: confirmed.size,
+                    inode: confirmed.inode,
+                    device: confirmed.device,
+                }
+            } else {
+                DiskState::New
+            })
+        } else if has_changed_file {
+            Some(DiskState::New)
+        } else {
+            buffer.disk_state_for_save()
+        };
         if file
             .as_ref()
             .is_some_and(|file| file.disk_state() == DiskState::New)
@@ -410,11 +496,46 @@ impl LocalBufferStore {
         }
 
         let save = worktree.update(cx, |worktree, cx| {
-            worktree.write_file(path, text, line_ending, encoding, has_bom, cx)
+            worktree.write_file(path, text, line_ending, encoding, has_bom, expected, cx)
         });
 
         cx.spawn(async move |this, cx| {
-            let new_file = save.await?;
+            let new_file = match save.await {
+                Ok(file) => file,
+                Err(error) => {
+                    if same_path
+                        && let Some(WriteFileError::DiskChanged { found, .. }) =
+                            error.downcast_ref::<WriteFileError>()
+                    {
+                        let reload = buffer_handle.update(cx, |buffer, cx| {
+                            let dirty = buffer.is_dirty();
+                            if let Some(file) = File::from_dyn(buffer.file()) {
+                                let mut file = file.clone();
+                                file.disk_state = *found;
+                                if !dirty && matches!(found, DiskState::Present { .. }) {
+                                    return Some(buffer.reload_from_file(Arc::new(file), cx));
+                                }
+                                buffer.file_updated(Arc::new(file), cx);
+                            }
+                            if dirty || matches!(found, DiskState::Deleted) {
+                                buffer.set_conflict();
+                                cx.notify();
+                            }
+                            None
+                        });
+                        if let Some(reload) = reload {
+                            if reload.await.is_err() {
+                                buffer_handle.update(cx, |buffer, cx| {
+                                    buffer.set_conflict();
+                                    cx.notify();
+                                });
+                                return Err(error.context("Failed to reload the changed file"));
+                            }
+                        }
+                    }
+                    return Err(error);
+                }
+            };
             let mtime = new_file.disk_state().mtime();
             this.update(cx, |this, cx| {
                 if let Some((downstream_client, project_id)) = this.downstream_client.clone() {
@@ -433,15 +554,15 @@ impl LocalBufferStore {
                             buffer_id: buffer_id.to_proto(),
                             version: serialize_version(&version),
                             mtime: mtime.map(|time| time.into()),
+                            size: new_file.disk_state().size(),
+                            inode: new_file.disk_state().inode(),
+                            device: new_file.disk_state().device(),
                         })
                         .log_err();
                 }
             })?;
             buffer_handle.update(cx, |buffer, cx| {
-                if has_changed_file {
-                    buffer.file_updated(new_file, cx);
-                }
-                buffer.did_save(version.clone(), mtime, cx);
+                buffer.did_save_with_file(version.clone(), new_file, cx);
             });
             Ok(())
         })
@@ -568,6 +689,7 @@ impl LocalBufferStore {
                             mtime,
                             size: Some(entry.size),
                             inode: Some(entry.inode),
+                            device: entry.device,
                         },
                         None => old_file.disk_state,
                     },
@@ -653,19 +775,21 @@ impl LocalBufferStore {
     fn save_buffer(
         &self,
         buffer: Entity<Buffer>,
+        overwrite: Option<proto::File>,
         cx: &mut Context<BufferStore>,
     ) -> Task<Result<()>> {
         let Some(file) = File::from_dyn(buffer.read(cx).file()) else {
             return Task::ready(Err(anyhow!("buffer doesn't have a file")));
         };
         let worktree = file.worktree.clone();
-        self.save_local_buffer(buffer, worktree, file.path.clone(), false, cx)
+        self.save_local_buffer(buffer, worktree, file.path.clone(), false, overwrite, cx)
     }
 
     fn save_buffer_as(
         &self,
         buffer: Entity<Buffer>,
         path: ProjectPath,
+        expected: Option<proto::File>,
         cx: &mut Context<BufferStore>,
     ) -> Task<Result<()>> {
         let Some(worktree) = self
@@ -675,7 +799,7 @@ impl LocalBufferStore {
         else {
             return Task::ready(Err(anyhow!("no such worktree")));
         };
-        self.save_local_buffer(buffer, worktree, path.path, true, cx)
+        self.save_local_buffer(buffer, worktree, path.path, true, expected, cx)
     }
 
     #[ztracing::instrument(skip_all)]
@@ -852,6 +976,7 @@ impl BufferStore {
             path_to_buffer_id: Default::default(),
             shared_buffers: Default::default(),
             loading_buffers: Default::default(),
+            pending_saves: Default::default(),
             non_searchable_buffers: Default::default(),
             worktree_store,
             project_search: Default::default(),
@@ -877,6 +1002,7 @@ impl BufferStore {
             opened_buffers: Default::default(),
             path_to_buffer_id: Default::default(),
             loading_buffers: Default::default(),
+            pending_saves: Default::default(),
             shared_buffers: Default::default(),
             non_searchable_buffers: Default::default(),
             worktree_store,
@@ -977,9 +1103,39 @@ impl BufferStore {
         buffer: Entity<Buffer>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.save_buffer_with_overwrite(buffer, false, cx)
+    }
+
+    pub fn save_buffer_with_overwrite(
+        &mut self,
+        buffer: Entity<Buffer>,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let file = overwrite
+            .then(|| buffer.read(cx).file().map(|file| file.to_proto(cx)))
+            .flatten();
+        self.save_buffer_with_overwrite_file(buffer, file, cx)
+    }
+
+    pub fn save_buffer_with_overwrite_file(
+        &mut self,
+        buffer: Entity<Buffer>,
+        overwrite_file: Option<proto::File>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.enqueue_save(buffer, None, overwrite_file, cx)
+    }
+
+    fn save_buffer_impl(
+        &mut self,
+        buffer: Entity<Buffer>,
+        overwrite: Option<proto::File>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         match &mut self.state {
-            BufferStoreState::Local(this) => this.save_buffer(buffer, cx),
-            BufferStoreState::Remote(this) => this.save_remote_buffer(buffer, None, cx),
+            BufferStoreState::Local(this) => this.save_buffer(buffer, overwrite, cx),
+            BufferStoreState::Remote(this) => this.save_remote_buffer(buffer, None, overwrite, cx),
         }
     }
 
@@ -989,11 +1145,122 @@ impl BufferStore {
         path: ProjectPath,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.save_buffer_as_with_disk_state(buffer, path, None, cx)
+    }
+
+    pub fn save_buffer_as_with_disk_state(
+        &mut self,
+        buffer: Entity<Buffer>,
+        path: ProjectPath,
+        expected: Option<DiskState>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let expected = expected.unwrap_or_else(|| {
+            self.worktree_store
+                .read(cx)
+                .worktree_for_id(path.worktree_id, cx)
+                .and_then(|worktree| {
+                    worktree
+                        .read(cx)
+                        .entry_for_path(&path.path)
+                        .and_then(|entry| {
+                            Some(DiskState::Present {
+                                mtime: entry.mtime?,
+                                size: Some(entry.size),
+                                inode: Some(entry.inode),
+                                device: entry.device,
+                            })
+                        })
+                })
+                .unwrap_or(DiskState::New)
+        });
+        let file = proto::File {
+            worktree_id: path.worktree_id.to_proto(),
+            path: path.path.as_unix_str().to_owned(),
+            mtime: expected.mtime().map(Into::into),
+            size: expected.size(),
+            inode: expected.inode(),
+            device: expected.device(),
+            is_deleted: expected.is_deleted(),
+            ..Default::default()
+        };
+        self.enqueue_save(buffer, Some(path), Some(file), cx)
+    }
+
+    fn enqueue_save(
+        &mut self,
+        buffer: Entity<Buffer>,
+        path: Option<ProjectPath>,
+        overwrite: Option<proto::File>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let buffer_id = buffer.read(cx).remote_id();
+        let (sender, receiver) = oneshot::channel();
+        let previous = self.pending_saves.remove(&buffer_id);
+        let completion = async move { receiver.await.unwrap_or(Err(None)) }
+            .boxed()
+            .shared();
+        let (result_sender, result_receiver) = oneshot::channel();
+        // Caller cancellation must not drop an in-flight write or skip applying its receipt.
+        self.pending_saves.insert(buffer_id, completion.clone());
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                if let Some(previous) = previous {
+                    match previous.await {
+                        Ok(()) => {}
+                        Err(Some(error)) => return Err(error.into()),
+                        Err(None) => anyhow::bail!(
+                            "preceding save failed; resolve its error before retrying"
+                        ),
+                    }
+                }
+                // Snapshot text, path and disk identity only after the preceding receipt is applied.
+                this.update(cx, |this, cx| match path {
+                    Some(path) => this.save_buffer_as_impl(buffer, path, overwrite, cx),
+                    None => this.save_buffer_impl(buffer, overwrite, cx),
+                })?
+                .await
+            }
+            .await;
+            this.update(cx, |this, _| {
+                if this
+                    .pending_saves
+                    .get(&buffer_id)
+                    .is_some_and(|pending| pending.ptr_eq(&completion))
+                {
+                    this.pending_saves.remove(&buffer_id);
+                }
+            })
+            .log_err();
+            let completion_result = result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|error| error.downcast_ref::<WriteFileError>().cloned());
+            if sender.send(completion_result).is_err() {
+                log::debug!("save completion receiver dropped");
+            }
+            if let Err(result) = result_sender.send(result) {
+                result.log_err();
+            }
+        })
+        .detach();
+        cx.spawn(async move |_, _| result_receiver.await.context("save operation dropped")?)
+    }
+
+    fn save_buffer_as_impl(
+        &mut self,
+        buffer: Entity<Buffer>,
+        path: ProjectPath,
+        expected: Option<proto::File>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let old_file = buffer.read(cx).file().cloned();
         let task = match &self.state {
-            BufferStoreState::Local(this) => this.save_buffer_as(buffer.clone(), path, cx),
+            BufferStoreState::Local(this) => {
+                this.save_buffer_as(buffer.clone(), path, expected, cx)
+            }
             BufferStoreState::Remote(this) => {
-                this.save_remote_buffer(buffer.clone(), Some(path.to_proto()), cx)
+                this.save_remote_buffer(buffer.clone(), Some(path.to_proto()), expected, cx)
             }
         };
         cx.spawn(async move |this, cx| {
@@ -1027,7 +1294,8 @@ impl BufferStore {
         buffer_entity.update(cx, move |_, cx| {
             cx.on_release(move |buffer, cx| {
                 handle
-                    .update(cx, |_, cx| {
+                    .update(cx, |this, cx| {
+                        this.pending_saves.remove(&buffer.remote_id());
                         cx.emit(BufferStoreEvent::BufferDropped(buffer.remote_id()))
                     })
                     .ok();
@@ -1220,6 +1488,9 @@ impl BufferStore {
                         buffer_id: buffer.remote_id().to_proto(),
                         version: serialize_version(&buffer.version()),
                         mtime: buffer.saved_mtime().map(|t| t.into()),
+                        size: buffer.disk_state_for_save().and_then(DiskState::size),
+                        inode: buffer.disk_state_for_save().and_then(DiskState::inode),
+                        device: buffer.disk_state_for_save().and_then(DiskState::device),
                         line_ending: serialize_line_ending(buffer.line_ending()) as i32,
                     })
                     .log_err();
@@ -1335,6 +1606,9 @@ impl BufferStore {
                         buffer_id: buffer_id.into(),
                         version: language::proto::serialize_version(buffer.saved_version()),
                         mtime: buffer.saved_mtime().map(|time| time.into()),
+                        size: buffer.disk_state_for_save().and_then(DiskState::size),
+                        inode: buffer.disk_state_for_save().and_then(DiskState::inode),
+                        device: buffer.disk_state_for_save().and_then(DiskState::device),
                         line_ending: language::proto::serialize_line_ending(buffer.line_ending())
                             as i32,
                     })
@@ -1468,12 +1742,66 @@ impl BufferStore {
             && let Some(new_path) = ProjectPath::from_proto(new_path)
         {
             this.update(&mut cx, |this, cx| {
-                this.save_buffer_as(buffer.clone(), new_path, cx)
+                let expected = envelope.payload.overwrite_file.or_else(|| {
+                    Some(proto::File {
+                        worktree_id: new_path.worktree_id.to_proto(),
+                        path: new_path.path.as_unix_str().to_owned(),
+                        ..Default::default()
+                    })
+                });
+                this.enqueue_save(buffer.clone(), Some(new_path), expected, cx)
             })
             .await?;
         } else {
-            this.update(&mut cx, |this, cx| this.save_buffer(buffer.clone(), cx))
-                .await?;
+            this.update(&mut cx, |this, cx| {
+                if envelope.payload.overwrite && envelope.payload.overwrite_file.is_none() {
+                    return Task::ready(Err(anyhow!(
+                        "Overwrite confirmation is missing its file identity"
+                    )));
+                }
+                this.save_buffer_with_overwrite_file(
+                    buffer.clone(),
+                    envelope.payload.overwrite_file,
+                    cx,
+                )
+            })
+            .await
+            .map_err(|error| {
+                if let Some(WriteFileError::DiskChanged { found, .. }) =
+                    error.downcast_ref::<WriteFileError>()
+                {
+                    let mut response = ErrorCode::FileChangedOnDisk.message(error.to_string());
+                    if let Some((seconds, nanos)) = found
+                        .mtime()
+                        .and_then(fs::MTime::to_seconds_and_nanos_for_persistence)
+                    {
+                        response = response
+                            .with_tag("mtime_seconds", &seconds.to_string())
+                            .with_tag("mtime_nanos", &nanos.to_string());
+                    }
+                    if let Some(size) = found.size() {
+                        response = response.with_tag("size", &size.to_string());
+                    }
+                    if let Some(inode) = found.inode() {
+                        response = response.with_tag("inode", &inode.to_string());
+                    }
+                    if let Some(device) = found.device() {
+                        response = response.with_tag("device", &device.to_string());
+                    }
+                    response
+                        .with_tag(
+                            "deleted",
+                            if matches!(found, DiskState::Deleted) {
+                                "true"
+                            } else {
+                                "false"
+                            },
+                        )
+                        .into()
+                } else {
+                    error
+                }
+            })?;
         }
 
         Ok(buffer.read_with(&cx, |buffer, _| proto::BufferSaved {
@@ -1481,6 +1809,9 @@ impl BufferStore {
             buffer_id: buffer_id.into(),
             version: serialize_version(buffer.saved_version()),
             mtime: buffer.saved_mtime().map(|time| time.into()),
+            size: buffer.disk_state_for_save().and_then(DiskState::size),
+            inode: buffer.disk_state_for_save().and_then(DiskState::inode),
+            device: buffer.disk_state_for_save().and_then(DiskState::device),
         }))
     }
 
@@ -1521,7 +1852,15 @@ impl BufferStore {
         this.update(&mut cx, move |this, cx| {
             if let Some(buffer) = this.get_possibly_incomplete(buffer_id) {
                 buffer.update(cx, |buffer, cx| {
-                    buffer.did_save(version, mtime, cx);
+                    apply_save_receipt(
+                        buffer,
+                        version,
+                        mtime,
+                        envelope.payload.size,
+                        envelope.payload.inode,
+                        envelope.payload.device,
+                        cx,
+                    );
                 });
             }
 
@@ -1531,6 +1870,9 @@ impl BufferStore {
                         project_id: *project_id,
                         buffer_id: buffer_id.into(),
                         mtime: envelope.payload.mtime,
+                        size: envelope.payload.size,
+                        inode: envelope.payload.inode,
+                        device: envelope.payload.device,
                         version: envelope.payload.version,
                     })
                     .log_err();
@@ -1555,7 +1897,23 @@ impl BufferStore {
         this.update(&mut cx, |this, cx| {
             if let Some(buffer) = this.get_possibly_incomplete(buffer_id) {
                 buffer.update(cx, |buffer, cx| {
-                    buffer.did_reload(version, line_ending, mtime, cx);
+                    if let Some(mtime) = mtime
+                        && (envelope.payload.size.is_some() || envelope.payload.inode.is_some())
+                    {
+                        buffer.did_reload_with_disk_state(
+                            version,
+                            line_ending,
+                            DiskState::Present {
+                                mtime,
+                                size: envelope.payload.size,
+                                inode: envelope.payload.inode,
+                                device: envelope.payload.device,
+                            },
+                            cx,
+                        );
+                    } else {
+                        buffer.did_reload(version, line_ending, mtime, cx);
+                    }
                 });
             }
 
@@ -1565,6 +1923,9 @@ impl BufferStore {
                         project_id: *project_id,
                         buffer_id: buffer_id.into(),
                         mtime: envelope.payload.mtime,
+                        size: envelope.payload.size,
+                        inode: envelope.payload.inode,
+                        device: envelope.payload.device,
                         version: envelope.payload.version,
                         line_ending: envelope.payload.line_ending,
                     })
@@ -1909,4 +2270,52 @@ fn apply_initial_line_ending(buffer: &mut Buffer, cx: &mut Context<Buffer>) {
     if buffer.line_ending() != desired {
         buffer.set_line_ending(desired, cx);
     }
+}
+
+fn apply_save_receipt(
+    buffer: &mut Buffer,
+    version: clock::Global,
+    mtime: Option<fs::MTime>,
+    size: Option<u64>,
+    inode: Option<u64>,
+    device: Option<u64>,
+    cx: &mut Context<Buffer>,
+) {
+    if let Some(mtime) = mtime
+        && (size.is_some() || inode.is_some())
+    {
+        buffer.did_save_with_disk_state(
+            version,
+            DiskState::Present {
+                mtime,
+                size,
+                inode,
+                device,
+            },
+            cx,
+        );
+    } else {
+        buffer.did_save(version, mtime, cx);
+    }
+}
+
+fn conflict_disk_state(error: &anyhow::Error) -> Result<Option<DiskState>> {
+    if error.error_tag("deleted") == Some("true") {
+        return Ok(Some(DiskState::Deleted));
+    }
+    let Some(seconds) = error.error_tag("mtime_seconds") else {
+        return Ok(None);
+    };
+    Ok(Some(DiskState::Present {
+        mtime: fs::MTime::from_seconds_and_nanos(
+            seconds.parse()?,
+            error
+                .error_tag("mtime_nanos")
+                .context("missing conflict timestamp")?
+                .parse()?,
+        ),
+        size: error.error_tag("size").map(str::parse).transpose()?,
+        inode: error.error_tag("inode").map(str::parse).transpose()?,
+        device: error.error_tag("device").map(str::parse).transpose()?,
+    }))
 }

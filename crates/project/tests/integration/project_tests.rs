@@ -8910,6 +8910,579 @@ async fn test_save_file(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_failed_conflict_reload_allows_confirmed_overwrite(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({"file.txt": "original"}))
+        .await;
+    let path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    cx.run_until_parked();
+    fs.pause_events();
+    fs.insert_file(path, vec![0; 1024]).await;
+    project
+        .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+        .await
+        .expect_err("binary replacement cannot reload");
+    buffer.read_with(cx, |buffer, _| {
+        assert_eq!(buffer.text(), "original");
+        assert!(buffer.has_conflict());
+    });
+    assert_eq!(
+        fs.read_file_sync(path).expect("external bytes"),
+        vec![0; 1024]
+    );
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer_with_overwrite(buffer.clone(), true, cx)
+        })
+        .await
+        .expect("confirmed overwrite recovers");
+    assert_eq!(fs.read_file_sync(path).expect("saved bytes"), b"original");
+    assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+}
+
+#[gpui::test(iterations = 20)]
+async fn test_failed_save_as_preserves_source_identity(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({"file.txt": "original"}))
+        .await;
+    let source = Path::new(path!("/dir/file.txt"));
+    let destination = Path::new(path!("/dir/new.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(source, cx))
+        .await
+        .expect("open buffer");
+    cx.run_until_parked();
+    fs.pause_events();
+    let original = buffer.read_with(cx, |buffer, _| buffer.file().expect("file").disk_state());
+    let save = project.update(cx, |project, cx| {
+        let worktree_id = project
+            .worktrees(cx)
+            .next()
+            .expect("worktree")
+            .read(cx)
+            .id();
+        project.save_buffer_as(
+            buffer.clone(),
+            ProjectPath {
+                worktree_id,
+                path: rel_path("new.txt").into(),
+            },
+            cx,
+        )
+    });
+    while fs.write_count_for_path(destination) == 0 {
+        assert!(cx.executor().tick(), "save must publish");
+    }
+    fs.set_mtime(destination, fs::MTime::from_seconds_and_nanos(1, 0))
+        .expect("replace destination metadata before refresh");
+    save.await.expect_err("post-publication replacement");
+    buffer.read_with(cx, |buffer, _| {
+        let file = buffer.file().expect("source file");
+        assert_eq!(file.path().as_ref(), rel_path("file.txt"));
+        assert_eq!(file.disk_state(), original);
+        assert!(!buffer.has_conflict());
+    });
+    project
+        .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+        .await
+        .expect("original file remains saveable");
+}
+
+#[gpui::test]
+async fn test_overwrite_confirmation_rejects_a_later_replacement(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({"file.txt": "original"}))
+        .await;
+    let path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+    fs.insert_file(path, b"first replacement".to_vec()).await;
+    cx.run_until_parked();
+    let confirmed = buffer.read_with(cx, |buffer, cx| buffer.file().expect("file").to_proto(cx));
+    fs.insert_file(path, b"second replacement".to_vec()).await;
+    cx.run_until_parked();
+    project
+        .update(cx, |project, cx| {
+            project.save_buffers_with_overwrite_files(
+                HashSet::from_iter([buffer.clone()]),
+                HashMap::from_iter([(buffer.clone(), confirmed)]),
+                cx,
+            )
+        })
+        .await
+        .expect_err("confirmation cannot authorize a later replacement");
+    assert_eq!(
+        fs.read_file_sync(path).expect("external bytes"),
+        b"second replacement"
+    );
+    assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+}
+
+#[gpui::test(iterations = 20)]
+async fn test_queued_saves_preserve_disk_conflicts(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({"file.txt": "original"}))
+        .await;
+    let path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+    cx.run_until_parked();
+    fs.pause_events();
+    fs.insert_file(path, b"external".to_vec()).await;
+    let first = project.update(cx, |project, cx| project.save_buffer(buffer.clone(), cx));
+    let second = project.update(cx, |project, cx| project.save_buffer(buffer.clone(), cx));
+    let (first, second) = futures::join!(first, second);
+    for result in [first, second] {
+        assert!(matches!(
+            result
+                .expect_err("conflict")
+                .downcast_ref::<worktree::WriteFileError>(),
+            Some(worktree::WriteFileError::DiskChanged { .. })
+        ));
+    }
+    assert_eq!(
+        fs.read_file_sync(path).expect("external bytes"),
+        b"external"
+    );
+}
+
+#[gpui::test(iterations = 20)]
+async fn test_post_save_deletion_is_a_disk_conflict(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({"file.txt": "original"}))
+        .await;
+    let path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    cx.run_until_parked();
+    fs.pause_events();
+    let writes = fs.write_count_for_path(path);
+    let save = project.update(cx, |project, cx| project.save_buffer(buffer.clone(), cx));
+    while fs.write_count_for_path(path) == writes {
+        assert!(cx.executor().tick(), "save must publish");
+    }
+    // FakeFs only yields here; keep the pending refresh paused until removal finishes.
+    futures::executor::block_on(fs.remove_file(path, Default::default()))
+        .expect("remove published file");
+    let error = save.await.expect_err("published file disappeared");
+    assert!(matches!(
+        error.downcast_ref::<worktree::WriteFileError>(),
+        Some(worktree::WriteFileError::DiskChanged {
+            found: DiskState::Deleted,
+            ..
+        })
+    ));
+    assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer_with_overwrite(buffer.clone(), true, cx)
+        })
+        .await
+        .expect("confirm recreation");
+    assert_eq!(
+        fs.read_file_sync(path).expect("recreated bytes"),
+        b"original"
+    );
+}
+
+#[cfg(unix)]
+#[gpui::test]
+async fn test_save_as_creates_dangling_symlink_target(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let source = directory.path().join("source.txt");
+    let link = directory.path().join("link.txt");
+    std::fs::write(&source, "saved contents").expect("source file");
+    std::os::unix::fs::symlink("target.txt", &link).expect("dangling symlink");
+    let project = Project::test(RealFs::new(None, cx.executor()), [directory.path()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(&source, cx))
+        .await
+        .expect("open source");
+    let expected = project
+        .read_with(cx, |project, cx| {
+            project.save_as_disk_state(link.clone(), cx)
+        })
+        .await
+        .expect("capture target");
+    assert_eq!(expected, DiskState::New);
+    project
+        .update(cx, |project, cx| {
+            let worktree_id = project
+                .worktrees(cx)
+                .next()
+                .expect("worktree")
+                .read(cx)
+                .id();
+            project.save_buffer_as_with_disk_state(
+                buffer.clone(),
+                ProjectPath {
+                    worktree_id,
+                    path: rel_path("link.txt").into(),
+                },
+                Some(expected),
+                cx,
+            )
+        })
+        .await
+        .expect("save through dangling symlink");
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("target.txt")).expect("target"),
+        "saved contents"
+    );
+    assert!(
+        std::fs::symlink_metadata(link)
+            .expect("preserved link")
+            .is_symlink()
+    );
+}
+
+#[gpui::test]
+async fn test_save_as_checks_confirmed_destination(cx: &mut TestAppContext) {
+    init_test(cx);
+    for existing in [false, true] {
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/dir"), json!({"file.txt": "original"}))
+            .await;
+        let path = Path::new(path!("/dir/new.txt"));
+        if existing {
+            fs.insert_file(path, b"confirmed".to_vec()).await;
+        }
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/dir/file.txt"), cx)
+            })
+            .await
+            .expect("open buffer");
+        let expected = project
+            .read_with(cx, |project, cx| {
+                project.save_as_disk_state(path.to_owned(), cx)
+            })
+            .await
+            .expect("capture destination");
+        fs.insert_file(path, b"unconfirmed".to_vec()).await;
+        cx.run_until_parked();
+        project
+            .update(cx, |project, cx| {
+                let worktree_id = project
+                    .worktrees(cx)
+                    .next()
+                    .expect("worktree")
+                    .read(cx)
+                    .id();
+                project.save_buffer_as_with_disk_state(
+                    buffer.clone(),
+                    ProjectPath {
+                        worktree_id,
+                        path: rel_path("new.txt").into(),
+                    },
+                    Some(expected),
+                    cx,
+                )
+            })
+            .await
+            .expect_err("new destination must not be overwritten");
+        assert_eq!(
+            fs.read_file_sync(path).expect("external bytes"),
+            b"unconfirmed"
+        );
+        buffer.read_with(cx, |buffer, _| {
+            assert_eq!(
+                buffer.file().expect("source").path().as_ref(),
+                rel_path("file.txt")
+            );
+            assert!(!buffer.has_conflict());
+        });
+    }
+}
+
+#[gpui::test(iterations = 20)]
+async fn test_overlapping_saves_use_latest_receipt(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "file.txt": "original" }))
+        .await;
+    let file_path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+        .await
+        .expect("open buffer");
+    cx.run_until_parked();
+    fs.pause_events();
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+    let store = project.read_with(cx, |project, _| project.buffer_store().clone());
+    let first = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let second = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let third = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let (first, second, third) = futures::join!(first, second, third);
+    first.expect("first save");
+    second.expect("overlapping second save");
+    third.expect("overlapping third save");
+    let first = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let canceled = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    let last = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    drop(canceled);
+    let (first, last) = futures::join!(first, last);
+    first.expect("save preceding canceled queue entry");
+    last.expect("canceled queue entry must not break ordering");
+    let canceled = store.update(cx, |store, cx| store.save_buffer(buffer.clone(), cx));
+    drop(canceled);
+    store
+        .update(cx, |store, cx| store.save_buffer(buffer.clone(), cx))
+        .await
+        .expect("retry after a canceled save");
+    assert_eq!(
+        fs.load(file_path).await.expect("read file"),
+        "edited original"
+    );
+    buffer.read_with(cx, |buffer, _| {
+        assert!(!buffer.has_conflict());
+        assert!(!buffer.is_dirty());
+    });
+}
+
+#[gpui::test(iterations = 20)]
+async fn test_cancel_save_after_publication_keeps_receipt(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "file.txt": "original" }))
+        .await;
+    let path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    cx.run_until_parked();
+    fs.pause_events();
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+    let writes = fs.write_count_for_path(path);
+    let save = project.update(cx, |project, cx| project.save_buffer(buffer.clone(), cx));
+    while fs.write_count_for_path(path) == writes {
+        assert!(cx.executor().tick(), "save must publish its write");
+    }
+    assert!(
+        buffer.read_with(cx, |buffer, _| buffer.is_dirty()),
+        "receipt must still be pending"
+    );
+    drop(save);
+    project
+        .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+        .await
+        .expect("next save must wait for the canceled caller's receipt");
+    assert_eq!(
+        fs.read_file_sync(path).expect("read file"),
+        b"edited original"
+    );
+    buffer.read_with(cx, |buffer, _| {
+        assert!(!buffer.is_dirty());
+        assert!(!buffer.has_conflict());
+    });
+}
+
+#[gpui::test]
+async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    for (encoding, has_bom) in [
+        (encoding_rs::UTF_8, false),
+        (encoding_rs::UTF_8, true),
+        (encoding_rs::UTF_16LE, true),
+    ] {
+        for dirty in [false, true] {
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(path!("/dir"), json!({})).await;
+            let file_path = Path::new(path!("/dir/file.txt"));
+            fs.insert_file(
+                file_path,
+                language::encode_text("original".into(), encoding, has_bom),
+            )
+            .await;
+            let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+            let buffer = project
+                .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+                .await
+                .expect("open buffer");
+            if dirty {
+                buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+            }
+            cx.run_until_parked();
+            let original = fs
+                .metadata(file_path)
+                .await
+                .expect("metadata")
+                .expect("file");
+            fs.pause_events();
+            let replacement = language::encode_text("replaced".into(), encoding, has_bom);
+            fs.insert_file(file_path, replacement.clone()).await;
+            fs.set_mtime(file_path, original.mtime)
+                .expect("preserve timestamp");
+            assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+
+            let error = project
+                .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                .await
+                .expect_err("save must detect replacement without watcher events");
+            assert!(matches!(
+                error.downcast_ref::<worktree::WriteFileError>(),
+                Some(worktree::WriteFileError::DiskChanged {
+                    expected: DiskState::Present { mtime, size, inode, .. },
+                    found: DiskState::Present { mtime: found_mtime, size: found_size, inode: found_inode, .. },
+                }) if mtime == found_mtime && size == found_size && inode != found_inode
+            ));
+            if !dirty {
+                assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "replaced");
+            }
+            assert_eq!(
+                fs.load_bytes(file_path).await.expect("read disk"),
+                replacement
+            );
+            buffer.read_with(cx, |buffer, _| {
+                assert_eq!(buffer.has_conflict(), dirty);
+                assert_eq!(
+                    buffer.text(),
+                    if dirty { "edited original" } else { "replaced" }
+                );
+            });
+
+            // The conflict prompt's Overwrite action saves against the newly observed identity.
+            project
+                .update(cx, |project, cx| {
+                    project.save_buffer_with_overwrite(buffer.clone(), true, cx)
+                })
+                .await
+                .expect("save after resolving conflict");
+            assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+            assert_eq!(
+                fs.load_bytes(file_path).await.expect("read saved file"),
+                language::encode_text(
+                    if dirty { "edited original" } else { "replaced" }.into(),
+                    encoding,
+                    has_bom,
+                ),
+            );
+        }
+    }
+}
+
+#[gpui::test]
+async fn test_save_detects_missed_file_creation_and_deletion(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    for (existed, dirty) in [(false, true), (true, true), (true, false)] {
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/dir"), json!({})).await;
+        let file_path = Path::new(path!("/dir/file.txt"));
+        if existed {
+            fs.insert_file(file_path, b"original".to_vec()).await;
+        }
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let buffer = project
+            .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+            .await
+            .expect("open buffer");
+        if dirty {
+            buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+        }
+        cx.run_until_parked();
+        fs.pause_events();
+        if existed {
+            fs.remove_file(file_path, Default::default())
+                .await
+                .expect("delete file");
+        } else {
+            fs.insert_file(file_path, b"external".to_vec()).await;
+        }
+        let error = project
+            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .await
+            .expect_err("save must observe creation or deletion");
+        assert!(error.downcast_ref::<worktree::WriteFileError>().is_some());
+        assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+        if existed {
+            assert!(fs.metadata(file_path).await.expect("metadata").is_none());
+        } else {
+            assert_eq!(fs.load(file_path).await.expect("read disk"), "external");
+        }
+        project
+            .update(cx, |project, cx| {
+                project.save_buffer_with_overwrite(buffer.clone(), true, cx)
+            })
+            .await
+            .expect("explicit retry can overwrite or recreate");
+        assert_eq!(
+            fs.load(file_path).await.expect("read saved file"),
+            if !dirty {
+                "original"
+            } else if existed {
+                "edited original"
+            } else {
+                "edited "
+            },
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_save_excluded_file_twice(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.file_scan_exclusions =
+                    Some(SplicingVec::from(vec!["**/file.txt".to_string()]));
+            });
+        });
+    });
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "file.txt": "original" }))
+        .await;
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let file_path = Path::new(path!("/dir/file.txt"));
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
+        .await
+        .expect("open excluded file");
+    cx.run_until_parked();
+    fs.pause_events();
+    for text in ["first", "second"] {
+        buffer.update(cx, |buffer, cx| {
+            buffer.edit([(0..buffer.len(), text)], None, cx)
+        });
+        project
+            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .await
+            .expect("save must use the previous save receipt");
+        assert_eq!(fs.load(file_path).await.expect("read saved file"), text);
+        assert!(!buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+    }
+}
+
+#[gpui::test]
 async fn test_buffer_does_not_follow_save_backup(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 
@@ -8986,10 +9559,18 @@ async fn test_buffer_does_not_follow_save_backup(cx: &mut gpui::TestAppContext) 
             .unwrap();
             cx.run_until_parked();
             buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "saved ")], None, cx));
+            if dirty {
+                project
+                    .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                    .await
+                    .expect_err("a known conflict requires overwrite confirmation");
+            }
             project
-                .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                .update(cx, |project, cx| {
+                    project.save_buffer_with_overwrite(buffer.clone(), dirty, cx)
+                })
                 .await
-                .unwrap();
+                .expect("save to the original path after resolving any conflict");
             cx.run_until_parked();
             assert_eq!(
                 fs.load(Path::new(path!("/dir/file.txt"))).await.unwrap(),
@@ -9253,6 +9834,17 @@ async fn test_save_as(cx: &mut gpui::TestAppContext) {
         assert!(!buffer.has_conflict());
         assert_eq!(buffer.language().unwrap().name(), "Plain Text");
     });
+    let save_events = Arc::new(Mutex::new(Vec::new()));
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&buffer, {
+            let save_events = save_events.clone();
+            move |_, event, _| {
+                if matches!(event, BufferEvent::FileHandleChanged | BufferEvent::Saved) {
+                    save_events.lock().push(event.clone());
+                }
+            }
+        })
+    });
     project
         .update(cx, |project, cx| {
             let worktree_id = project.worktrees(cx).next().unwrap().read(cx).id();
@@ -9264,6 +9856,10 @@ async fn test_save_as(cx: &mut gpui::TestAppContext) {
         })
         .await
         .unwrap();
+    assert_eq!(
+        *save_events.lock(),
+        vec![BufferEvent::FileHandleChanged, BufferEvent::Saved]
+    );
     assert_eq!(fs.load(Path::new("/dir/file1.rs")).await.unwrap(), "abc");
 
     cx.executor().run_until_parked();

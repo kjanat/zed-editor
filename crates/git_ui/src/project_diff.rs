@@ -520,6 +520,7 @@ impl Item for ProjectDiff {
         &mut self,
         _: Entity<Project>,
         _: ProjectPath,
+        _expected: Option<language::DiskState>,
         _window: &mut Window,
         _: &mut Context<Self>,
     ) -> Task<Result<()>> {
@@ -1833,6 +1834,7 @@ mod tests {
             buffer_editor.set_text("different\n", window, cx);
             buffer_editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: false,
                     force_format: false,
                     autosave: false,

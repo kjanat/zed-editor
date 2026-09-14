@@ -1364,6 +1364,7 @@ async fn test_send_breakpoints_when_editor_has_been_saved(
         .update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: true,
                     force_format: false,
                     autosave: false,

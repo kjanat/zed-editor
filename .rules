@@ -155,6 +155,10 @@ Release Notes:
 - N/A
 ```
 
+## Build and CI monitoring
+
+- Do not actively watch or repeatedly poll build or CI runs. You may look up durations of comparable previous runs and schedule a single check for when that much time has elapsed since the current run started. Return control to the user while waiting; do not keep an agent or polling loop running. If the scheduled check still finds the run pending, report it as pending without starting a polling loop.
+
 ## Crash Investigation
 
 ## Sentry Integration

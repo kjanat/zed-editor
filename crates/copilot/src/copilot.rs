@@ -1723,6 +1723,7 @@ mod tests {
                 mtime: ::fs::MTime::from_seconds_and_nanos(100, 42),
                 size: None,
                 inode: None,
+                device: None,
             }
         }
 

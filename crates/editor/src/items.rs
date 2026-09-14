@@ -989,6 +989,21 @@ impl Item for Editor {
                 .collect()
         };
 
+        let overwrite_files = buffers_to_save
+            .iter()
+            .filter_map(|buffer| {
+                options
+                    .overwrite
+                    .then(|| {
+                        buffer
+                            .read(cx)
+                            .file()
+                            .map(|file| (buffer.clone(), file.to_proto(cx)))
+                    })
+                    .flatten()
+            })
+            .collect();
+
         let format_trigger = if options.force_format {
             FormatTrigger::Manual
         } else {
@@ -1017,7 +1032,11 @@ impl Item for Editor {
             if !buffers_to_save.is_empty() {
                 project
                     .update(cx, |project, cx| {
-                        project.save_buffers(buffers_to_save.clone(), cx)
+                        project.save_buffers_with_overwrite_files(
+                            buffers_to_save.clone(),
+                            overwrite_files,
+                            cx,
+                        )
                     })
                     .await?;
             }
@@ -1030,6 +1049,7 @@ impl Item for Editor {
         &mut self,
         project: Entity<Project>,
         path: ProjectPath,
+        expected: Option<language::DiskState>,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
@@ -1046,7 +1066,9 @@ impl Item for Editor {
             cx,
         );
 
-        project.update(cx, |project, cx| project.save_buffer_as(buffer, path, cx))
+        project.update(cx, |project, cx| {
+            project.save_buffer_as_with_disk_state(buffer, path, expected, cx)
+        })
     }
 
     fn reload(
@@ -3476,6 +3498,7 @@ mod tests {
         let save = editor.update_in(cx, |editor, window, cx| {
             editor.save(
                 SaveOptions {
+                    overwrite: false,
                     format: false,
                     force_format: false,
                     autosave: false,

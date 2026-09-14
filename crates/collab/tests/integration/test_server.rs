@@ -50,7 +50,7 @@ use workspace::{MultiWorkspace, Workspace, WorkspaceStore};
 
 use livekit_client::test::{ManualUnixTimestampSource, TestServer as LivekitTestServer};
 
-use crate::db_tests::TestDb;
+use crate::test_db::TestDb;
 
 pub struct TestServer {
     pub app_state: Arc<AppState>,

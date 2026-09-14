@@ -1203,6 +1203,7 @@ impl Item for ProjectSearchView {
         &mut self,
         _: Entity<Project>,
         _: ProjectPath,
+        _expected: Option<language::DiskState>,
         _window: &mut Window,
         _: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
@@ -1916,6 +1917,7 @@ impl ProjectSearchView {
                     this.update_in(cx, |this, window, cx| {
                         this.save(
                             SaveOptions {
+                                overwrite: false,
                                 format: true,
                                 force_format: false,
                                 autosave: false,

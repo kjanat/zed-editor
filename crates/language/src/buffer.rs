@@ -415,19 +415,19 @@ pub enum DiskState {
     New,
     /// File present on the filesystem.
     ///
-    /// `size` and `inode` accompany `mtime` because the timestamp alone cannot see an external
-    /// write: a tool that rewrites a file within one mtime tick - formatters, build steps,
+    /// `size`, `inode`, and `device` accompany `mtime` because the timestamp alone cannot see
+    /// an external write: a tool that rewrites a file within one mtime tick - formatters, build steps,
     /// `git` operations and sync clients all do - would otherwise compare equal to the
     /// previous state, so no reload is requested and the buffer stays stale indefinitely. A
     /// rewrite that changes the file's length is caught by `size`, and one that keeps it is
     /// usually caught by `inode`, since most such tools replace the file by renaming a new one
-    /// over it.
+    /// over it. `device` distinguishes identical inode numbers on different filesystems.
     ///
     /// A gap remains: a tool that rewrites the file *in place* to the same length within one
-    /// mtime tick keeps all three fields and is invisible here. Only hashing the contents
+    /// mtime tick keeps all four fields and is invisible here. Only hashing the contents
     /// would catch it, and that would mean reading every file on every scan.
     ///
-    /// Either field is `None` where that observation could not establish it, which is the case
+    /// Identity fields are `None` where that observation could not establish it, which is the case
     /// for a file described over the wire whose worktree entry has not arrived yet. Compare
     /// two states with [`DiskState::differs_from`] rather than `==`, so that a field one side
     /// could not see is not itself read as a change.
@@ -435,6 +435,7 @@ pub enum DiskState {
         mtime: MTime,
         size: Option<u64>,
         inode: Option<u64>,
+        device: Option<u64>,
     },
     /// Deleted file that was previously present.
     Deleted,
@@ -457,16 +458,23 @@ impl DiskState {
 
         match (self, other) {
             (
-                DiskState::Present { mtime, size, inode },
+                DiskState::Present {
+                    mtime,
+                    size,
+                    inode,
+                    device,
+                },
                 DiskState::Present {
                     mtime: other_mtime,
                     size: other_size,
                     inode: other_inode,
+                    device: other_device,
                 },
             ) => {
                 mtime != other_mtime
                     || known_and_different(size, other_size)
                     || known_and_different(inode, other_inode)
+                    || known_and_different(device, other_device)
             }
             _ => self != other,
         }
@@ -476,15 +484,22 @@ impl DiskState {
         if self.differs_from(observation) {
             return false;
         }
-        if let Self::Present { size, inode, .. } = self
+        if let Self::Present {
+            size,
+            inode,
+            device,
+            ..
+        } = self
             && let Self::Present {
                 size: observed_size,
                 inode: observed_inode,
+                device: observed_device,
                 ..
             } = observation
         {
             *size = size.or(observed_size);
             *inode = inode.or(observed_inode);
+            *device = device.or(observed_device);
         }
         true
     }
@@ -507,6 +522,20 @@ impl DiskState {
             DiskState::Present { size, .. } => size,
             DiskState::Deleted => None,
             DiskState::Historic { .. } => None,
+        }
+    }
+
+    pub fn inode(self) -> Option<u64> {
+        match self {
+            Self::Present { inode, .. } => inode,
+            _ => None,
+        }
+    }
+
+    pub fn device(self) -> Option<u64> {
+        match self {
+            Self::Present { device, .. } => device,
+            _ => None,
         }
     }
 
@@ -1595,6 +1624,11 @@ impl Buffer {
         self.saved_disk_state.and_then(DiskState::mtime)
     }
 
+    pub fn disk_state_for_save(&self) -> Option<DiskState> {
+        self.saved_disk_state
+            .or_else(|| self.file.as_ref().map(|file| file.disk_state()))
+    }
+
     /// Returns the character encoding of the buffer's file.
     pub fn encoding(&self) -> &'static Encoding {
         self.encoding
@@ -1720,6 +1754,7 @@ impl Buffer {
                     mtime,
                     size: None,
                     inode: None,
+                    device: None,
                 })
         });
     }
@@ -1754,13 +1789,63 @@ impl Buffer {
         mtime: Option<MTime>,
         cx: &mut Context<Self>,
     ) {
+        self.record_saved_mtime(mtime);
+        self.finish_save(version, cx);
+    }
+
+    fn finish_save(&mut self, version: clock::Global, cx: &mut Context<Self>) {
         self.saved_version = version.clone();
         self.has_unsaved_edits.set((version, false));
         self.has_conflict = false;
-        self.record_saved_mtime(mtime);
         self.was_changed();
         cx.emit(BufferEvent::Saved);
         cx.notify();
+    }
+
+    pub fn did_save_with_file(
+        &mut self,
+        version: clock::Global,
+        file: Arc<dyn File>,
+        cx: &mut Context<Self>,
+    ) {
+        let disk_state = file.disk_state();
+        self.record_saved_disk_state(disk_state);
+        self.file_updated_impl(file, false, cx);
+        self.saved_disk_state = Some(disk_state);
+        self.finish_save(version, cx);
+    }
+
+    pub fn did_save_with_disk_state(
+        &mut self,
+        version: clock::Global,
+        disk_state: DiskState,
+        cx: &mut Context<Self>,
+    ) {
+        self.record_saved_disk_state(disk_state);
+        self.finish_save(version, cx);
+    }
+
+    fn record_saved_disk_state(&mut self, disk_state: DiskState) {
+        let observed = self.file.as_ref().map(|file| file.disk_state());
+        if observed.is_some_and(|observed| !observed.differs_from(disk_state)) {
+            self.superseded_disk_states.clear();
+        } else {
+            for state in self.saved_disk_state.into_iter().chain(observed) {
+                if state.mtime().is_some()
+                    && state.differs_from(disk_state)
+                    && !self
+                        .superseded_disk_states
+                        .iter_mut()
+                        .any(|candidate| candidate.merge_observation(state))
+                {
+                    self.superseded_disk_states.push(state);
+                    if self.superseded_disk_states.len() > MAX_SUPERSEDED_DISK_STATES {
+                        self.superseded_disk_states.remove(0);
+                    }
+                }
+            }
+        }
+        self.saved_disk_state = Some(disk_state);
     }
 
     /// Reloads the contents of the buffer from disk.
@@ -1862,7 +1947,7 @@ impl Buffer {
                         this.has_conflict = true;
                     }
 
-                    this.did_reload(prev_version, this.line_ending(), this.saved_mtime(), cx);
+                    this.record_reload(prev_version, this.line_ending(), this.saved_mtime(), cx);
                 }
 
                 this.reload_task.take();
@@ -1879,11 +1964,43 @@ impl Buffer {
         mtime: Option<MTime>,
         cx: &mut Context<Self>,
     ) {
+        self.has_conflict = false;
+        self.record_reload(version, line_ending, mtime, cx);
+    }
+
+    pub fn did_reload_with_disk_state(
+        &mut self,
+        version: clock::Global,
+        line_ending: LineEnding,
+        disk_state: DiskState,
+        cx: &mut Context<Self>,
+    ) {
+        self.has_conflict = false;
+        self.record_saved_disk_state(disk_state);
+        self.finish_reload(version, line_ending, cx);
+    }
+
+    fn record_reload(
+        &mut self,
+        version: clock::Global,
+        line_ending: LineEnding,
+        mtime: Option<MTime>,
+        cx: &mut Context<Self>,
+    ) {
+        self.record_saved_mtime(mtime);
+        self.finish_reload(version, line_ending, cx);
+    }
+
+    fn finish_reload(
+        &mut self,
+        version: clock::Global,
+        line_ending: LineEnding,
+        cx: &mut Context<Self>,
+    ) {
         self.saved_version = version;
         self.has_unsaved_edits
             .set((self.saved_version.clone(), false));
         self.text.set_line_ending(line_ending);
-        self.record_saved_mtime(mtime);
         cx.emit(BufferEvent::Reloaded);
         cx.notify();
     }
@@ -1891,6 +2008,25 @@ impl Buffer {
     /// Updates the [`File`] backing this buffer. This should be called when
     /// the file has changed or has been deleted.
     pub fn file_updated(&mut self, new_file: Arc<dyn File>, cx: &mut Context<Self>) {
+        self.file_updated_impl(new_file, true, cx);
+    }
+
+    pub fn reload_from_file(
+        &mut self,
+        file: Arc<dyn File>,
+        cx: &mut Context<Self>,
+    ) -> oneshot::Receiver<Option<Transaction>> {
+        // The caller awaits this reload, so do not also emit a detached ReloadNeeded.
+        self.file_updated_impl(file, false, cx);
+        self.reload(cx)
+    }
+
+    fn file_updated_impl(
+        &mut self,
+        new_file: Arc<dyn File>,
+        reload_if_clean: bool,
+        cx: &mut Context<Self>,
+    ) {
         let was_dirty = self.is_dirty();
         let mut file_changed = false;
 
@@ -1903,7 +2039,17 @@ impl Buffer {
             let new_state = new_file.disk_state();
             if old_state.differs_from(new_state) {
                 file_changed = true;
-                if !was_dirty && matches!(new_state, DiskState::Present { .. }) {
+                if reload_if_clean
+                    && !was_dirty
+                    && matches!(new_state, DiskState::Present { .. })
+                    && !self
+                        .saved_disk_state
+                        .is_some_and(|saved| !saved.differs_from(new_state))
+                    && !self
+                        .superseded_disk_states
+                        .iter()
+                        .any(|state| !state.differs_from(new_state))
+                {
                     cx.emit(BufferEvent::ReloadNeeded)
                 }
             }
@@ -1911,8 +2057,11 @@ impl Buffer {
             file_changed = true;
         };
 
-        if new_file.disk_state().mtime().is_some()
-            && new_file.disk_state().mtime() == self.saved_mtime()
+        if reload_if_clean
+            && new_file.disk_state().mtime().is_some()
+            && self
+                .saved_disk_state
+                .is_some_and(|saved| !saved.differs_from(new_file.disk_state()))
         {
             self.superseded_disk_states.clear();
         }

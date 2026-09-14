@@ -38,6 +38,7 @@ pub const LEADER_UPDATE_THROTTLE: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug)]
 pub struct SaveOptions {
+    pub overwrite: bool,
     pub format: bool,
     pub force_format: bool,
     pub autosave: bool,
@@ -46,6 +47,7 @@ pub struct SaveOptions {
 impl Default for SaveOptions {
     fn default() -> Self {
         Self {
+            overwrite: false,
             format: true,
             force_format: false,
             autosave: false,
@@ -311,6 +313,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
         &mut self,
         _project: Entity<Project>,
         _path: ProjectPath,
+        _expected: Option<language::DiskState>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
@@ -543,6 +546,7 @@ pub trait ItemHandle: 'static + Send {
         &self,
         project: Entity<Project>,
         path: ProjectPath,
+        _expected: Option<language::DiskState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<()>>;
@@ -1079,10 +1083,13 @@ impl<T: Item> ItemHandle for Entity<T> {
         &self,
         project: Entity<Project>,
         path: ProjectPath,
+        expected: Option<language::DiskState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
-        self.update(cx, |item, cx| item.save_as(project, path, window, cx))
+        self.update(cx, |item, cx| {
+            item.save_as(project, path, expected, window, cx)
+        })
     }
 
     fn reload(
@@ -1822,6 +1829,7 @@ pub mod test {
             &mut self,
             _: Entity<Project>,
             _: ProjectPath,
+            _expected: Option<language::DiskState>,
             _window: &mut Window,
             _: &mut Context<Self>,
         ) -> Task<anyhow::Result<()>> {
