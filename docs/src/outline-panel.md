@@ -23,8 +23,13 @@ within the file.
 
 ## Usage with multibuffers
 
-The outline panel truly excels when used with multi-buffers. Here are some
-examples of its versatility:
+File rows follow the order of the files in the multibuffer.
+If files from a folder appear in separate parts of the multibuffer, the outline panel repeats that folder's path group to preserve their order.
+
+When a multibuffer includes deleted project files, they remain grouped under their original paths with struck-through file names.
+Folder rows group files by path and are not struck through, even when the folders no longer exist on disk.
+
+The outline panel truly excels when used with multi-buffers. Here are some examples of its versatility:
 
 ### Project Search Results
 
