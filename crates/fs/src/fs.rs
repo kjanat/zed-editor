@@ -3992,14 +3992,15 @@ fn save_durably_checked(
     checkpoint(DurableSavePhase::ClassifyDestination)?;
     let destination = classify_save_destination(path)?;
     if let Some(expected) = expected {
-        let found = match &destination {
-            SaveDestination::New(_) => None,
-            SaveDestination::Replaceable { source, .. } => Some(save_receipt(source)?),
-            SaveDestination::MustWriteInPlace { path, .. } => {
-                Some(save_receipt(&std::fs::File::open(path)?)?)
+        match &destination {
+            SaveDestination::New(_) => expected.check(None)?,
+            SaveDestination::Replaceable { source, .. } => {
+                expected.check(Some(save_receipt(source)?))?;
             }
-        };
-        expected.check(found)?;
+            // In-place saves validate their write handle before truncating. A read open
+            // here would deadlock a FIFO whose peer is waiting for our writer.
+            SaveDestination::MustWriteInPlace { .. } => {}
+        }
     }
     let destination_path = match &destination {
         SaveDestination::New(path)

@@ -8955,6 +8955,45 @@ async fn test_overlapping_saves_use_latest_receipt(cx: &mut gpui::TestAppContext
     });
 }
 
+#[gpui::test(iterations = 20)]
+async fn test_cancel_save_after_publication_keeps_receipt(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "file.txt": "original" }))
+        .await;
+    let path = Path::new(path!("/dir/file.txt"));
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    cx.run_until_parked();
+    fs.pause_events();
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+    let writes = fs.write_count_for_path(path);
+    let save = project.update(cx, |project, cx| project.save_buffer(buffer.clone(), cx));
+    while fs.write_count_for_path(path) == writes {
+        assert!(cx.executor().tick(), "save must publish its write");
+    }
+    assert!(
+        buffer.read_with(cx, |buffer, _| buffer.is_dirty()),
+        "receipt must still be pending"
+    );
+    drop(save);
+    project
+        .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+        .await
+        .expect("next save must wait for the canceled caller's receipt");
+    assert_eq!(
+        fs.read_file_sync(path).expect("read file"),
+        b"edited original"
+    );
+    buffer.read_with(cx, |buffer, _| {
+        assert!(!buffer.is_dirty());
+        assert!(!buffer.has_conflict());
+    });
+}
+
 #[gpui::test]
 async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext) {
     init_test(cx);
@@ -9043,7 +9082,7 @@ async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext
 #[gpui::test]
 async fn test_save_detects_missed_file_creation_and_deletion(cx: &mut gpui::TestAppContext) {
     init_test(cx);
-    for existed in [false, true] {
+    for (existed, dirty) in [(false, true), (true, true), (true, false)] {
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(path!("/dir"), json!({})).await;
         let file_path = Path::new(path!("/dir/file.txt"));
@@ -9055,7 +9094,9 @@ async fn test_save_detects_missed_file_creation_and_deletion(cx: &mut gpui::Test
             .update(cx, |project, cx| project.open_local_buffer(file_path, cx))
             .await
             .expect("open buffer");
-        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+        if dirty {
+            buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "edited ")], None, cx));
+        }
         cx.run_until_parked();
         fs.pause_events();
         if existed {
@@ -9084,7 +9125,9 @@ async fn test_save_detects_missed_file_creation_and_deletion(cx: &mut gpui::Test
             .expect("explicit retry can overwrite or recreate");
         assert_eq!(
             fs.load(file_path).await.expect("read saved file"),
-            if existed {
+            if !dirty {
+                "original"
+            } else if existed {
                 "edited original"
             } else {
                 "edited "

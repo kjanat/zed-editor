@@ -455,7 +455,7 @@ impl LocalBufferStore {
                                 }
                                 buffer.file_updated(Arc::new(file), cx);
                             }
-                            if dirty {
+                            if dirty || matches!(found, DiskState::Deleted) {
                                 buffer.set_conflict();
                                 cx.notify();
                             }
@@ -1075,21 +1075,11 @@ impl BufferStore {
         let buffer_id = buffer.read(cx).remote_id();
         let (sender, receiver) = oneshot::channel();
         let previous = self.pending_saves.remove(&buffer_id);
-        let completion = {
-            let previous = previous.clone();
-            async move {
-                match receiver.await {
-                    Ok(success) => success,
-                    // Canceling a queued save must preserve the preceding save's place in line.
-                    Err(_) => match previous {
-                        Some(previous) => previous.await,
-                        None => true,
-                    },
-                }
-            }
+        let completion = async move { receiver.await.unwrap_or(false) }
             .boxed()
-            .shared()
-        };
+            .shared();
+        let (result_sender, result_receiver) = oneshot::channel();
+        // Caller cancellation must not drop an in-flight write or skip applying its receipt.
         self.pending_saves.insert(buffer_id, completion.clone());
         cx.spawn(async move |this, cx| {
             let result = async {
@@ -1120,8 +1110,12 @@ impl BufferStore {
             if sender.send(result.is_ok()).is_err() {
                 log::debug!("save completion receiver dropped");
             }
-            result
+            if let Err(result) = result_sender.send(result) {
+                result.log_err();
+            }
         })
+        .detach();
+        cx.spawn(async move |_, _| result_receiver.await.context("save operation dropped")?)
     }
 
     fn save_buffer_as_impl(

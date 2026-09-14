@@ -1779,7 +1779,25 @@ impl Buffer {
         cx: &mut Context<Self>,
     ) {
         let disk_state = file.disk_state();
-        self.record_saved_mtime(disk_state.mtime());
+        let observed = self.file.as_ref().map(|file| file.disk_state());
+        if observed.is_some_and(|observed| !observed.differs_from(disk_state)) {
+            self.superseded_disk_states.clear();
+        } else {
+            for state in self.saved_disk_state.into_iter().chain(observed) {
+                if state.mtime().is_some()
+                    && state.differs_from(disk_state)
+                    && !self
+                        .superseded_disk_states
+                        .iter_mut()
+                        .any(|candidate| candidate.merge_observation(state))
+                {
+                    self.superseded_disk_states.push(state);
+                    if self.superseded_disk_states.len() > MAX_SUPERSEDED_DISK_STATES {
+                        self.superseded_disk_states.remove(0);
+                    }
+                }
+            }
+        }
         self.file_updated_impl(file, false, cx);
         self.saved_disk_state = Some(disk_state);
         self.finish_save(version, cx);
@@ -1955,7 +1973,14 @@ impl Buffer {
             let new_state = new_file.disk_state();
             if old_state.differs_from(new_state) {
                 file_changed = true;
-                if reload_if_clean && !was_dirty && matches!(new_state, DiskState::Present { .. }) {
+                if reload_if_clean
+                    && !was_dirty
+                    && matches!(new_state, DiskState::Present { .. })
+                    && !self
+                        .superseded_disk_states
+                        .iter()
+                        .any(|state| !state.differs_from(new_state))
+                {
                     cx.emit(BufferEvent::ReloadNeeded)
                 }
             }
@@ -1965,7 +1990,9 @@ impl Buffer {
 
         if reload_if_clean
             && new_file.disk_state().mtime().is_some()
-            && new_file.disk_state().mtime() == self.saved_mtime()
+            && self
+                .saved_disk_state
+                .is_some_and(|saved| !saved.differs_from(new_file.disk_state()))
         {
             self.superseded_disk_states.clear();
         }

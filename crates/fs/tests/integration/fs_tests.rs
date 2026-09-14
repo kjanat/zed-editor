@@ -524,6 +524,66 @@ async fn test_realfs_save_replaces_contents(executor: BackgroundExecutor) {
     assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "Fresh");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_checked_fifo_save_does_not_open_a_reader() {
+    use std::os::unix::{
+        ffi::OsStrExt as _,
+        fs::{MetadataExt as _, OpenOptionsExt as _},
+    };
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("fifo");
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("FIFO path");
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let _reader = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .expect("FIFO reader");
+    let metadata = std::fs::metadata(&path).expect("FIFO metadata");
+    let modified = metadata
+        .modified()
+        .expect("mtime")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("mtime after epoch");
+    let expected = SaveExpectation::Present {
+        mtime: MTime::from_seconds_and_nanos(modified.as_secs(), modified.subsec_nanos()),
+        len: Some(metadata.len()),
+        inode: Some(metadata.ino()),
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let save_path = path.clone();
+    let save = std::thread::spawn(move || {
+        save_checked_with_checkpoint_for_test(
+            &save_path,
+            expected,
+            |_| Ok(()),
+            |phase| {
+                if phase == DurableSavePhase::WriteContents {
+                    sender.send(()).expect("checkpoint receiver");
+                    anyhow::bail!("stop at write checkpoint");
+                }
+                Ok(())
+            },
+        )
+    });
+    let blocked = receiver.recv_timeout(Duration::from_secs(2)).is_err();
+    // Release a regressed read open so a failing test can still join its worker.
+    let _rescue_writer = blocked.then(|| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .expect("release blocked reader")
+    });
+    let error = save
+        .join()
+        .expect("save worker")
+        .expect_err("checkpoint stops save");
+    assert!(error.to_string().contains("stop at write checkpoint"));
+    assert!(!blocked, "save blocked opening another FIFO reader");
+}
+
 #[gpui::test]
 async fn test_checked_save_rejects_replacements_during_publication(executor: BackgroundExecutor) {
     let fs = RealFs::new(None, executor);
