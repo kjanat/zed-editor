@@ -805,6 +805,7 @@ impl Item for BufferDiagnosticsEditor {
         &mut self,
         _project: Entity<Project>,
         _path: ProjectPath,
+        _expected: Option<language::DiskState>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Task<Result<()>> {

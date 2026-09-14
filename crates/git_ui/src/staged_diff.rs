@@ -382,6 +382,7 @@ impl Item for StagedDiff {
         &mut self,
         _: Entity<Project>,
         _: ProjectPath,
+        _expected: Option<language::DiskState>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Task<Result<()>> {

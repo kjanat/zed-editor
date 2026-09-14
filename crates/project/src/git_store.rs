@@ -434,6 +434,8 @@ impl language::File for IndexTextFile {
             mtime: None,
             is_deleted: false,
             is_historic: true,
+            size: None,
+            inode: None,
         }
     }
 

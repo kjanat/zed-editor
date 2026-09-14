@@ -2008,11 +2008,13 @@ impl Item for SplittableEditor {
         &mut self,
         project: Entity<Project>,
         path: project::ProjectPath,
+        expected: Option<language::DiskState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Task<anyhow::Result<()>> {
-        self.rhs_editor
-            .update(cx, |editor, cx| editor.save_as(project, path, window, cx))
+        self.rhs_editor.update(cx, |editor, cx| {
+            editor.save_as(project, path, expected, window, cx)
+        })
     }
 
     fn reload(

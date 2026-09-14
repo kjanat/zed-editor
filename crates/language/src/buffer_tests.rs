@@ -6093,6 +6093,89 @@ fn test_save_receipt_preserves_identity_and_lagging_observations(cx: &mut App) {
 }
 
 #[gpui::test]
+fn test_save_receipt_catch_up_does_not_reload(cx: &mut TestAppContext) {
+    cx.update(|cx| init_settings(cx, |_| {}));
+    let mtime = MTime::from_seconds_and_nanos(100, 0);
+    let buffer = cx.new(|cx| Buffer::local("old", cx));
+    let reloads = std::rc::Rc::new(std::cell::Cell::new(0));
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&buffer, {
+            let reloads = reloads.clone();
+            move |_, event, _| {
+                if matches!(event, BufferEvent::ReloadNeeded) {
+                    reloads.set(reloads.get() + 1);
+                }
+            }
+        })
+    });
+    buffer.update(cx, |buffer, cx| {
+        buffer.file_updated(observed_file(mtime, Some(3), Some(1)), cx);
+        buffer.did_save_with_file(buffer.version(), observed_file(mtime, Some(3), Some(2)), cx);
+        buffer.file_updated(observed_file(mtime, Some(3), Some(1)), cx);
+        buffer.file_updated(observed_file(mtime, Some(3), Some(2)), cx);
+    });
+    assert_eq!(reloads.get(), 0);
+    buffer.update(cx, |buffer, cx| {
+        buffer.file_updated(observed_file(mtime, Some(3), Some(3)), cx);
+    });
+    assert_eq!(reloads.get(), 1, "external replacement still reloads");
+}
+
+#[gpui::test]
+fn test_remote_save_receipt_precedes_file_observation(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let mtime = MTime::from_seconds_and_nanos(100, 0);
+    let buffer = cx.new(|cx| Buffer::local("old", cx));
+    buffer.update(cx, |buffer, cx| {
+        buffer.file_updated(observed_file(mtime, Some(3), Some(1)), cx);
+        buffer.did_save_with_disk_state(
+            buffer.version(),
+            DiskState::Present {
+                mtime,
+                size: Some(3),
+                inode: Some(2),
+            },
+            cx,
+        );
+        buffer.edit([(0..0, "edited ")], None, cx);
+        buffer.file_updated(observed_file(mtime, Some(3), Some(1)), cx);
+        assert!(!buffer.has_conflict());
+        buffer.file_updated(observed_file(mtime, Some(3), Some(2)), cx);
+        assert!(!buffer.has_conflict());
+        buffer.file_updated(observed_file(mtime, Some(3), Some(3)), cx);
+        assert!(buffer.has_conflict());
+    });
+}
+
+#[gpui::test]
+fn test_remote_reload_receipt_preserves_same_timestamp_identity(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let mtime = MTime::from_seconds_and_nanos(100, 0);
+    let buffer = cx.new(|cx| Buffer::local("old", cx));
+    buffer.update(cx, |buffer, cx| {
+        buffer.file_updated(observed_file(mtime, Some(3), Some(1)), cx);
+        buffer.set_conflict();
+        buffer.did_reload_with_disk_state(
+            buffer.version(),
+            buffer.line_ending(),
+            DiskState::Present {
+                mtime,
+                size: Some(3),
+                inode: Some(2),
+            },
+            cx,
+        );
+        assert!(!buffer.has_conflict());
+        assert!(!buffer.is_dirty());
+        buffer.edit([(0..0, "edited ")], None, cx);
+        buffer.file_updated(observed_file(mtime, Some(3), Some(2)), cx);
+        assert!(!buffer.has_conflict());
+        buffer.file_updated(observed_file(mtime, Some(3), Some(3)), cx);
+        assert!(buffer.has_conflict());
+    });
+}
+
+#[gpui::test]
 fn test_reload_clears_conflict_without_discarding_newer_edits(cx: &mut App) {
     init_settings(cx, |_| {});
     let buffer = cx.new(|cx| Buffer::local("original", cx));

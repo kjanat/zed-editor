@@ -111,7 +111,7 @@ pub struct NotebookEditor {
 
 enum SaveDestination {
     CurrentPath,
-    NewPath(ProjectPath),
+    NewPath(ProjectPath, Option<language::DiskState>),
 }
 
 impl NotebookEditor {
@@ -367,10 +367,15 @@ impl NotebookEditor {
                         .update(cx, |project, cx| project.save_buffer(buffer, cx))
                         .await
                 }
-                SaveDestination::NewPath(new_path) => {
+                SaveDestination::NewPath(new_path, expected) => {
                     project
                         .update(cx, |project, cx| {
-                            project.save_buffer_as(buffer, new_path.clone(), cx)
+                            project.save_buffer_as_with_disk_state(
+                                buffer,
+                                new_path.clone(),
+                                expected,
+                                cx,
+                            )
                         })
                         .await?;
 
@@ -1918,10 +1923,11 @@ impl Item for NotebookEditor {
         &mut self,
         project: Entity<Project>,
         path: ProjectPath,
+        expected: Option<language::DiskState>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        self.save_impl(SaveDestination::NewPath(path), project, cx)
+        self.save_impl(SaveDestination::NewPath(path, expected), project, cx)
     }
 
     fn reload(

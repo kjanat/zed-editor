@@ -1262,6 +1262,9 @@ impl HeadlessProject {
             exists: metadata.is_some(),
             is_dir,
             path: expanded.to_string_lossy().into_owned(),
+            mtime: metadata.map(|metadata| metadata.mtime.into()),
+            size: metadata.map(|metadata| metadata.len),
+            inode: metadata.map(|metadata| metadata.inode),
         })
     }
 

@@ -16256,6 +16256,7 @@ async fn test_read_only_buffer_can_be_saved_as(cx: &mut TestAppContext) {
                 worktree_id,
                 path: rel_path("copy.rs").into(),
             },
+            None,
             window,
             cx,
         )
@@ -16468,6 +16469,82 @@ async fn test_save_actions_are_hidden_for_read_only_files(cx: &mut TestAppContex
     buffer.update(cx, |buffer, cx| buffer.set_capability(ReadWrite, cx));
     cx.run_until_parked();
     assert_eq!(save_actions_visible(cx), (true, true, true, true));
+}
+
+#[gpui::test]
+async fn test_overwrite_confirmation_survives_formatting(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let path = Path::new(path!("/file.rs"));
+    fs.insert_file(path, b"original".to_vec()).await;
+    let project = Project::test(fs.clone(), [path], cx).await;
+    let registry = project.read_with(cx, |project, _| project.languages().clone());
+    registry.add(rust_lang());
+    let mut servers = registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await
+        .expect("open buffer");
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        build_editor_with_project(project.clone(), multi_buffer, window, cx)
+    });
+    editor.update_in(cx, |editor, window, cx| {
+        editor.set_text("edited", window, cx)
+    });
+    fs.insert_file(path, b"first replacement".to_vec()).await;
+    cx.run_until_parked();
+    assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+    let server = servers.next().await.expect("language server");
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = std::sync::Arc::new(parking_lot::Mutex::new(Some(wait)));
+    let (started, formatting) = futures::channel::oneshot::channel();
+    let mut started = Some(started);
+    server.set_request_handler::<lsp::request::Formatting, _, _>(move |_, _| {
+        started
+            .take()
+            .expect("one request")
+            .send(())
+            .expect("signal formatting");
+        let wait = wait.lock().take().expect("one formatting request");
+        async move {
+            wait.await.expect("release formatter");
+            Ok(None)
+        }
+    });
+    let save = editor.update_in(cx, |editor, window, cx| {
+        editor.save(
+            SaveOptions {
+                overwrite: true,
+                format: true,
+                force_format: false,
+                autosave: false,
+            },
+            project.clone(),
+            window,
+            cx,
+        )
+    });
+    formatting.await.expect("formatting has started");
+    fs.insert_file(path, b"second replacement".to_vec()).await;
+    cx.run_until_parked();
+    release.send(()).expect("finish formatting");
+    save.await
+        .expect_err("later replacement must reject overwrite");
+    assert_eq!(
+        fs.read_file_sync(path).expect("external bytes"),
+        b"second replacement"
+    );
+    assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
 }
 
 #[gpui::test]

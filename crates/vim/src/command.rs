@@ -505,6 +505,17 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                 return;
             };
 
+            let expected = project
+                .read(cx)
+                .entry_for_path(&project_path, cx)
+                .and_then(|entry| {
+                    Some(language::DiskState::Present {
+                        mtime: entry.mtime?,
+                        size: Some(entry.size),
+                        inode: Some(entry.inode),
+                    })
+                })
+                .unwrap_or(language::DiskState::New);
             if project.read(cx).entry_for_path(&project_path, cx).is_some()
                 && action.save_intent != Some(SaveIntent::Overwrite)
             {
@@ -528,14 +539,14 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
 
                     let _ = editor.update_in(cx, |editor, window, cx| {
                         editor
-                            .save_as(project, project_path, window, cx)
+                            .save_as(project, project_path, Some(expected), window, cx)
                             .detach_and_prompt_err("Failed to :w", window, cx, |_, _, _| None);
                     });
                 })
                 .detach();
             } else {
                 editor
-                    .save_as(project, project_path, window, cx)
+                    .save_as(project, project_path, Some(expected), window, cx)
                     .detach_and_prompt_err("Failed to :w", window, cx, |_, _, _| None);
             }
         });

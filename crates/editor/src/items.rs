@@ -989,6 +989,21 @@ impl Item for Editor {
                 .collect()
         };
 
+        let overwrite_files = buffers_to_save
+            .iter()
+            .filter_map(|buffer| {
+                options
+                    .overwrite
+                    .then(|| {
+                        buffer
+                            .read(cx)
+                            .file()
+                            .map(|file| (buffer.clone(), file.to_proto(cx)))
+                    })
+                    .flatten()
+            })
+            .collect();
+
         let format_trigger = if options.force_format {
             FormatTrigger::Manual
         } else {
@@ -1017,9 +1032,9 @@ impl Item for Editor {
             if !buffers_to_save.is_empty() {
                 project
                     .update(cx, |project, cx| {
-                        project.save_buffers_with_overwrite(
+                        project.save_buffers_with_overwrite_files(
                             buffers_to_save.clone(),
-                            options.overwrite,
+                            overwrite_files,
                             cx,
                         )
                     })
@@ -1034,6 +1049,7 @@ impl Item for Editor {
         &mut self,
         project: Entity<Project>,
         path: ProjectPath,
+        expected: Option<language::DiskState>,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
@@ -1050,7 +1066,9 @@ impl Item for Editor {
             cx,
         );
 
-        project.update(cx, |project, cx| project.save_buffer_as(buffer, path, cx))
+        project.update(cx, |project, cx| {
+            project.save_buffer_as_with_disk_state(buffer, path, expected, cx)
+        })
     }
 
     fn reload(

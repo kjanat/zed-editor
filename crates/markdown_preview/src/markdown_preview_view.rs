@@ -1696,15 +1696,16 @@ impl Item for MarkdownPreviewView {
         &mut self,
         project: Entity<Project>,
         path: project::ProjectPath,
+        expected: Option<language::DiskState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         self.active_editor
             .as_ref()
             .map(|editor_state| {
-                editor_state
-                    .editor
-                    .update(cx, |editor, cx| editor.save_as(project, path, window, cx))
+                editor_state.editor.update(cx, |editor, cx| {
+                    editor.save_as(project, path, expected, window, cx)
+                })
             })
             .unwrap_or_else(|| Task::ready(Ok(())))
     }

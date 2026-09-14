@@ -510,6 +510,13 @@ impl DiskState {
         }
     }
 
+    pub fn inode(self) -> Option<u64> {
+        match self {
+            Self::Present { inode, .. } => inode,
+            _ => None,
+        }
+    }
+
     pub fn exists(&self) -> bool {
         match self {
             DiskState::New => false,
@@ -1779,6 +1786,23 @@ impl Buffer {
         cx: &mut Context<Self>,
     ) {
         let disk_state = file.disk_state();
+        self.record_saved_disk_state(disk_state);
+        self.file_updated_impl(file, false, cx);
+        self.saved_disk_state = Some(disk_state);
+        self.finish_save(version, cx);
+    }
+
+    pub fn did_save_with_disk_state(
+        &mut self,
+        version: clock::Global,
+        disk_state: DiskState,
+        cx: &mut Context<Self>,
+    ) {
+        self.record_saved_disk_state(disk_state);
+        self.finish_save(version, cx);
+    }
+
+    fn record_saved_disk_state(&mut self, disk_state: DiskState) {
         let observed = self.file.as_ref().map(|file| file.disk_state());
         if observed.is_some_and(|observed| !observed.differs_from(disk_state)) {
             self.superseded_disk_states.clear();
@@ -1798,9 +1822,7 @@ impl Buffer {
                 }
             }
         }
-        self.file_updated_impl(file, false, cx);
         self.saved_disk_state = Some(disk_state);
-        self.finish_save(version, cx);
     }
 
     /// Reloads the contents of the buffer from disk.
@@ -1923,6 +1945,18 @@ impl Buffer {
         self.record_reload(version, line_ending, mtime, cx);
     }
 
+    pub fn did_reload_with_disk_state(
+        &mut self,
+        version: clock::Global,
+        line_ending: LineEnding,
+        disk_state: DiskState,
+        cx: &mut Context<Self>,
+    ) {
+        self.has_conflict = false;
+        self.record_saved_disk_state(disk_state);
+        self.finish_reload(version, line_ending, cx);
+    }
+
     fn record_reload(
         &mut self,
         version: clock::Global,
@@ -1930,11 +1964,20 @@ impl Buffer {
         mtime: Option<MTime>,
         cx: &mut Context<Self>,
     ) {
+        self.record_saved_mtime(mtime);
+        self.finish_reload(version, line_ending, cx);
+    }
+
+    fn finish_reload(
+        &mut self,
+        version: clock::Global,
+        line_ending: LineEnding,
+        cx: &mut Context<Self>,
+    ) {
         self.saved_version = version;
         self.has_unsaved_edits
             .set((self.saved_version.clone(), false));
         self.text.set_line_ending(line_ending);
-        self.record_saved_mtime(mtime);
         cx.emit(BufferEvent::Reloaded);
         cx.notify();
     }
@@ -1976,6 +2019,9 @@ impl Buffer {
                 if reload_if_clean
                     && !was_dirty
                     && matches!(new_state, DiskState::Present { .. })
+                    && !self
+                        .saved_disk_state
+                        .is_some_and(|saved| !saved.differs_from(new_state))
                     && !self
                         .superseded_disk_states
                         .iter()

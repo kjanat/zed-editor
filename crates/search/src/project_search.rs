@@ -1203,6 +1203,7 @@ impl Item for ProjectSearchView {
         &mut self,
         _: Entity<Project>,
         _: ProjectPath,
+        _expected: Option<language::DiskState>,
         _window: &mut Window,
         _: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {

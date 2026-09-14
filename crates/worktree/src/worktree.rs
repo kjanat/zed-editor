@@ -83,7 +83,7 @@ pub use worktree_settings::WorktreeSettings;
 
 pub const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum WriteFileError {
     DiskChanged {
         expected: DiskState,
@@ -2030,7 +2030,20 @@ impl LocalWorktree {
                         .unwrap()
                         .refresh_entry(path.clone(), None, cx)
                 })?
-                .await?;
+                .await;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    if fs.metadata(&abs_path).await?.is_none() {
+                        return Err(WriteFileError::DiskChanged {
+                            expected: saved,
+                            found: DiskState::Deleted,
+                        }
+                        .into());
+                    }
+                    return Err(error);
+                }
+            };
             let worktree = this.upgrade().context("worktree dropped")?;
             let file = if let Some(entry) = entry {
                 File::for_entry(entry, worktree)
@@ -2041,8 +2054,9 @@ impl LocalWorktree {
                     .with_context(|| {
                         format!("Fetching metadata after saving the excluded buffer {abs_path:?}")
                     })?
-                    .with_context(|| {
-                        format!("Excluded buffer {path:?} got removed during saving")
+                    .ok_or(WriteFileError::DiskChanged {
+                        expected: saved,
+                        found: DiskState::Deleted,
                     })?;
                 Arc::new(File {
                     worktree,
@@ -4023,6 +4037,8 @@ impl language::File for File {
             mtime: self.disk_state.mtime().map(|time| time.into()),
             is_deleted: self.disk_state.is_deleted(),
             is_historic: matches!(self.disk_state, DiskState::Historic { .. }),
+            size: self.disk_state.size(),
+            inode: self.disk_state.inode(),
         }
     }
 
@@ -4098,19 +4114,15 @@ impl File {
         } else if proto.is_deleted {
             DiskState::Deleted
         } else if let Some(mtime) = proto.mtime.map(&Into::into) {
-            // `proto::File` carries no size or identity, but `proto::Entry` carries both and
-            // the worktree they belong to is already here, so recover them from the entry
-            // rather than leaving this observation blind to every same-mtime rewrite. The
-            // entry is missing when its worktree update has not arrived yet, and both fields
-            // stay unknown until it does.
+            // Older peers omit size and identity, so recover missing fields from the worktree.
             let entry = proto
                 .entry_id
                 .map(ProjectEntryId::from_proto)
                 .and_then(|entry_id| worktree.read(cx).entry_for_id(entry_id));
             DiskState::Present {
                 mtime,
-                size: entry.map(|entry| entry.size),
-                inode: entry.map(|entry| entry.inode),
+                size: proto.size.or_else(|| entry.map(|entry| entry.size)),
+                inode: proto.inode.or_else(|| entry.map(|entry| entry.inode)),
             }
         } else {
             DiskState::New

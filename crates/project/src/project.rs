@@ -3451,14 +3451,39 @@ impl Project {
         overwrite: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        cx.spawn(async move |this, cx| {
-            let save_tasks = buffers.into_iter().filter_map(|buffer| {
-                this.update(cx, |this, cx| {
-                    this.save_buffer_with_overwrite(buffer, overwrite, cx)
+        let overwrite_files = buffers
+            .iter()
+            .filter_map(|buffer| {
+                overwrite
+                    .then(|| {
+                        buffer
+                            .read(cx)
+                            .file()
+                            .map(|file| (buffer.clone(), file.to_proto(cx)))
+                    })
+                    .flatten()
+            })
+            .collect();
+        self.save_buffers_with_overwrite_files(buffers, overwrite_files, cx)
+    }
+
+    pub fn save_buffers_with_overwrite_files(
+        &self,
+        buffers: HashSet<Entity<Buffer>>,
+        overwrite_files: HashMap<Entity<Buffer>, proto::File>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let saves = buffers
+            .into_iter()
+            .map(|buffer| {
+                let overwrite_file = overwrite_files.get(&buffer).cloned();
+                self.buffer_store.update(cx, |store, cx| {
+                    store.save_buffer_with_overwrite_file(buffer, overwrite_file, cx)
                 })
-                .ok()
-            });
-            try_join_all(save_tasks).await?;
+            })
+            .collect::<Vec<_>>();
+        cx.spawn(async move |_, _| {
+            try_join_all(saves).await?;
             Ok(())
         })
     }
@@ -3484,8 +3509,18 @@ impl Project {
         path: ProjectPath,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.save_buffer_as_with_disk_state(buffer, path, None, cx)
+    }
+
+    pub fn save_buffer_as_with_disk_state(
+        &mut self,
+        buffer: Entity<Buffer>,
+        path: ProjectPath,
+        expected: Option<language::DiskState>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         self.buffer_store.update(cx, |buffer_store, cx| {
-            buffer_store.save_buffer_as(buffer.clone(), path, cx)
+            buffer_store.save_buffer_as_with_disk_state(buffer, path, expected, cx)
         })
     }
 
@@ -5041,6 +5076,61 @@ impl Project {
             let resolved_path = resolve_task.await;
             resolved_path.filter(|path| path.is_file())
         })
+    }
+
+    pub fn save_as_disk_state(&self, path: PathBuf, cx: &App) -> Task<Result<language::DiskState>> {
+        use language::DiskState;
+        if self.is_local() {
+            let fs = self.fs.clone();
+            cx.background_spawn(async move {
+                Ok(fs
+                    .metadata(&path)
+                    .await?
+                    .map(|metadata| DiskState::Present {
+                        mtime: metadata.mtime,
+                        size: Some(metadata.len),
+                        inode: Some(metadata.inode),
+                    })
+                    .unwrap_or(DiskState::New))
+            })
+        } else if let Some(remote_client) = self.remote_client.as_ref() {
+            let request = remote_client
+                .read(cx)
+                .proto_client()
+                .request(proto::GetPathMetadata {
+                    project_id: REMOTE_SERVER_PROJECT_ID,
+                    path: path.to_string_lossy().into_owned(),
+                });
+            cx.background_spawn(async move {
+                let metadata = request.await?;
+                Ok(if metadata.exists {
+                    DiskState::Present {
+                        mtime: metadata
+                            .mtime
+                            .context("Remote host did not provide the destination identity")?
+                            .into(),
+                        size: metadata.size,
+                        inode: metadata.inode,
+                    }
+                } else {
+                    DiskState::New
+                })
+            })
+        } else {
+            let state = self
+                .find_worktree(&path, cx)
+                .and_then(|(worktree, path)| {
+                    let worktree = worktree.read(cx);
+                    let entry = worktree.entry_for_path(&path)?;
+                    Some(DiskState::Present {
+                        mtime: entry.mtime?,
+                        size: Some(entry.size),
+                        inode: Some(entry.inode),
+                    })
+                })
+                .unwrap_or(DiskState::New);
+            Task::ready(Ok(state))
+        }
     }
 
     pub fn resolve_abs_path(&self, path: &str, cx: &App) -> Task<Option<ResolvedPath>> {

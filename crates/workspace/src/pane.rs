@@ -2486,6 +2486,12 @@ impl Pane {
                     return Ok(false);
                 };
 
+                let expected = project
+                    .read_with(cx, |project, cx| {
+                        project.save_as_disk_state(new_path.clone(), cx)
+                    })
+                    .await?;
+
                 let project_path = pane.update(cx, |pane, cx| {
                     pane.project
                         .update(cx, |project, cx| {
@@ -2503,7 +2509,7 @@ impl Pane {
                             pane.remove_item(item.item_id(), false, false, window, cx);
                         }
 
-                        item.save_as(project.clone(), new_path, window, cx)
+                        item.save_as(project.clone(), new_path, Some(expected), window, cx)
                     })?
                 } else {
                     return Ok(false);

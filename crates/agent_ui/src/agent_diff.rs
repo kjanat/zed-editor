@@ -637,6 +637,7 @@ impl Item for AgentDiffPane {
         &mut self,
         _: Entity<Project>,
         _: ProjectPath,
+        _expected: Option<language::DiskState>,
         _window: &mut Window,
         _: &mut Context<Self>,
     ) -> Task<Result<()>> {
