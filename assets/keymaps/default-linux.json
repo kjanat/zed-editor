@@ -1,5 +1,4 @@
-[
-	// Standard Linux bindings
+[ // Standard Linux bindings
 	{
 		"bindings": {
 			"home": "menu::SelectFirst",
@@ -391,7 +390,6 @@
 			"shift-backspace": "agent::ArchiveSelectedThread",
 		},
 	},
-
 	{
 		"context": "BufferSearchBar",
 		"bindings": {
@@ -522,8 +520,7 @@
 			"alt-r": "search::ToggleRegex",
 			"ctrl-k shift-enter": "pane::TogglePinTab",
 		},
-	},
-	// Bindings from VS Code
+	}, // Bindings from VS Code
 	{
 		"context": "Editor",
 		"bindings": {
@@ -789,8 +786,7 @@
 			"left": "app_menu::ActivateMenuLeft",
 			"right": "app_menu::ActivateMenuRight",
 		},
-	},
-	// Bindings from Sublime Text
+	}, // Bindings from Sublime Text
 	{
 		"context": "Editor",
 		"bindings": {
@@ -808,8 +804,7 @@
 			"ctrl-alt-shift-right": "editor::SelectToNextSubwordEnd",
 			"ctrl-alt-shift-f": "editor::SelectToNextSubwordEnd",
 		},
-	},
-	// Bindings from Atom
+	}, // Bindings from Atom
 	{
 		"context": "Pane",
 		"bindings": {
@@ -818,8 +813,7 @@
 			"ctrl-k left": "pane::SplitLeft",
 			"ctrl-k right": "pane::SplitRight",
 		},
-	},
-	// Bindings that should be unified with bindings for more general actions
+	}, // Bindings that should be unified with bindings for more general actions
 	{
 		"context": "Editor && renaming",
 		"bindings": {
@@ -853,8 +847,7 @@
 		"bindings": {
 			"shift-tab": "editor::PreviousSnippetTabstop",
 		},
-	},
-	// Bindings for accepting edit predictions
+	}, // Bindings for accepting edit predictions
 	//
 	// alt-l is provided as an alternative to tab/alt-tab. and will be displayed in the UI. This is
 	// because alt-tab may not be available, as it is often used for window switching.
@@ -896,8 +889,7 @@
 			"up": "editor::SignatureHelpPrevious",
 			"down": "editor::SignatureHelpNext",
 		},
-	},
-	// Custom bindings
+	}, // Custom bindings
 	{
 		"bindings": {
 			"ctrl-alt-shift-f": "workspace::FollowNextCollaborator",
@@ -1009,6 +1001,8 @@
 			"alt-d": "project_panel::CompareMarkedFiles",
 			"shift-find": "project_panel::NewSearchInDirectory",
 			"ctrl-alt-shift-f": "project_panel::NewSearchInDirectory",
+			"menu": "project_panel::OpenContextMenu",
+			"shift-f10": "project_panel::OpenContextMenu",
 			"shift-down": "menu::SelectNext",
 			"shift-up": "menu::SelectPrevious",
 			"escape": "menu::Cancel",
@@ -1657,5 +1651,5 @@
 			"tab": "skill_creator::FocusNextField",
 			"shift-tab": "skill_creator::FocusPreviousField",
 		},
-	},
+	}
 ]
