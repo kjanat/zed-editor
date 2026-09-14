@@ -586,6 +586,8 @@ fn test_checked_fifo_save_does_not_open_a_reader() {
 
 #[gpui::test]
 async fn test_checked_save_rejects_replacements_during_publication(executor: BackgroundExecutor) {
+    // Real filesystem metadata can await OS work outside the deterministic scheduler.
+    executor.allow_parking();
     let fs = RealFs::new(None, executor);
     for phase in [
         DurableSavePhase::ClassifyDestination,
@@ -627,6 +629,8 @@ async fn test_checked_save_rejects_replacements_during_publication(executor: Bac
 
 #[gpui::test]
 async fn test_checked_save_receipt_precedes_external_refresh(executor: BackgroundExecutor) {
+    // Real filesystem metadata can await OS work outside the deterministic scheduler.
+    executor.allow_parking();
     let fs = RealFs::new(None, executor);
     let directory = TempDir::new().expect("temporary directory");
     let path = directory.path().join("file.txt");

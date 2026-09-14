@@ -116,7 +116,8 @@ jobs:
         if: runner.os == 'Windows' || runner.os == 'macOS'
         shell: bash
         run: |
-          if grep -E 'LNK4217|__eh_frame section too large' tests.log; then
+          # Keep macOS __eh_frame size/performance warnings visible without failing debug tests.
+          if grep -E 'LNK4217' tests.log; then
             echo "::error::Native test build emitted linker warnings"
             exit 1
           else

@@ -9248,10 +9248,18 @@ async fn test_buffer_does_not_follow_save_backup(cx: &mut gpui::TestAppContext) 
             .unwrap();
             cx.run_until_parked();
             buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "saved ")], None, cx));
+            if dirty {
+                project
+                    .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                    .await
+                    .expect_err("a known conflict requires overwrite confirmation");
+            }
             project
-                .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                .update(cx, |project, cx| {
+                    project.save_buffer_with_overwrite(buffer.clone(), dirty, cx)
+                })
                 .await
-                .unwrap();
+                .expect("save to the original path after resolving any conflict");
             cx.run_until_parked();
             assert_eq!(
                 fs.load(Path::new(path!("/dir/file.txt"))).await.unwrap(),
