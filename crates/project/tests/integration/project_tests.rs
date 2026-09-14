@@ -9107,6 +9107,59 @@ async fn test_post_save_deletion_is_a_disk_conflict(cx: &mut TestAppContext) {
     );
 }
 
+#[cfg(unix)]
+#[gpui::test]
+async fn test_save_as_creates_dangling_symlink_target(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let source = directory.path().join("source.txt");
+    let link = directory.path().join("link.txt");
+    std::fs::write(&source, "saved contents").expect("source file");
+    std::os::unix::fs::symlink("target.txt", &link).expect("dangling symlink");
+    let project = Project::test(RealFs::new(None, cx.executor()), [directory.path()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(&source, cx))
+        .await
+        .expect("open source");
+    let expected = project
+        .read_with(cx, |project, cx| {
+            project.save_as_disk_state(link.clone(), cx)
+        })
+        .await
+        .expect("capture target");
+    assert_eq!(expected, DiskState::New);
+    project
+        .update(cx, |project, cx| {
+            let worktree_id = project
+                .worktrees(cx)
+                .next()
+                .expect("worktree")
+                .read(cx)
+                .id();
+            project.save_buffer_as_with_disk_state(
+                buffer.clone(),
+                ProjectPath {
+                    worktree_id,
+                    path: rel_path("link.txt").into(),
+                },
+                Some(expected),
+                cx,
+            )
+        })
+        .await
+        .expect("save through dangling symlink");
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("target.txt")).expect("target"),
+        "saved contents"
+    );
+    assert!(
+        std::fs::symlink_metadata(link)
+            .expect("preserved link")
+            .is_symlink()
+    );
+}
+
 #[gpui::test]
 async fn test_save_as_checks_confirmed_destination(cx: &mut TestAppContext) {
     init_test(cx);
@@ -9298,8 +9351,8 @@ async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext
             assert!(matches!(
                 error.downcast_ref::<worktree::WriteFileError>(),
                 Some(worktree::WriteFileError::DiskChanged {
-                    expected: DiskState::Present { mtime, size, inode },
-                    found: DiskState::Present { mtime: found_mtime, size: found_size, inode: found_inode },
+                    expected: DiskState::Present { mtime, size, inode, .. },
+                    found: DiskState::Present { mtime: found_mtime, size: found_size, inode: found_inode, .. },
                 }) if mtime == found_mtime && size == found_size && inode != found_inode
             ));
             if !dirty {

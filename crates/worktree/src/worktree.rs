@@ -1783,6 +1783,7 @@ impl LocalWorktree {
                             mtime: metadata.mtime,
                             size: Some(metadata.len),
                             inode: Some(metadata.inode),
+                            device: Some(metadata.device),
                         },
                         is_local: true,
                         is_private,
@@ -1842,6 +1843,7 @@ impl LocalWorktree {
                             mtime: metadata.mtime,
                             size: Some(metadata.len),
                             inode: Some(metadata.inode),
+                            device: Some(metadata.device),
                         },
                         is_local: true,
                         is_private,
@@ -1953,13 +1955,17 @@ impl LocalWorktree {
             let abs_path = abs_path.clone();
             async move {
                 let expectation = match expected {
-                    Some(DiskState::Present { mtime, size, inode }) => {
-                        Some(fs::SaveExpectation::Present {
-                            mtime,
-                            len: size,
-                            inode,
-                        })
-                    }
+                    Some(DiskState::Present {
+                        mtime,
+                        size,
+                        inode,
+                        device,
+                    }) => Some(fs::SaveExpectation::Present {
+                        mtime,
+                        len: size,
+                        inode,
+                        device,
+                    }),
                     Some(DiskState::New | DiskState::Deleted) => Some(fs::SaveExpectation::Absent),
                     Some(DiskState::Historic { .. }) => {
                         anyhow::bail!("Cannot save a historic file without choosing a destination")
@@ -2006,6 +2012,7 @@ impl LocalWorktree {
                             mtime: receipt.mtime,
                             size: Some(receipt.len),
                             inode: Some(receipt.inode),
+                            device: Some(receipt.device),
                         })
                         .unwrap_or_else(|| {
                             if expected == DiskState::New {
@@ -2023,6 +2030,7 @@ impl LocalWorktree {
                 mtime: receipt.mtime,
                 size: Some(receipt.len),
                 inode: Some(receipt.inode),
+                device: Some(receipt.device),
             };
             let entry = this
                 .update(cx, |this, cx| {
@@ -2065,6 +2073,7 @@ impl LocalWorktree {
                         mtime: metadata.mtime,
                         size: Some(metadata.len),
                         inode: Some(metadata.inode),
+                        device: Some(metadata.device),
                     },
                     entry_id: None,
                     is_local: true,
@@ -4039,6 +4048,7 @@ impl language::File for File {
             is_historic: matches!(self.disk_state, DiskState::Historic { .. }),
             size: self.disk_state.size(),
             inode: self.disk_state.inode(),
+            device: self.disk_state.device(),
         }
     }
 
@@ -4085,6 +4095,7 @@ impl File {
                     mtime,
                     size: Some(entry.size),
                     inode: Some(entry.inode),
+                    device: entry.device,
                 }
             } else {
                 DiskState::New
@@ -4123,6 +4134,9 @@ impl File {
                 mtime,
                 size: proto.size.or_else(|| entry.map(|entry| entry.size)),
                 inode: proto.inode.or_else(|| entry.map(|entry| entry.inode)),
+                device: proto
+                    .device
+                    .or_else(|| entry.and_then(|entry| entry.device)),
             }
         } else {
             DiskState::New
@@ -4166,6 +4180,7 @@ pub struct Entry {
     pub kind: EntryKind,
     pub path: Arc<RelPath>,
     pub inode: u64,
+    pub device: Option<u64>,
     pub mtime: Option<MTime>,
 
     pub canonical_path: Option<Arc<Path>>,
@@ -4349,6 +4364,7 @@ impl Entry {
             },
             path,
             inode: metadata.inode,
+            device: Some(metadata.device),
             mtime: Some(metadata.mtime),
             size: metadata.len,
             canonical_path,
@@ -7502,6 +7518,7 @@ impl<'a> From<&'a Entry> for proto::Entry {
             is_dir: entry.is_dir(),
             path: entry.path.as_ref().as_unix_str().to_owned(),
             inode: entry.inode,
+            device: entry.device,
             mtime: entry.mtime.map(|time| time.into()),
             is_ignored: entry.is_ignored,
             is_hidden: entry.is_hidden,
@@ -7542,6 +7559,7 @@ impl TryFrom<(&CharBag, &PathMatcher, proto::Entry)> for Entry {
             kind,
             path: path.into(),
             inode: entry.inode,
+            device: entry.device,
             mtime: entry.mtime.map(|time| time.into()),
             size: entry.size.unwrap_or(0),
             canonical_path: entry

@@ -76,6 +76,22 @@ async fn test_remote_save_detects_missed_file_replacement(
         buffer.edit([(0..0, "edited ")], None, cx)
     });
     executor.run_until_parked();
+    project_b.read_with(cx_b, |project, cx| {
+        let entry = project
+            .entry_for_path(
+                &project::ProjectPath {
+                    worktree_id,
+                    path: rel_path("a.txt").into(),
+                },
+                cx,
+            )
+            .expect("joined worktree entry");
+        assert_eq!(
+            entry.device,
+            Some(0),
+            "joining must restore the persisted device"
+        );
+    });
     let file_path = Path::new(path!("/dir/a.txt"));
     let original = fs
         .metadata(file_path)
@@ -129,6 +145,7 @@ async fn test_remote_save_detects_missed_file_replacement(
         .await
         .expect("host buffer");
     let receipt = host_buffer.read_with(cx_a, |buffer, _| buffer.disk_state_for_save());
+    assert_eq!(receipt.and_then(language::DiskState::device), Some(0));
     assert_eq!(
         buffer.read_with(cx_b, |buffer, _| buffer.disk_state_for_save()),
         receipt

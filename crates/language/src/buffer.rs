@@ -415,19 +415,19 @@ pub enum DiskState {
     New,
     /// File present on the filesystem.
     ///
-    /// `size` and `inode` accompany `mtime` because the timestamp alone cannot see an external
-    /// write: a tool that rewrites a file within one mtime tick - formatters, build steps,
+    /// `size`, `inode`, and `device` accompany `mtime` because the timestamp alone cannot see
+    /// an external write: a tool that rewrites a file within one mtime tick - formatters, build steps,
     /// `git` operations and sync clients all do - would otherwise compare equal to the
     /// previous state, so no reload is requested and the buffer stays stale indefinitely. A
     /// rewrite that changes the file's length is caught by `size`, and one that keeps it is
     /// usually caught by `inode`, since most such tools replace the file by renaming a new one
-    /// over it.
+    /// over it. `device` distinguishes identical inode numbers on different filesystems.
     ///
     /// A gap remains: a tool that rewrites the file *in place* to the same length within one
-    /// mtime tick keeps all three fields and is invisible here. Only hashing the contents
+    /// mtime tick keeps all four fields and is invisible here. Only hashing the contents
     /// would catch it, and that would mean reading every file on every scan.
     ///
-    /// Either field is `None` where that observation could not establish it, which is the case
+    /// Identity fields are `None` where that observation could not establish it, which is the case
     /// for a file described over the wire whose worktree entry has not arrived yet. Compare
     /// two states with [`DiskState::differs_from`] rather than `==`, so that a field one side
     /// could not see is not itself read as a change.
@@ -435,6 +435,7 @@ pub enum DiskState {
         mtime: MTime,
         size: Option<u64>,
         inode: Option<u64>,
+        device: Option<u64>,
     },
     /// Deleted file that was previously present.
     Deleted,
@@ -457,16 +458,23 @@ impl DiskState {
 
         match (self, other) {
             (
-                DiskState::Present { mtime, size, inode },
+                DiskState::Present {
+                    mtime,
+                    size,
+                    inode,
+                    device,
+                },
                 DiskState::Present {
                     mtime: other_mtime,
                     size: other_size,
                     inode: other_inode,
+                    device: other_device,
                 },
             ) => {
                 mtime != other_mtime
                     || known_and_different(size, other_size)
                     || known_and_different(inode, other_inode)
+                    || known_and_different(device, other_device)
             }
             _ => self != other,
         }
@@ -476,15 +484,22 @@ impl DiskState {
         if self.differs_from(observation) {
             return false;
         }
-        if let Self::Present { size, inode, .. } = self
+        if let Self::Present {
+            size,
+            inode,
+            device,
+            ..
+        } = self
             && let Self::Present {
                 size: observed_size,
                 inode: observed_inode,
+                device: observed_device,
                 ..
             } = observation
         {
             *size = size.or(observed_size);
             *inode = inode.or(observed_inode);
+            *device = device.or(observed_device);
         }
         true
     }
@@ -513,6 +528,13 @@ impl DiskState {
     pub fn inode(self) -> Option<u64> {
         match self {
             Self::Present { inode, .. } => inode,
+            _ => None,
+        }
+    }
+
+    pub fn device(self) -> Option<u64> {
+        match self {
+            Self::Present { device, .. } => device,
             _ => None,
         }
     }
@@ -1732,6 +1754,7 @@ impl Buffer {
                     mtime,
                     size: None,
                     inode: None,
+                    device: None,
                 })
         });
     }

@@ -210,6 +210,7 @@ impl RemoteBufferStore {
                     mtime,
                     response.size,
                     response.inode,
+                    response.device,
                     cx,
                 );
             });
@@ -477,6 +478,7 @@ impl LocalBufferStore {
                     mtime: mtime.into(),
                     size: confirmed.size,
                     inode: confirmed.inode,
+                    device: confirmed.device,
                 }
             } else {
                 DiskState::New
@@ -554,6 +556,7 @@ impl LocalBufferStore {
                             mtime: mtime.map(|time| time.into()),
                             size: new_file.disk_state().size(),
                             inode: new_file.disk_state().inode(),
+                            device: new_file.disk_state().device(),
                         })
                         .log_err();
                 }
@@ -686,6 +689,7 @@ impl LocalBufferStore {
                             mtime,
                             size: Some(entry.size),
                             inode: Some(entry.inode),
+                            device: entry.device,
                         },
                         None => old_file.disk_state,
                     },
@@ -1164,6 +1168,7 @@ impl BufferStore {
                                 mtime: entry.mtime?,
                                 size: Some(entry.size),
                                 inode: Some(entry.inode),
+                                device: entry.device,
                             })
                         })
                 })
@@ -1175,6 +1180,7 @@ impl BufferStore {
             mtime: expected.mtime().map(Into::into),
             size: expected.size(),
             inode: expected.inode(),
+            device: expected.device(),
             is_deleted: expected.is_deleted(),
             ..Default::default()
         };
@@ -1484,6 +1490,7 @@ impl BufferStore {
                         mtime: buffer.saved_mtime().map(|t| t.into()),
                         size: buffer.disk_state_for_save().and_then(DiskState::size),
                         inode: buffer.disk_state_for_save().and_then(DiskState::inode),
+                        device: buffer.disk_state_for_save().and_then(DiskState::device),
                         line_ending: serialize_line_ending(buffer.line_ending()) as i32,
                     })
                     .log_err();
@@ -1601,6 +1608,7 @@ impl BufferStore {
                         mtime: buffer.saved_mtime().map(|time| time.into()),
                         size: buffer.disk_state_for_save().and_then(DiskState::size),
                         inode: buffer.disk_state_for_save().and_then(DiskState::inode),
+                        device: buffer.disk_state_for_save().and_then(DiskState::device),
                         line_ending: language::proto::serialize_line_ending(buffer.line_ending())
                             as i32,
                     })
@@ -1777,6 +1785,9 @@ impl BufferStore {
                     if let Some(inode) = found.inode() {
                         response = response.with_tag("inode", &inode.to_string());
                     }
+                    if let Some(device) = found.device() {
+                        response = response.with_tag("device", &device.to_string());
+                    }
                     response
                         .with_tag(
                             "deleted",
@@ -1800,6 +1811,7 @@ impl BufferStore {
             mtime: buffer.saved_mtime().map(|time| time.into()),
             size: buffer.disk_state_for_save().and_then(DiskState::size),
             inode: buffer.disk_state_for_save().and_then(DiskState::inode),
+            device: buffer.disk_state_for_save().and_then(DiskState::device),
         }))
     }
 
@@ -1846,6 +1858,7 @@ impl BufferStore {
                         mtime,
                         envelope.payload.size,
                         envelope.payload.inode,
+                        envelope.payload.device,
                         cx,
                     );
                 });
@@ -1859,6 +1872,7 @@ impl BufferStore {
                         mtime: envelope.payload.mtime,
                         size: envelope.payload.size,
                         inode: envelope.payload.inode,
+                        device: envelope.payload.device,
                         version: envelope.payload.version,
                     })
                     .log_err();
@@ -1893,6 +1907,7 @@ impl BufferStore {
                                 mtime,
                                 size: envelope.payload.size,
                                 inode: envelope.payload.inode,
+                                device: envelope.payload.device,
                             },
                             cx,
                         );
@@ -1910,6 +1925,7 @@ impl BufferStore {
                         mtime: envelope.payload.mtime,
                         size: envelope.payload.size,
                         inode: envelope.payload.inode,
+                        device: envelope.payload.device,
                         version: envelope.payload.version,
                         line_ending: envelope.payload.line_ending,
                     })
@@ -2262,12 +2278,22 @@ fn apply_save_receipt(
     mtime: Option<fs::MTime>,
     size: Option<u64>,
     inode: Option<u64>,
+    device: Option<u64>,
     cx: &mut Context<Buffer>,
 ) {
     if let Some(mtime) = mtime
         && (size.is_some() || inode.is_some())
     {
-        buffer.did_save_with_disk_state(version, DiskState::Present { mtime, size, inode }, cx);
+        buffer.did_save_with_disk_state(
+            version,
+            DiskState::Present {
+                mtime,
+                size,
+                inode,
+                device,
+            },
+            cx,
+        );
     } else {
         buffer.did_save(version, mtime, cx);
     }
@@ -2290,5 +2316,6 @@ fn conflict_disk_state(error: &anyhow::Error) -> Result<Option<DiskState>> {
         ),
         size: error.error_tag("size").map(str::parse).transpose()?,
         inode: error.error_tag("inode").map(str::parse).transpose()?,
+        device: error.error_tag("device").map(str::parse).transpose()?,
     }))
 }

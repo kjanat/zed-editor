@@ -284,6 +284,7 @@ impl Database {
                         is_dir: ActiveValue::set(entry.is_dir),
                         path: ActiveValue::set(entry.path.clone()),
                         inode: ActiveValue::set(entry.inode as i64),
+                        device: ActiveValue::set(entry.device.map(|device| device as i64)),
                         mtime_seconds: ActiveValue::set(mtime.seconds as i64),
                         mtime_nanos: ActiveValue::set(mtime.nanos as i32),
                         canonical_path: ActiveValue::set(entry.canonical_path.clone()),
@@ -307,6 +308,7 @@ impl Database {
                         worktree_entry::Column::IsDir,
                         worktree_entry::Column::Path,
                         worktree_entry::Column::Inode,
+                        worktree_entry::Column::Device,
                         worktree_entry::Column::MtimeSeconds,
                         worktree_entry::Column::MtimeNanos,
                         worktree_entry::Column::CanonicalPath,
@@ -798,6 +800,7 @@ impl Database {
                         is_dir: db_entry.is_dir,
                         path: db_entry.path,
                         inode: db_entry.inode as u64,
+                        device: db_entry.device.map(|device| device as u64),
                         mtime: Some(proto::Timestamp {
                             seconds: db_entry.mtime_seconds as u64,
                             nanos: db_entry.mtime_nanos as u32,

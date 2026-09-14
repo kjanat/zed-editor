@@ -76,6 +76,7 @@ CREATE TABLE "worktree_entries" (
     "path" VARCHAR NOT NULL,
     "canonical_path" TEXT,
     "inode" INTEGER NOT NULL,
+    "device" INTEGER,
     "mtime_seconds" INTEGER NOT NULL,
     "mtime_nanos" INTEGER NOT NULL,
     "is_external" BOOL NOT NULL,

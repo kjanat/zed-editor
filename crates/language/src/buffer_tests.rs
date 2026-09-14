@@ -5795,8 +5795,14 @@ fn test_disk_state_differs_from() {
         mtime,
         size: Some(size),
         inode: Some(inode),
+        device: None,
     };
-    let partial = |mtime, size, inode| DiskState::Present { mtime, size, inode };
+    let partial = |mtime, size, inode| DiskState::Present {
+        mtime,
+        size,
+        inode,
+        device: None,
+    };
 
     assert!(!present(mtime, 10, 1).differs_from(present(mtime, 10, 1)));
     assert!(present(mtime, 10, 1).differs_from(present(later, 10, 1)));
@@ -5834,7 +5840,12 @@ fn observed_file(mtime: MTime, size: Option<u64>, inode: Option<u64>) -> Arc<dyn
             root_name: "root".into(),
             local_root: None,
         },
-        state: DiskState::Present { mtime, size, inode },
+        state: DiskState::Present {
+            mtime,
+            size,
+            inode,
+            device: None,
+        },
     })
 }
 
@@ -6057,6 +6068,7 @@ fn test_save_receipt_preserves_identity_and_lagging_observations(cx: &mut App) {
                     mtime: saved_mtime,
                     size: Some(3),
                     inode: Some(2),
+                    device: None,
                 }),
             );
             buffer.set_conflict();
@@ -6066,6 +6078,7 @@ fn test_save_receipt_preserves_identity_and_lagging_observations(cx: &mut App) {
                     mtime: saved_mtime,
                     size: Some(3),
                     inode: Some(2),
+                    device: None,
                 }),
             );
             buffer.did_save_with_file(
@@ -6122,6 +6135,46 @@ fn test_save_receipt_catch_up_does_not_reload(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn test_save_receipt_distinguishes_devices(cx: &mut App) {
+    init_settings(cx, |_| {});
+    let mtime = MTime::from_seconds_and_nanos(100, 0);
+    let observation = |device| -> Arc<dyn File> {
+        Arc::new(ObservedFile {
+            file: TestFile {
+                path: rel_path("file.txt").into(),
+                root_name: "root".into(),
+                local_root: None,
+            },
+            state: DiskState::Present {
+                mtime,
+                size: Some(3),
+                inode: Some(1),
+                device: Some(device),
+            },
+        })
+    };
+    let buffer = cx.new(|cx| Buffer::local("old", cx));
+    buffer.update(cx, |buffer, cx| {
+        buffer.file_updated(observation(10), cx);
+        buffer.did_save_with_disk_state(buffer.version(), observation(20).disk_state(), cx);
+        buffer.edit([(0..0, "edited ")], None, cx);
+        buffer.file_updated(observation(10), cx);
+        assert!(!buffer.has_conflict(), "pre-save device remains superseded");
+        buffer.file_updated(observation(20), cx);
+        assert!(!buffer.has_conflict(), "saved device catches up");
+        buffer.file_updated(observation(30), cx);
+        assert!(
+            buffer.has_conflict(),
+            "same inode on another device is a replacement"
+        );
+        assert_eq!(
+            buffer.disk_state_for_save().and_then(DiskState::device),
+            Some(20)
+        );
+    });
+}
+
+#[gpui::test]
 fn test_remote_save_receipt_precedes_file_observation(cx: &mut App) {
     init_settings(cx, |_| {});
     let mtime = MTime::from_seconds_and_nanos(100, 0);
@@ -6134,6 +6187,7 @@ fn test_remote_save_receipt_precedes_file_observation(cx: &mut App) {
                 mtime,
                 size: Some(3),
                 inode: Some(2),
+                device: None,
             },
             cx,
         );
@@ -6162,6 +6216,7 @@ fn test_remote_reload_receipt_preserves_same_timestamp_identity(cx: &mut App) {
                 mtime,
                 size: Some(3),
                 inode: Some(2),
+                device: None,
             },
             cx,
         );

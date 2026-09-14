@@ -853,6 +853,7 @@ impl LocalImageStore {
                             mtime,
                             size: Some(entry.size),
                             inode: Some(entry.inode),
+                            device: entry.device,
                         },
                         None => old_file.disk_state,
                     },

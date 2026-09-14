@@ -50,6 +50,7 @@ async fn test_path_inclusion_matcher(cx: &mut gpui::TestAppContext) {
         kind: EntryKind::UnloadedDir,
         path: Arc::from(RelPath::from_unix_str(Path::new("src/data")).unwrap()),
         inode: 0,
+        device: None,
         mtime: None,
         canonical_path: None,
         is_ignored: true,

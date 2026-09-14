@@ -665,6 +665,7 @@ impl Database {
                             is_dir: db_entry.is_dir,
                             path: db_entry.path,
                             inode: db_entry.inode as u64,
+                            device: db_entry.device.map(|device| device as u64),
                             mtime: Some(proto::Timestamp {
                                 seconds: db_entry.mtime_seconds as u64,
                                 nanos: db_entry.mtime_nanos as u32,

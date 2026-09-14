@@ -1255,7 +1255,7 @@ impl HeadlessProject {
         let fs = cx.read_entity(&this, |this, _| this.fs.clone());
         let expanded = PathBuf::from(shellexpand::tilde(&envelope.payload.path).to_string());
 
-        let metadata = fs.metadata(&expanded).await?;
+        let metadata = fs.metadata_for_save(&expanded).await?;
         let is_dir = metadata.map(|metadata| metadata.is_dir).unwrap_or(false);
 
         Ok(proto::GetPathMetadataResponse {
@@ -1265,6 +1265,7 @@ impl HeadlessProject {
             mtime: metadata.map(|metadata| metadata.mtime.into()),
             size: metadata.map(|metadata| metadata.len),
             inode: metadata.map(|metadata| metadata.inode),
+            device: metadata.map(|metadata| metadata.device),
         })
     }
 

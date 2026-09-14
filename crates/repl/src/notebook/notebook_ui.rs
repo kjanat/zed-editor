@@ -301,47 +301,6 @@ impl NotebookEditor {
         }
     }
 
-    pub fn mark_as_saved(&mut self, cx: &mut Context<Self>) {
-        self.original_cell_order = self.cell_order.clone();
-
-        for cell in self.cell_map.values() {
-            match cell {
-                Cell::Code(code_cell) => {
-                    code_cell.update(cx, |code_cell, cx| {
-                        let editor = code_cell.editor();
-                        editor.update(cx, |editor, cx| {
-                            editor.buffer().update(cx, |buffer, cx| {
-                                if let Some(buf) = buffer.as_singleton() {
-                                    buf.update(cx, |b, cx| {
-                                        let version = b.version();
-                                        b.did_save(version, None, cx);
-                                    });
-                                }
-                            });
-                        });
-                    });
-                }
-                Cell::Markdown(markdown_cell) => {
-                    markdown_cell.update(cx, |markdown_cell, cx| {
-                        let editor = markdown_cell.editor();
-                        editor.update(cx, |editor, cx| {
-                            editor.buffer().update(cx, |buffer, cx| {
-                                if let Some(buf) = buffer.as_singleton() {
-                                    buf.update(cx, |b, cx| {
-                                        let version = b.version();
-                                        b.did_save(version, None, cx);
-                                    });
-                                }
-                            });
-                        });
-                    });
-                }
-                Cell::Raw(_) => {}
-            }
-        }
-        cx.notify();
-    }
-
     fn save_impl(
         &mut self,
         destination: SaveDestination,
@@ -351,7 +310,17 @@ impl NotebookEditor {
         let notebook = self.to_notebook(cx);
         let project_path = self.notebook_item.read(cx).project_path.clone();
 
-        self.mark_as_saved(cx);
+        let saved_cell_order = self.cell_order.clone();
+        let saved_buffers: Vec<_> = self
+            .cell_map
+            .values()
+            .filter_map(|cell| {
+                let editor = cell.editor(cx)?.read(cx);
+                let buffer = editor.buffer().read(cx).as_singleton()?;
+                let version = buffer.read(cx).version();
+                Some((buffer, version))
+            })
+            .collect();
 
         cx.spawn(async move |this, cx| {
             let json =
@@ -393,7 +362,15 @@ impl NotebookEditor {
                         })
                     })
                 }
-            }
+            }?;
+            this.update(cx, |this, cx| {
+                // Only acknowledge the versions serialized before the write began.
+                this.original_cell_order = saved_cell_order;
+                for (buffer, version) in saved_buffers {
+                    buffer.update(cx, |buffer, cx| buffer.did_save(version, None, cx));
+                }
+                cx.notify();
+            })
         })
     }
 
@@ -2345,11 +2322,39 @@ mod tests {
         });
 
         notebook_editor
-            .update_in(cx, |notebook_editor, window, cx| {
-                notebook_editor.save(SaveOptions::default(), project.clone(), window, cx)
+            .update(cx, |editor, cx| {
+                editor.save_impl(
+                    SaveDestination::NewPath(project_path.clone(), Some(language::DiskState::New)),
+                    project.clone(),
+                    cx,
+                )
             })
             .await
-            .expect("saving the notebook should succeed");
+            .expect_err("a destination created after confirmation must reject the save");
+        assert!(
+            notebook_editor.read_with(cx, |editor, cx| editor.is_dirty(cx)),
+            "failed save must retain unsaved cell edits"
+        );
+        assert!(
+            String::from_utf8(
+                fs.read_file_sync(path!("/notebooks/test.ipynb"))
+                    .expect("original file")
+            )
+            .expect("UTF-8")
+            .contains("print('hello')")
+        );
+
+        let save = notebook_editor.update_in(cx, |notebook_editor, window, cx| {
+            notebook_editor.save(SaveOptions::default(), project.clone(), window, cx)
+        });
+        cell_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("print('new edit')", window, cx);
+        });
+        save.await.expect("saving the notebook should succeed");
+        assert!(
+            notebook_editor.read_with(cx, |editor, cx| editor.is_dirty(cx)),
+            "edits made during the save must remain dirty"
+        );
 
         let saved = String::from_utf8(
             fs.read_file_sync(path!("/notebooks/test.ipynb"))
@@ -2369,5 +2374,20 @@ mod tests {
             );
             assert!(!buffer.is_dirty(), "saving should leave the buffer clean");
         });
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.save(SaveOptions::default(), project.clone(), window, cx)
+            })
+            .await
+            .expect("save the later edit");
+        assert!(!notebook_editor.read_with(cx, |editor, cx| editor.is_dirty(cx)));
+        assert!(
+            String::from_utf8(
+                fs.read_file_sync(path!("/notebooks/test.ipynb"))
+                    .expect("saved file")
+            )
+            .expect("UTF-8")
+            .contains("print('new edit')")
+        );
     }
 }

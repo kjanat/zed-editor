@@ -66,6 +66,7 @@ message BufferSaved {
   reserved 5;
   optional uint64 size = 6;
   optional uint64 inode = 7;
+  optional uint64 device = 8;
 }
 
 message BufferReloaded {
@@ -77,6 +78,7 @@ message BufferReloaded {
   LineEnding line_ending = 6;
   optional uint64 size = 7;
   optional uint64 inode = 8;
+  optional uint64 device = 9;
 }
 
 message ReloadBuffers {

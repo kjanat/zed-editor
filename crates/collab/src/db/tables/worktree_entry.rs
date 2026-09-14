@@ -13,6 +13,7 @@ pub struct Model {
     pub is_dir: bool,
     pub path: String,
     pub inode: i64,
+    pub device: Option<i64>,
     pub mtime_seconds: i64,
     pub mtime_nanos: i32,
     pub git_status: Option<i64>,

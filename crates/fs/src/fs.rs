@@ -154,6 +154,8 @@ pub trait Fs: Send + Sync {
     async fn is_file(&self, path: &Path) -> bool;
     async fn is_dir(&self, path: &Path) -> bool;
     async fn metadata(&self, path: &Path) -> Result<Option<Metadata>>;
+    /// Save expectations describe the target, never a dangling symlink itself.
+    async fn metadata_for_save(&self, path: &Path) -> Result<Option<Metadata>>;
     async fn read_link(&self, path: &Path) -> Result<PathBuf>;
     async fn read_dir(
         &self,
@@ -329,6 +331,8 @@ pub struct RemoveOptions {
 #[derive(Copy, Clone, Debug)]
 pub struct Metadata {
     pub inode: u64,
+    /// Filesystem device ID, or volume serial number on Windows.
+    pub device: u64,
     pub mtime: MTime,
     pub is_symlink: bool,
     pub is_dir: bool,
@@ -345,6 +349,8 @@ pub enum SaveContent<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SaveReceipt {
+    /// Filesystem device ID, or volume serial number on Windows.
+    pub device: u64,
     pub mtime: MTime,
     pub len: u64,
     pub inode: u64,
@@ -357,6 +363,7 @@ pub enum SaveExpectation {
         mtime: MTime,
         len: Option<u64>,
         inode: Option<u64>,
+        device: Option<u64>,
     },
 }
 
@@ -364,10 +371,19 @@ impl SaveExpectation {
     fn check(self, found: Option<SaveReceipt>) -> Result<()> {
         let matches = match (self, found) {
             (Self::Absent, None) => true,
-            (Self::Present { mtime, len, inode }, Some(found)) => {
+            (
+                Self::Present {
+                    mtime,
+                    len,
+                    inode,
+                    device,
+                },
+                Some(found),
+            ) => {
                 mtime == found.mtime
                     && len.is_none_or(|len| len == found.len)
                     && inode.is_none_or(|inode| inode == found.inode)
+                    && device.is_none_or(|device| device == found.device)
             }
             _ => false,
         };
@@ -1173,6 +1189,23 @@ impl Fs for RealFs {
             .await
     }
 
+    async fn metadata_for_save(&self, path: &Path) -> Result<Option<Metadata>> {
+        match self.canonicalize(path).await {
+            Ok(target) => self.metadata(&target).await,
+            Err(error)
+                if error.downcast_ref::<io::Error>().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    )
+                }) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn metadata(&self, path: &Path) -> Result<Option<Metadata>> {
         let path_buf = path.to_owned();
         let symlink_metadata = match self
@@ -1217,10 +1250,10 @@ impl Fs for RealFs {
         };
 
         #[cfg(unix)]
-        let inode = metadata.ino();
+        let (inode, device) = (metadata.ino(), metadata.dev());
 
         #[cfg(windows)]
-        let inode = file_id(path).await?;
+        let (inode, device) = file_id(path).await?;
 
         #[cfg(windows)]
         let is_fifo = false;
@@ -1241,6 +1274,7 @@ impl Fs for RealFs {
 
         Ok(Some(Metadata {
             inode,
+            device,
             mtime: MTime(metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
             len: metadata.len(),
             is_symlink,
@@ -3453,6 +3487,7 @@ impl Fs for FakeFs {
                         inode, mtime, len, ..
                     } => Some(SaveReceipt {
                         inode: *inode,
+                        device: 0,
                         mtime: *mtime,
                         len: *len,
                     }),
@@ -3511,6 +3546,10 @@ impl Fs for FakeFs {
             .is_ok_and(|metadata| metadata.is_some_and(|metadata| metadata.is_dir))
     }
 
+    async fn metadata_for_save(&self, path: &Path) -> Result<Option<Metadata>> {
+        self.metadata(path).await
+    }
+
     async fn metadata(&self, path: &Path) -> Result<Option<Metadata>> {
         self.simulate_random_delay().await;
         let path = normalize_path(path);
@@ -3531,6 +3570,7 @@ impl Fs for FakeFs {
                     inode, mtime, len, ..
                 } => Metadata {
                     inode: *inode,
+                    device: 0,
                     mtime: *mtime,
                     len: *len,
                     is_dir: false,
@@ -3543,6 +3583,7 @@ impl Fs for FakeFs {
                     inode, mtime, len, ..
                 } => Metadata {
                     inode: *inode,
+                    device: 0,
                     mtime: *mtime,
                     len: *len,
                     is_dir: true,
@@ -3823,7 +3864,7 @@ fn read_recursive<'a>(
 // can we get file id not open the file twice?
 // https://github.com/rust-lang/rust/issues/63010
 #[cfg(target_os = "windows")]
-async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
+async fn file_id(path: impl AsRef<Path>) -> Result<(u64, u64)> {
     use std::os::windows::io::AsRawHandle;
 
     use smol::fs::windows::OpenOptionsExt;
@@ -3846,7 +3887,10 @@ async fn file_id(path: impl AsRef<Path>) -> Result<u64> {
     smol::unblock(move || {
         unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle() as _), &mut info)? };
 
-        Ok(((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64))
+        Ok((
+            ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64),
+            u64::from(info.dwVolumeSerialNumber),
+        ))
     })
     .await
 }
@@ -3973,13 +4017,19 @@ fn save_durably_with_checkpoint(
 fn save_receipt(file: &std::fs::File) -> Result<SaveReceipt> {
     let metadata = file.metadata()?;
     #[cfg(unix)]
-    let inode = metadata.ino();
+    let (inode, device) = (metadata.ino(), metadata.dev());
     #[cfg(windows)]
-    let inode = windows_file_information(file)?.identity.file_index;
+    let identity = windows_file_information(file)?.identity;
+    #[cfg(windows)]
+    let (inode, device) = (
+        identity.file_index,
+        u64::from(identity.volume_serial_number),
+    );
     Ok(SaveReceipt {
         mtime: MTime(metadata.modified()?),
         len: metadata.len(),
         inode,
+        device,
     })
 }
 
@@ -4272,6 +4322,7 @@ fn save_replaceable_file(
         mtime: original.mtime,
         len: Some(original.len),
         inode: Some(original.inode),
+        device: Some(original.device),
     }
     .check(Some(save_receipt(&source)?))?;
     anyhow::ensure!(

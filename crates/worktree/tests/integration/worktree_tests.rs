@@ -6875,6 +6875,7 @@ async fn test_remote_worktree_without_git_emits_root_repo_event_after_first_upda
                     is_dir: true,
                     path: "".to_string(),
                     inode: 1,
+                    device: None,
                     mtime: Some(proto::Timestamp {
                         seconds: 0,
                         nanos: 0,
@@ -6970,6 +6971,7 @@ async fn test_remote_worktree_with_git_emits_root_repo_event_when_repo_info_arri
                     is_dir: true,
                     path: "".to_string(),
                     inode: 1,
+                    device: None,
                     mtime: Some(proto::Timestamp {
                         seconds: 0,
                         nanos: 0,

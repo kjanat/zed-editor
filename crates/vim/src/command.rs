@@ -513,6 +513,7 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                         mtime: entry.mtime?,
                         size: Some(entry.size),
                         inode: Some(entry.inode),
+                        device: entry.device,
                     })
                 })
                 .unwrap_or(language::DiskState::New);

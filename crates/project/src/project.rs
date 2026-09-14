@@ -5084,12 +5084,13 @@ impl Project {
             let fs = self.fs.clone();
             cx.background_spawn(async move {
                 Ok(fs
-                    .metadata(&path)
+                    .metadata_for_save(&path)
                     .await?
                     .map(|metadata| DiskState::Present {
                         mtime: metadata.mtime,
                         size: Some(metadata.len),
                         inode: Some(metadata.inode),
+                        device: Some(metadata.device),
                     })
                     .unwrap_or(DiskState::New))
             })
@@ -5111,6 +5112,7 @@ impl Project {
                             .into(),
                         size: metadata.size,
                         inode: metadata.inode,
+                        device: metadata.device,
                     }
                 } else {
                     DiskState::New
@@ -5126,6 +5128,7 @@ impl Project {
                         mtime: entry.mtime?,
                         size: Some(entry.size),
                         inode: Some(entry.inode),
+                        device: entry.device,
                     })
                 })
                 .unwrap_or(DiskState::New);
