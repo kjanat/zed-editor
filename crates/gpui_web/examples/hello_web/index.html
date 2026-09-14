@@ -65,6 +65,24 @@
 			data-wasm-opt="0"
 		>
 		<script data-trunk type="module" src="gallery.js"></script>
+		<link
+			data-trunk
+			rel="rust"
+			data-type="worker"
+			data-bin="dynamic_fonts"
+			data-bindgen-target="web"
+			data-keep-debug
+			data-wasm-opt="0"
+		>
+		<link
+			data-trunk
+			rel="rust"
+			data-type="worker"
+			data-bin="font_fallback_test"
+			data-bindgen-target="web"
+			data-keep-debug
+			data-wasm-opt="0"
+		>
 		<style>
 			* {
 				margin: 0;
@@ -171,6 +189,11 @@
 				<li>
 					<a href="/input" data-module="input"><strong>Text input</strong><span
 						>Typing, cursor movement, and selections.</span></a>
+				</li>
+				<li>
+					<a href="/dynamic-fonts" data-module="dynamic_fonts"><strong>Dynamic
+							fonts</strong><span>Download a font when missing glyphs are
+							reported.</span></a>
 				</li>
 				<li>
 					<a href="/prime-sieve" data-module="hello_web"><strong>Prime
