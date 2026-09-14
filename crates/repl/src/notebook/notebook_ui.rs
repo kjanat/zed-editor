@@ -110,7 +110,7 @@ pub struct NotebookEditor {
 }
 
 enum SaveDestination {
-    CurrentPath,
+    CurrentPath(Option<client::proto::File>),
     NewPath(ProjectPath, Option<language::DiskState>),
 }
 
@@ -122,6 +122,12 @@ impl NotebookEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
+        let buffer = notebook_item.read(cx).buffer.clone();
+        cx.observe(&buffer, |_, _, cx| {
+            cx.emit(());
+            cx.notify();
+        })
+        .detach();
 
         let languages = project.read(cx).languages().clone();
         let language_name = notebook_item.read(cx).language_name();
@@ -308,7 +314,7 @@ impl NotebookEditor {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let notebook = self.to_notebook(cx);
-        let project_path = self.notebook_item.read(cx).project_path.clone();
+        let buffer = self.notebook_item.read(cx).buffer.clone();
 
         let saved_cell_order = self.cell_order.clone();
         let saved_buffers: Vec<_> = self
@@ -325,15 +331,22 @@ impl NotebookEditor {
         cx.spawn(async move |this, cx| {
             let json =
                 serde_json::to_string_pretty(&notebook).context("Failed to serialize notebook")?;
-            let buffer = project
-                .update(cx, |project, cx| project.open_buffer(project_path, cx))
-                .await?;
             buffer.update(cx, |buffer, cx| buffer.set_text(json, cx));
 
             match destination {
-                SaveDestination::CurrentPath => {
+                SaveDestination::CurrentPath(overwrite_file) => {
                     project
-                        .update(cx, |project, cx| project.save_buffer(buffer, cx))
+                        .update(cx, |project, cx| {
+                            let overwrite_files = overwrite_file
+                                .into_iter()
+                                .map(|file| (buffer.clone(), file))
+                                .collect();
+                            project.save_buffers_with_overwrite_files(
+                                [buffer].into_iter().collect(),
+                                overwrite_files,
+                                cx,
+                            )
+                        })
                         .await
                 }
                 SaveDestination::NewPath(new_path, expected) => {
@@ -1615,6 +1628,7 @@ impl Focusable for NotebookEditor {
 
 // Intended to be a NotebookBuffer
 pub struct NotebookItem {
+    buffer: Entity<language::Buffer>,
     project_path: ProjectPath,
     languages: Arc<LanguageRegistry>,
     // Raw notebook data
@@ -1700,6 +1714,7 @@ impl project::ProjectItem for NotebookItem {
                     .context("Entry not found")?;
 
                 Ok(cx.new(|_| NotebookItem {
+                    buffer,
                     project_path: path,
                     languages,
                     notebook,
@@ -1804,6 +1819,10 @@ impl EventEmitter<()> for NotebookEditor {}
 // }
 
 impl Item for NotebookEditor {
+    fn to_item_events(_: &(), emit: &mut dyn FnMut(ItemEvent)) {
+        emit(ItemEvent::UpdateTab);
+    }
+
     type Event = ();
 
     fn can_split(&self) -> bool {
@@ -1888,12 +1907,23 @@ impl Item for NotebookEditor {
 
     fn save(
         &mut self,
-        _options: SaveOptions,
+        options: SaveOptions,
         project: Entity<Project>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        self.save_impl(SaveDestination::CurrentPath, project, cx)
+        let overwrite_file = options
+            .overwrite
+            .then(|| {
+                self.notebook_item
+                    .read(cx)
+                    .buffer
+                    .read(cx)
+                    .file()
+                    .map(|file| file.to_proto(cx))
+            })
+            .flatten();
+        self.save_impl(SaveDestination::CurrentPath(overwrite_file), project, cx)
     }
 
     fn save_as(
@@ -1913,16 +1943,15 @@ impl Item for NotebookEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let project_path = self.notebook_item.read(cx).project_path.clone();
+        let buffer = self.notebook_item.read(cx).buffer.clone();
         let languages = self.languages.clone();
         let notebook_language = self.notebook_language.clone();
 
         cx.spawn_in(window, async move |this, cx| {
-            let buffer = this
-                .update(cx, |this, cx| {
-                    this.project
-                        .update(cx, |project, cx| project.open_buffer(project_path, cx))
-                })?
+            project
+                .update(cx, |project, cx| {
+                    project.reload_buffers([buffer.clone()].into_iter().collect(), true, cx)
+                })
                 .await?;
 
             let file_content = buffer.read_with(cx, |buffer, _| buffer.text());
@@ -1963,6 +1992,8 @@ impl Item for NotebookEditor {
                     cell_map.insert(cell_id.clone(), cell_entity);
                 }
 
+                this.notebook_item
+                    .update(cx, |item, _| item.notebook = notebook);
                 this.cell_order = cell_order.clone();
                 this.original_cell_order = cell_order;
                 this.cell_map = cell_map;
@@ -1975,8 +2006,12 @@ impl Item for NotebookEditor {
         })
     }
 
+    fn has_conflict(&self, cx: &App) -> bool {
+        self.notebook_item.read(cx).buffer.read(cx).has_conflict()
+    }
+
     fn is_dirty(&self, cx: &App) -> bool {
-        self.has_structural_changes() || self.has_content_changes(cx)
+        self.has_conflict(cx) || self.has_structural_changes() || self.has_content_changes(cx)
     }
 }
 
@@ -2389,5 +2424,88 @@ mod tests {
             .expect("UTF-8")
             .contains("print('new edit')")
         );
+
+        fs.pause_events();
+        cell_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("print('keep my edit')", window, cx);
+        });
+        let path = std::path::Path::new(path!("/notebooks/test.ipynb"));
+        fs.insert_file(path, NOTEBOOK_WITH_ONE_CODE_CELL.as_bytes().to_vec())
+            .await;
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.save(SaveOptions::default(), project.clone(), window, cx)
+            })
+            .await
+            .expect_err("missed external replacement must conflict");
+        assert!(notebook_editor.read_with(cx, |editor, cx| editor.has_conflict(cx)));
+        assert!(notebook_editor.read_with(cx, |editor, cx| editor.is_dirty(cx)));
+
+        let overwrite = notebook_editor.update_in(cx, |editor, window, cx| {
+            editor.save(
+                SaveOptions {
+                    overwrite: true,
+                    ..Default::default()
+                },
+                project.clone(),
+                window,
+                cx,
+            )
+        });
+        // Change the destination before the spawned save can consume the approval.
+        fs.set_mtime(path, fs.get_and_increment_mtime())
+            .expect("second replacement");
+        overwrite
+            .await
+            .expect_err("approval must stay bound to the confirmed identity");
+        assert_eq!(
+            fs.read_file_sync(path).expect("external file"),
+            NOTEBOOK_WITH_ONE_CODE_CELL.as_bytes()
+        );
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.save(
+                    SaveOptions {
+                        overwrite: true,
+                        ..Default::default()
+                    },
+                    project.clone(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .expect("confirm current replacement");
+        assert!(!notebook_editor.read_with(cx, |editor, cx| editor.has_conflict(cx)));
+        assert!(!notebook_editor.read_with(cx, |editor, cx| editor.is_dirty(cx)));
+        assert!(
+            String::from_utf8(fs.read_file_sync(path).expect("saved notebook"))
+                .expect("UTF-8")
+                .contains("print('keep my edit')")
+        );
+
+        fs.insert_file(path, NOTEBOOK_WITH_ONE_CODE_CELL.as_bytes().to_vec())
+            .await;
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.save(SaveOptions::default(), project.clone(), window, cx)
+            })
+            .await
+            .expect_err("new external replacement");
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.reload(project.clone(), window, cx)
+            })
+            .await
+            .expect("discard notebook edits");
+        notebook_editor.read_with(cx, |editor, cx| {
+            assert!(!editor.has_conflict(cx));
+            assert!(!editor.is_dirty(cx));
+            let notebook = serde_json::to_string(&editor.to_notebook(cx)).expect("notebook JSON");
+            assert!(
+                notebook.contains("print('hello')"),
+                "discard must read the external file"
+            );
+        });
     }
 }
