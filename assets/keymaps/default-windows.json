@@ -1,5 +1,4 @@
-[
-	// Standard Windows bindings
+[ // Standard Windows bindings
 	{
 		"use_key_equivalents": true,
 		"bindings": {
@@ -524,8 +523,7 @@
 			// "ctrl-shift-alt-x": "search::ToggleRegex",
 			"ctrl-k shift-enter": "pane::TogglePinTab",
 		},
-	},
-	// Bindings from VS Code
+	}, // Bindings from VS Code
 	{
 		"context": "Editor",
 		"use_key_equivalents": true,
@@ -779,8 +777,7 @@
 			"left": "app_menu::ActivateMenuLeft",
 			"right": "app_menu::ActivateMenuRight",
 		},
-	},
-	// Bindings from Sublime Text
+	}, // Bindings from Sublime Text
 	{
 		"context": "Editor",
 		"use_key_equivalents": true,
@@ -797,8 +794,7 @@
 			"ctrl-shift-alt-left": "editor::SelectToPreviousSubwordStart",
 			"ctrl-shift-alt-right": "editor::SelectToNextSubwordEnd",
 		},
-	},
-	// Bindings from Atom
+	}, // Bindings from Atom
 	{
 		"context": "Pane",
 		"use_key_equivalents": true,
@@ -808,8 +804,7 @@
 			"ctrl-k left": "pane::SplitLeft",
 			"ctrl-k right": "pane::SplitRight",
 		},
-	},
-	// Bindings that should be unified with bindings for more general actions
+	}, // Bindings that should be unified with bindings for more general actions
 	{
 		"context": "Editor && renaming",
 		"use_key_equivalents": true,
@@ -846,8 +841,7 @@
 		"bindings": {
 			"shift-tab": "editor::PreviousSnippetTabstop",
 		},
-	},
-	// Bindings for accepting edit predictions
+	}, // Bindings for accepting edit predictions
 	//
 	// alt-l is provided as an alternative to tab/alt-tab. and will be displayed in the UI. This is
 	// because alt-tab may not be available, as it is often used for window switching.
@@ -894,8 +888,7 @@
 			"up": "editor::SignatureHelpPrevious",
 			"down": "editor::SignatureHelpNext",
 		},
-	},
-	// Custom bindings
+	}, // Custom bindings
 	{
 		"use_key_equivalents": true,
 		"bindings": {
@@ -1002,6 +995,8 @@
 			"ctrl-shift-enter": "project_panel::OpenWithSystem",
 			"alt-d": "project_panel::CompareMarkedFiles",
 			"ctrl-k ctrl-shift-f": "project_panel::NewSearchInDirectory",
+			"menu": "project_panel::OpenContextMenu",
+			"shift-f10": "project_panel::OpenContextMenu",
 			"shift-down": "menu::SelectNext",
 			"shift-up": "menu::SelectPrevious",
 			"escape": "menu::Cancel",
@@ -1670,5 +1665,5 @@
 			"tab": "skill_creator::FocusNextField",
 			"shift-tab": "skill_creator::FocusPreviousField",
 		},
-	},
+	}
 ]
