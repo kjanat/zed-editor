@@ -32,7 +32,7 @@ use std::{
     ops::{Deref, DerefMut, Range},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -61,6 +61,7 @@ pub fn underline_y_offset(line_height: Pixels, ascent: Pixels, descent: Pixels) 
 }
 
 const MAX_REPORTED_MISSING_GLYPHS: usize = 1024;
+const RECENT_MISSING_GLYPH_SLOTS: usize = 4 * MAX_REPORTED_MISSING_GLYPHS;
 
 /// The spacing behavior required of a fallback font.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -128,6 +129,10 @@ struct QueuedMissingGlyph {
 struct MissingGlyphReporter {
     generation: Arc<AtomicUsize>,
     sender: async_channel::Sender<QueuedMissingGlyph>,
+    // Fingerprints of recently queued glyphs, so repeated reports from separate
+    // lines do not fill the queue before the receiver can deduplicate them.
+    // A slot collision only lets a duplicate through; it never drops a glyph.
+    recently_queued: Box<[AtomicU64]>,
 }
 
 impl MissingGlyphSink for MissingGlyphReporter {
@@ -137,9 +142,12 @@ impl MissingGlyphSink for MissingGlyphReporter {
         }
 
         let generation = self.generation.load(Ordering::Acquire);
-        // Repetitions within a line must not fill the queue before its other
-        // missing glyphs. Cross-report deduplication belongs to the receiver.
         for missing_glyph in missing_glyphs.into_iter().unique() {
+            let fingerprint = Self::fingerprint(generation, &missing_glyph);
+            let slot = &self.recently_queued[fingerprint as usize % self.recently_queued.len()];
+            if slot.load(Ordering::Relaxed) == fingerprint {
+                continue;
+            }
             let queued = QueuedMissingGlyph {
                 generation,
                 missing_glyph,
@@ -147,11 +155,36 @@ impl MissingGlyphSink for MissingGlyphReporter {
             if self.sender.try_send(queued).is_err() {
                 break;
             }
+            // Mark only after queueing, so a full queue cannot hide the glyph
+            // from later reports.
+            slot.store(fingerprint, Ordering::Relaxed);
         }
     }
 }
 
 impl MissingGlyphReporter {
+    fn new(
+        generation: Arc<AtomicUsize>,
+        sender: async_channel::Sender<QueuedMissingGlyph>,
+    ) -> Self {
+        Self {
+            generation,
+            sender,
+            recently_queued: (0..RECENT_MISSING_GLYPH_SLOTS)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+        }
+    }
+
+    fn fingerprint(generation: usize, missing_glyph: &MissingGlyph) -> u64 {
+        // A full-width keyed hash keeps distinct glyphs from sharing a
+        // fingerprint in practice; zero is reserved for empty slots.
+        let mut hasher = std::hash::DefaultHasher::new();
+        generation.hash(&mut hasher);
+        missing_glyph.hash(&mut hasher);
+        hasher.finish().max(1)
+    }
+
     fn reset(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
@@ -266,10 +299,10 @@ impl TextSystem {
                 font("Arial"), // macOS, Windows
             ],
             font_generation: Arc::default(),
-            missing_glyph_reporter: Arc::new(MissingGlyphReporter {
-                generation: missing_glyph_generation.clone(),
+            missing_glyph_reporter: Arc::new(MissingGlyphReporter::new(
+                missing_glyph_generation.clone(),
                 sender,
-            }),
+            )),
             missing_glyph_receiver: Mutex::new(Some(MissingGlyphReceiver {
                 state: MissingGlyphState::default(),
                 generation: missing_glyph_generation,

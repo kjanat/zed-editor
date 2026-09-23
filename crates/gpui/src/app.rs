@@ -3388,6 +3388,32 @@ mod test {
         assert_eq!(second_observed.borrow().len(), 2);
     }
 
+    #[gpui::test]
+    fn repeated_missing_glyph_reports_leave_room_for_new_glyphs(cx: &mut TestAppContext) {
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let observed = observed.clone();
+            cx.on_missing_glyphs(move |missing_glyphs, _| {
+                observed.borrow_mut().extend_from_slice(missing_glyphs);
+            })
+        });
+        cx.update(|cx| {
+            // Each shaped line reports separately, so more lines than the queue
+            // holds can report the same glyph before the receiver runs.
+            for _ in 0..1100 {
+                cx.text_system()
+                    .report_missing_glyphs_in_test(vec![missing_glyph("repeated")]);
+            }
+            cx.text_system()
+                .report_missing_glyphs_in_test(vec![missing_glyph("later")]);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            observed.borrow().as_slice(),
+            &[missing_glyph("repeated"), missing_glyph("later")]
+        );
+    }
+
     #[test]
     fn test_gpui_borrow() {
         let cx = TestAppContext::single();
