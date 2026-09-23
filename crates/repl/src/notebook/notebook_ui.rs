@@ -2155,14 +2155,13 @@ impl KernelSession for NotebookEditor {
                     cell.update(cx, |cell, cx| {
                         cell.handle_message(message, window, cx);
                     });
-                    // Status and reply messages leave nothing to save, so counting them would
-                    // keep a notebook dirty after a save that raced with them.
+                    // Only outputs are counted: status and reply messages leave nothing to save,
+                    // and execution counts are compared through the serialized snapshot.
                     if matches!(
                         message.content,
                         JupyterMessageContent::StreamContent(_)
                             | JupyterMessageContent::DisplayData(_)
                             | JupyterMessageContent::ExecuteResult(_)
-                            | JupyterMessageContent::ExecuteInput(_)
                             | JupyterMessageContent::ErrorOutput(_)
                     ) {
                         self.outputs_generation += 1;
@@ -2631,6 +2630,29 @@ mod tests {
                 panic!("expected a code cell");
             };
             cell.update(cx, |cell, _| cell.finish_execution());
+            assert!(!editor.has_unsaved_changes(cx));
+        });
+
+        // Neither does a rerun that reports the execution count already saved.
+        let counted = NOTEBOOK_WITH_ONE_CODE_CELL
+            .replace(r#""execution_count": null"#, r#""execution_count": 1"#);
+        assert_ne!(counted, NOTEBOOK_WITH_ONE_CODE_CELL);
+        fs.insert_file(path!("/notebooks/test.ipynb"), counted.into_bytes())
+            .await;
+        cx.run_until_parked();
+        notebook_editor.update_in(cx, |editor, window, cx| {
+            assert_eq!(code_cell_execution_count(editor, cx), Some(1));
+            let request: JupyterMessage = ExecuteRequest::new("print('hello')".to_string()).into();
+            let cell_id = editor.cell_order[0].clone();
+            editor
+                .execution_requests
+                .insert(request.header.msg_id.clone(), cell_id);
+            let input = jupyter_protocol::ExecuteInput {
+                code: "print('hello')".to_string(),
+                execution_count: jupyter_protocol::ExecutionCount::new(1),
+            };
+            editor.route(&JupyterMessage::new(input, Some(&request)), window, cx);
+            assert_eq!(code_cell_execution_count(editor, cx), Some(1));
             assert!(!editor.has_unsaved_changes(cx));
         });
     }
