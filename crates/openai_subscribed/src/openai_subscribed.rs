@@ -86,6 +86,53 @@ pub struct State {
     last_model_catalog_error: Option<SharedString>,
 }
 
+/// Stores the credentials of a completed sign-in and installs them unless a
+/// sign-out or another sign-in happened since. Runs detached, because a sign-out
+/// drops the sign-in task and must not interrupt a keychain write it would then
+/// race with. Returns whether the credentials were installed.
+async fn persist_sign_in(
+    this: WeakEntity<State>,
+    creds: CodexCredentials,
+    cx: &mut AsyncApp,
+) -> Result<bool> {
+    let generation = this.read_with(cx, |state, _| state.auth_generation)?;
+    let (result_tx, result_rx) = futures::channel::oneshot::channel();
+    cx.spawn(async move |cx| {
+        let result = async {
+            let (credentials_provider, credentials_write_lock) =
+                this.read_with(cx, |state, _| {
+                    (
+                        state.credentials_provider.clone(),
+                        state.credentials_write_lock.clone(),
+                    )
+                })?;
+            let _write_guard = credentials_write_lock.lock().await;
+            store_credentials(&*credentials_provider, Some(&creds), cx).await?;
+            let installed = this.update(cx, |state, cx| {
+                if state.auth_generation != generation {
+                    return false;
+                }
+                state.auth_generation = state.auth_generation.wrapping_add(1);
+                state.credentials = Some(creds);
+                state.last_auth_error = None;
+                cx.notify();
+                true
+            })?;
+            if !installed {
+                // A sign-out that finished before this took the lock deleted
+                // nothing this wrote; store what it left.
+                let credentials = this.read_with(cx, |state, _| state.credentials.clone())?;
+                store_credentials(&*credentials_provider, credentials.as_ref(), cx).await?;
+            }
+            anyhow::Ok(installed)
+        }
+        .await;
+        result_tx.send(result).ok();
+    })
+    .detach();
+    result_rx.await?
+}
+
 /// Makes the keychain hold `credentials`, or nothing when signed out.
 async fn store_credentials(
     credentials_provider: &dyn CredentialsProvider,
@@ -330,29 +377,21 @@ impl State {
                         state.begin_persisting_credentials(cx);
                     })?;
 
-                    let (credentials_provider, credentials_write_lock) =
-                        this.read_with(cx, |state, _| {
-                            (
-                                state.credentials_provider.clone(),
-                                state.credentials_write_lock.clone(),
-                            )
-                        })?;
-                    let write_guard = credentials_write_lock.lock().await;
-                    let persist_result =
-                        store_credentials(&*credentials_provider, Some(&creds), cx).await;
+                    let persist_result = persist_sign_in(this.clone(), creds, cx).await;
 
                     match persist_result {
-                        Ok(()) => {
-                            let refresh_models_task = this.update(cx, |state, cx| {
-                                state.auth_generation = state.auth_generation.wrapping_add(1);
-                                state.credentials = Some(creds);
-                                state.last_auth_error = None;
-                                state.refresh_model_catalog(cx)
-                            })?;
-                            drop(write_guard);
+                        Ok(true) => {
+                            let refresh_models_task =
+                                this.update(cx, |state, cx| state.refresh_model_catalog(cx))?;
                             if let Err(error) = refresh_models_task.await {
                                 log::warn!("Failed to refresh ChatGPT models: {error:#}");
                             }
+                            this.update(cx, |state, cx| {
+                                state.sign_in_state = SignInState::Idle;
+                                cx.notify();
+                            })?;
+                        }
+                        Ok(false) => {
                             this.update(cx, |state, cx| {
                                 state.sign_in_state = SignInState::Idle;
                                 cx.notify();
@@ -1767,9 +1806,9 @@ mod tests {
         // Sign out while the refreshed token is being written to the keychain.
         let sign_out_task = state.update(cx, |state, cx| state.sign_out(cx));
         cx.run_until_parked();
-        sign_out_task.await.expect("sign-out should succeed");
         write_gate_tx.send(()).ok();
         cx.run_until_parked();
+        sign_out_task.await.expect("sign-out should succeed");
 
         assert!(refresh_task.await.is_err());
         cx.read(|cx| assert!(state.read(cx).credentials.is_none()));

@@ -581,13 +581,24 @@ impl SettingsStore {
                             // disk, which makes an open settings buffer with edits report a
                             // conflict. They are still applied below, since the file may have
                             // been changed before the watcher got to it.
-                            let resolved_path =
-                                fs.canonicalize(settings_path).await.with_context(|| {
-                                    format!(
+                            // Another process may have replaced the file since it was
+                            // checked, which leaves nothing to resolve.
+                            let resolved_path = match fs.canonicalize(settings_path).await {
+                                Ok(resolved_path) => resolved_path,
+                                Err(error)
+                                    if error.downcast_ref::<std::io::Error>().is_some_and(
+                                        |error| error.kind() == std::io::ErrorKind::NotFound,
+                                    ) =>
+                                {
+                                    settings_path.to_path_buf()
+                                }
+                                Err(error) => {
+                                    return Err(error.context(format!(
                                         "Failed to canonicalize settings path {:?}",
                                         settings_path
-                                    )
-                                })?;
+                                    )));
+                                }
+                            };
 
                             fs.atomic_write(resolved_path.clone(), new_text.clone())
                                 .await

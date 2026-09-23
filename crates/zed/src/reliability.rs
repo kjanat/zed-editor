@@ -18,7 +18,10 @@ use std::{
     ffi::OsStr,
     fs,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use sysinfo::{MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
@@ -37,14 +40,16 @@ pub fn init(client: Arc<Client>, workspace_store: Entity<WorkspaceStore>, cx: &m
     cx.on_flags_ready({
         let client = client.clone();
         // This fires again on every settings change and reconnect, and overlapping
-        // uploads can read the same file before either deletes it.
-        let mut uploaded = false;
+        // uploads can read the same file before either deletes it. Files an upload
+        // left behind are retried by the next one.
+        let upload_in_flight = Arc::new(AtomicBool::new(false));
         move |flags_ready, cx| {
-            if flags_ready.is_staff && !uploaded {
-                uploaded = true;
+            if flags_ready.is_staff && !upload_in_flight.swap(true, Ordering::AcqRel) {
                 let client = client.clone();
+                let upload_in_flight = upload_in_flight.clone();
                 cx.background_spawn(async move {
                     upload_build_timings(client).await.warn_on_err();
+                    upload_in_flight.store(false, Ordering::Release);
                 })
                 .detach();
             }

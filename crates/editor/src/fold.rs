@@ -886,23 +886,33 @@ impl Editor {
         if self.serialized_folds == serialized_folds {
             return;
         }
-        self.serialized_folds = serialized_folds;
+        self.serialized_folds = serialized_folds.clone();
         let db = EditorDb::global(cx);
-        self.serialize_folds = cx.background_spawn(async move {
+        let write = cx.background_spawn(async move {
             background_executor.timer(SERIALIZATION_THROTTLE_TIME).await;
             if db_folds.is_empty() {
                 // No folds - delete any persisted folds for this file
                 db.delete_file_folds(workspace_id, file_path)
                     .await
                     .with_context(|| format!("deleting file folds for workspace {workspace_id:?}"))
-                    .log_err();
             } else {
                 db.save_file_folds(workspace_id, file_path, db_folds)
                     .await
                     .with_context(|| {
                         format!("persisting file folds for workspace {workspace_id:?}")
                     })
-                    .log_err();
+            }
+        });
+        self.serialize_folds = cx.spawn(async move |editor, cx| {
+            if write.await.log_err().is_none() {
+                // Forget the failed write so the next fold change retries it.
+                editor
+                    .update(cx, |editor, _| {
+                        if editor.serialized_folds == serialized_folds {
+                            editor.serialized_folds = None;
+                        }
+                    })
+                    .ok();
             }
         });
     }
