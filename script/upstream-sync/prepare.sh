@@ -88,8 +88,15 @@ attempt_merge() {
 	fi
 	# The fork keeps its own automation and the publisher rejects any change to
 	# .github, so upstream changes there are dropped instead of stalling the sync.
+	git diff --name-only "${BASE}" upstream/main -- .github >/tmp/dropped-github.txt
+	if [[ -s /tmp/dropped-github.txt ]]; then
+		printf 'Dropped upstream .github changes:\n' >>"${GITHUB_STEP_SUMMARY}"
+		sed 's/^/- /' /tmp/dropped-github.txt >>"${GITHUB_STEP_SUMMARY}"
+	fi
 	git rm -r -q -f --ignore-unmatch -- .github
-	git checkout master -- .github
+	if git cat-file -e master:.github 2>/dev/null; then
+		git checkout master -- .github
+	fi
 
 	if [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
 		git commit --message "Merge upstream main"

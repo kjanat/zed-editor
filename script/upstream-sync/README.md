@@ -21,8 +21,10 @@ imports Python from, or executes scripts from the candidate. A changed `master`
 or sync-branch race stops publication. Local commits on the existing sync branch
 also stop its replacement.
 
-Changes to `.github` require manual review and integration; the automatic sync
-opens an issue instead of publishing them to a same-repository PR.
+The fork keeps its own automation: the merge restores `.github` from `master`,
+so upstream changes there, including new workflows and edits to workflows the
+fork removed, are dropped and listed in the job summary instead of stopping the
+sync. Adopting one means porting it by hand.
 
 New or unassigned sync PRs and issues are assigned to `kjanat`. Existing
 assignees are preserved.
