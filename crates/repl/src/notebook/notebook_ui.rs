@@ -144,6 +144,9 @@ pub struct NotebookEditor {
     /// The cells as last loaded or saved, to detect changes such as new
     /// outputs that the cell buffers do not track.
     saved_cells: Option<String>,
+    /// Outputs changed since the last save or load. Rich outputs such as images
+    /// are not serialized, so the snapshot above cannot show these changes.
+    outputs_changed: bool,
 }
 
 enum SaveDestination {
@@ -222,6 +225,7 @@ impl NotebookEditor {
             kernel_picker_handle: PopoverMenuHandle::default(),
             external_change_pending: false,
             saved_cells: None,
+            outputs_changed: false,
         };
         editor.launch_kernel(window, cx);
         // Launching a kernel records its kernelspec, which is not a user edit.
@@ -324,24 +328,14 @@ impl NotebookEditor {
     }
 
     /// Captures what a save would write and a reload would replace: the cells
-    /// with their outputs and execution counts, and the selected kernel. The
-    /// rest of the metadata is left out because the kernel updates it on its
-    /// own. Output counts are included because rich outputs such as images are
-    /// not serialized, so clearing them would otherwise go unnoticed.
+    /// with their serializable outputs and execution counts, and the selected
+    /// kernel. The rest of the metadata is left out because the kernel updates
+    /// it on its own.
     fn serialize_cells(&self, cx: &App) -> Option<String> {
         let notebook = self.to_notebook(cx);
-        let output_counts: Vec<usize> = self
-            .cell_order
-            .iter()
-            .filter_map(|cell_id| match self.cell_map.get(cell_id)? {
-                Cell::Code(cell) => Some(cell.read(cx).output_count()),
-                _ => None,
-            })
-            .collect();
         serde_json::to_string(&serde_json::json!({
             "cells": notebook.cells,
             "kernelspec": notebook.metadata.kernelspec,
-            "output_counts": output_counts,
         }))
         .log_err()
     }
@@ -349,7 +343,8 @@ impl NotebookEditor {
     /// Whether the notebook holds anything a reload would lose, including cell
     /// outputs and execution counts, which do not dirty the source buffers.
     fn has_unsaved_changes(&self, cx: &App) -> bool {
-        self.has_executing_cells(cx)
+        self.outputs_changed
+            || self.has_executing_cells(cx)
             || self.has_structural_changes()
             || self.has_content_changes(cx)
             || self.saved_cells.is_none()
@@ -434,6 +429,7 @@ impl NotebookEditor {
             .min(self.cell_order.len().saturating_sub(1));
         self.cell_list = ListState::new(self.cell_order.len(), gpui::ListAlignment::Top, px(1000.));
         self.saved_cells = self.serialize_cells(cx);
+        self.outputs_changed = false;
         cx.notify();
     }
 
@@ -535,6 +531,7 @@ impl NotebookEditor {
             this.update(cx, |this, cx| {
                 this.external_change_pending = false;
                 this.saved_cells = saved_cells;
+                this.outputs_changed = false;
                 // Only acknowledge the versions serialized before the write began.
                 this.original_cell_order = saved_cell_order;
                 for (buffer, version) in saved_buffers {
@@ -767,6 +764,7 @@ impl NotebookEditor {
                 }
                 cx.notify();
             });
+            self.outputs_changed = true;
         }
 
         if let Err(error) = send_result {
@@ -801,6 +799,7 @@ impl NotebookEditor {
                 });
             }
         }
+        self.outputs_changed = true;
         cx.notify();
     }
 
@@ -2145,6 +2144,7 @@ impl KernelSession for NotebookEditor {
                     cell.update(cx, |cell, cx| {
                         cell.handle_message(message, window, cx);
                     });
+                    self.outputs_changed = true;
                 }
             }
         }
@@ -2419,6 +2419,20 @@ mod tests {
             })
             .await
             .expect("discard the kernel selection");
+
+        // Cleared outputs are kept, even though rich outputs are not serialized.
+        notebook_editor.update_in(cx, |editor, window, cx| editor.clear_outputs(window, cx));
+        let after_clear =
+            NOTEBOOK_WITH_ONE_CODE_CELL.replace("print('hello')", "print('after clear')");
+        fs.insert_file(path, after_clear.into_bytes()).await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, cx| assert!(editor.has_conflict(cx)));
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.reload(project.clone(), window, cx)
+            })
+            .await
+            .expect("discard the cleared outputs");
 
         // Cells rebuilt by a reload keep their event wiring.
         let two_cells = NOTEBOOK_WITH_ONE_CODE_CELL.replace(

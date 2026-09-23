@@ -797,10 +797,6 @@ impl CodeCell {
         !self.outputs.is_empty()
     }
 
-    pub fn output_count(&self) -> usize {
-        self.outputs.len()
-    }
-
     pub fn clear_outputs(&mut self) {
         self.outputs.clear();
         self.execution_duration = None;
