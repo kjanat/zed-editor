@@ -882,6 +882,11 @@ impl Editor {
                 (start, end, start_fp, end_fp)
             })
             .collect::<Vec<_>>();
+        let serialized_folds = Some((workspace_id, file_path.clone(), db_folds.clone()));
+        if self.serialized_folds == serialized_folds {
+            return;
+        }
+        self.serialized_folds = serialized_folds;
         let db = EditorDb::global(cx);
         self.serialize_folds = cx.background_spawn(async move {
             background_executor.timer(SERIALIZATION_THROTTLE_TIME).await;

@@ -1186,6 +1186,9 @@ pub struct Editor {
     _scroll_cursor_center_top_bottom_task: Task<()>,
     serialize_selections: Task<()>,
     serialize_folds: Task<()>,
+    /// The folds this editor last persisted, so navigation that unfolds nothing
+    /// doesn't write them again over a newer state saved by another editor.
+    serialized_folds: Option<(WorkspaceId, Arc<Path>, Vec<(usize, usize, String, String)>)>,
     minimap: Option<Entity<Self>>,
     pub change_list: ChangeList,
     inline_value_cache: InlineValueCache,
@@ -2563,6 +2566,7 @@ impl Editor {
             toggle_fold_multiple_buffers: Task::ready(()),
             serialize_selections: Task::ready(()),
             serialize_folds: Task::ready(()),
+            serialized_folds: None,
             text_style_refinement: None,
             load_diff_task: None,
             diff_hunk_renderer: None,
