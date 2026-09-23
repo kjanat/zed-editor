@@ -449,6 +449,7 @@ impl NotebookEditor {
         // reload may have changed.
         self.refresh_language(cx);
 
+        let selected_cell_id = self.cell_order.get(self.selected_cell_index).cloned();
         let focused_cell_id = self.cell_map.iter().find_map(|(cell_id, cell)| {
             let editor = cell.editor(cx)?;
             editor
@@ -504,8 +505,11 @@ impl NotebookEditor {
         // Results of requests sent for the replaced cells must not reach the
         // new cells that share their IDs.
         self.execution_requests.clear();
-        self.selected_cell_index = self
-            .selected_cell_index
+        // The selection follows its cell when the reload moves it, and otherwise
+        // stays at its position.
+        self.selected_cell_index = selected_cell_id
+            .and_then(|selected| self.cell_order.iter().position(|id| *id == selected))
+            .unwrap_or(self.selected_cell_index)
             .min(self.cell_order.len().saturating_sub(1));
         self.cell_list = ListState::new(self.cell_order.len(), gpui::ListAlignment::Top, px(1000.));
         if !self.cell_order.is_empty() {
@@ -2609,6 +2613,31 @@ mod tests {
             code_cell(1, cx).read_with(cx, |cell, cx| cell.current_source(cx)),
             "print('two changed')"
         );
+
+        // The selection follows its cell when cells are inserted before it.
+        let selected_id = notebook_editor.read_with(cx, |editor, _| {
+            editor.cell_order[editor.selected_cell_index].clone()
+        });
+        let prepended = second_changed.replacen(
+            r#""cells": ["#,
+            r#""cells": [
+            {
+                "cell_type": "code",
+                "id": "cell-zero",
+                "metadata": {},
+                "execution_count": null,
+                "outputs": [],
+                "source": ["print('zero')"]
+            },"#,
+            1,
+        );
+        assert_ne!(prepended, second_changed);
+        fs.insert_file(path, prepended.into_bytes()).await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, _| {
+            assert_eq!(editor.cell_order.len(), 3);
+            assert_eq!(editor.cell_order[editor.selected_cell_index], selected_id);
+        });
 
         // A shorter reloaded notebook keeps the selection in range.
         fs.insert_file(path, NOTEBOOK_WITH_ONE_CODE_CELL.as_bytes().to_vec())
