@@ -2518,45 +2518,37 @@ impl Pane {
                     return Ok(false);
                 };
 
-                // Views of the destination anywhere in the workspace keep a buffer
-                // that no longer receives the file's updates once the saved item
-                // takes it over. They may hold the only copy of unsaved edits,
-                // including ones made while the save was running, so they are
-                // closed only once the file was replaced, and only while they are
-                // clean and still show that file rather than one they were saved as.
+                save_task.await?;
+
+                // Views of the destination anywhere in the workspace, including ones
+                // opened or moved while the save ran, keep a buffer that no longer
+                // receives the file's updates once the saved item takes it over. They
+                // may hold the only copy of unsaved edits, so only clean views that
+                // still show that file through another buffer are closed.
+                let saved_project_items =
+                    pane.read_with(cx, |_, cx| item.project_item_model_ids(cx));
                 let panes = pane.read_with(cx, |pane, cx| {
                     pane.workspace
                         .upgrade()
                         .map(|workspace| workspace.read(cx).panes().to_vec())
                         .unwrap_or_default()
                 });
-                let destinations = panes
-                    .iter()
-                    .flat_map(|pane| {
-                        pane.read_with(cx, |pane, cx| {
-                            pane.items()
-                                .filter(|destination| {
-                                    destination.item_id() != item.item_id()
-                                        && destination.project_path(cx).as_ref() == Some(&new_path)
-                                })
-                                .map(|destination| destination.item_id())
-                                .collect::<Vec<_>>()
-                        })
-                        .into_iter()
-                        .map(move |destination_id| (pane.clone(), destination_id))
-                    })
-                    .collect::<Vec<_>>();
-                save_task.await?;
-                for (destination_pane, destination_id) in destinations {
+                for destination_pane in panes {
                     destination_pane.update_in(cx, |pane, window, cx| {
-                        let destination_is_clean = pane
+                        let stale_destinations = pane
                             .items()
-                            .find(|destination| destination.item_id() == destination_id)
-                            .is_some_and(|destination| {
-                                !destination.is_dirty(cx)
+                            .filter(|destination| {
+                                destination.item_id() != item.item_id()
                                     && destination.project_path(cx).as_ref() == Some(&new_path)
-                            });
-                        if destination_is_clean {
+                                    && !destination.is_dirty(cx)
+                                    && destination
+                                        .project_item_model_ids(cx)
+                                        .iter()
+                                        .all(|id| !saved_project_items.contains(id))
+                            })
+                            .map(|destination| destination.item_id())
+                            .collect::<Vec<_>>();
+                        for destination_id in stale_destinations {
                             pane.remove_item(destination_id, false, false, window, cx);
                         }
                     })?;
