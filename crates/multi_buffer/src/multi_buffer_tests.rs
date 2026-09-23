@@ -464,7 +464,9 @@ async fn test_diff_update_reports_an_edit_only_when_the_text_changes(cx: &mut Te
     assert_eq!(edit_count.load(SeqCst), 0);
 
     // Expanded, the deleted text is part of the multibuffer's text.
-    multibuffer.update(cx, |multibuffer, cx| multibuffer.set_all_diff_hunks_expanded(cx));
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.set_all_diff_hunks_expanded(cx)
+    });
     cx.run_until_parked();
     edit_count.store(0, SeqCst);
     set_base_text("one\ntwo!\nthree\n", cx).await;
