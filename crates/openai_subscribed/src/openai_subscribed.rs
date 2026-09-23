@@ -127,7 +127,11 @@ async fn persist_sign_in(
             anyhow::Ok(installed)
         }
         .await;
-        result_tx.send(result).ok();
+        // A sign-out drops the sign-in task that waits for this result, and a
+        // failure then has nobody else to report it.
+        if let Err(Err(error)) = result_tx.send(result) {
+            log::error!("Failed to persist ChatGPT subscription credentials: {error:#}");
+        }
     })
     .detach();
     result_rx.await?

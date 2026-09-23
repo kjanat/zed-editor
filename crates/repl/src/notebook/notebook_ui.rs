@@ -699,6 +699,13 @@ impl NotebookEditor {
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         cx.spawn(async move |this, cx| {
+            // A reload can land between `save` checking for a conflict and this
+            // write, which would otherwise replace the external version unseen.
+            if matches!(destination, SaveDestination::CurrentPath(None))
+                && this.read_with(cx, |this, _| this.disk_reloads != disk_reloads)?
+            {
+                anyhow::bail!("The notebook changed on disk since you started editing it");
+            }
             let json =
                 serde_json::to_string_pretty(&notebook).context("Failed to serialize notebook")?;
             buffer.update(cx, |buffer, cx| buffer.set_text(json, cx));
@@ -3428,6 +3435,28 @@ mod tests {
             )
             .expect("UTF-8")
             .contains("print('new edit')")
+        );
+
+        // A reload landing after `save` checked for a conflict, but before its
+        // write, stops the write.
+        cell_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("print('racing edit')", window, cx);
+        });
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                let save = editor.save(SaveOptions::default(), project.clone(), window, cx);
+                editor.disk_reloads = editor.disk_reloads.wrapping_add(1);
+                save
+            })
+            .await
+            .expect_err("a reload before the write must stop the save");
+        assert!(
+            !String::from_utf8(
+                fs.read_file_sync(path!("/notebooks/test.ipynb"))
+                    .expect("saved file")
+            )
+            .expect("UTF-8")
+            .contains("racing edit")
         );
 
         fs.pause_events();
