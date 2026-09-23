@@ -524,9 +524,16 @@ impl NotebookEditor {
     }
 
     fn disk_differs_from_saved(&self, cx: &App) -> bool {
+        self.disk_differs_from(&self.notebook_on_disk, cx)
+    }
+
+    /// Whether the backing buffer, which follows the file on disk, holds a
+    /// different notebook than `snapshot`; a reload that only reformats the JSON
+    /// doesn't count.
+    fn disk_differs_from(&self, snapshot: &Option<serde_json::Value>, cx: &App) -> bool {
         let text = self.notebook_item.read(cx).buffer.read(cx).text();
         match parse_notebook_text(&text) {
-            Ok(notebook) => serde_json::to_value(&notebook).log_err() != self.notebook_on_disk,
+            Ok(notebook) => serde_json::to_value(&notebook).log_err() != *snapshot,
             Err(_) => true,
         }
     }
@@ -696,13 +703,16 @@ impl NotebookEditor {
         let written_cells = cells_on_disk(&notebook.cells);
         let written_notebook = serde_json::to_value(&notebook).log_err();
         let disk_reloads = self.disk_reloads;
+        let disk_at_start = self.notebook_on_disk.clone();
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         cx.spawn(async move |this, cx| {
             // A reload can land between `save` checking for a conflict and this
             // write, which would otherwise replace the external version unseen.
             if matches!(destination, SaveDestination::CurrentPath(None))
-                && this.read_with(cx, |this, _| this.disk_reloads != disk_reloads)?
+                && this.read_with(cx, |this, cx| {
+                    this.disk_reloads != disk_reloads && this.disk_differs_from(&disk_at_start, cx)
+                })?
             {
                 anyhow::bail!("The notebook changed on disk since you started editing it");
             }
@@ -3097,6 +3107,73 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    async fn test_save_stops_after_a_reload_that_changed_the_notebook(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/notebooks"),
+            json!({ "test.ipynb": NOTEBOOK_WITH_ONE_CODE_CELL }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/notebooks").as_ref()], cx).await;
+        cx.update(|cx| ReplStore::init(fs.clone(), cx));
+        let project_path = project.read_with(cx, |project, cx| ProjectPath {
+            worktree_id: project.worktrees(cx).next().unwrap().read(cx).id(),
+            path: rel_path("test.ipynb").into(),
+        });
+        let notebook_item = cx
+            .update(|cx| {
+                NotebookItem::try_open(&project, &project_path, cx)
+                    .expect("ipynb files should be openable as notebooks")
+            })
+            .await
+            .expect("notebook should parse");
+        let cx = cx.add_empty_window();
+        let notebook_editor = cx.update(|window, cx| {
+            cx.new(|cx| NotebookEditor::new(project.clone(), notebook_item, window, cx))
+        });
+        let cell_editor = notebook_editor.read_with(cx, |editor, cx| {
+            let Some(Cell::Code(cell)) = editor.cell_map.get(&editor.cell_order[0]) else {
+                panic!("expected a code cell");
+            };
+            cell.read(cx).editor().clone()
+        });
+        cell_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("print('my edit')", window, cx);
+        });
+
+        // The reload lands after `save` checked for a conflict, but before its
+        // write, and brings a different notebook.
+        let external = NOTEBOOK_WITH_ONE_CODE_CELL.replace("print('hello')", "print('external')");
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                let save = editor.save(SaveOptions::default(), project.clone(), window, cx);
+                editor
+                    .notebook_item
+                    .read(cx)
+                    .buffer
+                    .clone()
+                    .update(cx, |buffer, cx| buffer.set_text(external.clone(), cx));
+                editor.disk_reloads = editor.disk_reloads.wrapping_add(1);
+                save
+            })
+            .await
+            .expect_err("a reload that changed the notebook must stop the save");
+        let on_disk = String::from_utf8(
+            fs.read_file_sync(path!("/notebooks/test.ipynb"))
+                .expect("notebook file"),
+        )
+        .expect("UTF-8");
+        assert!(!on_disk.contains("my edit"), "{on_disk}");
+    }
+
     fn execute_reply(request: &JupyterMessage) -> JupyterMessage {
         let reply = jupyter_protocol::ExecuteReply {
             status: jupyter_protocol::ReplyStatus::Ok,
@@ -3438,7 +3515,7 @@ mod tests {
         );
 
         // A reload landing after `save` checked for a conflict, but before its
-        // write, stops the write.
+        // write, doesn't stop the write when it left the notebook as it was.
         cell_editor.update_in(cx, |editor, window, cx| {
             editor.set_text("print('racing edit')", window, cx);
         });
@@ -3449,9 +3526,9 @@ mod tests {
                 save
             })
             .await
-            .expect_err("a reload before the write must stop the save");
+            .expect("a reload that changed nothing must not stop the save");
         assert!(
-            !String::from_utf8(
+            String::from_utf8(
                 fs.read_file_sync(path!("/notebooks/test.ipynb"))
                     .expect("saved file")
             )
