@@ -353,8 +353,6 @@ impl ComponentPreview {
 
         self.component_list = ListState::new(new_len, gpui::ListAlignment::Top, px(1500.0));
         self.entries = entries;
-
-        cx.emit(ItemEvent::UpdateTab);
     }
 
     fn render_sidebar_entry(

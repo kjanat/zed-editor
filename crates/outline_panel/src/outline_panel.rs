@@ -5532,8 +5532,8 @@ impl Panel for OutlinePanel {
                         if !outline_panel.pinned {
                             outline_panel.clear_previous(window, cx);
                         }
+                        outline_panel.serialize(cx);
                     }
-                    outline_panel.serialize(cx);
                 })
                 .ok();
         })
