@@ -758,8 +758,9 @@ impl NotebookEditor {
         };
 
         if let Some(Cell::Code(cell)) = self.cell_map.get(&cell_id) {
-            cell.update(cx, |cell, cx| {
-                if cell.has_outputs() {
+            let outputs_changed = cell.update(cx, |cell, cx| {
+                let had_outputs = cell.has_outputs();
+                if had_outputs {
                     cell.clear_outputs();
                 }
                 if let Err(error) = &send_result {
@@ -768,8 +769,11 @@ impl NotebookEditor {
                     cell.start_execution();
                 }
                 cx.notify();
+                had_outputs || send_result.is_err()
             });
-            self.outputs_generation += 1;
+            if outputs_changed {
+                self.outputs_generation += 1;
+            }
         }
 
         if let Err(error) = send_result {
@@ -2533,6 +2537,102 @@ mod tests {
     fn test_parse_notebook_text_rejects_non_object_cells() {
         let text = r#"{"cells": [1], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}"#;
         assert!(parse_notebook_text(text).is_err());
+    }
+
+    #[derive(Debug)]
+    struct FakeRunningKernel {
+        request_tx: futures::channel::mpsc::Sender<JupyterMessage>,
+        working_directory: std::path::PathBuf,
+        execution_state: jupyter_protocol::ExecutionState,
+    }
+
+    impl crate::kernels::RunningKernel for FakeRunningKernel {
+        fn request_tx(&self) -> futures::channel::mpsc::Sender<JupyterMessage> {
+            self.request_tx.clone()
+        }
+
+        fn stdin_tx(&self) -> futures::channel::mpsc::Sender<JupyterMessage> {
+            self.request_tx.clone()
+        }
+
+        fn working_directory(&self) -> &std::path::PathBuf {
+            &self.working_directory
+        }
+
+        fn execution_state(&self) -> &jupyter_protocol::ExecutionState {
+            &self.execution_state
+        }
+
+        fn set_execution_state(&mut self, state: jupyter_protocol::ExecutionState) {
+            self.execution_state = state;
+        }
+
+        fn kernel_info(&self) -> Option<&jupyter_protocol::KernelInfoReply> {
+            None
+        }
+
+        fn set_kernel_info(&mut self, _info: jupyter_protocol::KernelInfoReply) {}
+
+        fn force_shutdown(&mut self, _window: &mut Window, _cx: &mut App) -> Task<Result<()>> {
+            Task::ready(Ok(()))
+        }
+
+        fn kill(&mut self) {}
+    }
+
+    #[gpui::test]
+    async fn test_running_a_cell_without_output_keeps_notebook_clean(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/notebooks"),
+            json!({ "test.ipynb": NOTEBOOK_WITH_ONE_CODE_CELL }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/notebooks").as_ref()], cx).await;
+        cx.update(|cx| ReplStore::init(fs.clone(), cx));
+        let project_path = project.read_with(cx, |project, cx| ProjectPath {
+            worktree_id: project.worktrees(cx).next().unwrap().read(cx).id(),
+            path: rel_path("test.ipynb").into(),
+        });
+        let notebook_item = cx
+            .update(|cx| {
+                NotebookItem::try_open(&project, &project_path, cx)
+                    .expect("ipynb files should be openable as notebooks")
+            })
+            .await
+            .expect("notebook should parse");
+        let cx = cx.add_empty_window();
+        let notebook_editor = cx.update(|window, cx| {
+            cx.new(|cx| NotebookEditor::new(project.clone(), notebook_item, window, cx))
+        });
+
+        let (request_tx, _request_rx) = futures::channel::mpsc::channel(8);
+        notebook_editor.update_in(cx, |editor, window, cx| {
+            editor.kernel = Kernel::RunningKernel(Box::new(FakeRunningKernel {
+                request_tx,
+                working_directory: std::path::PathBuf::from(path!("/notebooks")),
+                execution_state: jupyter_protocol::ExecutionState::Idle,
+            }));
+            let cell_id = editor.cell_order[0].clone();
+            editor.execute_cell(cell_id, window, cx);
+            assert!(editor.has_unsaved_changes(cx));
+        });
+
+        // An aborted request finishes without output or an execution count.
+        notebook_editor.update(cx, |editor, cx| {
+            let Some(Cell::Code(cell)) = editor.cell_map.get(&editor.cell_order[0]) else {
+                panic!("expected a code cell");
+            };
+            cell.update(cx, |cell, _| cell.finish_execution());
+            assert!(!editor.has_unsaved_changes(cx));
+        });
     }
 
     fn code_cell_execution_count(editor: &NotebookEditor, cx: &App) -> Option<i32> {
