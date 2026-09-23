@@ -448,6 +448,19 @@ impl NotebookEditor {
             })
     }
 
+    /// Nothing will answer requests sent to a kernel that is gone, so their cells
+    /// have to stop waiting for them.
+    fn abandon_executions(&mut self, cx: &mut Context<Self>) {
+        for (_, cell_id) in self.execution_requests.drain() {
+            if let Some(Cell::Code(cell)) = self.cell_map.get(&cell_id) {
+                cell.update(cx, |cell, cx| {
+                    cell.finish_execution();
+                    cx.notify();
+                });
+            }
+        }
+    }
+
     /// Handles the backing JSON buffer being reloaded from disk, which happens
     /// automatically while it is clean even if the cells hold unsaved edits.
     fn backing_buffer_reloaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -549,6 +562,21 @@ impl NotebookEditor {
             .and_then(|selected| self.cell_order.iter().position(|id| *id == selected))
             .unwrap_or(self.selected_cell_index)
             .min(self.cell_order.len().saturating_sub(1));
+        // A reload that deletes the focused cell would otherwise leave focus on an
+        // editor that is no longer shown.
+        if let Some(focused_cell_id) = focused_cell_id
+            && !self.cell_map.contains_key(&focused_cell_id)
+        {
+            let fallback_editor = self
+                .cell_order
+                .get(self.selected_cell_index)
+                .and_then(|cell_id| self.cell_map.get(cell_id))
+                .and_then(|cell| cell.editor(cx).cloned());
+            match fallback_editor {
+                Some(editor) => window.focus(&editor.focus_handle(cx), cx),
+                None => self.focus_handle.focus(window, cx),
+            }
+        }
         self.cell_list = ListState::new(self.cell_order.len(), gpui::ListAlignment::Top, px(1000.));
         if !self.cell_order.is_empty() {
             self.cell_list
@@ -803,7 +831,7 @@ impl NotebookEditor {
             kernel.force_shutdown(window, cx).detach();
         }
 
-        self.execution_requests.clear();
+        self.abandon_executions(cx);
 
         self.launch_kernel_with_spec(spec, window, cx);
     }
@@ -815,7 +843,7 @@ impl NotebookEditor {
             }
 
             self.kernel = Kernel::Restarting;
-            self.execution_requests.clear();
+            self.abandon_executions(cx);
             cx.notify();
 
             self.launch_kernel_with_spec(spec, window, cx);
@@ -2229,7 +2257,7 @@ impl KernelSession for NotebookEditor {
 
     fn kernel_errored(&mut self, error_message: String, cx: &mut Context<Self>) {
         self.kernel = Kernel::ErroredLaunch(error_message);
-        self.execution_requests.clear();
+        self.abandon_executions(cx);
         cx.notify();
     }
 }
@@ -2460,12 +2488,23 @@ mod tests {
         notebook_editor.update_in(cx, |editor, window, cx| {
             editor
                 .execution_requests
-                .insert(request.header.msg_id.clone(), cell_id);
+                .insert(request.header.msg_id.clone(), cell_id.clone());
             let status = JupyterMessage::new(jupyter_protocol::Status::idle(), Some(&request));
             editor.route(&status, window, cx);
             assert!(!editor.has_unsaved_changes(cx));
-            editor.execution_requests.clear();
+        });
 
+        // Cells waiting on a kernel that went away stop waiting.
+        code_cell(0, cx).update(cx, |cell, _| cell.start_execution());
+        notebook_editor.update_in(cx, |editor, _, cx| {
+            editor
+                .execution_requests
+                .insert(request.header.msg_id.clone(), cell_id);
+            editor.abandon_executions(cx);
+            assert!(!editor.has_executing_cells(cx));
+        });
+
+        notebook_editor.update_in(cx, |editor, window, cx| {
             // Neither does clearing outputs that aren't there.
             editor.clear_outputs(window, cx);
             assert!(!editor.has_unsaved_changes(cx));
