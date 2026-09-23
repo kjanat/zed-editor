@@ -157,6 +157,9 @@ pub struct NotebookEditor {
     saved: SavedNotebook,
     /// The cells as they are in the file, so a reload can tell which ones it changed.
     cells_on_disk: HashMap<CellId, serde_json::Value>,
+    /// The whole file as last loaded or saved, so a reload that changes it back
+    /// can clear the conflict it caused.
+    notebook_on_disk: Option<serde_json::Value>,
     /// Each cell's comparison with `saved`, kept until the cell's revision changes
     /// so serializing large outputs doesn't happen on every check.
     cell_comparisons: RefCell<HashMap<CellId, (CellRevision, bool)>>,
@@ -249,6 +252,7 @@ impl NotebookEditor {
             saved: SavedNotebook::default(),
             cell_comparisons: RefCell::default(),
             cells_on_disk: cells_on_disk(&notebook_item.read(cx).notebook.cells),
+            notebook_on_disk: serde_json::to_value(&notebook_item.read(cx).notebook).log_err(),
         };
         editor.launch_kernel(window, cx);
         // Launching a kernel records its kernelspec, which is not a user edit.
@@ -415,21 +419,22 @@ impl NotebookEditor {
     /// Handles the backing JSON buffer being reloaded from disk, which happens
     /// automatically while it is clean even if the cells hold unsaved edits.
     fn backing_buffer_reloaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.has_unsaved_changes(cx) {
-            // Rebuilding would discard the user's edits, and saving them would
-            // silently replace the external version, so require a decision.
-            self.external_change_pending = true;
-        } else {
-            let text = self.notebook_item.read(cx).buffer.read(cx).text();
-            match parse_notebook_text(&text) {
-                Ok(notebook) => {
-                    self.replace_cells(notebook, window, cx);
-                    self.external_change_pending = false;
-                }
-                Err(error) => {
-                    log::error!("failed to parse externally changed notebook: {error:#}");
-                    self.external_change_pending = true;
-                }
+        let text = self.notebook_item.read(cx).buffer.read(cx).text();
+        match parse_notebook_text(&text) {
+            Ok(notebook) if self.has_unsaved_changes(cx) => {
+                // Rebuilding would discard the user's edits, and saving them would
+                // silently replace the external version, so require a decision,
+                // unless the file was changed back to what the edits started from.
+                self.external_change_pending =
+                    serde_json::to_value(&notebook).log_err() != self.notebook_on_disk;
+            }
+            Ok(notebook) => {
+                self.replace_cells(notebook, window, cx);
+                self.external_change_pending = false;
+            }
+            Err(error) => {
+                log::error!("failed to parse externally changed notebook: {error:#}");
+                self.external_change_pending = true;
             }
         }
         cx.emit(());
@@ -443,6 +448,7 @@ impl NotebookEditor {
         cx: &mut Context<Self>,
     ) {
         let cells = notebook.cells.clone();
+        self.notebook_on_disk = serde_json::to_value(&notebook).log_err();
         self.notebook_item
             .update(cx, |item, _| item.notebook = notebook);
         // The cells take their language from the notebook's metadata, which the
@@ -551,6 +557,7 @@ impl NotebookEditor {
         // Taken before the write so that changes made while it runs stay unsaved.
         let saved = self.snapshot(cx);
         let written_cells = cells_on_disk(&notebook.cells);
+        let written_notebook = serde_json::to_value(&notebook).log_err();
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         cx.spawn(async move |this, cx| {
@@ -605,6 +612,7 @@ impl NotebookEditor {
                 this.external_change_pending = false;
                 this.mark_saved(saved);
                 this.cells_on_disk = written_cells;
+                this.notebook_on_disk = written_notebook;
                 cx.notify();
             })
         })
@@ -2329,6 +2337,18 @@ mod tests {
             assert!(editor.is_dirty(cx));
         });
         assert!(notebook_json(cx).contains("print('mine')"));
+
+        // Changing the file back to what the edits started from clears the conflict.
+        fs.insert_file(path, external.clone().into_bytes()).await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, cx| {
+            assert!(!editor.has_conflict(cx));
+            assert!(editor.is_dirty(cx));
+        });
+        fs.insert_file(path, NOTEBOOK_WITH_ONE_CODE_CELL.as_bytes().to_vec())
+            .await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, cx| assert!(editor.has_conflict(cx)));
         notebook_editor
             .update_in(cx, |editor, window, cx| {
                 editor.save(SaveOptions::default(), project.clone(), window, cx)
