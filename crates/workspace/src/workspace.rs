@@ -7456,13 +7456,19 @@ impl Workspace {
             .create_shared_screen(peer_id, pane, window, cx)
     }
 
+    /// Makes this workspace the most recent one. Saving it doesn't, so that
+    /// background saves don't reorder the recent projects.
+    pub(crate) fn mark_recently_activated(&self, cx: &App) {
+        if let Some(database_id) = self.database_id {
+            let db = WorkspaceDb::global(cx);
+            cx.background_spawn(async move { db.update_timestamp(database_id).await.log_err() })
+                .detach();
+        }
+    }
+
     pub fn on_window_activation_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_window_active() {
-            if let Some(database_id) = self.database_id {
-                let db = WorkspaceDb::global(cx);
-                cx.background_spawn(async move { db.update_timestamp(database_id).await })
-                    .detach();
-            }
+            self.mark_recently_activated(cx);
         } else {
             // When window is deactivated, flush any deferred saves since focus has left the window
             self.flush_deferred_saves(window, cx);
