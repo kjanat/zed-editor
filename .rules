@@ -139,7 +139,6 @@ Other entities can then register a callback to handle these events by doing `cx.
 
 When an agent opens or updates a pull request, it must:
 
-- Use a clear, correctly capitalized, imperative PR title (for example, `Fix crash in project panel`).
 - Avoid conventional commit prefixes in PR titles (`fix:`, `feat:`, `docs:`, etc.).
 - Avoid trailing punctuation in PR titles.
 - Optionally prefix the title with a crate name when one crate is the clear scope (for example, `git_ui: Add history view`).
