@@ -2518,11 +2518,18 @@ impl Pane {
                 };
 
                 // The destination tab may hold the only copy of unsaved edits,
-                // so it is closed only once its file has actually been replaced.
+                // including ones made while the save was running, so it is
+                // closed only once its file was replaced and only while clean.
                 save_task.await?;
                 if let Some(replaced_item_id) = replaced_item_id {
                     pane.update_in(cx, |pane, window, cx| {
-                        pane.remove_item(replaced_item_id, false, false, window, cx);
+                        let destination_is_clean = pane
+                            .items()
+                            .find(|item| item.item_id() == replaced_item_id)
+                            .is_some_and(|item| !item.is_dirty(cx));
+                        if destination_is_clean {
+                            pane.remove_item(replaced_item_id, false, false, window, cx);
+                        }
                     })?;
                 }
                 if should_format {
@@ -8249,12 +8256,12 @@ mod tests {
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
 
-        for save_fails in [true, false] {
+        for (save_fails, destination_dirty) in [(true, true), (false, false), (false, true)] {
             let destination = pane.update_in(cx, |pane, window, cx| {
                 let destination = Box::new(cx.new(|cx| {
                     TestItem::new(cx)
                         .with_label("dest")
-                        .with_dirty(true)
+                        .with_dirty(destination_dirty)
                         .with_project_items(&[TestProjectItem::new_in_worktree(
                             1,
                             "dest.txt",
@@ -8303,11 +8310,17 @@ mod tests {
                     "a failed Save As must keep the destination"
                 );
                 assert!(destination.read_with(cx, |item, _| item.is_dirty));
+            } else if destination_dirty {
+                result.unwrap();
+                assert!(
+                    destination_open,
+                    "a successful Save As must not discard unsaved destination edits"
+                );
             } else {
                 result.unwrap();
                 assert!(
                     !destination_open,
-                    "a successful Save As replaces the destination"
+                    "a successful Save As replaces a clean destination"
                 );
             }
 
