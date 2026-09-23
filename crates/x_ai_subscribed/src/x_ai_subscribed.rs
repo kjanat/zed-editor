@@ -670,24 +670,40 @@ async fn get_fresh_credentials(
                             .map_err(|e| Arc::new(e))?;
                         if !still_current_generation {
                             // A sign-out or sign-in ran during the write, which may have
-                            // landed after it; store what that left instead.
-                            let current_credentials = state_clone
-                                .read_with(&*cx, |s, _| s.credentials.clone())
-                                .map_err(|e| Arc::new(e))?;
-                            match current_credentials {
-                                Some(current_credentials) => {
-                                    let json = serde_json::to_vec(&current_credentials)
-                                        .map_err(|e| Arc::new(e.into()))?;
-                                    credentials_provider
-                                        .write_credentials(CREDENTIALS_KEY, "Bearer", &json, &*cx)
-                                        .await
-                                        .log_err();
+                            // landed after it; store what that left instead, again if
+                            // another one runs while doing so.
+                            loop {
+                                let (stored_generation, current_credentials) = state_clone
+                                    .read_with(&*cx, |s, _| {
+                                        (s.auth_generation, s.credentials.clone())
+                                    })
+                                    .map_err(|e| Arc::new(e))?;
+                                match current_credentials {
+                                    Some(current_credentials) => {
+                                        let json = serde_json::to_vec(&current_credentials)
+                                            .map_err(|e| Arc::new(e.into()))?;
+                                        credentials_provider
+                                            .write_credentials(
+                                                CREDENTIALS_KEY,
+                                                "Bearer",
+                                                &json,
+                                                &*cx,
+                                            )
+                                            .await
+                                            .log_err();
+                                    }
+                                    None => {
+                                        credentials_provider
+                                            .delete_credentials(CREDENTIALS_KEY, &*cx)
+                                            .await
+                                            .log_err();
+                                    }
                                 }
-                                None => {
-                                    credentials_provider
-                                        .delete_credentials(CREDENTIALS_KEY, &*cx)
-                                        .await
-                                        .log_err();
+                                let generation_after_write = state_clone
+                                    .read_with(&*cx, |s, _| s.auth_generation)
+                                    .map_err(|e| Arc::new(e))?;
+                                if generation_after_write == stored_generation {
+                                    break;
                                 }
                             }
                             return Err(Arc::new(anyhow!(
