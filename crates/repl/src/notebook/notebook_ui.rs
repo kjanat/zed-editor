@@ -84,10 +84,10 @@ fn parse_notebook_text(text: &str) -> Result<nbformat::v4::Notebook> {
     }
     let mut json: serde_json::Value = serde_json::from_str(text)?;
     if let Some(cells) = json.get_mut("cells").and_then(|c| c.as_array_mut()) {
-        for cell in cells {
-            if cell.get("id").is_none() {
-                cell["id"] = serde_json::Value::String(Uuid::new_v4().to_string());
-            }
+        // Entries that aren't objects are left for nbformat to reject.
+        for cell in cells.iter_mut().filter_map(|cell| cell.as_object_mut()) {
+            cell.entry("id")
+                .or_insert_with(|| serde_json::Value::String(Uuid::new_v4().to_string()));
         }
     }
     let text = serde_json::to_string(&json)?;
@@ -1805,11 +1805,11 @@ impl project::ProjectItem for NotebookItem {
                             if let Some(cells) =
                                 json.get_mut("cells").and_then(|c| c.as_array_mut())
                             {
-                                for cell in cells {
-                                    if cell.get("id").is_none() {
-                                        cell["id"] =
-                                            serde_json::Value::String(Uuid::new_v4().to_string());
-                                    }
+                                for cell in cells.iter_mut().filter_map(|cell| cell.as_object_mut())
+                                {
+                                    cell.entry("id").or_insert_with(|| {
+                                        serde_json::Value::String(Uuid::new_v4().to_string())
+                                    });
                                 }
                             }
                             let file_content = serde_json::to_string(&json)?;
@@ -2506,6 +2506,12 @@ mod tests {
             notebook_editor.read_with(cx, |editor, _| editor.cell_order.len()),
             2
         );
+    }
+
+    #[test]
+    fn test_parse_notebook_text_rejects_non_object_cells() {
+        let text = r#"{"cells": [1], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}"#;
+        assert!(parse_notebook_text(text).is_err());
     }
 
     fn code_cell_execution_count(editor: &NotebookEditor, cx: &App) -> Option<i32> {
