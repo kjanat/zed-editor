@@ -4185,6 +4185,21 @@ async fn test_updating_lsp_settings_sends_one_did_change_configuration(
         1,
         "expected exactly one workspace/didChangeConfiguration after a settings change"
     );
+
+    // A settings change that leaves the server's configuration as it was sends nothing.
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.project.all_languages.defaults.tab_size = NonZeroU32::new(7);
+            });
+        })
+    });
+    cx.executor().run_until_parked();
+    assert_eq!(
+        did_change_count.load(atomic::Ordering::SeqCst),
+        1,
+        "expected no workspace/didChangeConfiguration for an unrelated settings change"
+    );
 }
 
 #[gpui::test(iterations = 3)]
