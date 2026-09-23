@@ -223,8 +223,9 @@ impl NotebookEditor {
             external_change_pending: false,
             saved_cells: None,
         };
-        editor.saved_cells = editor.serialize_cells(cx);
         editor.launch_kernel(window, cx);
+        // Launching a kernel records its kernelspec, which is not a user edit.
+        editor.saved_cells = editor.serialize_cells(cx);
         editor.refresh_language(cx);
         editor.refresh_kernelspecs(cx);
 
@@ -322,10 +323,27 @@ impl NotebookEditor {
         }
     }
 
-    /// Serializes the cells, including outputs and execution counts. Notebook
-    /// metadata is left out because the kernel updates it on its own.
+    /// Captures what a save would write and a reload would replace: the cells
+    /// with their outputs and execution counts, and the selected kernel. The
+    /// rest of the metadata is left out because the kernel updates it on its
+    /// own. Output counts are included because rich outputs such as images are
+    /// not serialized, so clearing them would otherwise go unnoticed.
     fn serialize_cells(&self, cx: &App) -> Option<String> {
-        serde_json::to_string(&self.to_notebook(cx).cells).log_err()
+        let notebook = self.to_notebook(cx);
+        let output_counts: Vec<usize> = self
+            .cell_order
+            .iter()
+            .filter_map(|cell_id| match self.cell_map.get(cell_id)? {
+                Cell::Code(cell) => Some(cell.read(cx).output_count()),
+                _ => None,
+            })
+            .collect();
+        serde_json::to_string(&serde_json::json!({
+            "cells": notebook.cells,
+            "kernelspec": notebook.metadata.kernelspec,
+            "output_counts": output_counts,
+        }))
+        .log_err()
     }
 
     /// Whether the notebook holds anything a reload would lose, including cell
@@ -381,10 +399,17 @@ impl NotebookEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let cells = notebook.cells.clone();
+        self.notebook_item
+            .update(cx, |item, _| item.notebook = notebook);
+        // The cells take their language from the notebook's metadata, which the
+        // reload may have changed.
+        self.refresh_language(cx);
+
         let mut cell_order = vec![];
         let mut cell_map = HashMap::default();
 
-        for cell in notebook.cells.iter() {
+        for cell in cells.iter() {
             let cell_id = cell.id();
             cell_order.push(cell_id.clone());
             let cell_entity = Cell::load(
@@ -398,8 +423,6 @@ impl NotebookEditor {
             cell_map.insert(cell_id.clone(), cell_entity);
         }
 
-        self.notebook_item
-            .update(cx, |item, _| item.notebook = notebook);
         self.cell_order = cell_order.clone();
         self.original_cell_order = cell_order;
         self.cell_map = cell_map;
@@ -446,7 +469,7 @@ impl NotebookEditor {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let notebook = self.to_notebook(cx);
-        let saved_cells = serde_json::to_string(&notebook.cells).log_err();
+        let saved_cells = self.serialize_cells(cx);
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         let saved_cell_order = self.cell_order.clone();
@@ -2373,6 +2396,29 @@ mod tests {
             })
             .await
             .expect("discard after execution");
+
+        // A newly selected kernel is kept as well.
+        notebook_editor.update(cx, |editor, cx| {
+            editor.notebook_item.update(cx, |item, _| {
+                item.notebook.metadata.kernelspec = serde_json::from_value(json!({
+                    "display_name": "Other",
+                    "name": "other",
+                    "language": "python"
+                }))
+                .ok();
+            });
+        });
+        let kernel_change =
+            NOTEBOOK_WITH_ONE_CODE_CELL.replace("print('hello')", "print('kernel change')");
+        fs.insert_file(path, kernel_change.into_bytes()).await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, cx| assert!(editor.has_conflict(cx)));
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.reload(project.clone(), window, cx)
+            })
+            .await
+            .expect("discard the kernel selection");
 
         // Cells rebuilt by a reload keep their event wiring.
         let two_cells = NOTEBOOK_WITH_ONE_CODE_CELL.replace(
