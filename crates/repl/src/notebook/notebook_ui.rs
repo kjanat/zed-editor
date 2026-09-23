@@ -164,6 +164,24 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
+/// The execute reply comes over the shell socket and the outputs over IOPub,
+/// which ends with an idle status, so either can arrive last.
+struct PendingExecution {
+    cell_id: CellId,
+    replied: bool,
+    idle: bool,
+}
+
+impl PendingExecution {
+    fn new(cell_id: CellId) -> Self {
+        Self {
+            cell_id,
+            replied: false,
+            idle: false,
+        }
+    }
+}
+
 pub struct NotebookEditor {
     languages: Arc<LanguageRegistry>,
     project: Entity<Project>,
@@ -179,7 +197,7 @@ pub struct NotebookEditor {
     cell_map: HashMap<CellId, Cell>,
     kernel: Kernel,
     kernel_specification: Option<KernelSpecification>,
-    execution_requests: HashMap<String, CellId>,
+    execution_requests: HashMap<String, PendingExecution>,
     kernel_picker_handle: PopoverMenuHandle<Picker<KernelPickerDelegate>>,
     /// The backing file was reloaded from disk while the notebook had unsaved
     /// edits, so those edits no longer describe the file they would replace.
@@ -451,8 +469,8 @@ impl NotebookEditor {
     /// Nothing will answer requests sent to a kernel that is gone, so their cells
     /// have to stop waiting for them.
     fn abandon_executions(&mut self, cx: &mut Context<Self>) {
-        for (_, cell_id) in self.execution_requests.drain() {
-            if let Some(Cell::Code(cell)) = self.cell_map.get(&cell_id) {
+        for (_, request) in self.execution_requests.drain() {
+            if let Some(Cell::Code(cell)) = self.cell_map.get(&request.cell_id) {
                 cell.update(cx, |cell, cx| {
                     cell.finish_execution();
                     cx.notify();
@@ -911,7 +929,8 @@ impl NotebookEditor {
         if let Err(error) = send_result {
             log::error!("notebook: cannot execute cell: {error}");
         } else {
-            self.execution_requests.insert(msg_id, cell_id.clone());
+            self.execution_requests
+                .insert(msg_id, PendingExecution::new(cell_id.clone()));
         }
     }
 
@@ -2238,19 +2257,24 @@ impl KernelSession for NotebookEditor {
 
         // Handle cell-specific messages
         if let Some(parent_header) = &message.parent_header {
-            if let Some(cell_id) = self.execution_requests.get(&parent_header.msg_id) {
-                if let Some(Cell::Code(cell)) = self.cell_map.get(cell_id) {
+            if let Some(request) = self.execution_requests.get_mut(&parent_header.msg_id) {
+                if let Some(Cell::Code(cell)) = self.cell_map.get(&request.cell_id) {
                     cell.update(cx, |cell, cx| {
                         cell.handle_message(message, window, cx);
                     });
                 }
-            }
-            // Outputs come on another channel than the execute reply, so a request
-            // is only done once the kernel reports going idle for it.
-            if let JupyterMessageContent::Status(status) = &message.content
-                && status.execution_state == ExecutionState::Idle
-            {
-                self.execution_requests.remove(&parent_header.msg_id);
+                match &message.content {
+                    JupyterMessageContent::ExecuteReply(_) => request.replied = true,
+                    JupyterMessageContent::Status(status)
+                        if status.execution_state == ExecutionState::Idle =>
+                    {
+                        request.idle = true
+                    }
+                    _ => {}
+                }
+                if request.replied && request.idle {
+                    self.execution_requests.remove(&parent_header.msg_id);
+                }
             }
         }
     }
@@ -2486,20 +2510,25 @@ mod tests {
         let cell_id = notebook_editor.read_with(cx, |editor, _| editor.cell_order[0].clone());
         let request: JupyterMessage = ExecuteRequest::new("print('hello')".to_string()).into();
         notebook_editor.update_in(cx, |editor, window, cx| {
-            editor
-                .execution_requests
-                .insert(request.header.msg_id.clone(), cell_id.clone());
+            editor.execution_requests.insert(
+                request.header.msg_id.clone(),
+                PendingExecution::new(cell_id.clone()),
+            );
             let status = JupyterMessage::new(jupyter_protocol::Status::idle(), Some(&request));
             editor.route(&status, window, cx);
+            // The request stays pending until its execute reply arrives too.
+            assert!(editor.has_executing_cells(cx));
+            editor.route(&execute_reply(&request), window, cx);
             assert!(!editor.has_unsaved_changes(cx));
         });
 
         // Cells waiting on a kernel that went away stop waiting.
         code_cell(0, cx).update(cx, |cell, _| cell.start_execution());
         notebook_editor.update_in(cx, |editor, _, cx| {
-            editor
-                .execution_requests
-                .insert(request.header.msg_id.clone(), cell_id);
+            editor.execution_requests.insert(
+                request.header.msg_id.clone(),
+                PendingExecution::new(cell_id),
+            );
             editor.abandon_executions(cx);
             assert!(!editor.has_executing_cells(cx));
         });
@@ -2570,9 +2599,10 @@ mod tests {
         // same output is no change, while clearing it is kept.
         let cell_id = notebook_editor.read_with(cx, |editor, _| editor.cell_order[0].clone());
         notebook_editor.update_in(cx, |editor, window, cx| {
-            editor
-                .execution_requests
-                .insert(request.header.msg_id.clone(), cell_id);
+            editor.execution_requests.insert(
+                request.header.msg_id.clone(),
+                PendingExecution::new(cell_id),
+            );
             let markdown = || {
                 JupyterMessage::new(
                     jupyter_protocol::DisplayData::from(vec![
@@ -2876,9 +2906,10 @@ mod tests {
             assert_eq!(code_cell_execution_count(editor, cx), Some(1));
             let request: JupyterMessage = ExecuteRequest::new("print('hello')".to_string()).into();
             let cell_id = editor.cell_order[0].clone();
-            editor
-                .execution_requests
-                .insert(request.header.msg_id.clone(), cell_id);
+            editor.execution_requests.insert(
+                request.header.msg_id.clone(),
+                PendingExecution::new(cell_id),
+            );
             let input = jupyter_protocol::ExecuteInput {
                 code: "print('hello')".to_string(),
                 execution_count: jupyter_protocol::ExecutionCount::new(1),
@@ -2886,9 +2917,21 @@ mod tests {
             editor.route(&JupyterMessage::new(input, Some(&request)), window, cx);
             let idle = jupyter_protocol::Status::idle();
             editor.route(&JupyterMessage::new(idle, Some(&request)), window, cx);
+            editor.route(&execute_reply(&request), window, cx);
             assert_eq!(code_cell_execution_count(editor, cx), Some(1));
             assert!(!editor.has_unsaved_changes(cx));
         });
+    }
+
+    fn execute_reply(request: &JupyterMessage) -> JupyterMessage {
+        let reply = jupyter_protocol::ExecuteReply {
+            status: jupyter_protocol::ReplyStatus::Ok,
+            execution_count: jupyter_protocol::ExecutionCount::new(1),
+            payload: Vec::new(),
+            user_expressions: None,
+            error: None,
+        };
+        JupyterMessage::new(reply, Some(request))
     }
 
     fn code_cell_execution_count(editor: &NotebookEditor, cx: &App) -> Option<i32> {
