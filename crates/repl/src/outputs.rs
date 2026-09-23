@@ -121,20 +121,29 @@ pub enum Output {
     Image {
         content: Entity<ImageView>,
         display_id: Option<String>,
+        data: MimeBundle,
     },
     ErrorOutput(ErrorView),
     Message(String),
+    /// Kernel output that can't be displayed, kept so saving writes it back.
+    Unrendered {
+        message: String,
+        data: MimeBundle,
+    },
     Table {
         content: Entity<TableView>,
         display_id: Option<String>,
+        data: MimeBundle,
     },
     Markdown {
         content: Entity<MarkdownView>,
         display_id: Option<String>,
+        data: MimeBundle,
     },
     Json {
         content: Entity<JsonView>,
         display_id: Option<String>,
+        data: MimeBundle,
     },
     ClearOutputWaitMarker,
 }
@@ -170,10 +179,18 @@ impl Output {
                     traceback: traceback_lines,
                 }))
             }
-            Output::Image { .. }
-            | Output::Markdown { .. }
-            | Output::Table { .. }
-            | Output::Json { .. } => None,
+            // The views can't be turned back into their MIME data, so keep what
+            // the kernel sent to write it back unchanged.
+            Output::Image { data, .. }
+            | Output::Markdown { data, .. }
+            | Output::Table { data, .. }
+            | Output::Json { data, .. }
+            | Output::Unrendered { data, .. } => Some(nbformat::v4::Output::DisplayData(
+                nbformat::v4::DisplayData {
+                    data: data.clone(),
+                    metadata: serde_json::Map::new(),
+                },
+            )),
             Output::Message(_) => None,
             Output::ClearOutputWaitMarker => None,
         }
@@ -257,7 +274,9 @@ impl Output {
             Self::Markdown { content, .. } => Some(content.clone().into_any_element()),
             Self::Stream { content, .. } => Some(content.clone().into_any_element()),
             Self::Image { content, .. } => Some(content.clone().into_any_element()),
-            Self::Message(message) => Some(div().child(message.clone()).into_any_element()),
+            Self::Message(message) | Self::Unrendered { message, .. } => {
+                Some(div().child(message.clone()).into_any_element())
+            }
             Self::Table { content, .. } => Some(content.clone().into_any_element()),
             Self::Json { content, .. } => Some(content.clone().into_any_element()),
             Self::ErrorOutput(error_view) => error_view.render(window, cx),
@@ -367,7 +386,7 @@ impl Output {
                         )
                         .into_any_element(),
                 ),
-                Self::Message(_) => None,
+                Self::Message(_) | Self::Unrendered { .. } => None,
                 Self::Table { content, .. } => {
                     Self::render_output_controls(content.clone(), workspace, window, cx)
                 }
@@ -381,7 +400,7 @@ impl Output {
             Output::Stream { .. } => None,
             Output::Image { display_id, .. } => display_id.clone(),
             Output::ErrorOutput(_) => None,
-            Output::Message(_) => None,
+            Output::Message(_) | Output::Unrendered { .. } => None,
             Output::Table { display_id, .. } => display_id.clone(),
             Output::Markdown { display_id, .. } => display_id.clone(),
             Output::Json { display_id, .. } => display_id.clone(),
@@ -395,13 +414,18 @@ impl Output {
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
-        match data.richest(rank_mime_type) {
+        let bundle = data;
+        match bundle.richest(rank_mime_type) {
             Some(MimeType::Json(json_value)) => match JsonView::from_value(json_value.clone()) {
                 Ok(json_view) => Output::Json {
                     content: cx.new(|_| json_view),
                     display_id,
+                    data: bundle.clone(),
                 },
-                Err(_) => Output::Message("Failed to parse JSON".to_string()),
+                Err(_) => Output::Unrendered {
+                    message: "Failed to parse JSON".to_string(),
+                    data: bundle.clone(),
+                },
             },
             Some(MimeType::Plain(text)) => Output::Plain {
                 content: cx.new(|cx| TerminalOutput::from(text, window, cx)),
@@ -412,18 +436,24 @@ impl Output {
                 Output::Markdown {
                     content,
                     display_id,
+                    data: bundle.clone(),
                 }
             }
             Some(MimeType::Png(data)) | Some(MimeType::Jpeg(data)) => match ImageView::from(data) {
                 Ok(view) => Output::Image {
                     content: cx.new(|_| view),
                     display_id,
+                    data: bundle.clone(),
                 },
-                Err(error) => Output::Message(format!("Failed to load image: {}", error)),
+                Err(error) => Output::Unrendered {
+                    message: format!("Failed to load image: {}", error),
+                    data: bundle.clone(),
+                },
             },
             Some(MimeType::DataTable(data)) => Output::Table {
                 content: cx.new(|cx| TableView::new(data, window, cx)),
                 display_id,
+                data: bundle.clone(),
             },
             Some(MimeType::Html(html_content)) => match html::html_to_markdown(html_content) {
                 Ok(markdown_text) => {
@@ -431,6 +461,7 @@ impl Output {
                     Output::Markdown {
                         content,
                         display_id,
+                        data: bundle.clone(),
                     }
                 }
                 Err(_) => Output::Plain {
@@ -439,7 +470,10 @@ impl Output {
                 },
             },
             // Any other media types are not supported
-            _ => Output::Message("Unsupported media type".to_string()),
+            _ => Output::Unrendered {
+                message: "Unsupported media type".to_string(),
+                data: bundle.clone(),
+            },
         }
     }
 }

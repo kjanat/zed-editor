@@ -168,11 +168,28 @@ impl Cell {
         }
     }
 
-    pub fn is_dirty(&self, cx: &App) -> bool {
+    /// Changes whenever the cell's serialized form may have changed, so that
+    /// comparing it with its saved form can be skipped while it stays the same.
+    pub fn revision(&self, cx: &App) -> CellRevision {
         match self {
-            Cell::Code(code_cell) => code_cell.read(cx).is_dirty(cx),
-            Cell::Markdown(markdown_cell) => markdown_cell.read(cx).is_dirty(cx),
-            Cell::Raw(_) => false,
+            Cell::Code(code_cell) => {
+                let code_cell = code_cell.read(cx);
+                CellRevision {
+                    source: code_cell.current_source(cx),
+                    outputs: code_cell.outputs_revision,
+                    execution_count: code_cell.execution_count,
+                }
+            }
+            Cell::Markdown(markdown_cell) => CellRevision {
+                source: markdown_cell.read(cx).current_source(cx),
+                outputs: 0,
+                execution_count: None,
+            },
+            Cell::Raw(raw_cell) => CellRevision {
+                source: raw_cell.read(cx).source.clone(),
+                outputs: 0,
+                execution_count: None,
+            },
         }
     }
 
@@ -382,6 +399,13 @@ pub trait RunnableCell: RenderableCell {
     fn run(&mut self, window: &mut Window, cx: &mut Context<Self>) -> ();
 }
 
+#[derive(Clone, PartialEq)]
+pub struct CellRevision {
+    source: String,
+    outputs: usize,
+    execution_count: Option<i32>,
+}
+
 pub struct MarkdownCell {
     id: CellId,
     metadata: CellMetadata,
@@ -479,10 +503,6 @@ impl MarkdownCell {
             .as_singleton()
             .map(|b| b.read(cx).text())
             .unwrap_or_default()
-    }
-
-    pub fn is_dirty(&self, cx: &App) -> bool {
-        self.editor.read(cx).buffer().read(cx).is_dirty(cx)
     }
 
     pub fn to_nbformat_cell(&self, cx: &App) -> nbformat::v4::Cell {
@@ -652,6 +672,8 @@ pub struct CodeCell {
     source: String,
     editor: Entity<editor::Editor>,
     outputs: Vec<Output>,
+    /// Bumped whenever `outputs` may have changed.
+    outputs_revision: usize,
     selected: bool,
     cell_position: Option<CellPosition>,
     _language_task: Task<()>,
@@ -733,6 +755,7 @@ impl CodeCell {
             source,
             editor,
             outputs,
+            outputs_revision: 0,
             selected: false,
             cell_position: None,
             execution_start_time: None,
@@ -767,10 +790,6 @@ impl CodeCell {
             .unwrap_or_default()
     }
 
-    pub fn is_dirty(&self, cx: &App) -> bool {
-        self.editor.read(cx).buffer().read(cx).is_dirty(cx)
-    }
-
     pub fn to_nbformat_cell(&self, cx: &App) -> nbformat::v4::Cell {
         let source = self.current_source(cx);
         let source_lines: Vec<String> = source.lines().map(|l| format!("{}\n", l)).collect();
@@ -799,6 +818,7 @@ impl CodeCell {
 
     pub fn clear_outputs(&mut self) {
         self.outputs.clear();
+        self.outputs_revision += 1;
         self.execution_duration = None;
     }
 
@@ -828,6 +848,7 @@ impl CodeCell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.outputs_revision += 1;
         self.outputs.push(Output::ErrorOutput(ErrorView {
             ename: "Kernel Error".to_string(),
             evalue: "cell could not be executed".to_string(),
@@ -861,6 +882,7 @@ impl CodeCell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.outputs_revision += 1;
         match &message.content {
             JupyterMessageContent::StreamContent(stream) => {
                 self.outputs.push(Output::Stream {
