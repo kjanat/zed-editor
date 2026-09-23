@@ -75,7 +75,7 @@ const NOTEBOOK_EXTENSION: &str = "ipynb";
 fn cells_on_disk(cells: &[nbformat::v4::Cell]) -> HashMap<CellId, serde_json::Value> {
     cells
         .iter()
-        .filter_map(|cell| Some((cell.id(), serde_json::to_value(cell).log_err()?)))
+        .filter_map(|cell| Some((cell.id().clone(), serde_json::to_value(cell).log_err()?)))
         .collect()
 }
 
@@ -462,7 +462,7 @@ impl NotebookEditor {
         let mut cell_map = HashMap::default();
 
         for cell in cells.iter() {
-            let cell_id = cell.id();
+            let cell_id = cell.id().clone();
             cell_order.push(cell_id.clone());
             // Cells the file didn't change keep their editors, and with them their
             // focus, cursor and editing state, as long as they still show the file.
