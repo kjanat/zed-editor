@@ -144,9 +144,11 @@ pub struct NotebookEditor {
     /// The cells as last loaded or saved, to detect changes such as new
     /// outputs that the cell buffers do not track.
     saved_cells: Option<String>,
-    /// Outputs changed since the last save or load. Rich outputs such as images
-    /// are not serialized, so the snapshot above cannot show these changes.
-    outputs_changed: bool,
+    /// Counts output changes. Rich outputs such as images are not serialized,
+    /// so the snapshot above cannot show them; comparing against the count at
+    /// the last save or load does.
+    outputs_generation: usize,
+    saved_outputs_generation: usize,
 }
 
 enum SaveDestination {
@@ -225,7 +227,8 @@ impl NotebookEditor {
             kernel_picker_handle: PopoverMenuHandle::default(),
             external_change_pending: false,
             saved_cells: None,
-            outputs_changed: false,
+            outputs_generation: 0,
+            saved_outputs_generation: 0,
         };
         editor.launch_kernel(window, cx);
         // Launching a kernel records its kernelspec, which is not a user edit.
@@ -343,7 +346,7 @@ impl NotebookEditor {
     /// Whether the notebook holds anything a reload would lose, including cell
     /// outputs and execution counts, which do not dirty the source buffers.
     fn has_unsaved_changes(&self, cx: &App) -> bool {
-        self.outputs_changed
+        self.outputs_generation != self.saved_outputs_generation
             || self.has_executing_cells(cx)
             || self.has_structural_changes()
             || self.has_content_changes(cx)
@@ -429,7 +432,7 @@ impl NotebookEditor {
             .min(self.cell_order.len().saturating_sub(1));
         self.cell_list = ListState::new(self.cell_order.len(), gpui::ListAlignment::Top, px(1000.));
         self.saved_cells = self.serialize_cells(cx);
-        self.outputs_changed = false;
+        self.saved_outputs_generation = self.outputs_generation;
         cx.notify();
     }
 
@@ -466,6 +469,8 @@ impl NotebookEditor {
     ) -> Task<Result<()>> {
         let notebook = self.to_notebook(cx);
         let saved_cells = self.serialize_cells(cx);
+        // Outputs that arrive while the save runs are not in what it writes.
+        let saved_outputs_generation = self.outputs_generation;
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         let saved_cell_order = self.cell_order.clone();
@@ -531,7 +536,7 @@ impl NotebookEditor {
             this.update(cx, |this, cx| {
                 this.external_change_pending = false;
                 this.saved_cells = saved_cells;
-                this.outputs_changed = false;
+                this.saved_outputs_generation = saved_outputs_generation;
                 // Only acknowledge the versions serialized before the write began.
                 this.original_cell_order = saved_cell_order;
                 for (buffer, version) in saved_buffers {
@@ -764,7 +769,7 @@ impl NotebookEditor {
                 }
                 cx.notify();
             });
-            self.outputs_changed = true;
+            self.outputs_generation += 1;
         }
 
         if let Err(error) = send_result {
@@ -799,7 +804,7 @@ impl NotebookEditor {
                 });
             }
         }
-        self.outputs_changed = true;
+        self.outputs_generation += 1;
         cx.notify();
     }
 
@@ -2144,7 +2149,7 @@ impl KernelSession for NotebookEditor {
                     cell.update(cx, |cell, cx| {
                         cell.handle_message(message, window, cx);
                     });
-                    self.outputs_changed = true;
+                    self.outputs_generation += 1;
                 }
             }
         }
