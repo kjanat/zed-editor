@@ -83,7 +83,15 @@ attempt_merge() {
 	: >/tmp/lockfiles.txt
 	: >/tmp/human.txt
 
-	if git merge --no-ff --no-commit upstream/main; then
+	if ! git merge --no-ff --no-commit upstream/main && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+		return 1
+	fi
+	# The fork keeps its own automation and the publisher rejects any change to
+	# .github, so upstream changes there are dropped instead of stalling the sync.
+	git rm -r -q -f --ignore-unmatch -- .github
+	git checkout master -- .github
+
+	if [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
 		git commit --message "Merge upstream main"
 		echo "result=clean" >>"${GITHUB_OUTPUT}"
 		return 0
