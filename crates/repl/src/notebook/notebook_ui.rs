@@ -530,6 +530,7 @@ impl NotebookEditor {
         let incoming_cells_on_disk = cells_on_disk(&cells);
         let mut cell_order = vec![];
         let mut cell_map = HashMap::default();
+        let mut focused_cell_kept = false;
 
         for cell in cells.iter() {
             let cell_id = cell.id().clone();
@@ -545,6 +546,7 @@ impl NotebookEditor {
                         && !matches!(existing, Cell::Code(code_cell) if code_cell.read(cx).is_executing())
                 });
             if reusable && let Some(existing) = previous_cells.remove(&cell_id) {
+                focused_cell_kept |= focused_cell_id.as_ref() == Some(&cell_id);
                 cell_map.insert(cell_id, existing);
                 continue;
             }
@@ -557,14 +559,6 @@ impl NotebookEditor {
                 cx,
             );
             Self::subscribe_to_cell(&cell_id, &cell_entity, window, cx);
-            if focused_cell_id.as_ref() == Some(&cell_id) {
-                if let Cell::Markdown(markdown_cell) = &cell_entity {
-                    markdown_cell.update(cx, |cell, _| cell.set_editing(true));
-                }
-                if let Some(editor) = cell_entity.editor(cx).cloned() {
-                    window.focus(&editor.focus_handle(cx), cx);
-                }
-            }
             cell_map.insert(cell_id, cell_entity);
         }
 
@@ -580,17 +574,29 @@ impl NotebookEditor {
             .and_then(|selected| self.cell_order.iter().position(|id| *id == selected))
             .unwrap_or(self.selected_cell_index)
             .min(self.cell_order.len().saturating_sub(1));
-        // A reload that deletes the focused cell would otherwise leave focus on an
-        // editor that is no longer shown.
+        // Unless its cell was kept, the focused editor is gone, so focus moves to
+        // the cell that replaced it, or to the selected cell if it was deleted,
+        // and to the notebook when neither has an editor to type in.
         if let Some(focused_cell_id) = focused_cell_id
-            && !self.cell_map.contains_key(&focused_cell_id)
+            && !focused_cell_kept
         {
-            let fallback_editor = self
-                .cell_order
-                .get(self.selected_cell_index)
-                .and_then(|cell_id| self.cell_map.get(cell_id))
-                .and_then(|cell| cell.editor(cx).cloned());
-            match fallback_editor {
+            let target_editor = match self.cell_map.get(&focused_cell_id) {
+                Some(Cell::Markdown(markdown_cell)) => {
+                    markdown_cell.update(cx, |cell, _| cell.set_editing(true));
+                    Some(markdown_cell.read(cx).editor().clone())
+                }
+                Some(Cell::Code(code_cell)) => Some(code_cell.read(cx).editor().clone()),
+                Some(Cell::Raw(_)) => None,
+                None => match self
+                    .cell_order
+                    .get(self.selected_cell_index)
+                    .and_then(|cell_id| self.cell_map.get(cell_id))
+                {
+                    Some(Cell::Code(code_cell)) => Some(code_cell.read(cx).editor().clone()),
+                    _ => None,
+                },
+            };
+            match target_editor {
                 Some(editor) => window.focus(&editor.focus_handle(cx), cx),
                 None => self.focus_handle.focus(window, cx),
             }
@@ -2920,6 +2926,90 @@ mod tests {
             editor.route(&execute_reply(&request), window, cx);
             assert_eq!(code_cell_execution_count(editor, cx), Some(1));
             assert!(!editor.has_unsaved_changes(cx));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_reload_moves_focus_off_replaced_editors(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/notebooks"),
+            json!({ "test.ipynb": NOTEBOOK_WITH_ONE_CODE_CELL }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/notebooks").as_ref()], cx).await;
+        cx.update(|cx| ReplStore::init(fs.clone(), cx));
+        let project_path = project.read_with(cx, |project, cx| ProjectPath {
+            worktree_id: project.worktrees(cx).next().unwrap().read(cx).id(),
+            path: rel_path("test.ipynb").into(),
+        });
+        let notebook_item = cx
+            .update(|cx| {
+                NotebookItem::try_open(&project, &project_path, cx)
+                    .expect("ipynb files should be openable as notebooks")
+            })
+            .await
+            .expect("notebook should parse");
+        let cx = cx.add_empty_window();
+        let notebook_editor = cx.update(|window, cx| {
+            cx.new(|cx| NotebookEditor::new(project.clone(), notebook_item, window, cx))
+        });
+        let path = std::path::Path::new(path!("/notebooks/test.ipynb"));
+        let focus_first_code_cell = |cx: &mut VisualTestContext| {
+            notebook_editor.update_in(cx, |editor, window, cx| {
+                let Some(Cell::Code(cell)) = editor.cell_map.get(&editor.cell_order[0]) else {
+                    panic!("expected a code cell");
+                };
+                window.focus(&cell.read(cx).editor().focus_handle(cx), cx);
+            });
+        };
+        let code_cell = |id: &str, source: &str| {
+            format!(
+                r#"{{"cell_type": "code", "id": "{id}", "metadata": {{}}, "execution_count": null, "outputs": [], "source": ["{source}"]}}"#
+            )
+        };
+        let notebook = |cells: &[String]| {
+            format!(
+                r#"{{"metadata": {{}}, "nbformat": 4, "nbformat_minor": 5, "cells": [{}]}}"#,
+                cells.join(",")
+            )
+        };
+
+        // A focused cell that turns into a raw cell leaves nothing to type in.
+        focus_first_code_cell(cx);
+        let raw_cell =
+            r#"{"cell_type": "raw", "id": "cell-one", "metadata": {}, "source": ["raw"]}"#;
+        fs.insert_file(path, notebook(&[raw_cell.to_string()]).into_bytes())
+            .await;
+        cx.run_until_parked();
+        notebook_editor.update_in(cx, |editor, window, _| {
+            assert!(matches!(
+                editor.cell_map.get(&editor.cell_order[0]),
+                Some(Cell::Raw(_))
+            ));
+            assert!(editor.focus_handle.is_focused(window));
+        });
+
+        // A deleted focused cell hands focus to the cell selected in its place.
+        fs.insert_file(path, notebook(&[code_cell("cell-one", "one")]).into_bytes())
+            .await;
+        cx.run_until_parked();
+        focus_first_code_cell(cx);
+        fs.insert_file(path, notebook(&[code_cell("cell-two", "two")]).into_bytes())
+            .await;
+        cx.run_until_parked();
+        notebook_editor.update_in(cx, |editor, window, cx| {
+            let Some(Cell::Code(cell)) = editor.cell_map.get(&editor.cell_order[0]) else {
+                panic!("expected a code cell");
+            };
+            assert!(cell.read(cx).editor().focus_handle(cx).is_focused(window));
         });
     }
 
