@@ -9,8 +9,8 @@ publish.workspace = true
 ignored = ["component"]
 
 [lib]
-path = "src/extensions_ui.rs"
 doctest = false
+path    = "src/extensions_ui.rs"
 
 [dependencies]
 anyhow.workspace                = true

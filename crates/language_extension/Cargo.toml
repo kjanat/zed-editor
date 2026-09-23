@@ -9,8 +9,8 @@ publish.workspace = true
 ignored = ["tracing"]
 
 [lib]
-path = "src/language_extension.rs"
 doctest = false
+path    = "src/language_extension.rs"
 
 [dependencies]
 anyhow.workspace      = true

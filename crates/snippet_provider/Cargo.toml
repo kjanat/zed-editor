@@ -5,6 +5,9 @@ edition.workspace = true
 license           = "GPL-3.0-or-later"
 publish.workspace = true
 
+[lib]
+doctest = false
+
 [dependencies]
 anyhow.workspace             = true
 collections.workspace        = true
@@ -25,9 +28,6 @@ util.workspace               = true
 fs              = { workspace = true, features = ["test-support"] }
 gpui            = { workspace = true, features = ["test-support"] }
 indoc.workspace = true
-
-[lib]
-doctest = false
 
 [features]
 test-support = []

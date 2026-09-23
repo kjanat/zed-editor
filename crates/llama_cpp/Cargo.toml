@@ -6,8 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/llama_cpp.rs"
 doctest = false
+path    = "src/llama_cpp.rs"
 
 [dependencies]
 anyhow.workspace              = true

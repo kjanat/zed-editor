@@ -9,8 +9,8 @@ publish.workspace = true
 ignored = ["async-std"]
 
 [lib]
-path = "src/fs.rs"
 doctest = false
+path    = "src/fs.rs"
 
 [[test]]
 name              = "integration"

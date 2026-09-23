@@ -6,8 +6,8 @@ license           = "Apache-2.0"
 publish.workspace = true
 
 [lib]
-path = "src/cloud_api_client.rs"
 doctest = false
+path    = "src/cloud_api_client.rs"
 
 [dependencies]
 anyhow.workspace          = true

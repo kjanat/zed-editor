@@ -6,8 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/http_proxy.rs"
 doctest = false
+path    = "src/http_proxy.rs"
 
 [dependencies]
 anyhow.workspace           = true

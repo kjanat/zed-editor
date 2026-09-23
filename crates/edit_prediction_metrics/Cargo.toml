@@ -6,8 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/edit_prediction_metrics.rs"
 doctest = false
+path    = "src/edit_prediction_metrics.rs"
 
 [dependencies]
 imara-diff.workspace  = true

@@ -9,8 +9,8 @@ publish.workspace = true
 ignored = ["editor"]
 
 [lib]
-path = "src/agent.rs"
 doctest = false
+path    = "src/agent.rs"
 
 [dependencies]
 acp_thread.workspace            = true

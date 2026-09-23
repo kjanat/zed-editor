@@ -179,7 +179,7 @@ If you need extra Rust flags, use one of the following approaches in
 Add your flags in the common target section
 
 ```toml
-[target.'cfg(all())']
+[target."cfg(all())"]
 rustflags = ["-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
 ```
 

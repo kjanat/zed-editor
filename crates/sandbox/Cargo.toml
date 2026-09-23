@@ -6,8 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/sandbox.rs"
 doctest = false
+path    = "src/sandbox.rs"
 
 # Behavior test helper for the Linux Bubblewrap sandbox. Only built when the
 # `nixos-test` feature is enabled (and only meaningful on Linux).

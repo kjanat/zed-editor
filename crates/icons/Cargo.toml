@@ -6,8 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/icons.rs"
 doctest = false
+path    = "src/icons.rs"
 
 [dependencies]
 serde.workspace = true

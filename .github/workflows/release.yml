@@ -15,7 +15,7 @@ jobs:
     if: (github.repository_owner == 'zed-industries' || github.repository_owner == 'zed-extensions')
     runs-on: namespace-profile-mac-large
     env:
-      RUST_LIB_BACKTRACE: '0'
+      RUST_LIB_BACKTRACE: "0"
     steps:
       - name: steps::checkout_repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

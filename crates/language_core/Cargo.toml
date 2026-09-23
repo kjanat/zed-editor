@@ -5,8 +5,8 @@ edition.workspace = true
 publish           = false
 
 [lib]
-path = "src/language_core.rs"
 doctest = false
+path    = "src/language_core.rs"
 
 [dependencies]
 anyhow.workspace             = true

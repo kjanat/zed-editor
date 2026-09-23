@@ -6,8 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/feature_flags.rs"
 doctest = false
+path    = "src/feature_flags.rs"
 
 [dependencies]
 collections.workspace          = true

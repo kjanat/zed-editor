@@ -6,8 +6,8 @@ license           = "Apache-2.0"
 publish.workspace = true
 
 [lib]
-path = "src/gpui_wgpu.rs"
 doctest = false
+path    = "src/gpui_wgpu.rs"
 
 [[bench]]
 harness = false

@@ -6,8 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/zeta_prompt.rs"
 doctest = false
+path    = "src/zeta_prompt.rs"
 
 [dependencies]
 anyhow.workspace     = true

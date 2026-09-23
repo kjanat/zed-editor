@@ -6,10 +6,10 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
+doctest    = false
 path       = "src/settings_macros.rs"
 proc-macro = true
-test = false
-doctest = false
+test       = false
 
 [dependencies]
 quote.workspace = true

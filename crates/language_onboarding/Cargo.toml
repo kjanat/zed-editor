@@ -6,9 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/python.rs"
-test = false
 doctest = false
+path    = "src/python.rs"
+test    = false
 
 [dependencies]
 db.workspace        = true

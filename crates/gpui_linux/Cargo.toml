@@ -9,8 +9,8 @@ publish.workspace = true
 ignored = ["bitflags", "scap", "x11-clipboard"]
 
 [lib]
-path = "src/gpui_linux.rs"
 doctest = false
+path    = "src/gpui_linux.rs"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 accesskit.workspace      = true

@@ -6,9 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
+doctest    = false
 path       = "src/feature_flags_macros.rs"
 proc-macro = true
-doctest = false
 
 [dependencies]
 proc-macro2.workspace = true

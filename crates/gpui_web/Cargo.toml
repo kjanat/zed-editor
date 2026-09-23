@@ -10,8 +10,8 @@ autoexamples      = false
 ignored = ["scheduler"]
 
 [lib]
-path = "src/gpui_web.rs"
 doctest = false
+path    = "src/gpui_web.rs"
 
 [dependencies]
 unicode-properties   = "=0.1.3"
