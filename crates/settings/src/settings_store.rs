@@ -570,13 +570,17 @@ impl SettingsStore {
                         let new_text = update(old_text.clone(), cx.clone())?;
 
                         let settings_path = paths::settings_file().as_path();
-                        let exists = fs.is_file(settings_path).await;
-                        // Rewriting identical contents would still change the file on disk,
-                        // which makes an open settings buffer with edits report a conflict.
-                        if exists && new_text == old_text {
-                            return Ok(());
-                        }
-                        if exists {
+                        if !fs.is_file(settings_path).await {
+                            fs.atomic_write(settings_path.to_path_buf(), new_text.clone())
+                                .await
+                                .with_context(|| {
+                                    format!("Failed to write settings to file {:?}", settings_path)
+                                })?;
+                        } else if new_text != old_text {
+                            // Rewriting identical contents would still change the file on
+                            // disk, which makes an open settings buffer with edits report a
+                            // conflict. They are still applied below, since the file may have
+                            // been changed before the watcher got to it.
                             let resolved_path =
                                 fs.canonicalize(settings_path).await.with_context(|| {
                                     format!(
@@ -589,12 +593,6 @@ impl SettingsStore {
                                 .await
                                 .with_context(|| {
                                     format!("Failed to write settings to file {:?}", resolved_path)
-                                })?;
-                        } else {
-                            fs.atomic_write(settings_path.to_path_buf(), new_text.clone())
-                                .await
-                                .with_context(|| {
-                                    format!("Failed to write settings to file {:?}", settings_path)
                                 })?;
                         }
 
