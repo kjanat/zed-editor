@@ -2499,19 +2499,20 @@ impl Pane {
                         })
                         .ok()
                 });
-                let (save_task, replaced_item_id) = if let Some(project_path) = project_path {
+                let (save_task, replaced_item) = if let Some(project_path) = project_path {
                     let (worktree, path) = project_path.await?;
                     let worktree_id = worktree.read_with(cx, |worktree, _| worktree.id());
                     let new_path = ProjectPath { worktree_id, path };
 
                     pane.update_in(cx, |pane, window, cx| {
-                        let replaced_item_id = pane
+                        let replaced_item = pane
                             .item_for_path(new_path.clone(), cx)
                             .map(|destination| destination.item_id())
-                            .filter(|destination_id| *destination_id != item.item_id());
+                            .filter(|destination_id| *destination_id != item.item_id())
+                            .map(|destination_id| (destination_id, new_path.clone()));
                         let save_task =
                             item.save_as(project.clone(), new_path, Some(expected), window, cx);
-                        (save_task, replaced_item_id)
+                        (save_task, replaced_item)
                     })?
                 } else {
                     return Ok(false);
@@ -2519,14 +2520,18 @@ impl Pane {
 
                 // The destination tab may hold the only copy of unsaved edits,
                 // including ones made while the save was running, so it is
-                // closed only once its file was replaced and only while clean.
+                // closed only once its file was replaced, and only while it is
+                // clean and still shows that file rather than one it was saved as.
                 save_task.await?;
-                if let Some(replaced_item_id) = replaced_item_id {
+                if let Some((replaced_item_id, replaced_path)) = replaced_item {
                     pane.update_in(cx, |pane, window, cx| {
                         let destination_is_clean = pane
                             .items()
                             .find(|item| item.item_id() == replaced_item_id)
-                            .is_some_and(|item| !item.is_dirty(cx));
+                            .is_some_and(|item| {
+                                !item.is_dirty(cx)
+                                    && item.project_path(cx).as_ref() == Some(&replaced_path)
+                            });
                         if destination_is_clean {
                             pane.remove_item(replaced_item_id, false, false, window, cx);
                         }
