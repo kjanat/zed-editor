@@ -1068,12 +1068,21 @@ impl ThreadView {
                 cx.defer(move |cx| {
                     let scroll_top = list_state.logical_scroll_top();
                     let _ = thread_view.update(cx, |this, cx| {
-                        if let Some(thread) = this.as_native_thread(cx) {
-                            thread.update(cx, |thread, _cx| {
-                                thread.set_ui_scroll_position(Some(scroll_top));
-                            });
+                        let Some(thread) = this.as_native_thread(cx) else {
+                            return;
+                        };
+                        // Scrolling against either end of the list doesn't move it,
+                        // and saving would rewrite the whole thread for nothing.
+                        let moved = thread.update(cx, |thread, _cx| {
+                            if thread.ui_scroll_position() == Some(scroll_top) {
+                                return false;
+                            }
+                            thread.set_ui_scroll_position(Some(scroll_top));
+                            true
+                        });
+                        if moved {
+                            this.schedule_save(cx);
                         }
-                        this.schedule_save(cx);
                     });
                 });
             });

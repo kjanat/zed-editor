@@ -1265,7 +1265,7 @@ impl ThreadMetadataStore {
     fn handle_conversation_event(
         &mut self,
         conversation_view: Entity<crate::ConversationView>,
-        _event: &crate::conversation_view::RootThreadUpdated,
+        event: &crate::conversation_view::RootThreadUpdated,
         cx: &mut Context<Self>,
     ) {
         let view = conversation_view.read(cx);
@@ -1291,15 +1291,21 @@ impl ThreadMetadataStore {
         let title = thread_ref.title();
         let title_override = existing_thread.and_then(|t| t.title_override.clone());
 
-        let updated_at = Utc::now();
+        let now = Utc::now();
+        // Opening a thread, or its title or folders changing, doesn't make it
+        // more recent than threads that were actually worked on since.
+        let updated_at = match existing_thread {
+            Some(existing_thread) if !event.thread_activity => existing_thread.updated_at,
+            _ => now,
+        };
 
         let created_at = existing_thread
             .and_then(|t| t.created_at)
-            .unwrap_or_else(|| updated_at);
+            .unwrap_or_else(|| now);
 
         let interacted_at = existing_thread
             .map(|t| t.interacted_at)
-            .unwrap_or(Some(updated_at));
+            .unwrap_or(Some(now));
 
         let agent_id = thread_ref.connection().agent_id();
 
@@ -2651,6 +2657,59 @@ mod tests {
              ThreadStore::reload has not yet completed, but got {} entries",
             list.len()
         );
+    }
+
+    #[gpui::test]
+    async fn test_thread_recency_follows_activity_only(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None::<&Path>, cx).await;
+        let (panel, mut vcx) = setup_panel_with_project(project, cx);
+        crate::test_support::open_thread_with_connection(
+            &panel,
+            StubAgentConnection::new(),
+            &mut vcx,
+        );
+        let thread = panel.read_with(&vcx, |panel, cx| panel.active_agent_thread(cx).unwrap());
+        let thread_id = crate::test_support::active_thread_id(&panel, &vcx);
+        thread.update_in(&mut vcx, |thread, _window, cx| {
+            thread.push_user_content_block(None, "Hello".into(), cx);
+        });
+        vcx.run_until_parked();
+
+        let long_ago = Utc::now() - chrono::Duration::days(30);
+        cx.update(|cx| {
+            ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+                let mut metadata = store.entry(thread_id).unwrap().clone();
+                metadata.updated_at = long_ago;
+                store.save(metadata, cx);
+            })
+        });
+        let updated_at = |cx: &mut TestAppContext| {
+            cx.read(|cx| {
+                ThreadMetadataStore::global(cx)
+                    .read(cx)
+                    .entry(thread_id)
+                    .unwrap()
+                    .updated_at
+            })
+        };
+
+        // A new title or unchanged working directories are not work on the thread.
+        thread.update_in(&mut vcx, |thread, _window, cx| {
+            thread.set_title("Renamed".into(), cx).detach();
+            let work_dirs = thread.work_dirs().cloned().unwrap_or_default();
+            thread.set_work_dirs(work_dirs, cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(updated_at(cx), long_ago);
+
+        thread.update_in(&mut vcx, |thread, _window, cx| {
+            thread.push_user_content_block(None, "Again".into(), cx);
+        });
+        vcx.run_until_parked();
+        assert!(updated_at(cx) > long_ago);
     }
 
     #[gpui::test]

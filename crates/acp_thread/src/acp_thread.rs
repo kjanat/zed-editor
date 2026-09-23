@@ -2650,6 +2650,15 @@ impl AcpThread {
     }
 
     pub fn set_work_dirs(&mut self, work_dirs: PathList, cx: &mut Context<Self>) {
+        // Worktree events that leave the directories as they were, such as opening
+        // a file outside the project, must not look like a change to the thread.
+        if self
+            .work_dirs
+            .as_ref()
+            .is_some_and(|current| current.ordered_paths().eq(work_dirs.ordered_paths()))
+        {
+            return;
+        }
         self.work_dirs = Some(work_dirs);
         cx.emit(AcpThreadEvent::WorkingDirectoriesUpdated)
     }
