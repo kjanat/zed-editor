@@ -1357,6 +1357,9 @@ impl MultiWorkspace {
         // workspace (which is now the chrome owner per `owns_window_chrome`).
         workspace.update(cx, |workspace, cx| {
             workspace.refresh_window_state(window, cx);
+            // The window stays active, so its activation doesn't mark the
+            // workspace switched to as the most recent one.
+            workspace.mark_recently_activated(cx);
         });
 
         cx.emit(MultiWorkspaceEvent::ActiveWorkspaceChanged { source_workspace });

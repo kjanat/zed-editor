@@ -486,11 +486,20 @@ impl LocalToolchainStore {
     ) -> Task<Option<()>> {
         cx.spawn(async move |this, cx| {
             this.update(cx, |this, cx| {
-                this.active_toolchains
+                let previous = this
+                    .active_toolchains
                     .entry((path.worktree_id, toolchain.language_name.clone()))
                     .or_default()
                     .insert(path.path, toolchain.clone());
-                cx.emit(ToolchainStoreEvent::ToolchainActivated);
+                // Re-picking the active toolchain would otherwise resend every
+                // language server its configuration. Equality ignores `as_json`,
+                // which configurations are derived from, so it is compared too.
+                let unchanged = previous.as_ref().is_some_and(|previous| {
+                    *previous == toolchain && previous.as_json == toolchain.as_json
+                });
+                if !unchanged {
+                    cx.emit(ToolchainStoreEvent::ToolchainActivated);
+                }
             })
             .ok();
             Some(())

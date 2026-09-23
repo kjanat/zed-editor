@@ -243,6 +243,9 @@ pub struct Copilot {
     server: CopilotServer,
     buffers: HashSet<WeakEntity<Buffer>>,
     server_id: LanguageServerId,
+    /// The configuration last sent to the running server, since every settings
+    /// change would otherwise resend it.
+    sent_configuration: Option<serde_json::Value>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -375,6 +378,7 @@ impl Copilot {
             .collect();
         let mut this = Self {
             server_id: new_server_id,
+            sent_configuration: None,
             fs,
             node_runtime,
             server: CopilotServer::Disabled,
@@ -408,7 +412,8 @@ impl Copilot {
                 // Only start if AI is enabled
                 this.start_copilot(true, false, cx);
                 if let Ok(server) = this.server.as_running() {
-                    notify_did_change_config_to_server(&server.lsp, cx)
+                    let server = server.lsp.clone();
+                    notify_did_change_config_to_server(this, &server, cx)
                         .context("copilot setting change: did change configuration")
                         .log_err();
                 }
@@ -537,6 +542,7 @@ impl Copilot {
         let send_focus_notification = Subscription::new(|| {});
         let this = cx.new(|cx| Self {
             server_id: LanguageServerId(0),
+            sent_configuration: None,
             fs: FakeFs::new(cx.background_executor().clone()),
             node_runtime,
             server: CopilotServer::Running(RunningCopilotServer {
@@ -682,8 +688,12 @@ impl Copilot {
                 })
                 .await?;
 
-            this.update(cx, |_, cx| notify_did_change_config_to_server(&server, cx))?
-                .context("copilot: did change configuration")?;
+            this.update(cx, |this, cx| {
+                // A new server has been sent nothing yet.
+                this.sent_configuration = None;
+                notify_did_change_config_to_server(this, &server, cx)
+            })?
+            .context("copilot: did change configuration")?;
 
             let status = server
                 .request::<request::CheckStatus>(
@@ -1303,6 +1313,7 @@ fn uri_for_buffer(buffer: &Entity<Buffer>, cx: &App) -> Result<lsp::Uri, ()> {
 }
 
 fn notify_did_change_config_to_server(
+    copilot: &mut Copilot,
     server: &Arc<LanguageServer>,
     cx: &mut Context<Copilot>,
 ) -> std::result::Result<(), anyhow::Error> {
@@ -1332,11 +1343,18 @@ fn notify_did_change_config_to_server(
         }
     });
 
-    server
+    if copilot.sent_configuration.as_ref() == Some(&settings) {
+        return Ok(());
+    }
+    if server
         .notify::<lsp::notification::DidChangeConfiguration>(lsp::DidChangeConfigurationParams {
-            settings,
+            settings: settings.clone(),
         })
-        .ok();
+        .log_err()
+        .is_some()
+    {
+        copilot.sent_configuration = Some(settings);
+    }
     Ok(())
 }
 
@@ -1436,6 +1454,7 @@ mod tests {
 
         let copilot = cx.new(|cx| Copilot {
             server_id: LanguageServerId(0),
+            sent_configuration: None,
             fs: FakeFs::new(cx.background_executor().clone()),
             node_runtime: NodeRuntime::unavailable(),
             server: CopilotServer::Disabled,
@@ -1784,6 +1803,7 @@ mod tests {
 
         let copilot = cx.new(|cx| Copilot {
             server_id: LanguageServerId(0),
+            sent_configuration: None,
             fs: FakeFs::new(cx.background_executor().clone()),
             node_runtime: NodeRuntime::unavailable(),
             server: CopilotServer::Disabled,

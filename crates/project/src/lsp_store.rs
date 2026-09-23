@@ -357,6 +357,9 @@ pub struct LocalLspStore {
         LanguageServerId,
         HashMap<Option<SharedString>, HashMap<PathBuf, Option<SharedString>>>,
     >,
+    /// The configuration each server was last refreshed with, so settings changes
+    /// that leave it unchanged don't make servers re-read it and re-analyze.
+    last_sent_workspace_configurations: HashMap<LanguageServerId, serde_json::Value>,
     restricted_worktrees_tasks: HashMap<WorktreeId, (Subscription, watch::Receiver<bool>)>,
     all_language_servers_stopped: bool,
     stopped_language_servers: HashSet<LanguageServerName>,
@@ -642,18 +645,24 @@ impl LocalLspStore {
                             }
                         })?;
 
+                    let initial_configuration = did_change_configuration_params.settings.clone();
                     language_server.notify::<lsp::notification::DidChangeConfiguration>(
                         did_change_configuration_params,
                     )?;
 
-                    anyhow::Ok(language_server)
+                    anyhow::Ok((language_server, initial_configuration))
                 }
                 .await;
 
                 match result {
-                    Ok(server) => {
+                    Ok((server, initial_configuration)) => {
                         lsp_store
                             .update(cx, |lsp_store, cx| {
+                                if let Some(local) = lsp_store.as_local_mut() {
+                                    local
+                                        .last_sent_workspace_configurations
+                                        .insert(server_id, initial_configuration);
+                                }
                                 lsp_store.insert_newly_running_language_server(
                                     adapter,
                                     server.clone(),
@@ -4987,6 +4996,7 @@ impl LspStore {
                 buffers_opened_in_servers: HashMap::default(),
                 buffer_pull_diagnostics_result_ids: HashMap::default(),
                 workspace_pull_diagnostics_result_ids: HashMap::default(),
+                last_sent_workspace_configurations: HashMap::default(),
                 restricted_worktrees_tasks: HashMap::default(),
                 all_language_servers_stopped: false,
                 stopped_language_servers: HashSet::default(),
@@ -9851,7 +9861,7 @@ impl LspStore {
                                     let server = server.clone();
                                     refreshed_servers.insert(server.name());
                                     let toolchain = seed.toolchain.clone();
-                                    Some(cx.spawn(async move |_, cx| {
+                                    Some(cx.spawn(async move |lsp_store, cx| {
                                         let settings =
                                             LocalLspStore::workspace_configuration_for_adapter(
                                                 adapter.adapter.clone(),
@@ -9862,10 +9872,34 @@ impl LspStore {
                                             )
                                             .await
                                             .ok()?;
+                                        let unchanged = lsp_store
+                                            .read_with(cx, |lsp_store, _| {
+                                                lsp_store.as_local().is_some_and(|local| {
+                                                    local
+                                                        .last_sent_workspace_configurations
+                                                        .get(&server_id)
+                                                        == Some(&settings)
+                                                })
+                                            })
+                                            .ok()?;
+                                        if unchanged {
+                                            return Some(());
+                                        }
                                         server
                                             .notify::<lsp::notification::DidChangeConfiguration>(
-                                                lsp::DidChangeConfigurationParams { settings },
+                                                lsp::DidChangeConfigurationParams {
+                                                    settings: settings.clone(),
+                                                },
                                             )
+                                            .ok()?;
+                                        lsp_store
+                                            .update(cx, |lsp_store, _| {
+                                                if let Some(local) = lsp_store.as_local_mut() {
+                                                    local
+                                                        .last_sent_workspace_configurations
+                                                        .insert(server_id, settings);
+                                                }
+                                            })
                                             .ok()?;
                                         Some(())
                                     }))
@@ -14337,6 +14371,7 @@ impl LspStore {
             local
                 .workspace_pull_diagnostics_result_ids
                 .remove(&for_server);
+            local.last_sent_workspace_configurations.remove(&for_server);
             for buffer_servers in local.buffers_opened_in_servers.values_mut() {
                 buffer_servers.remove(&for_server);
             }

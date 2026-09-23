@@ -149,6 +149,7 @@ impl RenderOnce for SettingsInputField {
             let initial_text = self.initial_text.clone();
             let placeholder = self.placeholder;
             let mut confirm = self.confirm.clone();
+            let synced_initial_text = first_render_initial_text.clone();
 
             move |window, cx| {
                 let mut editor = Editor::single_line(window, cx);
@@ -167,8 +168,13 @@ impl RenderOnce for SettingsInputField {
                         &editor_focus_handle,
                         window,
                         move |editor, _, window, cx| {
-                            let text = Some(editor.text(cx));
-                            confirm(text, window, cx);
+                            let text = editor.text(cx);
+                            // Tabbing through the field must not write the value it
+                            // shows, which may be inherited, into the settings file.
+                            if synced_initial_text.read(cx).as_deref().unwrap_or_default() == text {
+                                return;
+                            }
+                            confirm(Some(text), window, cx);
                         },
                     )
                     .detach();

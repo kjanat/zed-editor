@@ -26,6 +26,7 @@ pub fn register_fake_definition_server(
             initialization_options: None,
             additional_initialization_options: HashMap::default(),
             additional_workspace_configuration: HashMap::default(),
+            workspace_configuration: None,
             prettier_plugins: Vec::new(),
             disk_based_diagnostics_progress_token: None,
             disk_based_diagnostics_sources: Vec::new(),

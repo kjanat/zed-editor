@@ -1646,8 +1646,7 @@ impl WorkspaceDb {
                         bottom_dock_active_panel = ?14,
                         bottom_dock_zoom = ?15,
                         session_id = ?16,
-                        window_id = ?17,
-                        timestamp = CURRENT_TIMESTAMP
+                        window_id = ?17
                 );
                 let mut prepared_query = conn.exec_bound(query)?;
                 let args = (
@@ -5889,6 +5888,50 @@ mod tests {
             recents[0].identity_paths.paths(),
             &[PathBuf::from("/the-project")]
         );
+    }
+
+    #[gpui::test]
+    async fn test_saving_a_workspace_keeps_its_recency(cx: &mut gpui::TestAppContext) {
+        let fs = fs::FakeFs::new(cx.executor());
+        let db = WorkspaceDb::open_test_db("test_saving_a_workspace_keeps_its_recency").await;
+        fs.insert_tree("/background", json!({ "a.rs": "" })).await;
+        fs.insert_tree("/active", json!({ "b.rs": "" })).await;
+
+        db.save_workspace(workspace_with(
+            1,
+            &[Path::new("/background")],
+            empty_pane_group(),
+            None,
+        ))
+        .await;
+        db.save_workspace(workspace_with(
+            2,
+            &[Path::new("/active")],
+            empty_pane_group(),
+            None,
+        ))
+        .await;
+        db.set_timestamp_for_tests(WorkspaceId(1), "2024-01-01 00:00:00".to_owned())
+            .await
+            .unwrap();
+        db.set_timestamp_for_tests(WorkspaceId(2), "2024-01-01 00:00:01".to_owned())
+            .await
+            .unwrap();
+
+        // Files changing in a background window re-save its layout, which must not
+        // make it more recent than the window the user activated last.
+        db.save_workspace(workspace_with(
+            1,
+            &[Path::new("/background")],
+            empty_pane_group(),
+            None,
+        ))
+        .await;
+
+        let recents = db.recent_project_workspaces(fs.as_ref()).await.unwrap();
+        assert_eq!(recents.len(), 2);
+        assert_eq!(recents[0].workspace_id, WorkspaceId(2));
+        assert_eq!(recents[1].workspace_id, WorkspaceId(1));
     }
 
     #[gpui::test]

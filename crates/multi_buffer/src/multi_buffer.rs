@@ -2092,9 +2092,22 @@ impl MultiBuffer {
                 base_changed: base_text_changed,
             },
         );
-        if !edits.is_empty() {
-            self.subscriptions.publish(edits);
+        self.publish_diff_transform_edits(edits, cx);
+    }
+
+    /// A diff update only edits the text where hunks are expanded. Elsewhere, such
+    /// as after staging a hunk, it just repaints the gutter, and reporting an edit
+    /// would make editors re-run searches, refresh code actions and serialize.
+    fn publish_diff_transform_edits(
+        &mut self,
+        edits: Vec<Edit<MultiBufferOffset>>,
+        cx: &mut Context<Self>,
+    ) {
+        if edits.is_empty() {
+            cx.notify();
+            return;
         }
+        self.subscriptions.publish(edits);
         cx.emit(Event::Edited {
             edited_buffer: None,
             source: BufferEditSource::User,
@@ -2138,13 +2151,7 @@ impl MultiBuffer {
                 base_changed: false,
             },
         );
-        if !edits.is_empty() {
-            self.subscriptions.publish(edits);
-        }
-        cx.emit(Event::Edited {
-            edited_buffer: None,
-            source: BufferEditSource::User,
-        });
+        self.publish_diff_transform_edits(edits, cx);
     }
 
     pub fn all_buffers_iter(&self) -> impl Iterator<Item = Entity<Buffer>> {

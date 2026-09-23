@@ -567,28 +567,43 @@ impl SettingsStore {
                 async move {
                     let res = async move {
                         let old_text = Self::load_settings(&fs).await?;
-                        let new_text = update(old_text, cx.clone())?;
+                        let new_text = update(old_text.clone(), cx.clone())?;
 
                         let settings_path = paths::settings_file().as_path();
-                        if fs.is_file(settings_path).await {
-                            let resolved_path =
-                                fs.canonicalize(settings_path).await.with_context(|| {
-                                    format!(
+                        if !fs.is_file(settings_path).await {
+                            fs.atomic_write(settings_path.to_path_buf(), new_text.clone())
+                                .await
+                                .with_context(|| {
+                                    format!("Failed to write settings to file {:?}", settings_path)
+                                })?;
+                        } else if new_text != old_text {
+                            // Rewriting identical contents would still change the file on
+                            // disk, which makes an open settings buffer with edits report a
+                            // conflict. They are still applied below, since the file may have
+                            // been changed before the watcher got to it.
+                            // Another process may have replaced the file since it was
+                            // checked, which leaves nothing to resolve.
+                            let resolved_path = match fs.canonicalize(settings_path).await {
+                                Ok(resolved_path) => resolved_path,
+                                Err(error)
+                                    if error.downcast_ref::<std::io::Error>().is_some_and(
+                                        |error| error.kind() == std::io::ErrorKind::NotFound,
+                                    ) =>
+                                {
+                                    settings_path.to_path_buf()
+                                }
+                                Err(error) => {
+                                    return Err(error.context(format!(
                                         "Failed to canonicalize settings path {:?}",
                                         settings_path
-                                    )
-                                })?;
+                                    )));
+                                }
+                            };
 
                             fs.atomic_write(resolved_path.clone(), new_text.clone())
                                 .await
                                 .with_context(|| {
                                     format!("Failed to write settings to file {:?}", resolved_path)
-                                })?;
-                        } else {
-                            fs.atomic_write(settings_path.to_path_buf(), new_text.clone())
-                                .await
-                                .with_context(|| {
-                                    format!("Failed to write settings to file {:?}", settings_path)
                                 })?;
                         }
 
@@ -1838,6 +1853,50 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[gpui::test]
+    async fn test_update_settings_file_skips_unchanged_contents(cx: &mut gpui::TestAppContext) {
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.create_dir(paths::settings_file().parent().unwrap())
+            .await
+            .unwrap();
+        fs.insert_file(
+            paths::settings_file(),
+            r#"{ "tabs": { "close_position": "right" } }"#.as_bytes().to_vec(),
+        )
+        .await;
+        cx.update(|cx| {
+            let mut store = SettingsStore::new(cx, &default_settings());
+            store.register_setting::<ItemSettings>();
+            store.watch_settings_files(fs.clone(), cx, |_, _, _| {});
+            cx.set_global(store);
+        });
+        cx.run_until_parked();
+        let mtime_before = fs
+            .metadata(paths::settings_file())
+            .await
+            .unwrap()
+            .unwrap()
+            .mtime;
+
+        let rx = cx.update(|cx| {
+            cx.global::<SettingsStore>()
+                .update_settings_file_with_completion(fs.clone(), move |settings, _| {
+                    settings.tabs.get_or_insert_default().close_position =
+                        Some(ClosePosition::Right);
+                })
+        });
+        assert!(rx.await.unwrap().is_ok());
+        cx.run_until_parked();
+
+        let mtime_after = fs
+            .metadata(paths::settings_file())
+            .await
+            .unwrap()
+            .unwrap()
+            .mtime;
+        assert_eq!(mtime_before, mtime_after);
     }
 
     #[gpui::test]

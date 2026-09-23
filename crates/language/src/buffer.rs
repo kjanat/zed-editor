@@ -1703,6 +1703,9 @@ impl Buffer {
 
     /// Assign the line ending type to the buffer.
     pub fn set_line_ending(&mut self, line_ending: LineEnding, cx: &mut Context<Self>) {
+        if self.line_ending() == line_ending {
+            return;
+        }
         self.text.set_line_ending(line_ending);
 
         let lamport_timestamp = self.text.lamport_clock.tick();

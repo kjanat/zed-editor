@@ -168,7 +168,8 @@ impl TabularDataPreviewPane {
                 editor,
                 |this: &mut TabularDataPreviewPane, _editor, event: &EditorEvent, cx| {
                     match event {
-                        EditorEvent::Edited { .. } | EditorEvent::DirtyChanged => {
+                        // Not `DirtyChanged`: saving changes that but not the content.
+                        EditorEvent::Edited { .. } => {
                             this.parse_from_active_editor(true, cx);
                         }
                         _ => {}

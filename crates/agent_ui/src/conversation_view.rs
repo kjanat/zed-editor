@@ -297,7 +297,9 @@ impl Conversation {
         let subscription = cx.subscribe(&thread, {
             let session_id = session_id.clone();
             move |this, _thread, event, _cx| {
-                this.updated_at = Some(Instant::now());
+                if is_thread_activity(event) {
+                    this.updated_at = Some(Instant::now());
+                }
                 match event {
                     AcpThreadEvent::ToolAuthorizationRequested(id) => {
                         this.permission_requests
@@ -513,7 +515,11 @@ impl Conversation {
     }
 }
 
-pub(crate) struct RootThreadUpdated;
+pub(crate) struct RootThreadUpdated {
+    /// Whether the thread was worked on, as opposed to it being opened or its
+    /// title or working directories changing.
+    pub thread_activity: bool,
+}
 
 impl EventEmitter<RootThreadUpdated> for ConversationView {}
 
@@ -572,6 +578,35 @@ fn resolve_outcome_from_selection(
         .unwrap_or_else(|| choices.len().saturating_sub(1));
     let selected_choice = choices.get(selected_index).or(choices.last())?;
     Some(selected_choice.build_outcome(is_allow))
+}
+
+/// Events that mean the thread was worked on, as opposed to its title, setup
+/// or surroundings changing.
+fn is_thread_activity(event: &AcpThreadEvent) -> bool {
+    match event {
+        AcpThreadEvent::StatusChanged
+        | AcpThreadEvent::PromptUpdated
+        | AcpThreadEvent::NewEntry
+        | AcpThreadEvent::EntryUpdated(_)
+        | AcpThreadEvent::EntriesRemoved(_)
+        | AcpThreadEvent::ToolAuthorizationRequested(_)
+        | AcpThreadEvent::ToolAuthorizationReceived(_)
+        | AcpThreadEvent::ElicitationRequested(_)
+        | AcpThreadEvent::ElicitationResponded(_)
+        | AcpThreadEvent::Retry(_)
+        | AcpThreadEvent::SubagentSpawned(_)
+        | AcpThreadEvent::Stopped(_)
+        | AcpThreadEvent::Error
+        | AcpThreadEvent::Refusal => true,
+        AcpThreadEvent::TitleUpdated
+        | AcpThreadEvent::TokenUsageUpdated
+        | AcpThreadEvent::LoadError(_)
+        | AcpThreadEvent::PromptCapabilitiesUpdated
+        | AcpThreadEvent::AvailableCommandsUpdated(_)
+        | AcpThreadEvent::ModeUpdated(_)
+        | AcpThreadEvent::ConfigOptionsUpdated(_)
+        | AcpThreadEvent::WorkingDirectoriesUpdated => false,
+    }
 }
 
 fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
@@ -935,7 +970,9 @@ impl ConversationView {
         cx.emit(StateChange);
         cx.emit(AcpServerViewEvent::ActiveThreadChanged);
         if matches!(&self.server_state, ServerState::Connected(_)) {
-            cx.emit(RootThreadUpdated);
+            cx.emit(RootThreadUpdated {
+                thread_activity: false,
+            });
         }
         cx.notify();
     }
@@ -1608,7 +1645,9 @@ impl ConversationView {
         };
         let is_subagent = thread.read(cx).parent_session_id().is_some();
         if !is_subagent && affects_thread_metadata(event) {
-            cx.emit(RootThreadUpdated);
+            cx.emit(RootThreadUpdated {
+                thread_activity: is_thread_activity(event),
+            });
         }
         match event {
             AcpThreadEvent::StatusChanged => {

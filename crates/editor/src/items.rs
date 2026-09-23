@@ -2358,6 +2358,11 @@ fn restore_serialized_buffer_contents(
     mtime: Option<MTime>,
     cx: &mut Context<Buffer>,
 ) {
+    // The unsaved edits may have reached the file in the meantime, and then there
+    // is nothing to restore or to conflict with.
+    if buffer.text() == contents {
+        return;
+    }
     // If we did restore an mtime, store it on the buffer so that
     // the next edit will mark the buffer as dirty/conflicted.
     if mtime.is_some() {
@@ -3113,6 +3118,122 @@ mod tests {
 
     // Verify that renaming an open file emits EditorEvent::FileHandleChanged so that
     // the workspace re-serializes the editor with the updated path.
+    #[gpui::test]
+    async fn test_deserialize_contents_matching_the_file(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_file(path!("/file.rs"), b"fn main() {}".to_vec())
+            .await;
+        let project = Project::test(fs.clone(), [path!("/file.rs").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let db = cx.update(|_, cx| workspace::WorkspaceDb::global(cx));
+        let workspace_id = db.next_id().await.unwrap();
+        let editor_db = cx.update(|_, cx| EditorDb::global(cx));
+        let item_id = 4321 as ItemId;
+
+        // The unsaved contents were written to the file by something else since,
+        // so the file's mtime no longer matches the one that was serialized.
+        editor_db
+            .save_serialized_editor(
+                item_id,
+                workspace_id,
+                SerializedEditor {
+                    abs_path: Some(PathBuf::from(path!("/file.rs"))),
+                    contents: Some("fn main() {}".to_string()),
+                    language: Some("Rust".to_string()),
+                    mtime: Some(MTime::from_seconds_and_nanos(100, 0)),
+                },
+            )
+            .await
+            .unwrap();
+
+        let deserialized = deserialize_editor(item_id, workspace_id, workspace, project, cx).await;
+        deserialized.update(cx, |editor, cx| {
+            assert_eq!(editor.text(cx), "fn main() {}");
+            assert!(!editor.is_dirty(cx));
+            assert!(!editor.has_conflict(cx));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_unfolding_nothing_does_not_rewrite_persisted_folds(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({ "file.rs": "fn a() {\n    1\n}\nfn b() {\n    2\n}\n" }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        // Folds reference a workspace row, so a random id wouldn't persist anything.
+        let db = cx.update(|_, cx| workspace::WorkspaceDb::global(cx));
+        let workspace_id = db.next_id().await.unwrap();
+        let editor = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    PathBuf::from(path!("/dir/file.rs")),
+                    workspace::OpenOptions::default(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap()
+            .downcast::<Editor>()
+            .unwrap();
+        editor.update(cx, |editor, cx| {
+            if let Some(editor_workspace) = editor.workspace.as_mut() {
+                editor_workspace.1 = Some(workspace_id);
+            }
+            editor.set_should_serialize(true, cx);
+        });
+        let editor_db = cx.update(|_, cx| EditorDb::global(cx));
+        let file_path: Arc<Path> = Path::new(path!("/dir/file.rs")).into();
+
+        editor.update_in(cx, |editor, window, cx| {
+            editor.fold_ranges(vec![Point::new(0, 8)..Point::new(2, 0)], false, window, cx);
+        });
+        cx.executor()
+            .advance_clock(workspace::SERIALIZATION_THROTTLE_TIME * 2);
+        cx.run_until_parked();
+        assert_eq!(
+            editor_db
+                .get_file_folds(workspace_id, &file_path)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Another editor for the same file persists a newer state.
+        editor_db
+            .delete_file_folds(workspace_id, file_path.clone())
+            .await
+            .unwrap();
+
+        // Navigation that unfolds nothing here must not write this editor's older folds.
+        editor.update(cx, |editor, cx| {
+            editor.unfold_ranges(&[Point::new(4, 0)..Point::new(4, 0)], false, false, cx);
+        });
+        cx.executor()
+            .advance_clock(workspace::SERIALIZATION_THROTTLE_TIME * 2);
+        cx.run_until_parked();
+        assert!(
+            editor_db
+                .get_file_folds(workspace_id, &file_path)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[gpui::test]
     async fn test_file_handle_changed_on_rename(cx: &mut gpui::TestAppContext) {
         use serde_json::json;

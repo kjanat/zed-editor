@@ -1577,6 +1577,15 @@ struct DispatchingKeystrokes {
 /// A `Workspace` usually consists of 1 or more projects, a central pane group, 3 docks and a status bar.
 /// The `Workspace` owns everybody's state and serves as a default, "global context",
 /// that can be used to register a global action to be triggered from any place in the window.
+#[derive(Clone, PartialEq)]
+struct SavedWindowState {
+    window_bounds: WindowBounds,
+    display_uuid: Uuid,
+    native_window_state: Option<Vec<u8>>,
+    database_id: Option<WorkspaceId>,
+    has_paths: bool,
+}
+
 pub struct Workspace {
     weak_self: WeakEntity<Self>,
     workspace_actions: Vec<Box<dyn Fn(Div, &Workspace, &mut Window, &mut Context<Self>) -> Div>>,
@@ -1627,6 +1636,10 @@ pub struct Workspace {
     bounds: Bounds<Pixels>,
     pub centered_layout: bool,
     bounds_save_task_queued: Option<Task<()>>,
+    /// The window state last written, since focusing a window reports its bounds
+    /// as changed even when it didn't move. Cleared when writing it fails, so the
+    /// next bounds change retries.
+    last_saved_window_state: Arc<parking_lot::Mutex<Option<SavedWindowState>>>,
     on_prompt_for_new_path: Option<PromptForNewPath>,
     on_prompt_for_open_path: Option<PromptForOpenPath>,
     terminal_provider: Option<Box<dyn TerminalProvider>>,
@@ -2135,6 +2148,7 @@ impl Workspace {
             bounds: Default::default(),
             centered_layout: false,
             bounds_save_task_queued: None,
+            last_saved_window_state: Arc::default(),
             on_prompt_for_new_path: None,
             on_prompt_for_open_path: None,
             terminal_provider: None,
@@ -7442,13 +7456,19 @@ impl Workspace {
             .create_shared_screen(peer_id, pane, window, cx)
     }
 
+    /// Makes this workspace the most recent one. Saving it doesn't, so that
+    /// background saves don't reorder the recent projects.
+    pub(crate) fn mark_recently_activated(&self, cx: &App) {
+        if let Some(database_id) = self.database_id {
+            let db = WorkspaceDb::global(cx);
+            cx.background_spawn(async move { db.update_timestamp(database_id).await.log_err() })
+                .detach();
+        }
+    }
+
     pub fn on_window_activation_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_window_active() {
-            if let Some(database_id) = self.database_id {
-                let db = WorkspaceDb::global(cx);
-                cx.background_spawn(async move { db.update_timestamp(database_id).await })
-                    .detach();
-            }
+            self.mark_recently_activated(cx);
         } else {
             // When window is deactivated, flush any deferred saves since focus has left the window
             self.flush_deferred_saves(window, cx);
@@ -7524,7 +7544,7 @@ impl Workspace {
         self.session_id.clone()
     }
 
-    fn save_window_bounds(&self, window: &mut Window, cx: &mut App) -> Task<()> {
+    fn save_window_bounds(&mut self, window: &mut Window, cx: &mut App) -> Task<()> {
         let Some(display) = window.display(cx) else {
             return Task::ready(());
         };
@@ -7542,26 +7562,54 @@ impl Workspace {
         } else {
             None
         };
+        let saved_state = SavedWindowState {
+            window_bounds,
+            display_uuid,
+            native_window_state: native_window_state.clone(),
+            database_id,
+            has_paths,
+        };
+        {
+            let mut last_saved_window_state = self.last_saved_window_state.lock();
+            if last_saved_window_state.as_ref() == Some(&saved_state) {
+                return Task::ready(());
+            }
+            *last_saved_window_state = Some(saved_state.clone());
+        }
 
+        let last_saved_window_state = self.last_saved_window_state.clone();
         cx.background_executor().spawn(async move {
+            let mut saved = true;
             if !has_paths {
-                persistence::write_default_window_bounds(&kvp, window_bounds, display_uuid)
-                    .await
-                    .log_err();
+                saved &=
+                    persistence::write_default_window_bounds(&kvp, window_bounds, display_uuid)
+                        .await
+                        .log_err()
+                        .is_some();
             }
             if let Some(database_id) = database_id {
-                db.set_window_open_status(
-                    database_id,
-                    SerializedWindowBounds(window_bounds),
-                    display_uuid,
-                    native_window_state,
-                )
-                .await
-                .log_err();
-            } else {
-                persistence::write_default_window_bounds(&kvp, window_bounds, display_uuid)
+                saved &= db
+                    .set_window_open_status(
+                        database_id,
+                        SerializedWindowBounds(window_bounds),
+                        display_uuid,
+                        native_window_state,
+                    )
                     .await
-                    .log_err();
+                    .log_err()
+                    .is_some();
+            } else {
+                saved &=
+                    persistence::write_default_window_bounds(&kvp, window_bounds, display_uuid)
+                        .await
+                        .log_err()
+                        .is_some();
+            }
+            if !saved {
+                let mut last_saved_window_state = last_saved_window_state.lock();
+                if last_saved_window_state.as_ref() == Some(&saved_state) {
+                    *last_saved_window_state = None;
+                }
             }
         })
     }
@@ -7594,6 +7642,9 @@ impl Workspace {
                 })
             })
             .collect::<Vec<_>>();
+        // Written even when unchanged, so that shutdown also waits for an earlier
+        // identical write that is still in flight: the database applies writes in order.
+        *self.last_saved_window_state.lock() = None;
         let bounds_task = self.save_window_bounds(window, cx);
         let serialize_task = self.serialize_workspace_internal(window, cx);
         cx.background_spawn(async move {

@@ -923,6 +923,8 @@ pub struct FakeLspAdapter {
     pub initialization_options: Option<Value>,
     pub additional_initialization_options: HashMap<LanguageServerName, Value>,
     pub additional_workspace_configuration: HashMap<LanguageServerName, Value>,
+    /// Computes the server's workspace configuration, which is otherwise empty.
+    pub workspace_configuration: Option<Box<dyn 'static + Send + Sync + Fn(&App) -> Value>>,
     pub prettier_plugins: Vec<&'static str>,
     pub disk_based_diagnostics_progress_token: Option<String>,
     pub disk_based_diagnostics_sources: Vec<String>,
@@ -1547,6 +1549,7 @@ impl Default for FakeLspAdapter {
             initialization_options: None,
             additional_initialization_options: HashMap::default(),
             additional_workspace_configuration: HashMap::default(),
+            workspace_configuration: None,
             disk_based_diagnostics_sources: Vec::new(),
             prettier_plugins: Vec::new(),
             language_server_binary: LanguageServerBinary {
@@ -1606,6 +1609,19 @@ impl LspInstaller for FakeLspAdapter {
 impl LspAdapter for FakeLspAdapter {
     fn name(&self) -> LanguageServerName {
         LanguageServerName(self.name.into())
+    }
+
+    async fn workspace_configuration(
+        self: Arc<Self>,
+        _: &Arc<dyn LspAdapterDelegate>,
+        _: Option<Toolchain>,
+        _: Option<Uri>,
+        cx: &mut AsyncApp,
+    ) -> Result<Value> {
+        Ok(match &self.workspace_configuration {
+            Some(workspace_configuration) => cx.update(|cx| workspace_configuration(cx)),
+            None => serde_json::json!({}),
+        })
     }
 
     fn disk_based_diagnostic_sources(&self) -> Vec<String> {

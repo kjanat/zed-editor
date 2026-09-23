@@ -5508,6 +5508,7 @@ impl Panel for OutlinePanel {
                     let old_active = outline_panel.active;
                     outline_panel.active = active;
                     if old_active != active {
+                        outline_panel.serialize(cx);
                         outline_panel.lsp_outline_refresh_task = Task::ready(());
                         outline_panel.outline_fetch_tasks.clear();
                         if active
@@ -5533,7 +5534,6 @@ impl Panel for OutlinePanel {
                             outline_panel.clear_previous(window, cx);
                         }
                     }
-                    outline_panel.serialize(cx);
                 })
                 .ok();
         })

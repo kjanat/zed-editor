@@ -135,7 +135,14 @@ impl SettingsProfileSelectorDelegate {
         cx: &mut Context<Picker<SettingsProfileSelectorDelegate>>,
     ) -> Option<String> {
         if let Some(profile_name) = profile_name {
-            cx.set_global(ActiveSettingsProfileName(profile_name.clone()));
+            // Setting the global recomputes all settings and notifies every
+            // language server, so skip it while the query only re-selects it.
+            let is_active = cx
+                .try_global::<ActiveSettingsProfileName>()
+                .is_some_and(|active| active.0 == profile_name);
+            if !is_active {
+                cx.set_global(ActiveSettingsProfileName(profile_name.clone()));
+            }
             return Some(profile_name);
         }
 

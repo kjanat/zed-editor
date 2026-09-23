@@ -289,9 +289,13 @@ impl State {
                                 let label = SharedString::from(progress.progress_label());
                                 if this
                                     .update(cx, |this, cx| {
-                                        write_recover(&this.loading_progress)
-                                            .insert(event.model.clone(), label);
-                                        cx.notify();
+                                        // Ticks within the same percent would otherwise
+                                        // refresh every model picker for nothing.
+                                        let previous = write_recover(&this.loading_progress)
+                                            .insert(event.model.clone(), label.clone());
+                                        if previous != Some(label) {
+                                            cx.notify();
+                                        }
                                     })
                                     .is_err()
                                 {

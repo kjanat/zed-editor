@@ -7,7 +7,10 @@ use parking_lot::RwLock;
 use rand::prelude::*;
 use settings::SettingsStore;
 use std::env;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering::SeqCst},
+};
 use std::time::{Duration, Instant};
 use util::RandomCharIter;
 use util::rel_path::rel_path;
@@ -427,6 +430,52 @@ async fn test_diff_boundary_anchors(cx: &mut TestAppContext) {
             snapshot.summaries_for_anchors::<Point, _>(&[before, after]),
         )
     })
+}
+
+#[gpui::test]
+async fn test_diff_update_reports_an_edit_only_when_the_text_changes(cx: &mut TestAppContext) {
+    let buffer = cx.new(|cx| Buffer::local("one\nthree\n", cx));
+    let diff = cx.new(|cx| {
+        BufferDiff::new_with_base_text("one\ntwo\nthree\n", &buffer.read(cx).text_snapshot(), cx)
+    });
+    let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    multibuffer.update(cx, |multibuffer, cx| multibuffer.add_diff(diff.clone(), cx));
+    cx.run_until_parked();
+
+    let edit_count = Arc::new(AtomicUsize::new(0));
+    multibuffer.update(cx, |_, cx| {
+        let edit_count = edit_count.clone();
+        cx.subscribe(&multibuffer, move |_, _, event, _| {
+            if let Event::Edited { .. } = event {
+                edit_count.fetch_add(1, SeqCst);
+            }
+        })
+        .detach();
+    });
+    let set_base_text = |base_text: &str, cx: &mut TestAppContext| {
+        diff.update(cx, |diff, cx| {
+            diff.set_base_text(Some(base_text.into()), buffer.read(cx).text_snapshot(), cx)
+        })
+    };
+
+    // With the hunk collapsed, the deleted text isn't shown, so nothing is edited.
+    set_base_text("one\nTWO\nthree\n", cx).await;
+    cx.run_until_parked();
+    assert_eq!(edit_count.load(SeqCst), 0);
+
+    // Expanded, the deleted text is part of the multibuffer's text.
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.set_all_diff_hunks_expanded(cx)
+    });
+    cx.run_until_parked();
+    edit_count.store(0, SeqCst);
+    set_base_text("one\ntwo!\nthree\n", cx).await;
+    cx.run_until_parked();
+    assert!(edit_count.load(SeqCst) > 0);
+    assert_eq!(
+        multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx).text()),
+        "one\ntwo!\nthree\n"
+    );
 }
 
 #[gpui::test]

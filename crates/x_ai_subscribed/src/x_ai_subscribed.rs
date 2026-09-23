@@ -64,7 +64,83 @@ pub struct State {
     credentials_provider: Arc<dyn CredentialsProvider>,
     http_client: Arc<dyn HttpClient>,
     auth_generation: u64,
+    /// Held across each keychain write together with the state change it belongs
+    /// to, so writes from sign-in, sign-out and token refresh can't overtake each
+    /// other.
+    credentials_write_lock: Arc<futures::lock::Mutex<()>>,
     last_auth_error: Option<SharedString>,
+}
+
+/// Stores the credentials of a completed sign-in and installs them unless a
+/// sign-out or another sign-in happened since. Runs detached, because a sign-out
+/// drops the sign-in task and must not interrupt a keychain write it would then
+/// race with. Returns whether the credentials were installed.
+async fn persist_sign_in(
+    this: WeakEntity<State>,
+    creds: SuperGrokCredentials,
+    cx: &mut AsyncApp,
+) -> Result<bool> {
+    let generation = this.read_with(cx, |state, _| state.auth_generation)?;
+    let (result_tx, result_rx) = futures::channel::oneshot::channel();
+    cx.spawn(async move |cx| {
+        let result = async {
+            let (credentials_provider, credentials_write_lock) =
+                this.read_with(cx, |state, _| {
+                    (
+                        state.credentials_provider.clone(),
+                        state.credentials_write_lock.clone(),
+                    )
+                })?;
+            let _write_guard = credentials_write_lock.lock().await;
+            store_credentials(&*credentials_provider, Some(&creds), cx).await?;
+            let installed = this.update(cx, |state, cx| {
+                if state.auth_generation != generation {
+                    return false;
+                }
+                state.auth_generation = state.auth_generation.wrapping_add(1);
+                state.credentials = Some(creds);
+                state.last_auth_error = None;
+                cx.notify();
+                true
+            })?;
+            if !installed {
+                // A sign-out that finished before this took the lock deleted
+                // nothing this wrote; store what it left.
+                let credentials = this.read_with(cx, |state, _| state.credentials.clone())?;
+                store_credentials(&*credentials_provider, credentials.as_ref(), cx).await?;
+            }
+            anyhow::Ok(installed)
+        }
+        .await;
+        // A sign-out drops the sign-in task that waits for this result, and a
+        // failure then has nobody else to report it.
+        if let Err(Err(error)) = result_tx.send(result) {
+            log::error!("Failed to persist SuperGrok credentials: {error:#}");
+        }
+    })
+    .detach();
+    result_rx.await?
+}
+
+/// Makes the keychain hold `credentials`, or nothing when signed out.
+async fn store_credentials(
+    credentials_provider: &dyn CredentialsProvider,
+    credentials: Option<&SuperGrokCredentials>,
+    cx: &AsyncApp,
+) -> Result<()> {
+    match credentials {
+        Some(credentials) => {
+            let json = serde_json::to_vec(credentials)?;
+            credentials_provider
+                .write_credentials(CREDENTIALS_KEY, "Bearer", &json, cx)
+                .await
+        }
+        None => {
+            credentials_provider
+                .delete_credentials(CREDENTIALS_KEY, cx)
+                .await
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -132,6 +208,7 @@ impl State {
             credentials_provider,
             http_client,
             auth_generation: 0,
+            credentials_write_lock: Arc::default(),
             last_auth_error: None,
         }
     }
@@ -169,23 +246,11 @@ impl State {
         let task = cx.spawn(async move |this, cx| {
             match do_oauth_flow(http_client, cx).await {
                 Ok(creds) => {
-                    let persist_result = async {
-                        let credentials_provider =
-                            this.read_with(cx, |state, _| state.credentials_provider.clone())?;
-                        let json = serde_json::to_vec(&creds)?;
-                        credentials_provider
-                            .write_credentials(CREDENTIALS_KEY, "Bearer", &json, cx)
-                            .await?;
-                        anyhow::Ok(())
-                    }
-                    .await;
+                    let persist_result = persist_sign_in(this.clone(), creds, cx).await;
 
                     match persist_result {
-                        Ok(()) => {
+                        Ok(_) => {
                             this.update(cx, |state, cx| {
-                                state.auth_generation = state.auth_generation.wrapping_add(1);
-                                state.credentials = Some(creds);
-                                state.last_auth_error = None;
                                 state.sign_in_task = None;
                                 cx.notify();
                             })?;
@@ -229,9 +294,16 @@ impl State {
         cx.notify();
 
         let credentials_provider = self.credentials_provider.clone();
-        cx.spawn(async move |_this, cx| {
-            credentials_provider
-                .delete_credentials(CREDENTIALS_KEY, cx)
+        let credentials_write_lock = self.credentials_write_lock.clone();
+        cx.spawn(async move |this, cx| {
+            let _write_guard = credentials_write_lock.lock().await;
+            // A sign-in that finished while this waited for the lock owns the
+            // keychain now.
+            let credentials = this
+                .read_with(cx, |state, _| state.credentials.clone())
+                .ok()
+                .flatten();
+            store_credentials(&*credentials_provider, credentials.as_ref(), cx)
                 .await
                 .context("Failed to delete SuperGrok credentials from keychain")?;
             anyhow::Ok(())
@@ -646,24 +718,47 @@ async fn get_fresh_credentials(
                             email: claims.or(tokens.email).or(previous_email.clone()),
                         };
 
-                        let credentials_provider = state_clone
-                            .read_with(&*cx, |s, _| s.credentials_provider.clone())
+                        let (credentials_provider, credentials_write_lock) = state_clone
+                            .read_with(&*cx, |s, _| {
+                                (
+                                    s.credentials_provider.clone(),
+                                    s.credentials_write_lock.clone(),
+                                )
+                            })
                             .map_err(|e| Arc::new(e))?;
+                        let _write_guard = credentials_write_lock.lock().await;
 
-                        let json =
-                            serde_json::to_vec(&refreshed).map_err(|e| Arc::new(e.into()))?;
+                        // A sign-out or sign-in during the refresh replaced these
+                        // credentials. One that happens during the write stores its own
+                        // credentials after it, since it waits for the lock.
+                        let current_generation = state_clone
+                            .read_with(&*cx, |s, _| s.auth_generation)
+                            .map_err(|e| Arc::new(e))?;
+                        if current_generation != generation {
+                            return Err(Arc::new(anyhow!(
+                                "Sign-out occurred during token refresh"
+                            )));
+                        }
 
-                        credentials_provider
-                            .write_credentials(CREDENTIALS_KEY, "Bearer", &json, &*cx)
+                        store_credentials(&*credentials_provider, Some(&refreshed), &*cx)
                             .await
                             .map_err(|e| Arc::new(e))?;
 
-                        state_clone
+                        let still_current_generation = state_clone
                             .update(cx, |s, _| {
+                                if s.auth_generation != generation {
+                                    return false;
+                                }
                                 s.credentials = Some(refreshed.clone());
                                 s.refresh_task = None;
+                                true
                             })
                             .map_err(|e| Arc::new(e))?;
+                        if !still_current_generation {
+                            return Err(Arc::new(anyhow!(
+                                "Sign-out occurred during token refresh"
+                            )));
+                        }
 
                         Ok(refreshed)
                     }
@@ -681,6 +776,15 @@ async fn get_fresh_credentials(
                 }
                 Err(RefreshError::Fatal(e)) => {
                     log::error!("SuperGrok token refresh failed fatally: {e:?}");
+                    // A rejected token from before a sign-out or new sign-in must not
+                    // clear the credentials that replaced it.
+                    let credentials_write_lock = state_clone
+                        .read_with(&*cx, |s, _| s.credentials_write_lock.clone())
+                        .ok();
+                    let _write_guard = match &credentials_write_lock {
+                        Some(lock) => Some(lock.lock().await),
+                        None => None,
+                    };
                     let still_current_generation = state_clone
                         .read_with(&*cx, |s, _| s.auth_generation == generation)
                         .unwrap_or(false);
@@ -1482,6 +1586,7 @@ mod tests {
             credentials_provider,
             http_client,
             auth_generation: 0,
+            credentials_write_lock: Arc::default(),
             last_auth_error: None,
         })
     }

@@ -77,9 +77,85 @@ pub struct State {
     client_version: SharedString,
     available_models: Vec<ChatGptModel>,
     auth_generation: u64,
+    /// Held across each keychain write together with the state change it belongs
+    /// to, so writes from sign-in, sign-out and token refresh can't overtake each
+    /// other.
+    credentials_write_lock: Arc<futures::lock::Mutex<()>>,
     model_catalog_generation: u64,
     last_auth_error: Option<SharedString>,
     last_model_catalog_error: Option<SharedString>,
+}
+
+/// Stores the credentials of a completed sign-in and installs them unless a
+/// sign-out or another sign-in happened since. Runs detached, because a sign-out
+/// drops the sign-in task and must not interrupt a keychain write it would then
+/// race with. Returns whether the credentials were installed.
+async fn persist_sign_in(
+    this: WeakEntity<State>,
+    creds: CodexCredentials,
+    cx: &mut AsyncApp,
+) -> Result<bool> {
+    let generation = this.read_with(cx, |state, _| state.auth_generation)?;
+    let (result_tx, result_rx) = futures::channel::oneshot::channel();
+    cx.spawn(async move |cx| {
+        let result = async {
+            let (credentials_provider, credentials_write_lock) =
+                this.read_with(cx, |state, _| {
+                    (
+                        state.credentials_provider.clone(),
+                        state.credentials_write_lock.clone(),
+                    )
+                })?;
+            let _write_guard = credentials_write_lock.lock().await;
+            store_credentials(&*credentials_provider, Some(&creds), cx).await?;
+            let installed = this.update(cx, |state, cx| {
+                if state.auth_generation != generation {
+                    return false;
+                }
+                state.auth_generation = state.auth_generation.wrapping_add(1);
+                state.credentials = Some(creds);
+                state.last_auth_error = None;
+                cx.notify();
+                true
+            })?;
+            if !installed {
+                // A sign-out that finished before this took the lock deleted
+                // nothing this wrote; store what it left.
+                let credentials = this.read_with(cx, |state, _| state.credentials.clone())?;
+                store_credentials(&*credentials_provider, credentials.as_ref(), cx).await?;
+            }
+            anyhow::Ok(installed)
+        }
+        .await;
+        // A sign-out drops the sign-in task that waits for this result, and a
+        // failure then has nobody else to report it.
+        if let Err(Err(error)) = result_tx.send(result) {
+            log::error!("Failed to persist ChatGPT subscription credentials: {error:#}");
+        }
+    })
+    .detach();
+    result_rx.await?
+}
+
+/// Makes the keychain hold `credentials`, or nothing when signed out.
+async fn store_credentials(
+    credentials_provider: &dyn CredentialsProvider,
+    credentials: Option<&CodexCredentials>,
+    cx: &AsyncApp,
+) -> Result<()> {
+    match credentials {
+        Some(credentials) => {
+            let json = serde_json::to_vec(credentials)?;
+            credentials_provider
+                .write_credentials(CREDENTIALS_KEY, "Bearer", &json, cx)
+                .await
+        }
+        None => {
+            credentials_provider
+                .delete_credentials(CREDENTIALS_KEY, cx)
+                .await
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -167,6 +243,7 @@ impl State {
             client_version: MODEL_CATALOG_CLIENT_VERSION.into(),
             available_models: ChatGptModel::all(),
             auth_generation: 0,
+            credentials_write_lock: Arc::default(),
             model_catalog_generation: 0,
             last_auth_error: None,
             last_model_catalog_error: None,
@@ -304,28 +381,21 @@ impl State {
                         state.begin_persisting_credentials(cx);
                     })?;
 
-                    let persist_result = async {
-                        let credentials_provider =
-                            this.read_with(cx, |state, _| state.credentials_provider.clone())?;
-                        let json = serde_json::to_vec(&creds)?;
-                        credentials_provider
-                            .write_credentials(CREDENTIALS_KEY, "Bearer", &json, cx)
-                            .await?;
-                        anyhow::Ok(())
-                    }
-                    .await;
+                    let persist_result = persist_sign_in(this.clone(), creds, cx).await;
 
                     match persist_result {
-                        Ok(()) => {
-                            let refresh_models_task = this.update(cx, |state, cx| {
-                                state.auth_generation = state.auth_generation.wrapping_add(1);
-                                state.credentials = Some(creds);
-                                state.last_auth_error = None;
-                                state.refresh_model_catalog(cx)
-                            })?;
+                        Ok(true) => {
+                            let refresh_models_task =
+                                this.update(cx, |state, cx| state.refresh_model_catalog(cx))?;
                             if let Err(error) = refresh_models_task.await {
                                 log::warn!("Failed to refresh ChatGPT models: {error:#}");
                             }
+                            this.update(cx, |state, cx| {
+                                state.sign_in_state = SignInState::Idle;
+                                cx.notify();
+                            })?;
+                        }
+                        Ok(false) => {
                             this.update(cx, |state, cx| {
                                 state.sign_in_state = SignInState::Idle;
                                 cx.notify();
@@ -383,9 +453,16 @@ impl State {
         cx.notify();
 
         let credentials_provider = self.credentials_provider.clone();
-        cx.spawn(async move |_this, cx| {
-            credentials_provider
-                .delete_credentials(CREDENTIALS_KEY, cx)
+        let credentials_write_lock = self.credentials_write_lock.clone();
+        cx.spawn(async move |this, cx| {
+            let _write_guard = credentials_write_lock.lock().await;
+            // A sign-in that finished while this waited for the lock owns the
+            // keychain now.
+            let credentials = this
+                .read_with(cx, |state, _| state.credentials.clone())
+                .ok()
+                .flatten();
+            store_credentials(&*credentials_provider, credentials.as_ref(), cx)
                 .await
                 .context("Failed to delete ChatGPT subscription credentials from keychain")?;
             anyhow::Ok(())
@@ -999,7 +1076,19 @@ async fn get_fresh_credentials(
             match result {
                 Ok(refreshed) => {
                     let persist_result: Result<CodexCredentials, Arc<anyhow::Error>> = async {
-                        // Check if auth_generation changed (sign-out during refresh).
+                        let (credentials_provider, credentials_write_lock) = state_clone
+                            .read_with(&*cx, |s, _| {
+                                (
+                                    s.credentials_provider.clone(),
+                                    s.credentials_write_lock.clone(),
+                                )
+                            })
+                            .map_err(|e| Arc::new(e))?;
+                        let _write_guard = credentials_write_lock.lock().await;
+
+                        // A sign-out or sign-in during the refresh replaced these
+                        // credentials. One that happens during the write stores its own
+                        // credentials after it, since it waits for the lock.
                         let current_generation = state_clone
                             .read_with(&*cx, |s, _| s.auth_generation)
                             .map_err(|e| Arc::new(e))?;
@@ -1009,24 +1098,25 @@ async fn get_fresh_credentials(
                             )));
                         }
 
-                        let credentials_provider = state_clone
-                            .read_with(&*cx, |s, _| s.credentials_provider.clone())
-                            .map_err(|e| Arc::new(e))?;
-
-                        let json =
-                            serde_json::to_vec(&refreshed).map_err(|e| Arc::new(e.into()))?;
-
-                        credentials_provider
-                            .write_credentials(CREDENTIALS_KEY, "Bearer", &json, &*cx)
+                        store_credentials(&*credentials_provider, Some(&refreshed), &*cx)
                             .await
                             .map_err(|e| Arc::new(e))?;
 
-                        state_clone
+                        let still_current_generation = state_clone
                             .update(cx, |s, _| {
+                                if s.auth_generation != generation {
+                                    return false;
+                                }
                                 s.credentials = Some(refreshed.clone());
                                 s.refresh_task = None;
+                                true
                             })
                             .map_err(|e| Arc::new(e))?;
+                        if !still_current_generation {
+                            return Err(Arc::new(anyhow!(
+                                "Sign-out occurred during token refresh"
+                            )));
+                        }
 
                         Ok(refreshed)
                     }
@@ -1045,24 +1135,44 @@ async fn get_fresh_credentials(
                 }
                 Err(RefreshError::Fatal(e)) => {
                     log::error!("ChatGPT subscription token refresh failed fatally: {e:?}");
-                    state_clone
-                        .update(cx, |s, cx| {
-                            s.refresh_task = None;
-                            s.credentials = None;
-                            s.last_auth_error =
-                                Some("Your session has expired. Please sign in again.".into());
-                            s.reset_model_catalog();
-                            cx.notify();
-                        })
+                    // A rejected token from before a sign-out or new sign-in must not
+                    // clear the credentials that replaced it.
+                    let credentials_write_lock = state_clone
+                        .read_with(&*cx, |s, _| s.credentials_write_lock.clone())
                         .ok();
-                    // Also clear the keychain so stale credentials aren't loaded next time.
-                    if let Ok(credentials_provider) =
-                        state_clone.read_with(&*cx, |s, _| s.credentials_provider.clone())
-                    {
-                        credentials_provider
-                            .delete_credentials(CREDENTIALS_KEY, &*cx)
-                            .await
-                            .log_err();
+                    let _write_guard = match &credentials_write_lock {
+                        Some(lock) => Some(lock.lock().await),
+                        None => None,
+                    };
+                    let still_current_generation = state_clone
+                        .read_with(&*cx, |s, _| s.auth_generation == generation)
+                        .unwrap_or(false);
+                    if still_current_generation {
+                        state_clone
+                            .update(cx, |s, cx| {
+                                s.refresh_task = None;
+                                s.credentials = None;
+                                s.last_auth_error =
+                                    Some("Your session has expired. Please sign in again.".into());
+                                s.reset_model_catalog();
+                                cx.notify();
+                            })
+                            .ok();
+                        // Also clear the keychain so stale credentials aren't loaded next time.
+                        if let Ok(credentials_provider) =
+                            state_clone.read_with(&*cx, |s, _| s.credentials_provider.clone())
+                        {
+                            credentials_provider
+                                .delete_credentials(CREDENTIALS_KEY, &*cx)
+                                .await
+                                .log_err();
+                        }
+                    } else {
+                        state_clone
+                            .update(cx, |s, _| {
+                                s.refresh_task = None;
+                            })
+                            .ok();
                     }
                     Err(Arc::new(e))
                 }
@@ -1675,6 +1785,44 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_sign_out_during_refresh_write_keeps_credentials_cleared(cx: &mut TestAppContext) {
+        let creds_provider = Arc::new(FakeCredentialsProvider::new());
+        let (write_gate_tx, write_gate_rx) = futures::channel::oneshot::channel::<()>();
+        creds_provider.write_gate.lock().replace(write_gate_rx);
+
+        let http: Arc<dyn HttpClient> = FakeHttpClient::create(|_request| async {
+            Ok(http_client::Response::builder()
+                .status(200)
+                .body(http_client::AsyncBody::from(fake_token_response()))?)
+        });
+        let state = make_state_with_credentials_provider(
+            http.clone(),
+            Some(make_expired_credentials()),
+            creds_provider.clone(),
+            cx,
+        );
+
+        let weak_state = cx.read(|_cx| state.downgrade());
+        let refresh_task =
+            cx.spawn(async move |mut cx| get_fresh_credentials(&weak_state, &http, &mut cx).await);
+        cx.run_until_parked();
+
+        // Sign out while the refreshed token is being written to the keychain.
+        let sign_out_task = state.update(cx, |state, cx| state.sign_out(cx));
+        cx.run_until_parked();
+        write_gate_tx.send(()).ok();
+        cx.run_until_parked();
+        sign_out_task.await.expect("sign-out should succeed");
+
+        assert!(refresh_task.await.is_err());
+        cx.read(|cx| assert!(state.read(cx).credentials.is_none()));
+        assert!(
+            creds_provider.storage.lock().is_none(),
+            "the refresh must not restore credentials after sign-out"
+        );
+    }
+
+    #[gpui::test]
     async fn test_sign_out_completes_fully(cx: &mut TestAppContext) {
         let creds_provider = Arc::new(FakeCredentialsProvider::new());
         // Pre-populate the credential store
@@ -2266,12 +2414,14 @@ mod tests {
 
     struct FakeCredentialsProvider {
         storage: Mutex<Option<(String, Vec<u8>)>>,
+        write_gate: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     }
 
     impl FakeCredentialsProvider {
         fn new() -> Self {
             Self {
                 storage: Mutex::new(None),
+                write_gate: Mutex::new(None),
             }
         }
     }
@@ -2292,10 +2442,16 @@ mod tests {
             password: &'a [u8],
             _cx: &'a AsyncApp,
         ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-            self.storage
-                .lock()
-                .replace((username.to_string(), password.to_vec()));
-            Box::pin(async { Ok(()) })
+            let write_gate = self.write_gate.lock().take();
+            Box::pin(async move {
+                if let Some(write_gate) = write_gate {
+                    write_gate.await.ok();
+                }
+                self.storage
+                    .lock()
+                    .replace((username.to_string(), password.to_vec()));
+                Ok(())
+            })
         }
 
         fn delete_credentials<'a>(
@@ -2337,6 +2493,7 @@ mod tests {
             client_version: "0.0.0".into(),
             available_models: ChatGptModel::all(),
             auth_generation: 0,
+            credentials_write_lock: Arc::default(),
             model_catalog_generation: 0,
             last_auth_error: None,
             last_model_catalog_error: None,

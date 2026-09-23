@@ -109,11 +109,15 @@ fn parse_notebook_text(text: &str) -> Result<nbformat::v4::Notebook> {
         Ok(nbformat::Notebook::V3(v3_notebook)) => {
             let mut notebook = nbformat::upgrade_v3_notebook(v3_notebook)?;
             // Version 3 has no cell IDs and the upgrade makes up random ones.
-            for (index, cell) in notebook.cells.iter_mut().enumerate() {
-                let (nbformat::v4::Cell::Markdown { id, .. }
-                | nbformat::v4::Cell::Code { id, .. }
-                | nbformat::v4::Cell::Raw { id, .. }) = cell;
-                *id = CellId::new(&format!("cell-{index}")).map_err(anyhow::Error::msg)?;
+            let mut synthetic_ids = SyntheticCellIds::default();
+            for cell in &mut notebook.cells {
+                let (cell_type, id, source) = match cell {
+                    nbformat::v4::Cell::Markdown { id, source, .. } => ("markdown", id, source),
+                    nbformat::v4::Cell::Code { id, source, .. } => ("code", id, source),
+                    nbformat::v4::Cell::Raw { id, source, .. } => ("raw", id, source),
+                };
+                let synthetic_id = synthetic_ids.next(cell_type, &source.concat());
+                *id = CellId::new(&synthetic_id).map_err(anyhow::Error::msg)?;
             }
             Ok(notebook)
         }
@@ -121,28 +125,64 @@ fn parse_notebook_text(text: &str) -> Result<nbformat::v4::Notebook> {
     }
 }
 
-/// Gives cells without an ID one derived from their position, rather than a random
-/// one, so that reloading the same file gives them the same IDs again.
+/// Gives cells without an ID one derived from their type and contents, rather
+/// than a random one, so that reloading the same file gives them the same IDs
+/// again, and one derived from their contents rather than their position, so
+/// that cells inserted or removed around them don't hand their IDs to others.
 fn assign_missing_cell_ids(cells: &mut [serde_json::Value]) {
-    let taken: HashSet<String> = cells
-        .iter()
-        .filter_map(|cell| Some(cell.get("id")?.as_str()?.to_owned()))
-        .collect();
+    let mut synthetic_ids = SyntheticCellIds {
+        taken: cells
+            .iter()
+            .filter_map(|cell| Some(cell.get("id")?.as_str()?.to_owned()))
+            .collect(),
+    };
     // Entries that aren't objects are left for nbformat to reject.
-    for (index, cell) in cells.iter_mut().enumerate() {
+    for cell in cells.iter_mut() {
         let Some(cell) = cell.as_object_mut() else {
             continue;
         };
         if cell.contains_key("id") {
             continue;
         }
-        let mut id = format!("cell-{index}");
-        let mut suffix = 1;
-        while taken.contains(&id) {
-            id = format!("cell-{index}-{suffix}");
-            suffix += 1;
-        }
+        let cell_type = cell
+            .get("cell_type")
+            .and_then(|cell_type| cell_type.as_str())
+            .unwrap_or_default();
+        let source = match cell.get("source") {
+            Some(serde_json::Value::String(source)) => source.clone(),
+            Some(serde_json::Value::Array(lines)) => {
+                lines.iter().filter_map(|line| line.as_str()).collect()
+            }
+            _ => String::new(),
+        };
+        let id = synthetic_ids.next(cell_type, &source);
         cell.insert("id".to_string(), serde_json::Value::String(id));
+    }
+}
+
+#[derive(Default)]
+struct SyntheticCellIds {
+    taken: HashSet<String>,
+}
+
+impl SyntheticCellIds {
+    /// Identical cells are told apart by the order they appear in.
+    fn next(&mut self, cell_type: &str, source: &str) -> String {
+        // FNV-1a, which unlike the standard hasher is the same in every build.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in cell_type.bytes().chain([0]).chain(source.bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let base = format!("cell-{hash:016x}");
+        let mut id = base.clone();
+        let mut suffix = 1;
+        while self.taken.contains(&id) {
+            suffix += 1;
+            id = format!("{base}-{suffix}");
+        }
+        self.taken.insert(id.clone());
+        id
     }
 }
 
@@ -202,6 +242,9 @@ pub struct NotebookEditor {
     /// The backing file was reloaded from disk while the notebook had unsaved
     /// edits, so those edits no longer describe the file they would replace.
     external_change_pending: bool,
+    /// Counts reloads of the backing buffer from disk, so a save can tell whether
+    /// the file changed again while it was being written.
+    disk_reloads: u64,
     /// The notebook as last loaded or saved.
     saved: SavedNotebook,
     /// The cells as they are in the file, so a reload can tell which ones it changed.
@@ -298,6 +341,7 @@ impl NotebookEditor {
             execution_requests: HashMap::default(),
             kernel_picker_handle: PopoverMenuHandle::default(),
             external_change_pending: false,
+            disk_reloads: 0,
             saved: SavedNotebook::default(),
             cell_comparisons: RefCell::default(),
             cells_on_disk: cells_on_disk(&notebook_item.read(cx).notebook.cells),
@@ -479,9 +523,25 @@ impl NotebookEditor {
         }
     }
 
+    fn disk_differs_from_saved(&self, cx: &App) -> bool {
+        self.disk_differs_from(&self.notebook_on_disk, cx)
+    }
+
+    /// Whether the backing buffer, which follows the file on disk, holds a
+    /// different notebook than `snapshot`; a reload that only reformats the JSON
+    /// doesn't count.
+    fn disk_differs_from(&self, snapshot: &Option<serde_json::Value>, cx: &App) -> bool {
+        let text = self.notebook_item.read(cx).buffer.read(cx).text();
+        match parse_notebook_text(&text) {
+            Ok(notebook) => serde_json::to_value(&notebook).log_err() != *snapshot,
+            Err(_) => true,
+        }
+    }
+
     /// Handles the backing JSON buffer being reloaded from disk, which happens
     /// automatically while it is clean even if the cells hold unsaved edits.
     fn backing_buffer_reloaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.disk_reloads = self.disk_reloads.wrapping_add(1);
         let text = self.notebook_item.read(cx).buffer.read(cx).text();
         match parse_notebook_text(&text) {
             Ok(notebook) if self.has_unsaved_changes(cx) => {
@@ -642,9 +702,20 @@ impl NotebookEditor {
         let saved = self.snapshot(cx);
         let written_cells = cells_on_disk(&notebook.cells);
         let written_notebook = serde_json::to_value(&notebook).log_err();
+        let disk_reloads = self.disk_reloads;
+        let disk_at_start = self.notebook_on_disk.clone();
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         cx.spawn(async move |this, cx| {
+            // A reload can land between `save` checking for a conflict and this
+            // write, which would otherwise replace the external version unseen.
+            if matches!(destination, SaveDestination::CurrentPath(None))
+                && this.read_with(cx, |this, cx| {
+                    this.disk_reloads != disk_reloads && this.disk_differs_from(&disk_at_start, cx)
+                })?
+            {
+                anyhow::bail!("The notebook changed on disk since you started editing it");
+            }
             let json =
                 serde_json::to_string_pretty(&notebook).context("Failed to serialize notebook")?;
             buffer.update(cx, |buffer, cx| buffer.set_text(json, cx));
@@ -698,10 +769,13 @@ impl NotebookEditor {
                 }
             }?;
             this.update(cx, |this, cx| {
-                this.external_change_pending = false;
                 this.mark_saved(saved);
                 this.cells_on_disk = written_cells;
                 this.notebook_on_disk = written_notebook;
+                // Another program may have written the file after this save did,
+                // and that conflict must survive the save finishing.
+                this.external_change_pending =
+                    this.disk_reloads != disk_reloads && this.disk_differs_from_saved(cx);
                 cx.notify();
             })
         })
@@ -2793,8 +2867,28 @@ mod tests {
                 .map(|cell| cell.id().to_string())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(text), ["cell-0-1", "cell-0"]);
         assert_eq!(ids(text), ids(text));
+        let [synthetic_id, taken_id] = ids(text).try_into().unwrap();
+        assert_ne!(synthetic_id, taken_id);
+
+        // Inserting a cell before one without an ID leaves that cell's ID alone,
+        // and identical cells still get distinct IDs.
+        let cell = |source: &str| {
+            format!(
+                r#"{{"cell_type": "code", "metadata": {{}}, "execution_count": null, "outputs": [], "source": ["{source}"]}}"#
+            )
+        };
+        let notebook = |cells: &[String]| {
+            format!(
+                r#"{{"cells": [{}], "metadata": {{}}, "nbformat": 4, "nbformat_minor": 4}}"#,
+                cells.join(",")
+            )
+        };
+        let before = ids(&notebook(&[cell("a"), cell("b")]));
+        let after = ids(&notebook(&[cell("new"), cell("a"), cell("b")]));
+        assert_eq!(after[1..], before[..]);
+        let duplicates = ids(&notebook(&[cell("a"), cell("a")]));
+        assert_ne!(duplicates[0], duplicates[1]);
     }
 
     #[test]
@@ -3011,6 +3105,73 @@ mod tests {
             };
             assert!(cell.read(cx).editor().focus_handle(cx).is_focused(window));
         });
+    }
+
+    #[gpui::test]
+    async fn test_save_stops_after_a_reload_that_changed_the_notebook(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/notebooks"),
+            json!({ "test.ipynb": NOTEBOOK_WITH_ONE_CODE_CELL }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/notebooks").as_ref()], cx).await;
+        cx.update(|cx| ReplStore::init(fs.clone(), cx));
+        let project_path = project.read_with(cx, |project, cx| ProjectPath {
+            worktree_id: project.worktrees(cx).next().unwrap().read(cx).id(),
+            path: rel_path("test.ipynb").into(),
+        });
+        let notebook_item = cx
+            .update(|cx| {
+                NotebookItem::try_open(&project, &project_path, cx)
+                    .expect("ipynb files should be openable as notebooks")
+            })
+            .await
+            .expect("notebook should parse");
+        let cx = cx.add_empty_window();
+        let notebook_editor = cx.update(|window, cx| {
+            cx.new(|cx| NotebookEditor::new(project.clone(), notebook_item, window, cx))
+        });
+        let cell_editor = notebook_editor.read_with(cx, |editor, cx| {
+            let Some(Cell::Code(cell)) = editor.cell_map.get(&editor.cell_order[0]) else {
+                panic!("expected a code cell");
+            };
+            cell.read(cx).editor().clone()
+        });
+        cell_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("print('my edit')", window, cx);
+        });
+
+        // The reload lands after `save` checked for a conflict, but before its
+        // write, and brings a different notebook.
+        let external = NOTEBOOK_WITH_ONE_CODE_CELL.replace("print('hello')", "print('external')");
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                let save = editor.save(SaveOptions::default(), project.clone(), window, cx);
+                editor
+                    .notebook_item
+                    .read(cx)
+                    .buffer
+                    .clone()
+                    .update(cx, |buffer, cx| buffer.set_text(external.clone(), cx));
+                editor.disk_reloads = editor.disk_reloads.wrapping_add(1);
+                save
+            })
+            .await
+            .expect_err("a reload that changed the notebook must stop the save");
+        let on_disk = String::from_utf8(
+            fs.read_file_sync(path!("/notebooks/test.ipynb"))
+                .expect("notebook file"),
+        )
+        .expect("UTF-8");
+        assert!(!on_disk.contains("my edit"), "{on_disk}");
     }
 
     fn execute_reply(request: &JupyterMessage) -> JupyterMessage {
@@ -3351,6 +3512,28 @@ mod tests {
             )
             .expect("UTF-8")
             .contains("print('new edit')")
+        );
+
+        // A reload landing after `save` checked for a conflict, but before its
+        // write, doesn't stop the write when it left the notebook as it was.
+        cell_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("print('racing edit')", window, cx);
+        });
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                let save = editor.save(SaveOptions::default(), project.clone(), window, cx);
+                editor.disk_reloads = editor.disk_reloads.wrapping_add(1);
+                save
+            })
+            .await
+            .expect("a reload that changed nothing must not stop the save");
+        assert!(
+            String::from_utf8(
+                fs.read_file_sync(path!("/notebooks/test.ipynb"))
+                    .expect("saved file")
+            )
+            .expect("UTF-8")
+            .contains("racing edit")
         );
 
         fs.pause_events();
