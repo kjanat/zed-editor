@@ -551,9 +551,9 @@ impl MarkdownPreviewView {
             window,
             |this, editor, event: &EditorEvent, window, cx| {
                 match event {
+                    // Not `DirtyChanged`: saving changes that but not the content.
                     EditorEvent::Edited { .. }
                     | EditorEvent::BufferEdited { .. }
-                    | EditorEvent::DirtyChanged
                     | EditorEvent::BuffersEdited { .. } => {
                         this.update_markdown_from_active_editor(true, false, window, cx);
                     }
