@@ -630,6 +630,11 @@ impl NotebookEditor {
                         project.entry_for_path(&new_path, cx).map(|entry| entry.id)
                     });
                     this.update(cx, |this, cx| {
+                        // Kernels and their environments are picked per worktree.
+                        if this.worktree_id != new_path.worktree_id {
+                            this.worktree_id = new_path.worktree_id;
+                            this.refresh_kernelspecs(cx);
+                        }
                         this.notebook_item.update(cx, |notebook_item, _| {
                             notebook_item.project_path = new_path;
                             if let Some(entry_id) = entry_id {
