@@ -658,12 +658,42 @@ async fn get_fresh_credentials(
                             .await
                             .map_err(|e| Arc::new(e))?;
 
-                        state_clone
+                        let still_current_generation = state_clone
                             .update(cx, |s, _| {
+                                if s.auth_generation != generation {
+                                    return false;
+                                }
                                 s.credentials = Some(refreshed.clone());
                                 s.refresh_task = None;
+                                true
                             })
                             .map_err(|e| Arc::new(e))?;
+                        if !still_current_generation {
+                            // A sign-out or sign-in ran during the write, which may have
+                            // landed after it; store what that left instead.
+                            let current_credentials = state_clone
+                                .read_with(&*cx, |s, _| s.credentials.clone())
+                                .map_err(|e| Arc::new(e))?;
+                            match current_credentials {
+                                Some(current_credentials) => {
+                                    let json = serde_json::to_vec(&current_credentials)
+                                        .map_err(|e| Arc::new(e.into()))?;
+                                    credentials_provider
+                                        .write_credentials(CREDENTIALS_KEY, "Bearer", &json, &*cx)
+                                        .await
+                                        .log_err();
+                                }
+                                None => {
+                                    credentials_provider
+                                        .delete_credentials(CREDENTIALS_KEY, &*cx)
+                                        .await
+                                        .log_err();
+                                }
+                            }
+                            return Err(Arc::new(anyhow!(
+                                "Sign-out occurred during token refresh"
+                            )));
+                        }
 
                         Ok(refreshed)
                     }

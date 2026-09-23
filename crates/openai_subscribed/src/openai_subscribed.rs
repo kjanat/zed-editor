@@ -1021,12 +1021,42 @@ async fn get_fresh_credentials(
                             .await
                             .map_err(|e| Arc::new(e))?;
 
-                        state_clone
+                        let still_current_generation = state_clone
                             .update(cx, |s, _| {
+                                if s.auth_generation != generation {
+                                    return false;
+                                }
                                 s.credentials = Some(refreshed.clone());
                                 s.refresh_task = None;
+                                true
                             })
                             .map_err(|e| Arc::new(e))?;
+                        if !still_current_generation {
+                            // A sign-out or sign-in ran during the write, which may have
+                            // landed after it; store what that left instead.
+                            let current_credentials = state_clone
+                                .read_with(&*cx, |s, _| s.credentials.clone())
+                                .map_err(|e| Arc::new(e))?;
+                            match current_credentials {
+                                Some(current_credentials) => {
+                                    let json = serde_json::to_vec(&current_credentials)
+                                        .map_err(|e| Arc::new(e.into()))?;
+                                    credentials_provider
+                                        .write_credentials(CREDENTIALS_KEY, "Bearer", &json, &*cx)
+                                        .await
+                                        .log_err();
+                                }
+                                None => {
+                                    credentials_provider
+                                        .delete_credentials(CREDENTIALS_KEY, &*cx)
+                                        .await
+                                        .log_err();
+                                }
+                            }
+                            return Err(Arc::new(anyhow!(
+                                "Sign-out occurred during token refresh"
+                            )));
+                        }
 
                         Ok(refreshed)
                     }
@@ -1045,24 +1075,37 @@ async fn get_fresh_credentials(
                 }
                 Err(RefreshError::Fatal(e)) => {
                     log::error!("ChatGPT subscription token refresh failed fatally: {e:?}");
-                    state_clone
-                        .update(cx, |s, cx| {
-                            s.refresh_task = None;
-                            s.credentials = None;
-                            s.last_auth_error =
-                                Some("Your session has expired. Please sign in again.".into());
-                            s.reset_model_catalog();
-                            cx.notify();
-                        })
-                        .ok();
-                    // Also clear the keychain so stale credentials aren't loaded next time.
-                    if let Ok(credentials_provider) =
-                        state_clone.read_with(&*cx, |s, _| s.credentials_provider.clone())
-                    {
-                        credentials_provider
-                            .delete_credentials(CREDENTIALS_KEY, &*cx)
-                            .await
-                            .log_err();
+                    // A rejected token from before a sign-out or new sign-in must not
+                    // clear the credentials that replaced it.
+                    let still_current_generation = state_clone
+                        .read_with(&*cx, |s, _| s.auth_generation == generation)
+                        .unwrap_or(false);
+                    if still_current_generation {
+                        state_clone
+                            .update(cx, |s, cx| {
+                                s.refresh_task = None;
+                                s.credentials = None;
+                                s.last_auth_error =
+                                    Some("Your session has expired. Please sign in again.".into());
+                                s.reset_model_catalog();
+                                cx.notify();
+                            })
+                            .ok();
+                        // Also clear the keychain so stale credentials aren't loaded next time.
+                        if let Ok(credentials_provider) =
+                            state_clone.read_with(&*cx, |s, _| s.credentials_provider.clone())
+                        {
+                            credentials_provider
+                                .delete_credentials(CREDENTIALS_KEY, &*cx)
+                                .await
+                                .log_err();
+                        }
+                    } else {
+                        state_clone
+                            .update(cx, |s, _| {
+                                s.refresh_task = None;
+                            })
+                            .ok();
                     }
                     Err(Arc::new(e))
                 }
@@ -1675,6 +1718,44 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_sign_out_during_refresh_write_keeps_credentials_cleared(cx: &mut TestAppContext) {
+        let creds_provider = Arc::new(FakeCredentialsProvider::new());
+        let (write_gate_tx, write_gate_rx) = futures::channel::oneshot::channel::<()>();
+        creds_provider.write_gate.lock().replace(write_gate_rx);
+
+        let http: Arc<dyn HttpClient> = FakeHttpClient::create(|_request| async {
+            Ok(http_client::Response::builder()
+                .status(200)
+                .body(http_client::AsyncBody::from(fake_token_response()))?)
+        });
+        let state = make_state_with_credentials_provider(
+            http.clone(),
+            Some(make_expired_credentials()),
+            creds_provider.clone(),
+            cx,
+        );
+
+        let weak_state = cx.read(|_cx| state.downgrade());
+        let refresh_task =
+            cx.spawn(async move |mut cx| get_fresh_credentials(&weak_state, &http, &mut cx).await);
+        cx.run_until_parked();
+
+        // Sign out while the refreshed token is being written to the keychain.
+        let sign_out_task = state.update(cx, |state, cx| state.sign_out(cx));
+        cx.run_until_parked();
+        sign_out_task.await.expect("sign-out should succeed");
+        write_gate_tx.send(()).ok();
+        cx.run_until_parked();
+
+        assert!(refresh_task.await.is_err());
+        cx.read(|cx| assert!(state.read(cx).credentials.is_none()));
+        assert!(
+            creds_provider.storage.lock().is_none(),
+            "the refresh must not restore credentials after sign-out"
+        );
+    }
+
+    #[gpui::test]
     async fn test_sign_out_completes_fully(cx: &mut TestAppContext) {
         let creds_provider = Arc::new(FakeCredentialsProvider::new());
         // Pre-populate the credential store
@@ -2266,12 +2347,14 @@ mod tests {
 
     struct FakeCredentialsProvider {
         storage: Mutex<Option<(String, Vec<u8>)>>,
+        write_gate: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     }
 
     impl FakeCredentialsProvider {
         fn new() -> Self {
             Self {
                 storage: Mutex::new(None),
+                write_gate: Mutex::new(None),
             }
         }
     }
@@ -2292,10 +2375,16 @@ mod tests {
             password: &'a [u8],
             _cx: &'a AsyncApp,
         ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-            self.storage
-                .lock()
-                .replace((username.to_string(), password.to_vec()));
-            Box::pin(async { Ok(()) })
+            let write_gate = self.write_gate.lock().take();
+            Box::pin(async move {
+                if let Some(write_gate) = write_gate {
+                    write_gate.await.ok();
+                }
+                self.storage
+                    .lock()
+                    .replace((username.to_string(), password.to_vec()));
+                Ok(())
+            })
         }
 
         fn delete_credentials<'a>(
