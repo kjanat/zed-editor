@@ -7618,6 +7618,9 @@ impl Workspace {
                 })
             })
             .collect::<Vec<_>>();
+        // Written even when unchanged, so that shutdown also waits for an earlier
+        // identical write that is still in flight: the database applies writes in order.
+        self.last_saved_window_state = None;
         let bounds_task = self.save_window_bounds(window, cx);
         let serialize_task = self.serialize_workspace_internal(window, cx);
         cx.background_spawn(async move {
