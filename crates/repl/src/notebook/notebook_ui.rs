@@ -2149,7 +2149,18 @@ impl KernelSession for NotebookEditor {
                     cell.update(cx, |cell, cx| {
                         cell.handle_message(message, window, cx);
                     });
-                    self.outputs_generation += 1;
+                    // Status and reply messages leave nothing to save, so counting them would
+                    // keep a notebook dirty after a save that raced with them.
+                    if matches!(
+                        message.content,
+                        JupyterMessageContent::StreamContent(_)
+                            | JupyterMessageContent::DisplayData(_)
+                            | JupyterMessageContent::ExecuteResult(_)
+                            | JupyterMessageContent::ExecuteInput(_)
+                            | JupyterMessageContent::ErrorOutput(_)
+                    ) {
+                        self.outputs_generation += 1;
+                    }
                 }
             }
         }
@@ -2368,6 +2379,19 @@ mod tests {
                 cell.clone()
             })
         };
+
+        // Kernel status for a running cell changes nothing that would be saved.
+        let cell_id = notebook_editor.read_with(cx, |editor, _| editor.cell_order[0].clone());
+        let request: JupyterMessage = ExecuteRequest::new("print('hello')".to_string()).into();
+        notebook_editor.update_in(cx, |editor, window, cx| {
+            editor
+                .execution_requests
+                .insert(request.header.msg_id.clone(), cell_id);
+            let status = JupyterMessage::new(jupyter_protocol::Status::idle(), Some(&request));
+            editor.route(&status, window, cx);
+            assert!(!editor.has_unsaved_changes(cx));
+            editor.execution_requests.clear();
+        });
 
         // Execution results are unsaved state even though no source changed.
         code_cell(0, cx).update(cx, |cell, _| {
