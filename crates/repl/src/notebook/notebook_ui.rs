@@ -40,7 +40,7 @@ use crate::notebook::MovementDirection;
 use crate::repl_store::ReplStore;
 
 use picker::Picker;
-use runtimelib::{ExecuteRequest, JupyterMessage, JupyterMessageContent};
+use runtimelib::{ExecuteRequest, ExecutionState, JupyterMessage, JupyterMessageContent};
 use ui::PopoverMenuHandle;
 use zed_actions::editor::{MoveDown, MoveUp};
 use zed_actions::notebook::{
@@ -441,10 +441,11 @@ impl NotebookEditor {
     /// A running cell's results would land in whatever cell has its ID, so its
     /// cell must not be replaced by a reload.
     fn has_executing_cells(&self, cx: &App) -> bool {
-        self.cell_map.values().any(|cell| match cell {
-            Cell::Code(cell) => cell.read(cx).is_executing(),
-            _ => false,
-        })
+        !self.execution_requests.is_empty()
+            || self.cell_map.values().any(|cell| match cell {
+                Cell::Code(cell) => cell.read(cx).is_executing(),
+                _ => false,
+            })
     }
 
     /// Handles the backing JSON buffer being reloaded from disk, which happens
@@ -814,6 +815,7 @@ impl NotebookEditor {
             }
 
             self.kernel = Kernel::Restarting;
+            self.execution_requests.clear();
             cx.notify();
 
             self.launch_kernel_with_spec(spec, window, cx);
@@ -2215,11 +2217,19 @@ impl KernelSession for NotebookEditor {
                     });
                 }
             }
+            // Outputs come on another channel than the execute reply, so a request
+            // is only done once the kernel reports going idle for it.
+            if let JupyterMessageContent::Status(status) = &message.content
+                && status.execution_state == ExecutionState::Idle
+            {
+                self.execution_requests.remove(&parent_header.msg_id);
+            }
         }
     }
 
     fn kernel_errored(&mut self, error_message: String, cx: &mut Context<Self>) {
         self.kernel = Kernel::ErroredLaunch(error_message);
+        self.execution_requests.clear();
         cx.notify();
     }
 }
@@ -2533,7 +2543,7 @@ mod tests {
                 )
             };
             editor.route(&markdown(), window, cx);
-            assert!(editor.has_unsaved_changes(cx));
+            assert!(editor.is_modified(cx));
             // New outputs are unsaved work for closing the tab as well.
             assert!(editor.is_dirty(cx));
             // Outputs that can't be displayed are still written back.
@@ -2570,13 +2580,13 @@ mod tests {
             assert_eq!(outputs[2]["execution_count"], 7, "{outputs}");
             assert_eq!(outputs[2]["metadata"]["width"], 640, "{outputs}");
             editor.mark_saved(editor.snapshot(cx));
-            assert!(!editor.has_unsaved_changes(cx));
+            assert!(!editor.is_modified(cx));
             assert!(!editor.is_dirty(cx));
 
             editor.clear_outputs(window, cx);
-            assert!(editor.has_unsaved_changes(cx));
+            assert!(editor.is_modified(cx));
             editor.route(&markdown(), window, cx);
-            assert!(editor.has_unsaved_changes(cx));
+            assert!(editor.is_modified(cx));
             editor.route(
                 &JupyterMessage::new(
                     jupyter_protocol::DisplayData::from(vec![jupyter_protocol::MediaType::Svg(
@@ -2588,7 +2598,7 @@ mod tests {
                 cx,
             );
             editor.route(&execute_result(), window, cx);
-            assert!(!editor.has_unsaved_changes(cx));
+            assert!(!editor.is_modified(cx));
 
             editor.execution_requests.clear();
             editor.clear_outputs(window, cx);
@@ -2792,7 +2802,7 @@ mod tests {
             cx.new(|cx| NotebookEditor::new(project.clone(), notebook_item, window, cx))
         });
 
-        let (request_tx, _request_rx) = futures::channel::mpsc::channel(8);
+        let (request_tx, mut request_rx) = futures::channel::mpsc::channel(8);
         notebook_editor.update_in(cx, |editor, window, cx| {
             editor.kernel = Kernel::RunningKernel(Box::new(FakeRunningKernel {
                 request_tx,
@@ -2803,13 +2813,16 @@ mod tests {
             editor.execute_cell(cell_id, window, cx);
             assert!(editor.has_unsaved_changes(cx));
         });
+        let request = request_rx.try_recv().expect("execute request");
 
-        // An aborted request finishes without output or an execution count.
-        notebook_editor.update(cx, |editor, cx| {
-            let Some(Cell::Code(cell)) = editor.cell_map.get(&editor.cell_order[0]) else {
-                panic!("expected a code cell");
-            };
-            cell.update(cx, |cell, _| cell.finish_execution());
+        // An aborted request finishes without output or an execution count, once
+        // the kernel went idle for it: outputs may still follow the reply.
+        notebook_editor.update_in(cx, |editor, window, cx| {
+            let reply = jupyter_protocol::ExecuteReply::default();
+            editor.route(&JupyterMessage::new(reply, Some(&request)), window, cx);
+            assert!(editor.has_unsaved_changes(cx));
+            let idle = jupyter_protocol::Status::idle();
+            editor.route(&JupyterMessage::new(idle, Some(&request)), window, cx);
             assert!(!editor.has_unsaved_changes(cx));
         });
 
@@ -2832,6 +2845,8 @@ mod tests {
                 execution_count: jupyter_protocol::ExecutionCount::new(1),
             };
             editor.route(&JupyterMessage::new(input, Some(&request)), window, cx);
+            let idle = jupyter_protocol::Status::idle();
+            editor.route(&JupyterMessage::new(idle, Some(&request)), window, cx);
             assert_eq!(code_cell_execution_count(editor, cx), Some(1));
             assert!(!editor.has_unsaved_changes(cx));
         });
