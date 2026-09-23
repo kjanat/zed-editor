@@ -35,7 +35,7 @@ Zed's hosted models require a Pro subscription.
 Zed Pro includes access to all hosted AI models and Edit Predictions. The plan
 includes $5 of monthly token credit; usage beyond that is billed at the rates
 listed on [Zed-Hosted Models](./zed-hosted-models.md). A
-[trial of Zed Pro](#trials) includes $5 of GPT Luna and unlimited Edit
+[trial of Zed Pro](#trials) includes $5 of GPT-6 Luna usage and unlimited Edit
 Predictions for 14 days from when you start the trial.
 
 For details on billing and payment, see [Individual Billing](./billing.md).
@@ -53,10 +53,11 @@ billing details, see [Billing](./billing.md#organization).
 
 ### Student Plan {#student}
 
-The [Zed Student plan](https://zed.dev/education) includes all Zed Pro features:
-unlimited [Edit Predictions](../ai/edit-prediction.md), all
-[hosted AI models](./zed-hosted-models.md) except Claude Opus, and $10/month in
-token credits. Available free for one year to verified university students.
+The [Zed Student plan](https://zed.dev/education) includes unlimited
+[Edit Predictions](../ai/edit-prediction.md), $10/month in token credits, and
+all [hosted AI models](./zed-hosted-models.md) except Claude Fable, Claude Opus,
+GPT-6 Astra, GPT-5.5 pro, and GPT-5.4 pro. The plan is available free for one
+year to verified university students.
 
 ## Usage {#usage}
 
@@ -101,9 +102,10 @@ the limit resets or an administrator raises it.
 
 ### Trials {#trials}
 
-Trials include $5 of GPT Luna and unlimited Edit Predictions for 14 days from
-when you start the trial. Trial hosted-model access is limited to GPT Luna. Zed
-and Delta share the same $5 trial balance. No credit card is required.
+Trials include $5 of GPT-6 Luna usage and unlimited Edit Predictions for 14 days
+from when you start the trial. GPT-6 Luna is the only hosted model available
+during the trial. Zed and Delta share the same $5 trial balance. No credit card
+is required.
 
 Trials automatically convert to Zed Free when they end. No cancellation is
 needed to prevent conversion to Zed Pro.

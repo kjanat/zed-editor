@@ -434,8 +434,7 @@
 			"shift-a": "vim::HelixInsertEndOfLine",
 			"ctrl-[": "editor::Cancel",
 		},
-	},
-	// Vim/Helix consume Escape before menu::Cancel can dismiss notifications. macOS (Ctrl-C) and Linux
+	}, // Vim/Helix consume Escape before menu::Cancel can dismiss notifications. macOS (Ctrl-C) and Linux
 	// (Ctrl-Escape) have alternatives, but Windows does not, so try menu::Cancel first on Windows and
 	// let Escape fall through when no notification is shown.
 	{
@@ -553,7 +552,7 @@
 			"space w d": "pane::SplitDown", // not a helix default
 
 			// Space mode
-			"space b": "tab_switcher::ToggleAll",
+			"space b": "tab_switcher::OpenInActivePane",
 			"space f": "file_finder::Toggle",
 			"space k": "editor::Hover",
 			"space s": "outline::Toggle",
@@ -1197,7 +1196,6 @@
 			"enter": "agent::Chat",
 		},
 	},
-
 	{
 		"context": "SettingsWindow > NavigationMenu && !search",
 		"bindings": {
@@ -1297,5 +1295,5 @@
 			"tab": "skill_creator::FocusNextField",
 			"shift-tab": "skill_creator::FocusPreviousField",
 		},
-	},
+	}
 ]
