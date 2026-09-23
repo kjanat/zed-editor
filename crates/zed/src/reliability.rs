@@ -36,8 +36,12 @@ pub fn init(client: Arc<Client>, workspace_store: Entity<WorkspaceStore>, cx: &m
 
     cx.on_flags_ready({
         let client = client.clone();
+        // This fires again on every settings change and reconnect, and overlapping
+        // uploads can read the same file before either deletes it.
+        let mut uploaded = false;
         move |flags_ready, cx| {
-            if flags_ready.is_staff {
+            if flags_ready.is_staff && !uploaded {
+                uploaded = true;
                 let client = client.clone();
                 cx.background_spawn(async move {
                     upload_build_timings(client).await.warn_on_err();
