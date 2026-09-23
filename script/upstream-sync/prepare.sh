@@ -83,7 +83,18 @@ attempt_merge() {
 	: >/tmp/lockfiles.txt
 	: >/tmp/human.txt
 
-	if git merge --no-ff --no-commit upstream/main; then
+	if ! git merge --no-ff --no-commit upstream/main && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+		return 1
+	fi
+	# The fork keeps its own automation and the publisher rejects any change to
+	# .github, so upstream changes there are dropped instead of stalling the sync.
+	git diff --name-only "${BASE}" upstream/main -- .github >/tmp/dropped-github.txt
+	git rm -r -q -f --ignore-unmatch -- .github
+	if git cat-file -e master:.github 2>/dev/null; then
+		git checkout master -- .github
+	fi
+
+	if [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
 		git commit --message "Merge upstream main"
 		echo "result=clean" >>"${GITHUB_OUTPUT}"
 		return 0
@@ -202,6 +213,12 @@ attempt_merge() {
 		if [[ -s /tmp/lockfiles.txt ]]; then
 			printf -- "- \`Cargo.lock\`: fork side kept; cargo reconciles it after human files are resolved\n"
 		fi
+		if [[ -s /tmp/dropped-github.txt ]]; then
+			printf '\n### Upstream automation dropped (port by hand if wanted)\n'
+			while IFS= read -r FILE; do
+				printf -- "- \`%s\`\n" "${FILE}"
+			done </tmp/dropped-github.txt
+		fi
 		printf '\n### Needs a human (%s files)\n\n' "${HUMAN_COUNT}"
 		while IFS= read -r FILE; do
 			HUNKS="$(grep -c '^<<<<<<< ' "${FILE}" || true)"
@@ -242,6 +259,8 @@ attempt_merge() {
 	{
 		printf '### Resolve\n```sh\n'
 		printf 'git fetch upstream main && git merge --no-commit upstream/main\n'
+		printf '# Keep the fork'"'"'s automation; upstream .github changes are never adopted.\n'
+		printf 'git rm -r -q -f --ignore-unmatch -- .github && git checkout master -- .github\n'
 		printf "BASE=\"\$(git merge-base master upstream/main)\"\n"
 		while IFS= read -r FILE; do
 			printf 'git checkout --theirs -- %q && dprint fmt %q && git add %q\n' "${FILE}" "${FILE}" "${FILE}"
@@ -290,10 +309,16 @@ result=$(sed -n "s/^result=//p" "$GITHUB_OUTPUT")
 case "$result" in
 	clean | resolved)
 		dprint fmt
+		# Formatter configuration merged from upstream must not reformat the
+		# fork's automation either.
+		if git cat-file -e HEAD:.github 2>/dev/null; then
+			git checkout HEAD -- .github
+		fi
 		if ! git diff --quiet; then
 			git commit --all --message "Apply this fork's formatting to the upstream merge"
 		fi
 		git bundle create /output/sync.bundle refs/heads/sync/upstream ^master
+		cp /tmp/dropped-github.txt /output/
 		;;
 	conflict)
 		cp /tmp/issue-body.md /output/issue-body.md

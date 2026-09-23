@@ -20,6 +20,7 @@ class Publisher(Protocol):
     def report(self, title: str, body: str) -> None: ...
     def inspect_sync_pr(self) -> str: ...
     def resolution_details(self, directory: Path) -> str: ...
+    def dropped_automation(self, directory: Path) -> str: ...
     def sync_pr_body(
         self, resolutions: str = "", *, auto_merge: bool = False
     ) -> str: ...
@@ -321,6 +322,22 @@ class ReportingTests(unittest.TestCase):
         ) as gh:
             publisher.report("Upstream sync conflict", "details")
             self.assertEqual(gh.call_args.args[:2], ("issue", "create"))
+
+    def test_dropped_automation_survives_export_and_is_escaped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            _ = (source / "result").write_text("clean")
+            _ = (source / "dropped-github.txt").write_text(
+                ".github/workflows/new.yml\n.github/<x>.yml\n"
+            )
+            exporter.export(source, root / "export")
+            details = publisher.dropped_automation(root / "export")
+            self.assertIn("<code>.github/workflows/new.yml</code>", details)
+            self.assertIn("<code>.github/&lt;x&gt;.yml</code>", details)
+            _ = (root / "export" / "dropped-github.txt").write_text("")
+            self.assertEqual(publisher.dropped_automation(root / "export"), "")
 
     def test_resolution_lists_survive_export_and_appear_in_body(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -212,6 +212,18 @@ def resolution_details(directory: Path):
     return "\n\n".join(sections) + "\n\n"
 
 
+def dropped_automation(directory: Path):
+    dropped = directory / "dropped-github.txt"
+    paths = dropped.read_text().splitlines() if dropped.exists() else []
+    if not paths:
+        return ""
+    return (
+        "## Upstream automation dropped (port by hand if wanted)\n\n"
+        + "\n".join(f"- <code>{html.escape(path)}</code>" for path in paths)
+        + "\n\n"
+    )
+
+
 def sync_pr_body(resolutions: str = "", *, auto_merge: bool = False) -> str:
     conflicts = cast(
         list[Issue],
@@ -306,6 +318,7 @@ def publish(directory: Path):
         raise ValueError("Invalid preparation result")
 
     resolutions = resolution_details(directory) if result == "resolved" else ""
+    resolutions += dropped_automation(directory)
 
     _ = git("fetch", "origin", "master", "--no-tags")
     if git("rev-parse", "FETCH_HEAD") != base:
