@@ -796,6 +796,9 @@ impl NotebookEditor {
     }
 
     fn clear_outputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_outputs(window, cx) {
+            self.outputs_generation += 1;
+        }
         for cell in self.cell_map.values() {
             if let Cell::Code(code_cell) = cell {
                 code_cell.update(cx, |cell, cx| {
@@ -804,7 +807,6 @@ impl NotebookEditor {
                 });
             }
         }
-        self.outputs_generation += 1;
         cx.notify();
     }
 
@@ -2391,6 +2393,10 @@ mod tests {
             editor.route(&status, window, cx);
             assert!(!editor.has_unsaved_changes(cx));
             editor.execution_requests.clear();
+
+            // Neither does clearing outputs that aren't there.
+            editor.clear_outputs(window, cx);
+            assert!(!editor.has_unsaved_changes(cx));
         });
 
         // Execution results are unsaved state even though no source changed.
@@ -2450,7 +2456,22 @@ mod tests {
             .expect("discard the kernel selection");
 
         // Cleared outputs are kept, even though rich outputs are not serialized.
-        notebook_editor.update_in(cx, |editor, window, cx| editor.clear_outputs(window, cx));
+        let cell_id = notebook_editor.read_with(cx, |editor, _| editor.cell_order[0].clone());
+        notebook_editor.update_in(cx, |editor, window, cx| {
+            editor
+                .execution_requests
+                .insert(request.header.msg_id.clone(), cell_id);
+            let markdown =
+                jupyter_protocol::DisplayData::from(vec![jupyter_protocol::MediaType::Markdown(
+                    "**rich**".to_string(),
+                )]);
+            editor.route(&JupyterMessage::new(markdown, Some(&request)), window, cx);
+            editor.execution_requests.clear();
+            // As if the rich output had been saved, since it isn't serialized.
+            editor.saved_outputs_generation = editor.outputs_generation;
+            assert!(!editor.has_unsaved_changes(cx));
+            editor.clear_outputs(window, cx);
+        });
         let after_clear =
             NOTEBOOK_WITH_ONE_CODE_CELL.replace("print('hello')", "print('after clear')");
         fs.insert_file(path, after_clear.into_bytes()).await;
