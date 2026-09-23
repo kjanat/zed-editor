@@ -2499,23 +2499,60 @@ impl Pane {
                         })
                         .ok()
                 });
-                let save_task = if let Some(project_path) = project_path {
+                let (save_task, new_path) = if let Some(project_path) = project_path {
                     let (worktree, path) = project_path.await?;
                     let worktree_id = worktree.read_with(cx, |worktree, _| worktree.id());
                     let new_path = ProjectPath { worktree_id, path };
 
-                    pane.update_in(cx, |pane, window, cx| {
-                        if let Some(item) = pane.item_for_path(new_path.clone(), cx) {
-                            pane.remove_item(item.item_id(), false, false, window, cx);
-                        }
-
-                        item.save_as(project.clone(), new_path, Some(expected), window, cx)
+                    pane.update_in(cx, |_, window, cx| {
+                        let save_task = item.save_as(
+                            project.clone(),
+                            new_path.clone(),
+                            Some(expected),
+                            window,
+                            cx,
+                        );
+                        (save_task, new_path)
                     })?
                 } else {
                     return Ok(false);
                 };
 
                 save_task.await?;
+
+                // Views of the destination anywhere in the workspace, including ones
+                // opened or moved while the save ran, keep a buffer that no longer
+                // receives the file's updates once the saved item takes it over. They
+                // may hold the only copy of unsaved edits, so only clean views that
+                // still show that file through another buffer are closed.
+                let saved_project_items =
+                    pane.read_with(cx, |_, cx| item.project_item_model_ids(cx));
+                let panes = pane.read_with(cx, |pane, cx| {
+                    pane.workspace
+                        .upgrade()
+                        .map(|workspace| workspace.read(cx).panes().to_vec())
+                        .unwrap_or_default()
+                });
+                for destination_pane in panes {
+                    destination_pane.update_in(cx, |pane, window, cx| {
+                        let stale_destinations = pane
+                            .items()
+                            .filter(|destination| {
+                                destination.item_id() != item.item_id()
+                                    && destination.project_path(cx).as_ref() == Some(&new_path)
+                                    && !destination.is_dirty(cx)
+                                    && destination
+                                        .project_item_model_ids(cx)
+                                        .iter()
+                                        .all(|id| !saved_project_items.contains(id))
+                            })
+                            .map(|destination| destination.item_id())
+                            .collect::<Vec<_>>();
+                        for destination_id in stale_destinations {
+                            pane.remove_item(destination_id, false, false, window, cx);
+                        }
+                    })?;
+                }
                 if should_format {
                     pane.update_in(cx, |pane, window, cx| {
                         pane.unpreview_item_if_preview(item.item_id());
@@ -8219,6 +8256,177 @@ mod tests {
             assert_eq!(
                 item.save_count, 1,
                 "formatter should run after the file is given a path on first save"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_save_as_keeps_destination_tab_until_save_succeeds(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            util::path!("/root"),
+            serde_json::json!({ "dest.txt": "disk" }),
+        )
+        .await;
+        let project = Project::test(fs, [util::path!("/root").as_ref()], cx).await;
+        let worktree_id = project.update(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        for (save_fails, destination_dirty) in [(true, true), (false, false), (false, true)] {
+            let destination = pane.update_in(cx, |pane, window, cx| {
+                let destination = Box::new(cx.new(|cx| {
+                    TestItem::new(cx)
+                        .with_label("dest")
+                        .with_dirty(destination_dirty)
+                        .with_project_items(&[TestProjectItem::new_in_worktree(
+                            1,
+                            "dest.txt",
+                            worktree_id,
+                            cx,
+                        )])
+                }));
+                pane.add_item(destination.clone(), false, false, None, window, cx);
+                destination
+            });
+            let source = pane.update_in(cx, |pane, window, cx| {
+                let source = Box::new(cx.new(|cx| {
+                    let source = TestItem::new(cx)
+                        .with_label("untitled")
+                        .with_dirty(true)
+                        .with_project_items(&[TestProjectItem::new_untitled(cx)]);
+                    if save_fails {
+                        source.with_save_error("destination changed")
+                    } else {
+                        source
+                    }
+                }));
+                pane.add_item(source.clone(), true, true, None, window, cx);
+                source
+            });
+
+            let save_task = pane.update_in(cx, |_, window, cx| {
+                let pane = cx.entity();
+                let project = project.clone();
+                let source = source.clone();
+                window.spawn(cx, async move |cx| {
+                    Pane::save_item(project, pane, &*source, SaveIntent::Save, cx).await
+                })
+            });
+            cx.executor().run_until_parked();
+            cx.simulate_new_path_selection(|_| Some(PathBuf::from(util::path!("/root/dest.txt"))));
+            let result = save_task.await;
+
+            let destination_open = pane.read_with(cx, |pane, _| {
+                pane.index_for_item_id(destination.item_id()).is_some()
+            });
+            if save_fails {
+                assert!(result.is_err());
+                assert!(
+                    destination_open,
+                    "a failed Save As must keep the destination"
+                );
+                assert!(destination.read_with(cx, |item, _| item.is_dirty));
+            } else if destination_dirty {
+                result.unwrap();
+                assert!(
+                    destination_open,
+                    "a successful Save As must not discard unsaved destination edits"
+                );
+            } else {
+                result.unwrap();
+                assert!(
+                    !destination_open,
+                    "a successful Save As replaces a clean destination"
+                );
+            }
+
+            pane.update_in(cx, |pane, window, cx| {
+                for item_id in [source.item_id(), destination.item_id()] {
+                    pane.remove_item(item_id, false, false, window, cx);
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    async fn test_save_as_replaces_clean_destinations_in_every_pane(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            util::path!("/root"),
+            serde_json::json!({ "dest.txt": "disk" }),
+        )
+        .await;
+        let project = Project::test(fs, [util::path!("/root").as_ref()], cx).await;
+        let worktree_id = project.update(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let other_pane = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(pane.clone(), SplitDirection::Right, window, cx)
+        });
+
+        let add_destination = |pane: &Entity<Pane>, dirty: bool, cx: &mut VisualTestContext| {
+            pane.update_in(cx, |pane, window, cx| {
+                let destination = Box::new(cx.new(|cx| {
+                    TestItem::new(cx)
+                        .with_label("dest")
+                        .with_dirty(dirty)
+                        .with_project_items(&[TestProjectItem::new_in_worktree(
+                            1,
+                            "dest.txt",
+                            worktree_id,
+                            cx,
+                        )])
+                }));
+                pane.add_item(destination.clone(), false, false, None, window, cx);
+                destination
+            })
+        };
+        let clean_destination = add_destination(&other_pane, false, cx);
+        let dirty_destination = add_destination(&other_pane, true, cx);
+        let source = pane.update_in(cx, |pane, window, cx| {
+            let source = Box::new(cx.new(|cx| {
+                TestItem::new(cx)
+                    .with_label("untitled")
+                    .with_dirty(true)
+                    .with_project_items(&[TestProjectItem::new_untitled(cx)])
+            }));
+            pane.add_item(source.clone(), true, true, None, window, cx);
+            source
+        });
+
+        let save_task = pane.update_in(cx, |_, window, cx| {
+            let pane = cx.entity();
+            let project = project.clone();
+            let source = source.clone();
+            window.spawn(cx, async move |cx| {
+                Pane::save_item(project, pane, &*source, SaveIntent::Save, cx).await
+            })
+        });
+        cx.executor().run_until_parked();
+        cx.simulate_new_path_selection(|_| Some(PathBuf::from(util::path!("/root/dest.txt"))));
+        save_task.await.unwrap();
+
+        other_pane.read_with(cx, |other_pane, _| {
+            assert!(
+                other_pane
+                    .index_for_item_id(clean_destination.item_id())
+                    .is_none(),
+                "a clean view of the replaced file in another pane is closed"
+            );
+            assert!(
+                other_pane
+                    .index_for_item_id(dirty_destination.item_id())
+                    .is_some(),
+                "a view with unsaved edits is kept"
             );
         });
     }

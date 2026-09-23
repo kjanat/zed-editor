@@ -136,32 +136,65 @@ impl LineLayout {
     ///   shifted left so the first glyph starts at x=0, and byte indices rebased to 0.
     /// - `font_size`, `ascent`, and `descent` are copied to both halves.
     pub fn split_at(&self, byte_index: usize) -> (LineLayout, LineLayout) {
-        let x_offset = self.x_for_index(byte_index);
+        let byte_ordered = self
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.index))
+            .is_sorted();
+        let (positions, left_width, right_width) = if byte_ordered {
+            let x_offset = self.x_for_index(byte_index);
+            let positions = self
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| {
+                    if glyph.index < byte_index {
+                        glyph.position.x
+                    } else {
+                        glyph.position.x - x_offset
+                    }
+                })
+                .collect();
+            (positions, x_offset, self.width - x_offset)
+        } else {
+            self.packed_fragment_positions(byte_index)
+        };
 
         // Partition glyph runs. A single run may contribute glyphs to both halves.
         let mut left_runs = Vec::new();
         let mut right_runs = Vec::new();
+        let mut positions = positions.into_iter();
 
         for run in &self.runs {
-            let split_pos = run.glyphs.partition_point(|g| g.index < byte_index);
+            // Visually ordered RTL runs can have descending byte indices, so
+            // glyphs are partitioned by index rather than by position.
+            let mut left_glyphs = Vec::new();
+            let mut right_glyphs = Vec::new();
+            for (glyph, x) in run.glyphs.iter().zip(positions.by_ref()) {
+                let position = point(x, glyph.position.y);
+                if glyph.index < byte_index {
+                    left_glyphs.push(ShapedGlyph {
+                        position,
+                        ..glyph.clone()
+                    });
+                } else {
+                    right_glyphs.push(ShapedGlyph {
+                        id: glyph.id,
+                        position,
+                        index: glyph.index - byte_index,
+                        is_emoji: glyph.is_emoji,
+                    });
+                }
+            }
 
-            if split_pos > 0 {
+            if !left_glyphs.is_empty() {
                 left_runs.push(ShapedRun {
                     font_id: run.font_id,
-                    glyphs: run.glyphs[..split_pos].to_vec(),
+                    glyphs: left_glyphs,
                 });
             }
 
-            if split_pos < run.glyphs.len() {
-                let right_glyphs = run.glyphs[split_pos..]
-                    .iter()
-                    .map(|g| ShapedGlyph {
-                        id: g.id,
-                        position: point(g.position.x - x_offset, g.position.y),
-                        index: g.index - byte_index,
-                        is_emoji: g.is_emoji,
-                    })
-                    .collect();
+            if !right_glyphs.is_empty() {
                 right_runs.push(ShapedRun {
                     font_id: run.font_id,
                     glyphs: right_glyphs,
@@ -171,7 +204,7 @@ impl LineLayout {
 
         let left = LineLayout {
             font_size: self.font_size,
-            width: x_offset,
+            width: left_width,
             ascent: self.ascent,
             descent: self.descent,
             runs: left_runs,
@@ -180,7 +213,7 @@ impl LineLayout {
 
         let right = LineLayout {
             font_size: self.font_size,
-            width: self.width - x_offset,
+            width: right_width,
             ascent: self.ascent,
             descent: self.descent,
             runs: right_runs,
@@ -188,6 +221,54 @@ impl LineLayout {
         };
 
         (left, right)
+    }
+
+    /// Lays out each side of a split for a line whose visual order does not
+    /// follow byte order, returning every glyph's new x position (in run order)
+    /// and the widths of the two sides.
+    ///
+    /// Bidirectional text can interleave the two sides visually, so each glyph
+    /// keeps its own advance (up to the next glyph on the line) and each side's
+    /// glyphs are packed together in visual order. The two widths therefore
+    /// never overlap and always add up to the line's width.
+    fn packed_fragment_positions(&self, byte_index: usize) -> (Vec<Pixels>, Pixels, Pixels) {
+        let glyphs: Vec<&ShapedGlyph> = self.runs.iter().flat_map(|run| &run.glyphs).collect();
+        let mut visual_order: Vec<usize> = (0..glyphs.len()).collect();
+        visual_order.sort_by(|&a, &b| {
+            glyphs[a]
+                .position
+                .x
+                .partial_cmp(&glyphs[b].position.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut positions = vec![px(0.); glyphs.len()];
+        let mut left_width = px(0.);
+        let mut right_width = px(0.);
+        // Positions can include per-glyph offsets, so the leftmost glyph may not
+        // start at zero; that side keeps the leading span to preserve the total.
+        if let Some(&first_ix) = visual_order.first() {
+            let first = glyphs[first_ix];
+            if first.index < byte_index {
+                left_width = first.position.x;
+            } else {
+                right_width = first.position.x;
+            }
+        }
+        for (order, &glyph_ix) in visual_order.iter().enumerate() {
+            let glyph = glyphs[glyph_ix];
+            let next_x = visual_order
+                .get(order + 1)
+                .map_or(self.width, |&next_ix| glyphs[next_ix].position.x);
+            let width = if glyph.index < byte_index {
+                &mut left_width
+            } else {
+                &mut right_width
+            };
+            positions[glyph_ix] = *width;
+            *width += next_x - glyph.position.x;
+        }
+        (positions, left_width, right_width)
     }
 
     fn compute_wrap_boundaries(

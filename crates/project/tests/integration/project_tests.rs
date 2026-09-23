@@ -9013,6 +9013,57 @@ async fn test_failed_save_as_preserves_source_identity(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+async fn test_save_as_over_open_buffer_takes_over_its_path(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/dir"),
+        json!({"source.txt": "source", "destination.txt": "destination"}),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let source = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/dir/source.txt"), cx)
+        })
+        .await
+        .expect("open source");
+    // Kept open for the whole save, as a destination tab with edits would be.
+    let destination = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/dir/destination.txt"), cx)
+        })
+        .await
+        .expect("open destination");
+    cx.run_until_parked();
+
+    let destination_path = project.read_with(cx, |project, cx| ProjectPath {
+        worktree_id: project
+            .worktrees(cx)
+            .next()
+            .expect("worktree")
+            .read(cx)
+            .id(),
+        path: rel_path("destination.txt").into(),
+    });
+    project
+        .update(cx, |project, cx| {
+            project.save_buffer_as(source.clone(), destination_path.clone(), cx)
+        })
+        .await
+        .expect("save as");
+    cx.run_until_parked();
+
+    let open = project
+        .read_with(cx, |project, cx| {
+            project.get_open_buffer(&destination_path, cx)
+        })
+        .expect("destination path should resolve to an open buffer");
+    assert_eq!(open.entity_id(), source.entity_id());
+    assert_ne!(open.entity_id(), destination.entity_id());
+}
+
+#[gpui::test]
 async fn test_overwrite_confirmation_rejects_a_later_replacement(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());

@@ -1444,16 +1444,14 @@ impl BufferStore {
         let remote_id = buffer.read(cx).remote_id();
         if let Some(entry_id) = file.entry_id {
             if let Some(local) = self.as_local_mut() {
-                match local.local_buffer_ids_by_entry_id.get(&entry_id) {
-                    Some(_) => {
-                        return None;
-                    }
-                    None => {
-                        local
-                            .local_buffer_ids_by_entry_id
-                            .insert(entry_id, remote_id);
-                    }
+                // A buffer saved over another open buffer's file takes over the
+                // entry, or lookups would keep finding the replaced buffer.
+                if local.local_buffer_ids_by_entry_id.get(&entry_id) == Some(&remote_id) {
+                    return None;
                 }
+                local
+                    .local_buffer_ids_by_entry_id
+                    .insert(entry_id, remote_id);
             }
             self.path_to_buffer_id.insert(
                 ProjectPath {

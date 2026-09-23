@@ -177,6 +177,9 @@ impl LanguageModel for CopilotChatLanguageModel {
                     .ok_or_else(|| {
                         anyhow!("Copilot did not provide an output limit for this model")
                     })?;
+                let capped_output_tokens = request
+                    .max_output_tokens
+                    .map_or(max_output_tokens, |cap| cap.min(max_output_tokens));
                 let effort = request
                     .thinking_effort
                     .as_ref()
@@ -192,12 +195,15 @@ impl LanguageModel for CopilotChatLanguageModel {
                             budget_tokens: None,
                         }
                     } else if model.supports_thinking() {
-                        AnthropicModelMode::Thinking {
-                            budget_tokens: compute_thinking_budget(
-                                model.min_thinking_budget(),
-                                model.max_thinking_budget(),
-                                max_output_tokens.min(u32::MAX as u64) as u32,
-                            ),
+                        match compute_thinking_budget(
+                            model.min_thinking_budget(),
+                            model.max_thinking_budget(),
+                            capped_output_tokens.min(u32::MAX as u64) as u32,
+                        ) {
+                            Some(budget) => AnthropicModelMode::Thinking {
+                                budget_tokens: Some(budget),
+                            },
+                            None => AnthropicModelMode::Default,
                         }
                     } else {
                         AnthropicModelMode::Default
@@ -1035,7 +1041,7 @@ fn into_copilot_chat(
             LanguageModelToolChoice::None => ToolChoice::None,
         }),
         thinking_budget: if thinking_allowed && model.supports_thinking() {
-            model.max_output_tokens().or(max_tokens).and_then(|limit| {
+            max_tokens.or(model.max_output_tokens()).and_then(|limit| {
                 compute_thinking_budget(
                     model.min_thinking_budget(),
                     model.max_thinking_budget(),
@@ -1057,11 +1063,11 @@ fn compute_thinking_budget(
     let min_budget = min_budget.unwrap_or(1024);
     let max_budget = max_budget.unwrap_or(max_output_tokens.saturating_sub(1));
     let normalized = configured_budget.max(min_budget);
-    Some(
-        normalized
-            .min(max_budget)
-            .min(max_output_tokens.saturating_sub(1)),
-    )
+    let budget = normalized
+        .min(max_budget)
+        .min(max_output_tokens.saturating_sub(1));
+    // A cap too small for the minimum budget leaves no valid thinking request.
+    (budget >= min_budget).then_some(budget)
 }
 
 fn intent_to_chat_location(intent: Option<CompletionIntent>) -> ChatLocation {
@@ -1673,6 +1679,38 @@ mod tests {
             assert_eq!(
                 chat.get("max_tokens").cloned(),
                 limit.map(|value| json!(value))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn thinking_budget_follows_request_output_cap() -> Result<()> {
+        let mut value = serde_json::to_value(test_responses_model())?;
+        value["capabilities"]["limits"]["max_output_tokens"] = json!(16_384);
+        value["capabilities"]["supports"]["thinking"] = json!(true);
+        let model: CopilotChatModel = serde_json::from_value(value)?;
+
+        for (cap, expected_max_tokens, expected_budget) in [
+            (None, None, Some(16_000)),
+            (Some(4096), Some(4096), Some(4095)),
+            (Some(1024), Some(1024), None),
+            (Some(512), Some(512), None),
+        ] {
+            let request = LanguageModelRequest {
+                max_output_tokens: cap,
+                thinking_allowed: true,
+                ..Default::default()
+            };
+            let chat = serde_json::to_value(into_copilot_chat(&model, request)?)?;
+            assert_eq!(
+                chat.get("max_tokens").cloned(),
+                expected_max_tokens.map(|value| json!(value))
+            );
+            assert_eq!(
+                chat.get("thinking_budget")
+                    .filter(|budget| !budget.is_null()),
+                expected_budget.map(|budget| json!(budget)).as_ref()
             );
         }
         Ok(())

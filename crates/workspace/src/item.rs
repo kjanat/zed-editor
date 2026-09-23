@@ -1833,6 +1833,9 @@ pub mod test {
             _window: &mut Window,
             _: &mut Context<Self>,
         ) -> Task<anyhow::Result<()>> {
+            if let Some(error) = &self.save_error {
+                return Task::ready(Err(anyhow::anyhow!("{error}")));
+            }
             self.save_as_count += 1;
             self.is_dirty = false;
             Task::ready(Ok(()))
