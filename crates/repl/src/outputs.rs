@@ -114,6 +114,7 @@ pub enum Output {
     Plain {
         content: Entity<TerminalOutput>,
         display_id: Option<String>,
+        saved: nbformat::v4::Output,
     },
     Stream {
         content: Entity<TerminalOutput>,
@@ -121,20 +122,29 @@ pub enum Output {
     Image {
         content: Entity<ImageView>,
         display_id: Option<String>,
+        saved: nbformat::v4::Output,
     },
     ErrorOutput(ErrorView),
     Message(String),
+    /// Kernel output that can't be displayed, kept so saving writes it back.
+    Unrendered {
+        message: String,
+        saved: nbformat::v4::Output,
+    },
     Table {
         content: Entity<TableView>,
         display_id: Option<String>,
+        saved: nbformat::v4::Output,
     },
     Markdown {
         content: Entity<MarkdownView>,
         display_id: Option<String>,
+        saved: nbformat::v4::Output,
     },
     Json {
         content: Entity<JsonView>,
         display_id: Option<String>,
+        saved: nbformat::v4::Output,
     },
     ClearOutputWaitMarker,
 }
@@ -149,17 +159,7 @@ impl Output {
                     text: nbformat::v4::MultilineString(text),
                 })
             }
-            Output::Plain { content, .. } => {
-                let text = content.read(cx).full_text(cx);
-                let mut data = jupyter_protocol::media::Media::default();
-                data.content.push(jupyter_protocol::MediaType::Plain(text));
-                Some(nbformat::v4::Output::DisplayData(
-                    nbformat::v4::DisplayData {
-                        data,
-                        metadata: serde_json::Map::new(),
-                    },
-                ))
-            }
+
             Output::ErrorOutput(error_view) => {
                 let traceback_text = error_view.traceback.read(cx).full_text(cx);
                 let traceback_lines: Vec<String> =
@@ -170,10 +170,14 @@ impl Output {
                     traceback: traceback_lines,
                 }))
             }
-            Output::Image { .. }
-            | Output::Markdown { .. }
-            | Output::Table { .. }
-            | Output::Json { .. } => None,
+            // The views can't be turned back into what the kernel sent, which is
+            // kept to write it back unchanged.
+            Output::Plain { saved, .. }
+            | Output::Image { saved, .. }
+            | Output::Markdown { saved, .. }
+            | Output::Table { saved, .. }
+            | Output::Json { saved, .. }
+            | Output::Unrendered { saved, .. } => Some(saved.clone()),
             Output::Message(_) => None,
             Output::ClearOutputWaitMarker => None,
         }
@@ -257,7 +261,9 @@ impl Output {
             Self::Markdown { content, .. } => Some(content.clone().into_any_element()),
             Self::Stream { content, .. } => Some(content.clone().into_any_element()),
             Self::Image { content, .. } => Some(content.clone().into_any_element()),
-            Self::Message(message) => Some(div().child(message.clone()).into_any_element()),
+            Self::Message(message) | Self::Unrendered { message, .. } => {
+                Some(div().child(message.clone()).into_any_element())
+            }
             Self::Table { content, .. } => Some(content.clone().into_any_element()),
             Self::Json { content, .. } => Some(content.clone().into_any_element()),
             Self::ErrorOutput(error_view) => error_view.render(window, cx),
@@ -367,12 +373,30 @@ impl Output {
                         )
                         .into_any_element(),
                 ),
-                Self::Message(_) => None,
+                Self::Message(_) | Self::Unrendered { .. } => None,
                 Self::Table { content, .. } => {
                     Self::render_output_controls(content.clone(), workspace, window, cx)
                 }
                 Self::ClearOutputWaitMarker => None,
             })
+    }
+
+    /// Sets what this output is saved as in a notebook, so that outputs keep
+    /// their type, execution count and metadata such as image sizes.
+    pub fn saved_as(mut self, output: nbformat::v4::Output) -> Self {
+        match &mut self {
+            Output::Plain { saved, .. }
+            | Output::Image { saved, .. }
+            | Output::Markdown { saved, .. }
+            | Output::Table { saved, .. }
+            | Output::Json { saved, .. }
+            | Output::Unrendered { saved, .. } => *saved = output,
+            Output::Stream { .. }
+            | Output::ErrorOutput(_)
+            | Output::Message(_)
+            | Output::ClearOutputWaitMarker => {}
+        }
+        self
     }
 
     pub fn display_id(&self) -> Option<String> {
@@ -381,7 +405,7 @@ impl Output {
             Output::Stream { .. } => None,
             Output::Image { display_id, .. } => display_id.clone(),
             Output::ErrorOutput(_) => None,
-            Output::Message(_) => None,
+            Output::Message(_) | Output::Unrendered { .. } => None,
             Output::Table { display_id, .. } => display_id.clone(),
             Output::Markdown { display_id, .. } => display_id.clone(),
             Output::Json { display_id, .. } => display_id.clone(),
@@ -395,35 +419,51 @@ impl Output {
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
+        // Saved as display data unless the caller knows better, see `saved_as`.
+        let saved = nbformat::v4::Output::DisplayData(nbformat::v4::DisplayData {
+            data: data.clone(),
+            metadata: serde_json::Map::new(),
+        });
         match data.richest(rank_mime_type) {
             Some(MimeType::Json(json_value)) => match JsonView::from_value(json_value.clone()) {
                 Ok(json_view) => Output::Json {
                     content: cx.new(|_| json_view),
                     display_id,
+                    saved,
                 },
-                Err(_) => Output::Message("Failed to parse JSON".to_string()),
+                Err(_) => Output::Unrendered {
+                    message: "Failed to parse JSON".to_string(),
+                    saved,
+                },
             },
             Some(MimeType::Plain(text)) => Output::Plain {
                 content: cx.new(|cx| TerminalOutput::from(text, window, cx)),
                 display_id,
+                saved,
             },
             Some(MimeType::Markdown(text)) => {
                 let content = cx.new(|cx| MarkdownView::from(text.clone(), cx));
                 Output::Markdown {
                     content,
                     display_id,
+                    saved,
                 }
             }
             Some(MimeType::Png(data)) | Some(MimeType::Jpeg(data)) => match ImageView::from(data) {
                 Ok(view) => Output::Image {
                     content: cx.new(|_| view),
                     display_id,
+                    saved,
                 },
-                Err(error) => Output::Message(format!("Failed to load image: {}", error)),
+                Err(error) => Output::Unrendered {
+                    message: format!("Failed to load image: {}", error),
+                    saved,
+                },
             },
             Some(MimeType::DataTable(data)) => Output::Table {
                 content: cx.new(|cx| TableView::new(data, window, cx)),
                 display_id,
+                saved,
             },
             Some(MimeType::Html(html_content)) => match html::html_to_markdown(html_content) {
                 Ok(markdown_text) => {
@@ -431,15 +471,20 @@ impl Output {
                     Output::Markdown {
                         content,
                         display_id,
+                        saved,
                     }
                 }
                 Err(_) => Output::Plain {
                     content: cx.new(|cx| TerminalOutput::from(html_content, window, cx)),
                     display_id,
+                    saved,
                 },
             },
             // Any other media types are not supported
-            _ => Output::Message("Unsupported media type".to_string()),
+            _ => Output::Unrendered {
+                message: "Unsupported media type".to_string(),
+                saved,
+            },
         }
     }
 }
