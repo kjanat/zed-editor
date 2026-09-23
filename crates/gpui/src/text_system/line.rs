@@ -1462,6 +1462,48 @@ mod tests {
     }
 
     #[test]
+    fn test_split_at_descending_rtl_glyph_indices() {
+        // Visually ordered RTL glyphs for three 2-byte characters: the leftmost
+        // glyph belongs to the last character.
+        let glyph = |x: f32, index: usize| ShapedGlyph {
+            id: GlyphId(0),
+            position: point(px(x), px(0.0)),
+            index,
+            is_emoji: false,
+        };
+        let line = ShapedLine {
+            layout: Arc::new(LineLayout {
+                font_size: px(16.0),
+                width: px(30.0),
+                ascent: px(12.0),
+                descent: px(4.0),
+                runs: vec![ShapedRun {
+                    font_id: FontId(0),
+                    glyphs: vec![glyph(0.0, 4), glyph(10.0, 2), glyph(20.0, 0)],
+                }],
+                len: 6,
+            }),
+            text: "אבג".into(),
+            decoration_runs: SmallVec::new(),
+        };
+
+        let (left, right) = line.split_at(2);
+
+        let left_indices: Vec<usize> = left
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.index))
+            .collect();
+        let right_indices: Vec<usize> = right
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.index))
+            .collect();
+        assert_eq!(left_indices, vec![0]);
+        assert_eq!(right_indices, vec![2, 0]);
+    }
+
+    #[test]
     fn test_split_at_decorations() {
         // Three decoration runs: red [0..2), green [2..5), blue [5..6).
         // Split at byte 3 — red goes entirely left, green straddles, blue goes entirely right.

@@ -143,25 +143,31 @@ impl LineLayout {
         let mut right_runs = Vec::new();
 
         for run in &self.runs {
-            let split_pos = run.glyphs.partition_point(|g| g.index < byte_index);
+            // Visually ordered RTL runs can have descending byte indices, so
+            // glyphs are partitioned by index rather than by position.
+            let mut left_glyphs = Vec::new();
+            let mut right_glyphs = Vec::new();
+            for glyph in &run.glyphs {
+                if glyph.index < byte_index {
+                    left_glyphs.push(glyph.clone());
+                } else {
+                    right_glyphs.push(ShapedGlyph {
+                        id: glyph.id,
+                        position: point(glyph.position.x - x_offset, glyph.position.y),
+                        index: glyph.index - byte_index,
+                        is_emoji: glyph.is_emoji,
+                    });
+                }
+            }
 
-            if split_pos > 0 {
+            if !left_glyphs.is_empty() {
                 left_runs.push(ShapedRun {
                     font_id: run.font_id,
-                    glyphs: run.glyphs[..split_pos].to_vec(),
+                    glyphs: left_glyphs,
                 });
             }
 
-            if split_pos < run.glyphs.len() {
-                let right_glyphs = run.glyphs[split_pos..]
-                    .iter()
-                    .map(|g| ShapedGlyph {
-                        id: g.id,
-                        position: point(g.position.x - x_offset, g.position.y),
-                        index: g.index - byte_index,
-                        is_emoji: g.is_emoji,
-                    })
-                    .collect();
+            if !right_glyphs.is_empty() {
                 right_runs.push(ShapedRun {
                     font_id: run.font_id,
                     glyphs: right_glyphs,
