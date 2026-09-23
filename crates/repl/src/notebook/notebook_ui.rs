@@ -19,6 +19,7 @@ use log;
 use project::{Project, ProjectEntryId, ProjectPath};
 use settings::Settings as _;
 use ui::{CommonAnimationExt, KeyBinding, Tooltip, prelude::*};
+use util::ResultExt as _;
 use workspace::item::{ItemEvent, SaveOptions, TabContentParams};
 use workspace::searchable::SearchableItemHandle;
 use workspace::{Item, ItemHandle, Pane, ProjectItem, ToolbarItemLocation};
@@ -131,6 +132,9 @@ pub struct NotebookEditor {
     /// The backing file was reloaded from disk while the notebook had unsaved
     /// edits, so those edits no longer describe the file they would replace.
     external_change_pending: bool,
+    /// The cells as last loaded or saved, to detect changes such as new
+    /// outputs that the cell buffers do not track.
+    saved_cells: Option<String>,
 }
 
 enum SaveDestination {
@@ -178,63 +182,7 @@ impl NotebookEditor {
             cell_order.push(cell_id.clone());
             let cell_entity = Cell::load(&cell, &languages, notebook_language.clone(), window, cx);
 
-            match &cell_entity {
-                Cell::Code(code_cell) => {
-                    let cell_id_for_focus = cell_id.clone();
-                    cx.subscribe_in(code_cell, window, move |this, _cell, event, window, cx| {
-                        match event {
-                            CellEvent::Run(cell_id) => {
-                                this.execute_cell(cell_id.clone(), window, cx)
-                            }
-                            CellEvent::FocusedIn(_) => {
-                                this.select_cell_by_id(&cell_id_for_focus, cx)
-                            }
-                        }
-                    })
-                    .detach();
-
-                    let cell_id_for_editor = cell_id.clone();
-                    let editor = code_cell.read(cx).editor().clone();
-                    cx.subscribe(&editor, move |this, _editor, event, cx| {
-                        if let editor::EditorEvent::Focused = event {
-                            this.select_cell_by_id(&cell_id_for_editor, cx);
-                        }
-                    })
-                    .detach();
-                }
-                Cell::Markdown(markdown_cell) => {
-                    cx.subscribe(
-                        markdown_cell,
-                        move |_this, cell, event: &MarkdownCellEvent, cx| {
-                            match event {
-                                MarkdownCellEvent::FinishedEditing => {
-                                    cell.update(cx, |cell, cx| {
-                                        cell.reparse_markdown(cx);
-                                    });
-                                }
-                                MarkdownCellEvent::Run(_cell_id) => {
-                                    // run is handled separately by move_to_next_cell
-                                    // Just reparse here
-                                    cell.update(cx, |cell, cx| {
-                                        cell.reparse_markdown(cx);
-                                    });
-                                }
-                            }
-                        },
-                    )
-                    .detach();
-
-                    let cell_id_for_editor = cell_id.clone();
-                    let editor = markdown_cell.read(cx).editor().clone();
-                    cx.subscribe(&editor, move |this, _editor, event, cx| {
-                        if let editor::EditorEvent::Focused = event {
-                            this.select_cell_by_id(&cell_id_for_editor, cx);
-                        }
-                    })
-                    .detach();
-                }
-                Cell::Raw(_) => {}
-            }
+            Self::subscribe_to_cell(&cell_id, &cell_entity, window, cx);
 
             cell_map.insert(cell_id.clone(), cell_entity);
         }
@@ -264,7 +212,9 @@ impl NotebookEditor {
             execution_requests: HashMap::default(),
             kernel_picker_handle: PopoverMenuHandle::default(),
             external_change_pending: false,
+            saved_cells: None,
         };
+        editor.saved_cells = editor.serialize_cells(cx);
         editor.launch_kernel(window, cx);
         editor.refresh_language(cx);
         editor.refresh_kernelspecs(cx);
@@ -309,6 +259,75 @@ impl NotebookEditor {
         self.notebook_language = task.shared();
     }
 
+    fn subscribe_to_cell(
+        cell_id: &CellId,
+        cell: &Cell,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match cell {
+            Cell::Code(code_cell) => {
+                let cell_id_for_focus = cell_id.clone();
+                cx.subscribe_in(
+                    code_cell,
+                    window,
+                    move |this, _cell, event, window, cx| match event {
+                        CellEvent::Run(cell_id) => this.execute_cell(cell_id.clone(), window, cx),
+                        CellEvent::FocusedIn(_) => this.select_cell_by_id(&cell_id_for_focus, cx),
+                    },
+                )
+                .detach();
+
+                let cell_id_for_editor = cell_id.clone();
+                let editor = code_cell.read(cx).editor().clone();
+                cx.subscribe(&editor, move |this, _editor, event, cx| {
+                    if let editor::EditorEvent::Focused = event {
+                        this.select_cell_by_id(&cell_id_for_editor, cx);
+                    }
+                })
+                .detach();
+            }
+            Cell::Markdown(markdown_cell) => {
+                cx.subscribe(
+                    markdown_cell,
+                    move |_this, cell, event: &MarkdownCellEvent, cx| match event {
+                        MarkdownCellEvent::FinishedEditing | MarkdownCellEvent::Run(_) => {
+                            cell.update(cx, |cell, cx| {
+                                cell.reparse_markdown(cx);
+                            });
+                        }
+                    },
+                )
+                .detach();
+
+                let cell_id_for_editor = cell_id.clone();
+                let editor = markdown_cell.read(cx).editor().clone();
+                cx.subscribe(&editor, move |this, _editor, event, cx| {
+                    if let editor::EditorEvent::Focused = event {
+                        this.select_cell_by_id(&cell_id_for_editor, cx);
+                    }
+                })
+                .detach();
+            }
+            Cell::Raw(_) => {}
+        }
+    }
+
+    /// Serializes the cells, including outputs and execution counts. Notebook
+    /// metadata is left out because the kernel updates it on its own.
+    fn serialize_cells(&self, cx: &App) -> Option<String> {
+        serde_json::to_string(&self.to_notebook(cx).cells).log_err()
+    }
+
+    /// Whether the notebook holds anything a reload would lose, including cell
+    /// outputs and execution counts, which do not dirty the source buffers.
+    fn has_unsaved_changes(&self, cx: &App) -> bool {
+        self.has_structural_changes()
+            || self.has_content_changes(cx)
+            || self.saved_cells.is_none()
+            || self.serialize_cells(cx) != self.saved_cells
+    }
+
     fn has_structural_changes(&self) -> bool {
         self.cell_order != self.original_cell_order
     }
@@ -316,7 +335,7 @@ impl NotebookEditor {
     /// Handles the backing JSON buffer being reloaded from disk, which happens
     /// automatically while it is clean even if the cells hold unsaved edits.
     fn backing_buffer_reloaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.has_structural_changes() || self.has_content_changes(cx) {
+        if self.has_unsaved_changes(cx) {
             // Rebuilding would discard the user's edits, and saving them would
             // silently replace the external version, so require a decision.
             self.external_change_pending = true;
@@ -356,6 +375,7 @@ impl NotebookEditor {
                 window,
                 cx,
             );
+            Self::subscribe_to_cell(&cell_id, &cell_entity, window, cx);
             cell_map.insert(cell_id.clone(), cell_entity);
         }
 
@@ -364,7 +384,11 @@ impl NotebookEditor {
         self.cell_order = cell_order.clone();
         self.original_cell_order = cell_order;
         self.cell_map = cell_map;
+        self.selected_cell_index = self
+            .selected_cell_index
+            .min(self.cell_order.len().saturating_sub(1));
         self.cell_list = ListState::new(self.cell_order.len(), gpui::ListAlignment::Top, px(1000.));
+        self.saved_cells = self.serialize_cells(cx);
         cx.notify();
     }
 
@@ -400,6 +424,7 @@ impl NotebookEditor {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let notebook = self.to_notebook(cx);
+        let saved_cells = serde_json::to_string(&notebook.cells).log_err();
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         let saved_cell_order = self.cell_order.clone();
@@ -464,6 +489,7 @@ impl NotebookEditor {
             }?;
             this.update(cx, |this, cx| {
                 this.external_change_pending = false;
+                this.saved_cells = saved_cells;
                 // Only acknowledge the versions serialized before the write began.
                 this.original_cell_order = saved_cell_order;
                 for (buffer, version) in saved_buffers {
@@ -950,28 +976,9 @@ impl NotebookEditor {
             )
         });
 
-        cx.subscribe(
-            &markdown_cell,
-            move |_this, cell, event: &MarkdownCellEvent, cx| match event {
-                MarkdownCellEvent::FinishedEditing | MarkdownCellEvent::Run(_) => {
-                    cell.update(cx, |cell, cx| {
-                        cell.reparse_markdown(cx);
-                    });
-                }
-            },
-        )
-        .detach();
-
-        let cell_id_for_editor = new_cell_id.clone();
-        let editor = markdown_cell.read(cx).editor().clone();
-        cx.subscribe(&editor, move |this, _editor, event, cx| {
-            if let editor::EditorEvent::Focused = event {
-                this.select_cell_by_id(&cell_id_for_editor, cx);
-            }
-        })
-        .detach();
-
-        self.insert_cell_at_current_position(new_cell_id, Cell::Markdown(markdown_cell.clone()));
+        let cell = Cell::Markdown(markdown_cell.clone());
+        Self::subscribe_to_cell(&new_cell_id, &cell, window, cx);
+        self.insert_cell_at_current_position(new_cell_id, cell);
         markdown_cell.update(cx, |cell, cx| {
             cell.set_editing(true);
             cx.notify();
@@ -1000,27 +1007,9 @@ impl NotebookEditor {
             )
         });
 
-        let cell_id_for_run = new_cell_id.clone();
-        cx.subscribe_in(
-            &code_cell,
-            window,
-            move |this, _cell, event, window, cx| match event {
-                CellEvent::Run(cell_id) => this.execute_cell(cell_id.clone(), window, cx),
-                CellEvent::FocusedIn(_) => this.select_cell_by_id(&cell_id_for_run, cx),
-            },
-        )
-        .detach();
-
-        let cell_id_for_editor = new_cell_id.clone();
-        let editor = code_cell.read(cx).editor().clone();
-        cx.subscribe(&editor, move |this, _editor, event, cx| {
-            if let editor::EditorEvent::Focused = event {
-                this.select_cell_by_id(&cell_id_for_editor, cx);
-            }
-        })
-        .detach();
-
-        self.insert_cell_at_current_position(new_cell_id, Cell::Code(code_cell.clone()));
+        let cell = Cell::Code(code_cell.clone());
+        Self::subscribe_to_cell(&new_cell_id, &cell, window, cx);
+        self.insert_cell_at_current_position(new_cell_id, cell);
         let editor = code_cell.read(cx).editor().clone();
         window.focus(&editor.focus_handle(cx), cx);
         self.notebook_mode = NotebookMode::Edit;
@@ -2124,6 +2113,7 @@ impl KernelSession for NotebookEditor {
 
 #[cfg(test)]
 mod tests {
+    use super::super::RunnableCell as _;
     use super::*;
     use gpui::{TestAppContext, VisualTestContext};
     use project::{FakeFs, Project, ProjectItem as _};
@@ -2276,6 +2266,120 @@ mod tests {
             assert_eq!(editor.cell_order.len(), 1);
         });
         assert!(notebook_json(cx).contains("print('external')"));
+    }
+
+    #[gpui::test]
+    async fn test_reloaded_cells_keep_outputs_wiring_and_selection(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/notebooks"),
+            json!({ "test.ipynb": NOTEBOOK_WITH_ONE_CODE_CELL }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/notebooks").as_ref()], cx).await;
+        cx.update(|cx| ReplStore::init(fs.clone(), cx));
+        let project_path = project.read_with(cx, |project, cx| ProjectPath {
+            worktree_id: project.worktrees(cx).next().unwrap().read(cx).id(),
+            path: rel_path("test.ipynb").into(),
+        });
+        let notebook_item = cx
+            .update(|cx| {
+                NotebookItem::try_open(&project, &project_path, cx)
+                    .expect("ipynb files should be openable as notebooks")
+            })
+            .await
+            .expect("notebook should parse");
+        let cx = cx.add_empty_window();
+        let notebook_editor = cx.update(|window, cx| {
+            cx.new(|cx| NotebookEditor::new(project.clone(), notebook_item, window, cx))
+        });
+        let path = std::path::Path::new(path!("/notebooks/test.ipynb"));
+        let code_cell = |index: usize, cx: &mut VisualTestContext| {
+            notebook_editor.read_with(cx, |editor, _| {
+                let cell_id = &editor.cell_order[index];
+                let Some(Cell::Code(cell)) = editor.cell_map.get(cell_id) else {
+                    panic!("expected a code cell");
+                };
+                cell.clone()
+            })
+        };
+
+        // Execution results are unsaved state even though no source changed.
+        code_cell(0, cx).update(cx, |cell, _| {
+            cell.set_execution_count(3);
+        });
+        let external = NOTEBOOK_WITH_ONE_CODE_CELL.replace("print('hello')", "print('external')");
+        fs.insert_file(path, external.into_bytes()).await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, cx| {
+            assert!(editor.has_conflict(cx));
+            assert_eq!(code_cell_execution_count(editor, cx), Some(3));
+        });
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.reload(project.clone(), window, cx)
+            })
+            .await
+            .expect("discard execution results");
+
+        // Cells rebuilt by a reload keep their event wiring.
+        let two_cells = NOTEBOOK_WITH_ONE_CODE_CELL.replace(
+            r#""source": ["print('hello')"]
+            }"#,
+            r#""source": ["print('hello')"]
+            },
+            {
+                "cell_type": "code",
+                "id": "cell-two",
+                "metadata": {},
+                "execution_count": null,
+                "outputs": [],
+                "source": ["print('two')"]
+            }"#,
+        );
+        assert_ne!(two_cells, NOTEBOOK_WITH_ONE_CODE_CELL);
+        fs.insert_file(path, two_cells.into_bytes()).await;
+        cx.run_until_parked();
+        assert_eq!(
+            notebook_editor.read_with(cx, |editor, _| editor.cell_order.len()),
+            2
+        );
+        let second_id = notebook_editor.read_with(cx, |editor, _| editor.cell_order[1].clone());
+        code_cell(1, cx).update(cx, |_, cx| cx.emit(CellEvent::FocusedIn(second_id)));
+        cx.run_until_parked();
+        assert_eq!(
+            notebook_editor.read_with(cx, |editor, _| editor.selected_cell_index),
+            1
+        );
+
+        // A shorter reloaded notebook keeps the selection in range.
+        fs.insert_file(path, NOTEBOOK_WITH_ONE_CODE_CELL.as_bytes().to_vec())
+            .await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, _| {
+            assert_eq!(editor.cell_order.len(), 1);
+            assert_eq!(editor.selected_cell_index, 0);
+        });
+        notebook_editor.update_in(cx, |editor, window, cx| editor.add_code_block(window, cx));
+        assert_eq!(
+            notebook_editor.read_with(cx, |editor, _| editor.cell_order.len()),
+            2
+        );
+    }
+
+    fn code_cell_execution_count(editor: &NotebookEditor, cx: &App) -> Option<i32> {
+        let cell_id = editor.cell_order.first()?;
+        let Some(Cell::Code(cell)) = editor.cell_map.get(cell_id) else {
+            return None;
+        };
+        cell.read(cx).execution_count()
     }
 
     /// When the configured interpreter doesn't exist (e.g. Python isn't installed),
