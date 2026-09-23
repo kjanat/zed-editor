@@ -1501,6 +1501,20 @@ mod tests {
             .collect();
         assert_eq!(left_indices, vec![0]);
         assert_eq!(right_indices, vec![2, 0]);
+
+        // The first character is drawn rightmost, so each piece is measured from
+        // its own leftmost glyph rather than from the split's byte position.
+        let positions = |line: &ShapedLine| -> Vec<Pixels> {
+            line.runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.position.x))
+                .collect()
+        };
+        assert_eq!(left.width(), px(10.0));
+        assert_eq!(positions(&left), vec![px(0.0)]);
+        assert_eq!(right.width(), px(20.0));
+        assert_eq!(positions(&right), vec![px(0.0), px(10.0)]);
+        assert_eq!(left.width() + right.width(), line.width());
     }
 
     #[test]

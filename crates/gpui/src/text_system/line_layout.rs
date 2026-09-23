@@ -136,7 +136,20 @@ impl LineLayout {
     ///   shifted left so the first glyph starts at x=0, and byte indices rebased to 0.
     /// - `font_size`, `ascent`, and `descent` are copied to both halves.
     pub fn split_at(&self, byte_index: usize) -> (LineLayout, LineLayout) {
-        let x_offset = self.x_for_index(byte_index);
+        let byte_ordered = self
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.index))
+            .is_sorted();
+        let ((left_start, left_end), (right_start, right_end)) = if byte_ordered {
+            let x_offset = self.x_for_index(byte_index);
+            ((px(0.), x_offset), (x_offset, self.width))
+        } else {
+            (
+                self.fragment_extent(|index| index < byte_index),
+                self.fragment_extent(|index| index >= byte_index),
+            )
+        };
 
         // Partition glyph runs. A single run may contribute glyphs to both halves.
         let mut left_runs = Vec::new();
@@ -149,11 +162,14 @@ impl LineLayout {
             let mut right_glyphs = Vec::new();
             for glyph in &run.glyphs {
                 if glyph.index < byte_index {
-                    left_glyphs.push(glyph.clone());
+                    left_glyphs.push(ShapedGlyph {
+                        position: point(glyph.position.x - left_start, glyph.position.y),
+                        ..glyph.clone()
+                    });
                 } else {
                     right_glyphs.push(ShapedGlyph {
                         id: glyph.id,
-                        position: point(glyph.position.x - x_offset, glyph.position.y),
+                        position: point(glyph.position.x - right_start, glyph.position.y),
                         index: glyph.index - byte_index,
                         is_emoji: glyph.is_emoji,
                     });
@@ -177,7 +193,7 @@ impl LineLayout {
 
         let left = LineLayout {
             font_size: self.font_size,
-            width: x_offset,
+            width: left_end - left_start,
             ascent: self.ascent,
             descent: self.descent,
             runs: left_runs,
@@ -186,7 +202,7 @@ impl LineLayout {
 
         let right = LineLayout {
             font_size: self.font_size,
-            width: self.width - x_offset,
+            width: right_end - right_start,
             ascent: self.ascent,
             descent: self.descent,
             runs: right_runs,
@@ -194,6 +210,29 @@ impl LineLayout {
         };
 
         (left, right)
+    }
+
+    /// Returns the horizontal extent of the glyphs whose byte index satisfies
+    /// `in_fragment`, for layouts whose visual order does not follow byte order.
+    ///
+    /// The fragment starts at its leftmost glyph and ends at the nearest glyph
+    /// of the rest of the line to its right, or at the end of the line.
+    fn fragment_extent(&self, in_fragment: impl Fn(usize) -> bool) -> (Pixels, Pixels) {
+        let glyphs = || self.runs.iter().flat_map(|run| run.glyphs.iter());
+        let mut own_positions = glyphs()
+            .filter(|glyph| in_fragment(glyph.index))
+            .map(|glyph| glyph.position.x);
+        let Some(first) = own_positions.next() else {
+            return (px(0.), px(0.));
+        };
+        let (start, last) = own_positions.fold((first, first), |(start, last), x| {
+            (start.min(x), last.max(x))
+        });
+        let end = glyphs()
+            .filter(|glyph| !in_fragment(glyph.index) && glyph.position.x > last)
+            .map(|glyph| glyph.position.x)
+            .fold(self.width, Pixels::min);
+        (start, end)
     }
 
     fn compute_wrap_boundaries(
