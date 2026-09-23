@@ -4141,6 +4141,15 @@ async fn test_updating_lsp_settings_sends_one_did_change_configuration(
         "Rust",
         FakeLspAdapter {
             name: "rust-lsp",
+            // Like real servers, this one is configured from its `lsp` settings.
+            workspace_configuration: Some(Box::new(|cx| {
+                use settings::Settings as _;
+                project::project_settings::ProjectSettings::get_global(cx)
+                    .lsp
+                    .get(&LanguageServerName::new_static("rust-lsp"))
+                    .and_then(|settings| settings.settings.clone())
+                    .unwrap_or_else(|| json!({}))
+            })),
             ..Default::default()
         },
     );
