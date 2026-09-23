@@ -1993,6 +1993,8 @@ fn deny_tool_use_events(
     })
 }
 
+const MIN_THINKING_BUDGET_TOKENS: u64 = 1024;
+
 pub fn into_bedrock(
     request: LanguageModelRequest,
     model: String,
@@ -2306,9 +2308,23 @@ pub fn into_bedrock(
 
     let thinking = if request.thinking_allowed {
         match thinking_mode {
-            BedrockModelMode::Thinking { budget_tokens } => {
-                Some(bedrock::Thinking::Enabled { budget_tokens })
-            }
+            BedrockModelMode::Thinking { budget_tokens } => match budget_tokens {
+                // Bedrock rejects a budget at or above `max_tokens`, which a
+                // request cap can push below the mode's fixed budget.
+                Some(budget) if budget >= max_output_tokens => {
+                    let capped = max_output_tokens.saturating_sub(1);
+                    if capped >= MIN_THINKING_BUDGET_TOKENS {
+                        Some(bedrock::Thinking::Enabled {
+                            budget_tokens: Some(capped),
+                        })
+                    } else if model.contains(ConverseModel::ClaudeOpus5.request_id()) {
+                        Some(bedrock::Thinking::Disabled)
+                    } else {
+                        None
+                    }
+                }
+                _ => Some(bedrock::Thinking::Enabled { budget_tokens }),
+            },
             BedrockModelMode::AdaptiveThinking {
                 effort: default_effort,
             } => {
@@ -2944,6 +2960,51 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn test_thinking_budget_fits_under_output_cap() {
+        let thinking_for_cap = |max_output_tokens: Option<u64>| {
+            into_bedrock(
+                LanguageModelRequest {
+                    messages: vec![LanguageModelRequestMessage {
+                        role: Role::User,
+                        content: vec![MessageContent::Text("Hi".into())],
+                        cache: false,
+                        reasoning_details: None,
+                    }],
+                    thinking_allowed: true,
+                    max_output_tokens,
+                    ..Default::default()
+                },
+                "us.anthropic.claude-sonnet-4-5".to_string(),
+                1.0,
+                16_000,
+                BedrockModelMode::Thinking {
+                    budget_tokens: Some(10_000),
+                },
+                true,
+                true,
+                None,
+                None,
+            )
+            .unwrap()
+            .thinking
+        };
+
+        assert!(matches!(
+            thinking_for_cap(None),
+            Some(bedrock::Thinking::Enabled {
+                budget_tokens: Some(10_000)
+            })
+        ));
+        assert!(matches!(
+            thinking_for_cap(Some(4096)),
+            Some(bedrock::Thinking::Enabled {
+                budget_tokens: Some(4095)
+            })
+        ));
+        assert!(thinking_for_cap(Some(512)).is_none());
     }
 
     #[test]
