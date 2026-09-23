@@ -213,6 +213,12 @@ attempt_merge() {
 		if [[ -s /tmp/lockfiles.txt ]]; then
 			printf -- "- \`Cargo.lock\`: fork side kept; cargo reconciles it after human files are resolved\n"
 		fi
+		if [[ -s /tmp/dropped-github.txt ]]; then
+			printf '\n### Upstream automation dropped (port by hand if wanted)\n'
+			while IFS= read -r FILE; do
+				printf -- "- \`%s\`\n" "${FILE}"
+			done </tmp/dropped-github.txt
+		fi
 		printf '\n### Needs a human (%s files)\n\n' "${HUMAN_COUNT}"
 		while IFS= read -r FILE; do
 			HUNKS="$(grep -c '^<<<<<<< ' "${FILE}" || true)"
@@ -253,6 +259,8 @@ attempt_merge() {
 	{
 		printf '### Resolve\n```sh\n'
 		printf 'git fetch upstream main && git merge --no-commit upstream/main\n'
+		printf '# Keep the fork'"'"'s automation; upstream .github changes are never adopted.\n'
+		printf 'git rm -r -q -f --ignore-unmatch -- .github && git checkout master -- .github\n'
 		printf "BASE=\"\$(git merge-base master upstream/main)\"\n"
 		while IFS= read -r FILE; do
 			printf 'git checkout --theirs -- %q && dprint fmt %q && git add %q\n' "${FILE}" "${FILE}" "${FILE}"
