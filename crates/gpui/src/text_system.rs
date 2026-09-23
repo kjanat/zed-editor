@@ -1520,10 +1520,7 @@ mod missing_glyph_tests {
     fn missing_glyph_channel() -> (MissingGlyphReporter, MissingGlyphReceiver) {
         let (sender, receiver) = async_channel::bounded(MAX_REPORTED_MISSING_GLYPHS);
         let generation = Arc::<AtomicUsize>::default();
-        let reporter = MissingGlyphReporter {
-            generation: generation.clone(),
-            sender,
-        };
+        let reporter = MissingGlyphReporter::new(generation.clone(), sender);
         let receiver = MissingGlyphReceiver {
             state: MissingGlyphState::default(),
             generation,
