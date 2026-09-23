@@ -466,8 +466,9 @@ impl NotebookEditor {
             cell_order.push(cell_id.clone());
             // Cells the file didn't change keep their editors, and with them their
             // focus, cursor and editing state, as long as they still show the file.
-            let unchanged_on_disk = incoming_cells_on_disk.get(&cell_id).is_some()
-                && self.cells_on_disk.get(&cell_id) == incoming_cells_on_disk.get(&cell_id);
+            let unchanged_on_disk = incoming_cells_on_disk
+                .get(&cell_id)
+                .is_some_and(|incoming| self.cells_on_disk.get(&cell_id) == Some(incoming));
             let reusable = unchanged_on_disk
                 && previous_cells.get(&cell_id).is_some_and(|existing| {
                     !self.is_cell_modified(&cell_id, existing, cx)
