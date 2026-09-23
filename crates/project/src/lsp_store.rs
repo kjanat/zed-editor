@@ -645,18 +645,24 @@ impl LocalLspStore {
                             }
                         })?;
 
+                    let initial_configuration = did_change_configuration_params.settings.clone();
                     language_server.notify::<lsp::notification::DidChangeConfiguration>(
                         did_change_configuration_params,
                     )?;
 
-                    anyhow::Ok(language_server)
+                    anyhow::Ok((language_server, initial_configuration))
                 }
                 .await;
 
                 match result {
-                    Ok(server) => {
+                    Ok((server, initial_configuration)) => {
                         lsp_store
                             .update(cx, |lsp_store, cx| {
+                                if let Some(local) = lsp_store.as_local_mut() {
+                                    local
+                                        .last_sent_workspace_configurations
+                                        .insert(server_id, initial_configuration);
+                                }
                                 lsp_store.insert_newly_running_language_server(
                                     adapter,
                                     server.clone(),

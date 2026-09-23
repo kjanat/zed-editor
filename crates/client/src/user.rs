@@ -112,6 +112,7 @@ pub struct UserStore {
     update_contacts_tx: mpsc::UnboundedSender<UpdateContacts>,
     edit_prediction_usage: Option<EditPredictionUsage>,
     plan_info: Option<PlanInfo>,
+    is_staff: Option<bool>,
     current_user: watch::Receiver<Option<Arc<User>>>,
     current_organization: Option<Arc<Organization>>,
     organizations: Vec<Arc<Organization>>,
@@ -194,6 +195,7 @@ impl UserStore {
             plans_by_organization: HashMap::default(),
             configuration_by_organization: HashMap::default(),
             plan_info: None,
+            is_staff: None,
             edit_prediction_usage: None,
             contacts: Default::default(),
             incoming_contact_requests: Default::default(),
@@ -848,6 +850,7 @@ impl UserStore {
 
     pub fn clear_plan_and_usage(&mut self) {
         self.plan_info = None;
+        self.is_staff = None;
         self.edit_prediction_usage = None;
     }
 
@@ -905,13 +908,15 @@ impl UserStore {
             || plans_by_organization != self.plans_by_organization
             || configuration_by_organization != self.configuration_by_organization
             || edit_prediction_usage != self.edit_prediction_usage
-            || plan_info != self.plan_info;
+            || plan_info != self.plan_info
+            || Some(staff) != self.is_staff;
         self.organizations = organizations;
         self.current_organization = current_organization;
         self.plans_by_organization = plans_by_organization;
         self.configuration_by_organization = configuration_by_organization;
         self.edit_prediction_usage = edit_prediction_usage;
         self.plan_info = plan_info;
+        self.is_staff = Some(staff);
         if changed {
             cx.emit(Event::PrivateUserInfoUpdated);
         }
