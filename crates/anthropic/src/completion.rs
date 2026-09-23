@@ -281,6 +281,8 @@ fn to_anthropic_content(
     }
 }
 
+const MIN_THINKING_BUDGET_TOKENS: u32 = 1024;
+
 pub fn into_anthropic(
     request: LanguageModelRequest,
     model: String,
@@ -410,7 +412,22 @@ pub fn into_anthropic(
     let thinking = if request.thinking_allowed {
         match mode {
             AnthropicModelMode::Thinking { budget_tokens } => {
-                Some(Thinking::Enabled { budget_tokens })
+                match budget_tokens {
+                    // Anthropic rejects a budget at or above `max_tokens`, which a
+                    // request cap can push below the mode's fixed budget.
+                    Some(budget) if u64::from(budget) >= max_output_tokens => {
+                        match u32::try_from(max_output_tokens.saturating_sub(1)) {
+                            Ok(capped) if capped >= MIN_THINKING_BUDGET_TOKENS => {
+                                Some(Thinking::Enabled {
+                                    budget_tokens: Some(capped),
+                                })
+                            }
+                            _ => crate::requires_explicit_thinking_opt_out(&model)
+                                .then_some(Thinking::Disabled),
+                        }
+                    }
+                    _ => Some(Thinking::Enabled { budget_tokens }),
+                }
             }
             AnthropicModelMode::AdaptiveThinking => Some(Thinking::Adaptive {
                 display: Some(AdaptiveThinkingDisplay::Summarized),
@@ -1329,6 +1346,60 @@ mod tests {
             Some(StringOrContents::String(_))
         ));
         assert!(anthropic_request.tools[0].cache_control.is_none());
+    }
+
+    fn thinking_for_output_cap(max_output_tokens: Option<u64>) -> Option<Thinking> {
+        let request = LanguageModelRequest {
+            messages: vec![LanguageModelRequestMessage {
+                role: Role::User,
+                content: vec![MessageContent::Text("Hello".to_string())],
+                cache: false,
+                reasoning_details: None,
+            }],
+            thinking_effort: None,
+            thread_id: None,
+            prompt_cache_key: None,
+            prompt_id: None,
+            intent: None,
+            stop: vec![],
+            temperature: None,
+            tools: vec![],
+            tool_choice: None,
+            thinking_allowed: true,
+            speed: None,
+            compact_at_tokens: None,
+            max_output_tokens,
+        };
+        into_anthropic(
+            request,
+            "claude-sonnet-4-5".to_string(),
+            1.0,
+            16000,
+            AnthropicModelMode::Thinking {
+                budget_tokens: Some(10000),
+            },
+            AnthropicPromptCacheMode::Legacy,
+            &ANTHROPIC_PROVIDER_ID,
+        )
+        .unwrap()
+        .thinking
+    }
+
+    #[test]
+    fn test_thinking_budget_fits_under_output_cap() {
+        assert!(matches!(
+            thinking_for_output_cap(None),
+            Some(Thinking::Enabled {
+                budget_tokens: Some(10000)
+            })
+        ));
+        assert!(matches!(
+            thinking_for_output_cap(Some(4096)),
+            Some(Thinking::Enabled {
+                budget_tokens: Some(4095)
+            })
+        ));
+        assert!(thinking_for_output_cap(Some(512)).is_none());
     }
 
     fn request_with_assistant_content(assistant_content: Vec<MessageContent>) -> crate::Request {
