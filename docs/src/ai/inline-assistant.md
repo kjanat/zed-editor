@@ -30,7 +30,8 @@ for the Inline Assistant.
 [External Agents](./external-agents.md) run in agent threads, but they are not
 available for Inline Assistant generations. The Inline Assistant uses
 Zed-configured [LLM providers](./llm-providers.md), including Zed-hosted models,
-provider API keys, gateways, local models, and supported subscriptions.
+provider API keys, gateways, [local models](./use-a-local-model.md), and
+supported subscriptions.
 
 ## Adding Context
 

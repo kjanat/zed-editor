@@ -10,6 +10,7 @@ ignored = ["tracing"]
 
 [lib]
 path = "src/buffer_diff.rs"
+doctest = false
 
 [dependencies]
 clock.workspace             = true

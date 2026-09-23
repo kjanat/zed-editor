@@ -10,6 +10,7 @@ ignored = ["tracing"]
 
 [lib]
 path = "src/language_extension.rs"
+doctest = false
 
 [dependencies]
 anyhow.workspace      = true

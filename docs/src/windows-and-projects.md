@@ -11,8 +11,9 @@ your context intact.
 
 Use **Panel Layout > Agentic** from the user menu in the title bar (or the
 {#action workspace::UseAgenticLayout} action) to keep the Threads Sidebar and
-Agent Panel together on the left. Use **Panel Layout > Classic** (or {#action
-workspace::UseClassicLayout}) to restore the editor-oriented layout.
+[Agent Panel](./ai/agent-panel.md) together on the left. Use **Panel Layout >
+Classic** (or {#action workspace::UseClassicLayout}) to restore the
+editor-oriented layout.
 
 ## How Projects Open
 
@@ -95,8 +96,8 @@ If you want to add a folder to your current project (not as a separate project
 in the threads sidebar), you have several options:
 
 - **File menu**: File > Add Folder to Project
-- **Project panel**: Right-click in the project panel and choose "Add Folders to
-  Project"
+- **[Project panel](./project-panel.md)**: Right-click in the project panel and
+  choose "Add Folders to Project"
 - **Open Recent**: Select a recent project and click the "Add Folder to this
   Project" button
 

@@ -64,8 +64,8 @@ regex patterns that:
 | `search_web`       | The search query                                 |
 | `skill`            | The absolute path to the skill's `SKILL.md` file |
 
-For MCP tools, use the format `mcp:<server>:<tool_name>`. For example, a tool
-called `create_issue` on a server called `github` would be
+For [MCP tools](./mcp.md), use the format `mcp:<server>:<tool_name>`. For
+example, a tool called `create_issue` on a server called `github` would be
 `mcp:github:create_issue`.
 
 For model-invoked [Skills](./skills.md), use the `skill` tool. A user-invoked

@@ -717,7 +717,7 @@ fn find_dev_repo_root(candidates: impl IntoIterator<Item = PathBuf>) -> Option<P
 /// detail). Hidden from the public API.
 #[doc(hidden)]
 pub mod __rust_embed {
-    pub use rust_embed::{EmbeddedFile, Filenames, Metadata, RustEmbed, utils};
+    pub use rust_embed::{EmbeddedFile, Filenames, Metadata, RustEmbed, flate, utils};
 }
 
 /// Backs the dev arm of [`fs_embed!`]'s `iter`: every file under the root-relative

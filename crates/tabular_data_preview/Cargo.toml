@@ -6,6 +6,7 @@ publish.workspace = true
 
 [lib]
 path = "src/tabular_data_preview.rs"
+doctest = false
 
 [dependencies]
 anyhow.workspace    = true

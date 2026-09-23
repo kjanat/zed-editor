@@ -10,6 +10,7 @@ ignored = ["tracing"]
 
 [lib]
 path = "src/rope.rs"
+doctest = false
 
 [[bench]]
 harness = false

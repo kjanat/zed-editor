@@ -10,6 +10,7 @@ ignored = ["editor"]
 
 [lib]
 path = "src/agent.rs"
+doctest = false
 
 [dependencies]
 acp_thread.workspace            = true

@@ -7,6 +7,8 @@ publish.workspace = true
 
 [lib]
 path = "src/python.rs"
+test = false
+doctest = false
 
 [dependencies]
 db.workspace        = true

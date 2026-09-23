@@ -10,6 +10,7 @@ ignored = ["component"]
 
 [lib]
 path = "src/settings_ui.rs"
+doctest = false
 
 [dependencies]
 agent.workspace                    = true

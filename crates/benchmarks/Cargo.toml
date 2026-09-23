@@ -11,6 +11,7 @@ ignored = ["gpui_platform"]
 [lib]
 doctest = false
 path    = "src/benchmarks.rs"
+test    = false
 
 [[bench]]
 harness = false

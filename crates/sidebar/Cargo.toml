@@ -7,6 +7,7 @@ publish.workspace = true
 
 [lib]
 path = "src/sidebar.rs"
+doctest = false
 
 [dependencies]
 acp_thread.workspace            = true

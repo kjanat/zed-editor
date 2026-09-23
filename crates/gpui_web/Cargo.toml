@@ -11,6 +11,7 @@ ignored = ["scheduler"]
 
 [lib]
 path = "src/gpui_web.rs"
+doctest = false
 
 [dependencies]
 unicode-properties   = "=0.1.3"

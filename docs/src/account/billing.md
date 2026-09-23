@@ -24,8 +24,9 @@ invoicing and metering partner.
 
 Zed is billed on a monthly basis based on the date you initially subscribe.
 You'll receive *at least* one invoice from Zed each month you're subscribed to
-Zed Pro, and may receive more than one invoice if you use hosted models beyond
-your included monthly token credit.
+Zed Pro, and may receive more than one invoice if you use
+[hosted models](./zed-hosted-models.md) beyond your included monthly token
+credit.
 
 ### Zed Pro threshold billing {#threshold-billing}
 

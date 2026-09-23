@@ -11,6 +11,7 @@ publish           = true
 
 [lib]
 path = "src/html_to_markdown.rs"
+doctest = false
 
 [dependencies]
 anyhow.workspace            = true

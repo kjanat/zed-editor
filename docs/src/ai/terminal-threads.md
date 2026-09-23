@@ -33,8 +33,9 @@ The CLI or TUI running inside the terminal owns its own:
 - skills and instruction files
 - MCP configuration
 
-Zed Agent profiles, Zed Agent tool permissions, Zed Skills, and Zed Agent MCP
-settings do not automatically apply to Terminal Threads.
+[Zed Agent profiles](./agent-profiles.md), Zed Agent tool permissions, Zed
+Skills, and Zed Agent MCP settings do not automatically apply to Terminal
+Threads.
 
 ## Opening a Terminal Thread {#opening-a-terminal-thread}
 
@@ -77,7 +78,9 @@ icon that appears on hover. In the Threads Sidebar, right-click a Terminal
 Thread and select **Rename Title**, or select it and press {#kb
 agent::RenameSelectedThread}.
 
-To edit the title of the active Terminal Thread from the Agent Panel, custom-map {#action agent::RenameSelectedThread} in your `keymap.json`. Its default binding is scoped to the Threads Sidebar.
+To edit the title of the active Terminal Thread from the Agent Panel, custom-map
+{#action agent::RenameSelectedThread} in your `keymap.json`. Its default binding
+is scoped to the Threads Sidebar.
 
 ## Notifications {#terminal-thread-notifications}
 
@@ -208,8 +211,9 @@ Credentials come from the terminal session and the CLI/TUI running inside it.
 
 In remote projects, the CLI may read the remote shell environment and remote
 config files. In local Terminal Threads, it reads the local shell environment
-and local config files. Zed does not copy API keys from LLM provider settings
-into Terminal Threads.
+and local config files. Zed does not copy
+[API keys from LLM provider settings](./use-api-access.md) into Terminal
+Threads.
 
 ## When to Use Terminal Threads {#when-to-use-terminal-threads}
 

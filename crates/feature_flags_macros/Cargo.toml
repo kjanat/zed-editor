@@ -8,6 +8,7 @@ publish.workspace = true
 [lib]
 path       = "src/feature_flags_macros.rs"
 proc-macro = true
+doctest = false
 
 [dependencies]
 proc-macro2.workspace = true

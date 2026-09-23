@@ -439,7 +439,7 @@ following pattern:
 ### Text objects
 
 The `textobjects.scm` file defines rules for navigating by text objects. This
-was added in Zed v0.165 and is currently used only in Vim mode.
+was added in Zed v0.165 and is currently used only in [Vim mode](../vim.md).
 
 Vim provides two levels of granularity for navigating around files.
 Section-by-section with `[]` etc., and method-by-method with `]m` etc. Even
@@ -601,8 +601,8 @@ methods, see the
 
 ### Clipboard Commands
 
-Code actions and code lenses can use the client command
-`editor.copyToClipboard` to copy text when the user selects the action:
+Code actions and code lenses can use the client command `editor.copyToClipboard`
+to copy text when the user selects the action:
 
 ```json
 {
@@ -631,9 +631,9 @@ capability or set server-specific initialization options.
 
 ### Syntax Highlighting with Semantic Tokens
 
-Zed supports syntax highlighting using semantic tokens from the attached
-language servers. This is currently disabled by default, but can be enabled in
-your settings file:
+Zed supports syntax highlighting using [semantic tokens](../semantic-tokens.md)
+from the attached language servers. This is currently disabled by default, but
+can be enabled in your settings file:
 
 ```json [settings]
 {

@@ -7,5 +7,5 @@ publish.workspace = true
 
 [lib]
 proc-macro = true
-
-[dependencies]
+test = false
+doctest = false

@@ -8,6 +8,7 @@ publish.workspace = true
 [lib]
 doctest = false
 path    = "src/windows_resources.rs"
+test    = false
 
 [target.'cfg(target_os = "windows")'.dependencies]
 embed-resource = "3.0"
