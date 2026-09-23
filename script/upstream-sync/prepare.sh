@@ -14,6 +14,42 @@ format_merge_input() (
 		*) dprint fmt --stdin "$1" ;;
 	esac
 )
+# The exporter refuses issue-body.md above 60000 bytes, and GitHub rejects
+# issue bodies above 65536 characters, so the report must fit a fixed budget.
+REPORT_BUDGET="${SYNC_REPORT_BUDGET:-56000}"
+# Appends whole lines only, so multibyte characters are never split.
+append_lines_within() {
+	LC_ALL=C awk -v limit="$1" '{ size += length($0) + 1; if (size > limit) exit 1; print }'
+}
+assemble_report() (
+	set -euo pipefail
+	parts="$1" budget="$2"
+	notice_reserve=512
+	summary_size=$(wc -c <"${parts}/summary.md")
+	resolve_size=$(wc -c <"${parts}/resolve.md")
+	if ((summary_size + resolve_size + notice_reserve > budget)); then
+		append_lines_within $((budget - notice_reserve)) <"${parts}/summary.md" || true
+		printf '\n> [!WARNING]\n> This report exceeded %s bytes and was truncated. Reproduce the merge locally with `git merge --no-commit upstream/main` to see every conflict.\n' "${budget}"
+		return 0
+	fi
+	cat "${parts}/summary.md"
+	remaining=$((budget - summary_size - resolve_size - notice_reserve))
+	omitted=0
+	for detail in "${parts}"/details/*.md; do
+		[[ -e "${detail}" ]] || continue
+		detail_size=$(wc -c <"${detail}")
+		if ((omitted == 0 && detail_size <= remaining)); then
+			cat "${detail}"
+			remaining=$((remaining - detail_size))
+		else
+			omitted=$((omitted + 1))
+		fi
+	done
+	if ((omitted > 0)); then
+		printf '> [!NOTE]\n> Details for %s files were omitted to keep this report under %s bytes. Reproduce the merge locally to inspect them.\n\n' "${omitted}" "${budget}"
+	fi
+	cat "${parts}/resolve.md"
+)
 if [[ "${1:-}" == --format-merge-input ]]; then
 	format_merge_input "$2"
 	exit 0
@@ -146,6 +182,8 @@ attempt_merge() {
 	DATE="$(date -u +%Y-%m-%d)"
 	BEHIND="$(git rev-list --count master..upstream/main)"
 	HUMAN_COUNT="$(wc -l </tmp/human.txt)"
+	rm -rf /tmp/report
+	mkdir -p /tmp/report/details
 	{
 		printf '## Upstream sync conflict, %s\n\n' "${DATE}"
 		printf "Upstream is %s commits ahead (https://github.com/zed-industries/zed/compare/%s...%s).\n\n" \
@@ -164,8 +202,17 @@ attempt_merge() {
 		if [[ -s /tmp/lockfiles.txt ]]; then
 			printf -- "- \`Cargo.lock\`: fork side kept; cargo reconciles it after human files are resolved\n"
 		fi
-		printf '\n### Needs a human (%s files)\n' "${HUMAN_COUNT}"
+		printf '\n### Needs a human (%s files)\n\n' "${HUMAN_COUNT}"
 		while IFS= read -r FILE; do
+			HUNKS="$(grep -c '^<<<<<<< ' "${FILE}" || true)"
+			printf -- "- \`%s\`: %s conflict markers\n" "${FILE}" "${HUNKS}"
+		done </tmp/human.txt
+		printf '\n'
+	} >/tmp/report/summary.md
+	DETAIL_INDEX=0
+	while IFS= read -r FILE; do
+		DETAIL_INDEX=$((DETAIL_INDEX + 1))
+		{
 			HUNKS="$(grep -c '^<<<<<<< ' "${FILE}" || true)"
 			FORK_LOG="$(git log --format="- \`%h\` %s" -5 "${BASE}..master" -- "${FILE}")"
 			UPSTREAM_LOG="$(git log --format="- \`%h\` %s" -5 "master..upstream/main" -- "${FILE}")"
@@ -190,7 +237,9 @@ attempt_merge() {
 			printf '```diff\n'
 			git diff --cc -- "${FILE}" | awk 'NR <= 200 { print }'
 			printf '```\n</details>\n\n'
-		done </tmp/human.txt
+		} >"/tmp/report/details/$(printf '%06d' "${DETAIL_INDEX}").md"
+	done </tmp/human.txt
+	{
 		printf '### Resolve\n```sh\n'
 		printf 'git fetch upstream main && git merge --no-commit upstream/main\n'
 		printf "BASE=\"\$(git merge-base master upstream/main)\"\n"
@@ -229,7 +278,8 @@ attempt_merge() {
 			printf 'dprint check && git commit\n'
 		fi
 		printf '```\n'
-	} >/tmp/issue-body.md
+	} >/tmp/report/resolve.md
+	assemble_report /tmp/report "${REPORT_BUDGET}" >/tmp/issue-body.md
 
 	git merge --abort
 	echo "result=conflict" >>"${GITHUB_OUTPUT}"
