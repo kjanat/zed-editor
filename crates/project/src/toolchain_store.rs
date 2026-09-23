@@ -492,8 +492,12 @@ impl LocalToolchainStore {
                     .or_default()
                     .insert(path.path, toolchain.clone());
                 // Re-picking the active toolchain would otherwise resend every
-                // language server its configuration.
-                if previous.as_ref() != Some(&toolchain) {
+                // language server its configuration. Equality ignores `as_json`,
+                // which configurations are derived from, so it is compared too.
+                let unchanged = previous.as_ref().is_some_and(|previous| {
+                    *previous == toolchain && previous.as_json == toolchain.as_json
+                });
+                if !unchanged {
                     cx.emit(ToolchainStoreEvent::ToolchainActivated);
                 }
             })
