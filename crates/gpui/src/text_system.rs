@@ -346,6 +346,9 @@ impl TextSystem {
     pub(crate) fn enable_missing_glyph_reporting(&self) {
         self.platform_text_system
             .set_missing_glyph_sink(Some(self.missing_glyph_reporter.clone()));
+        // Cached layouts were shaped without a sink, so reusing them would never
+        // report their missing glyphs.
+        self.font_generation.fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn disable_missing_glyph_reporting(&self) {
@@ -1515,6 +1518,21 @@ mod missing_glyph_tests {
 
         assert!(reporter.sender.is_closed());
         assert!(reporter.sender.is_empty());
+    }
+
+    #[test]
+    fn enabling_reporting_invalidates_cached_layouts() {
+        let text_system = TextSystem::new(Arc::new(crate::NoopTextSystem::new()));
+        let generation = || text_system.font_generation.load(Ordering::Acquire);
+
+        let initial = generation();
+        text_system.enable_missing_glyph_reporting();
+        let enabled = generation();
+        assert!(enabled > initial);
+
+        text_system.disable_missing_glyph_reporting();
+        text_system.enable_missing_glyph_reporting();
+        assert!(generation() > enabled);
     }
 
     fn missing_glyph_channel() -> (MissingGlyphReporter, MissingGlyphReceiver) {
