@@ -6,7 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "agent_skills.rs"
+doctest = false
+path    = "agent_skills.rs"
 
 [dependencies]
 anyhow.workspace        = true

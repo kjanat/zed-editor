@@ -717,7 +717,10 @@ fn find_dev_repo_root(candidates: impl IntoIterator<Item = PathBuf>) -> Option<P
 /// detail). Hidden from the public API.
 #[doc(hidden)]
 pub mod __rust_embed {
-    pub use rust_embed::{EmbeddedFile, Filenames, Metadata, RustEmbed, utils};
+    pub use rust_embed::{
+        __mimetype_of, EmbeddedCompressedFile, EmbeddedFile, Filenames, Metadata, RustEmbed, flate,
+        utils,
+    };
 }
 
 /// Backs the dev arm of [`fs_embed!`]'s `iter`: every file under the root-relative
@@ -844,6 +847,14 @@ macro_rules! __fs_embed {
 
         #[cfg(debug_assertions)]
         impl $crate::__rust_embed::RustEmbed for $name {
+            // Files are read from disk uncompressed, matching the derive's own
+            // dynamic mode.
+            fn compressed(
+                _file_path: &str,
+            ) -> ::core::option::Option<$crate::__rust_embed::EmbeddedCompressedFile> {
+                ::core::option::Option::None
+            }
+
             fn get(
                 file_path: &str,
             ) -> ::core::option::Option<$crate::__rust_embed::EmbeddedFile> {

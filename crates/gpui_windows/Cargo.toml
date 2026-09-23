@@ -9,7 +9,8 @@ publish.workspace = true
 ignored = ["scap"]
 
 [lib]
-path = "src/gpui_windows.rs"
+doctest = false
+path    = "src/gpui_windows.rs"
 
 [dependencies]
 gpui.workspace = true

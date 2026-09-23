@@ -58,8 +58,8 @@ editor menu, or permanently, using the
 
 ## Project Panel
 
-Project panel can have its entries coloured based on the severity of the
-diagnostics in the file.
+[Project panel](./project-panel.md) can have its entries coloured based on the
+severity of the diagnostics in the file.
 
 To configure, use
 

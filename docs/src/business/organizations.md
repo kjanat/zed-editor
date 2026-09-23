@@ -79,5 +79,5 @@ any other organization memberships are unaffected.
 ## Organization Dashboard
 
 The dashboard shows your members, roles, and billing. Owners and admins have
-full access. Billing Managers have billing access. Members have no dashboard
-access.
+full access. Billing Managers have [billing](../account/billing.md) access.
+Members have no dashboard access.

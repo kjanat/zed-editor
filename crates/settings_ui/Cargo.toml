@@ -9,7 +9,8 @@ publish.workspace = true
 ignored = ["component"]
 
 [lib]
-path = "src/settings_ui.rs"
+doctest = false
+path    = "src/settings_ui.rs"
 
 [dependencies]
 agent.workspace                    = true

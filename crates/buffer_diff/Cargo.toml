@@ -9,7 +9,8 @@ publish.workspace = true
 ignored = ["tracing"]
 
 [lib]
-path = "src/buffer_diff.rs"
+doctest = false
+path    = "src/buffer_diff.rs"
 
 [dependencies]
 clock.workspace             = true

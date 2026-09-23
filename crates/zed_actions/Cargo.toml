@@ -8,6 +8,10 @@ publish.workspace = true
 [package.metadata.cargo-shear]
 ignored = ["util"]
 
+[lib]
+doctest = false
+test    = false
+
 [dependencies]
 gpui.workspace     = true
 schemars.workspace = true

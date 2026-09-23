@@ -6,10 +6,19 @@ license           = "Apache-2.0"
 publish.workspace = true
 
 [lib]
-path = "src/gpui_platform.rs"
+doctest = false
+path    = "src/gpui_platform.rs"
+
+[[bench]]
+harness           = false
+name              = "inspector_render"
+required-features = ["bench-support"]
 
 [dependencies]
 gpui.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_linux.workspace = true
@@ -29,6 +38,7 @@ gpui_windows.workspace = true
 default         = []
 bench-support   = ["gpui_macos/bench-support", "gpui/bench-support"]
 font-kit        = ["gpui_macos/font-kit"]
+inspector       = ["gpui/inspector"]
 runtime_shaders = ["gpui_macos/runtime_shaders"]
 screen-capture  = ["gpui_linux/screen-capture", "gpui_macos/screen-capture", "gpui_windows/screen-capture", "gpui/screen-capture"]
 test-support    = ["gpui_macos/test-support", "gpui_windows/test-support", "gpui/test-support"]

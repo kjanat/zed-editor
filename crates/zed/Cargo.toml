@@ -1,6 +1,6 @@
 [package]
 name              = "zed"
-version           = "1.21.0"
+version           = "1.22.0"
 authors           = ["Zed Team <hi@zed.dev>"]
 edition.workspace = true
 description       = "The fast, collaborative code editor."
@@ -118,6 +118,7 @@ gpui_platform                     = { workspace = true, features = [
   "x11",
 ] }
 gpui_tokio.workspace              = true
+hdrhistogram.workspace            = true
 image                             = { workspace = true, optional = true }
 itertools.workspace               = true
 rayon.workspace                   = true
@@ -267,11 +268,6 @@ gpui                  = { workspace = true, features = ["profiler", "windows-man
 windows.workspace     = true
 
 [features]
-inspector          = [
-  "gpui/inspector",
-  "inspector_ui/inspector",
-  "ui/derive_inspector_reflection",
-]
 test-support       = [
   "dep:image",
   "editor/test-support",

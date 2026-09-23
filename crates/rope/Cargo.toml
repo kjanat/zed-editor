@@ -9,7 +9,8 @@ publish.workspace = true
 ignored = ["tracing"]
 
 [lib]
-path = "src/rope.rs"
+doctest = false
+path    = "src/rope.rs"
 
 [[bench]]
 harness = false

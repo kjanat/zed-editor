@@ -6,7 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/input_latency_ui.rs"
+doctest = false
+path    = "src/input_latency_ui.rs"
+test    = false
 
 [dependencies]
 chrono.workspace       = true

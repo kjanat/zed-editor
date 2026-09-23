@@ -251,9 +251,9 @@ conversation from modifying the skills that govern future conversations.
 
 ## Agent Path Boundaries {#agent-path-boundaries}
 
-Zed Skills apply to the Zed Agent. External Agents and Terminal Threads may have
-their own native skills, prompts, or instruction systems. Configure those in the
-External Agent or CLI.
+Zed Skills apply to the Zed Agent. [External Agents](./external-agents.md) and
+Terminal Threads may have their own native skills, prompts, or instruction
+systems. Configure those in the External Agent or CLI.
 
 ## Limitations {#limitations}
 

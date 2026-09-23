@@ -235,7 +235,7 @@ the connection between your project and that interpreter. It shows available
 packages, lets you install new ones, and keeps track of which environment each
 project uses.
 
-Zed handles virtual environments through its toolchain system:
+Zed handles virtual environments through its [toolchain system](../toolchains.md):
 
 - Zed automatically discovers virtual environments in common locations (`.venv`,
   `venv`, `.env`, `env`)

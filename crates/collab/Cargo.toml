@@ -11,7 +11,8 @@ default-run       = "collab"
 ignored = ["sea-orm-macros"]
 
 [lib]
-test = false
+doctest = false
+test    = false
 
 [[bin]]
 name = "collab"

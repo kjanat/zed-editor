@@ -176,10 +176,10 @@ from linker failures to other hard-to-diagnose errors.
 If you need extra Rust flags, use one of the following approaches in
 `.cargo/config.toml`:
 
-Add your flags in the build section
+Add your flags in the common target section
 
 ```toml
-[build]
+[target."cfg(all())"]
 rustflags = ["-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
 ```
 

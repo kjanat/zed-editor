@@ -11,6 +11,7 @@ ignored = ["component"]
 [lib]
 doctest = false
 path    = "src/notifications.rs"
+test    = false
 
 [dependencies]
 anyhow.workspace       = true

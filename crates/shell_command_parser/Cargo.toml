@@ -6,12 +6,11 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/shell_command_parser.rs"
+doctest = false
+path    = "src/shell_command_parser.rs"
 
 [dependencies]
 brush-parser.workspace = true
-
-[dev-dependencies]
 
 [lints]
 workspace = true

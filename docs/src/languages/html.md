@@ -101,8 +101,8 @@ where to look for CSS classes by adding the following to your `settings.json`:
 }
 ```
 
-With these settings, you will get completions for Tailwind CSS classes in HTML
-`class` attributes. Examples:
+With these settings, you will get completions for
+[Tailwind CSS](./tailwindcss.md) classes in HTML `class` attributes. Examples:
 
 ```html
 <div class="flex items-center <completion here>">

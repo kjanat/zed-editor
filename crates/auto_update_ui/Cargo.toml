@@ -6,7 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/auto_update_ui.rs"
+doctest = false
+path    = "src/auto_update_ui.rs"
+test    = false
 
 [dependencies]
 agent_skills.workspace     = true

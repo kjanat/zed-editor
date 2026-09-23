@@ -189,5 +189,6 @@ prediction options.
 
 ## Agent Path Boundaries {#agent-path-boundaries}
 
-This page covers local models configured in Zed. External Agents and terminal
-CLIs may have their own local-model setup; configure those in the agent or CLI.
+This page covers local models configured in Zed.
+[External Agents](./external-agents.md) and terminal CLIs may have their own
+local-model setup; configure those in the agent or CLI.

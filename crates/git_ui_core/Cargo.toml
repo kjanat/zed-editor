@@ -6,8 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-name = "git_ui_core"
-path = "src/git_ui_core.rs"
+doctest = false
+name    = "git_ui_core"
+path    = "src/git_ui_core.rs"
 
 [dependencies]
 anyhow.workspace            = true

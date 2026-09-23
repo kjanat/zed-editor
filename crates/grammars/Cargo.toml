@@ -5,7 +5,9 @@ edition.workspace = true
 publish           = false
 
 [lib]
-path = "src/grammars.rs"
+doctest = false
+path    = "src/grammars.rs"
+test    = false
 
 [dependencies]
 anyhow.workspace        = true

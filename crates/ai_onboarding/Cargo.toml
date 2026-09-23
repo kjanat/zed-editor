@@ -9,7 +9,9 @@ publish.workspace = true
 ignored = ["component"]
 
 [lib]
-path = "src/ai_onboarding.rs"
+doctest = false
+path    = "src/ai_onboarding.rs"
+test    = false
 
 [dependencies]
 client.workspace          = true

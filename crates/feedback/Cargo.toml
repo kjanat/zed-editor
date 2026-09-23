@@ -6,7 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/feedback.rs"
+doctest = false
+path    = "src/feedback.rs"
+test    = false
 
 [dependencies]
 client.workspace         = true

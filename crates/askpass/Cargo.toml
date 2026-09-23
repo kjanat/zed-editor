@@ -6,7 +6,8 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/askpass.rs"
+doctest = false
+path    = "src/askpass.rs"
 
 [dependencies]
 anyhow.workspace   = true

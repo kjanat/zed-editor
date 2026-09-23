@@ -6,7 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/theme_extension.rs"
+doctest = false
+path    = "src/theme_extension.rs"
+test    = false
 
 [dependencies]
 anyhow.workspace         = true

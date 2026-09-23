@@ -6,8 +6,8 @@ description: Configure Zed Agent profiles for model selection, built-in tool ava
 # Agent Profiles
 
 Agent profiles control how the [Zed Agent](./zed-agent.md) behaves in a thread.
-A profile can set a default model and choose which built-in tools and MCP tools
-are available.
+A profile can set a default model and choose which [built-in tools](./tools.md)
+and MCP tools are available.
 
 Profiles do not decide whether a tool call is allowed automatically. Use
 [Tool Permissions](./tool-permissions.md) to control allow, deny, and confirm
@@ -23,7 +23,8 @@ Zed includes three built-in profiles:
 
 ## Configure Profiles {#configure-profiles}
 
-Open the profile selector in the Agent Panel, then click `Configure`.
+Open the profile selector in the [Agent Panel](./agent-panel.md), then click
+`Configure`.
 
 You can also run {#action agent::ManageProfiles} from the command palette.
 
@@ -81,6 +82,6 @@ requires approval.
 
 ## Agent Path Boundaries {#agent-path-boundaries}
 
-Agent profiles apply to the Zed Agent. External Agents and Terminal Threads do
-not use Zed Agent profiles unless their integration explicitly supports similar
-behavior.
+Agent profiles apply to the Zed Agent. External Agents and
+[Terminal Threads](./terminal-threads.md) do not use Zed Agent profiles unless
+their integration explicitly supports similar behavior.

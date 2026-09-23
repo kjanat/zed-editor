@@ -6,7 +6,9 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [lib]
-path = "src/web_search.rs"
+doctest = false
+path    = "src/web_search.rs"
+test    = false
 
 [dependencies]
 anyhow.workspace           = true

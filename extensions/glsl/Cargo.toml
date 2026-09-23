@@ -1,6 +1,6 @@
 [package]
 name              = "zed_glsl"
-version           = "0.2.4"
+version           = "0.2.5"
 edition.workspace = true
 license           = "Apache-2.0"
 publish.workspace = true
@@ -8,6 +8,7 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib"]
 path       = "src/glsl.rs"
+test       = false
 
 [dependencies]
 zed_extension_api = "0.1.0"

@@ -397,7 +397,7 @@ configure formatters globally or per-language in your `settings.json`:
 ```
 
 This example uses Prettier for JavaScript and the language server's formatter
-for Rust, both set to format on save.
+for [Rust](./languages/rust.md), both set to format on save.
 
 To disable formatting for a specific language:
 
@@ -426,8 +426,8 @@ allow you to configure linting rules:
 }
 ```
 
-This configuration sets up ESLint to organize imports on save for JavaScript
-files.
+This configuration sets up ESLint to organize imports on save for
+[JavaScript](./languages/javascript.md) files.
 
 To run linter fixes automatically on save:
 

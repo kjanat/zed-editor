@@ -9,7 +9,9 @@ publish.workspace = true
 ignored = ["component", "documented"]
 
 [lib]
-path = "src/onboarding.rs"
+doctest = false
+path    = "src/onboarding.rs"
+test    = false
 
 [dependencies]
 anyhow.workspace           = true

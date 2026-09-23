@@ -9,8 +9,9 @@ publish.workspace = true
 ignored = ["component", "remote_connection", "tracing"]
 
 [lib]
-name = "git_ui"
-path = "src/git_ui.rs"
+doctest = false
+name    = "git_ui"
+path    = "src/git_ui.rs"
 
 [dependencies]
 agent_settings.workspace    = true

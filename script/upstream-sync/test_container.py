@@ -143,6 +143,80 @@ rustfmt --version
             self.assertTrue((output / "sync.bundle").is_file())
             self.assertFalse((source / "compromised").exists())
 
+    def test_conflict_report_fits_the_exporter_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, upstream, output = (
+                root / name for name in ("source", "upstream", "output")
+            )
+            source.mkdir()
+            output.mkdir()
+
+            def git(*arguments: str, cwd: Path = source) -> None:
+                _ = subprocess.run(
+                    ["git", *arguments], cwd=cwd, check=True, capture_output=True
+                )
+
+            git("init", "-q", "-b", "master")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "commit.gpgsign", "false")
+            script = source / "script/upstream-sync/prepare.sh"
+            script.parent.mkdir(parents=True)
+            _ = shutil.copyfile(Path(__file__).with_name("prepare.sh"), script)
+            names = [f"conflict-{index:02}-é.txt" for index in range(40)]
+            for name in names:
+                _ = (source / name).write_text(
+                    "".join(f"{line}\n" for line in range(300))
+                )
+            git("add", ".")
+            git("commit", "-qm", "baseline")
+            git("clone", "-q", str(source), str(upstream))
+            git("config", "user.name", "Test", cwd=upstream)
+            git("config", "user.email", "test@example.invalid", cwd=upstream)
+            git("config", "commit.gpgsign", "false", cwd=upstream)
+            git("branch", "-m", "main", cwd=upstream)
+            for directory, side in ((source, "fork ✓"), (upstream, "upstream ✗")):
+                for name in names:
+                    _ = (directory / name).write_text(
+                        "".join(f"{side} {line}\n" for line in range(300))
+                    )
+                git("commit", "-qam", f"{side} rewrite", cwd=directory)
+            result = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network=none",
+                    "--user",
+                    f"{os.getuid()}:{os.getgid()}",
+                    "--cap-drop=ALL",
+                    "--security-opt=no-new-privileges",
+                    "--mount",
+                    f"type=bind,src={source},dst=/source,readonly",
+                    "--mount",
+                    f"type=bind,src={upstream},dst=/upstream,readonly",
+                    "--mount",
+                    f"type=bind,src={output},dst=/output",
+                    "--env",
+                    "UPSTREAM_URL=/upstream",
+                    os.environ["SYNC_TEST_IMAGE"],
+                    "bash",
+                    "/source/script/upstream-sync/prepare.sh",
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((output / "result").read_text(), "conflict\n")
+            report = (output / "issue-body.md").read_bytes()
+            self.assertLessEqual(len(report), 60000)
+            text = report.decode("utf-8")
+            self.assertIn(names[-1], text)
+            self.assertIn("were omitted", text)
+            self.assertIn("### Resolve", text)
+
 
 if __name__ == "__main__":
     _ = unittest.main()
