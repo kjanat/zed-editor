@@ -89,10 +89,6 @@ attempt_merge() {
 	# The fork keeps its own automation and the publisher rejects any change to
 	# .github, so upstream changes there are dropped instead of stalling the sync.
 	git diff --name-only "${BASE}" upstream/main -- .github >/tmp/dropped-github.txt
-	if [[ -s /tmp/dropped-github.txt ]]; then
-		printf 'Dropped upstream .github changes:\n' >>"${GITHUB_STEP_SUMMARY}"
-		sed 's/^/- /' /tmp/dropped-github.txt >>"${GITHUB_STEP_SUMMARY}"
-	fi
 	git rm -r -q -f --ignore-unmatch -- .github
 	if git cat-file -e master:.github 2>/dev/null; then
 		git checkout master -- .github
@@ -305,10 +301,16 @@ result=$(sed -n "s/^result=//p" "$GITHUB_OUTPUT")
 case "$result" in
 	clean | resolved)
 		dprint fmt
+		# Formatter configuration merged from upstream must not reformat the
+		# fork's automation either.
+		if git cat-file -e HEAD:.github 2>/dev/null; then
+			git checkout HEAD -- .github
+		fi
 		if ! git diff --quiet; then
 			git commit --all --message "Apply this fork's formatting to the upstream merge"
 		fi
 		git bundle create /output/sync.bundle refs/heads/sync/upstream ^master
+		cp /tmp/dropped-github.txt /output/
 		;;
 	conflict)
 		cp /tmp/issue-body.md /output/issue-body.md

@@ -23,7 +23,7 @@ also stop its replacement.
 
 The fork keeps its own automation: the merge restores `.github` from `master`,
 so upstream changes there, including new workflows and edits to workflows the
-fork removed, are dropped and listed in the job summary instead of stopping the
+fork removed, are dropped and listed in the sync PR instead of stopping the
 sync. Adopting one means porting it by hand.
 
 New or unassigned sync PRs and issues are assigned to `kjanat`. Existing

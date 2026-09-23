@@ -53,7 +53,8 @@ jobs:
           mkdir $d or die "$d: $!";
 
           for(["result",32],["sync.bundle",256<<20],["issue-body.md",60000],
-              ["formatting-only.txt",16000],["formatted-three-way.txt",16000],["lockfiles.txt",16000]){
+              ["formatting-only.txt",16000],["formatted-three-way.txt",16000],["lockfiles.txt",16000],
+              ["dropped-github.txt",16000]){
             my($n,$m)=@$_; my $i;
             unless(sysopen $i,"$s/$n",O_RDONLY|O_NOFOLLOW|O_NONBLOCK){
               next if $!==ENOENT && $n ne "result";
