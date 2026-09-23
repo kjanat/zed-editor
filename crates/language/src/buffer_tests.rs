@@ -145,6 +145,22 @@ fn test_set_line_ending(cx: &mut TestAppContext) {
     base.read_with(cx, |buffer, _| {
         assert_eq!(buffer.line_ending(), LineEnding::Unix);
     });
+
+    // Setting the current line ending is not an operation.
+    let operation_count = std::rc::Rc::new(std::cell::Cell::new(0));
+    cx.update(|cx| {
+        let operation_count = operation_count.clone();
+        cx.subscribe(&base, move |_, event, _| {
+            if let BufferEvent::Operation { .. } = event {
+                operation_count.set(operation_count.get() + 1);
+            }
+        })
+        .detach();
+    });
+    base.update(cx, |buffer, cx| {
+        buffer.set_line_ending(LineEnding::Unix, cx)
+    });
+    assert_eq!(operation_count.get(), 0);
 }
 
 #[gpui::test]

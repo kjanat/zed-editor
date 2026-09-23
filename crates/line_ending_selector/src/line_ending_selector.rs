@@ -127,7 +127,9 @@ impl PickerDelegate for LineEndingSelectorDelegate {
     }
 
     fn confirm(&mut self, _: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        if let Some(line_ending) = self.matches.get(self.selected_index) {
+        if let Some(line_ending) = self.matches.get(self.selected_index)
+            && *line_ending != self.buffer.read(cx).line_ending()
+        {
             self.buffer.update(cx, |this, cx| {
                 this.set_line_ending(*line_ending, cx);
             });
