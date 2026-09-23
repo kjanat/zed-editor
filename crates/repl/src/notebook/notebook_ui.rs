@@ -2542,9 +2542,28 @@ mod tests {
                 window,
                 cx,
             );
+            let execute_result = || {
+                let mut result = jupyter_protocol::ExecuteResult::default();
+                result.execution_count = jupyter_protocol::ExecutionCount::new(7);
+                result.data =
+                    jupyter_protocol::Media::new(vec![jupyter_protocol::MediaType::Plain(
+                        "42".to_string(),
+                    )]);
+                result
+                    .metadata
+                    .insert("width".to_string(), serde_json::json!(640));
+                JupyterMessage::new(result, Some(&request))
+            };
+            editor.route(&execute_result(), window, cx);
             let serialized = serde_json::to_string(&editor.to_notebook(cx)).unwrap();
             assert!(serialized.contains("**rich**"), "{serialized}");
             assert!(serialized.contains("<svg/>"), "{serialized}");
+            // Results keep their type, execution count and metadata.
+            let outputs =
+                serde_json::to_value(&editor.to_notebook(cx).cells[0]).unwrap()["outputs"].clone();
+            assert_eq!(outputs[2]["output_type"], "execute_result", "{outputs}");
+            assert_eq!(outputs[2]["execution_count"], 7, "{outputs}");
+            assert_eq!(outputs[2]["metadata"]["width"], 640, "{outputs}");
             editor.mark_saved(editor.snapshot(cx));
             assert!(!editor.has_unsaved_changes(cx));
             assert!(!editor.is_dirty(cx));
@@ -2563,6 +2582,7 @@ mod tests {
                 window,
                 cx,
             );
+            editor.route(&execute_result(), window, cx);
             assert!(!editor.has_unsaved_changes(cx));
 
             editor.execution_requests.clear();

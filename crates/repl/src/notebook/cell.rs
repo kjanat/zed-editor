@@ -128,10 +128,10 @@ fn convert_outputs(
                 content: cx.new(|cx| TerminalOutput::from(&text.0, window, cx)),
             },
             nbformat::v4::Output::DisplayData(display_data) => {
-                Output::new(&display_data.data, None, window, cx)
+                Output::new(&display_data.data, None, window, cx).saved_as(output.clone())
             }
             nbformat::v4::Output::ExecuteResult(execute_result) => {
-                Output::new(&execute_result.data, None, window, cx)
+                Output::new(&execute_result.data, None, window, cx).saved_as(output.clone())
             }
             nbformat::v4::Output::Error(error) => Output::ErrorOutput(ErrorView {
                 ename: error.ename.clone(),
@@ -890,12 +890,21 @@ impl CodeCell {
                 });
             }
             JupyterMessageContent::DisplayData(display_data) => {
+                let saved = nbformat::v4::Output::DisplayData(nbformat::v4::DisplayData {
+                    data: display_data.data.clone(),
+                    metadata: display_data.metadata.clone(),
+                });
                 self.outputs
-                    .push(Output::new(&display_data.data, None, window, cx));
+                    .push(Output::new(&display_data.data, None, window, cx).saved_as(saved));
             }
             JupyterMessageContent::ExecuteResult(execute_result) => {
+                let saved = nbformat::v4::Output::ExecuteResult(nbformat::v4::ExecuteResult {
+                    execution_count: execute_result.execution_count,
+                    data: execute_result.data.clone(),
+                    metadata: execute_result.metadata.clone(),
+                });
                 self.outputs
-                    .push(Output::new(&execute_result.data, None, window, cx));
+                    .push(Output::new(&execute_result.data, None, window, cx).saved_as(saved));
             }
             JupyterMessageContent::ExecuteInput(input) => {
                 self.execution_count = serde_json::to_value(&input.execution_count)
