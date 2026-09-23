@@ -73,6 +73,15 @@ pub(crate) const CONTROL_SIZE: f32 = 20.0;
 const NOTEBOOK_EXTENSION: &str = "ipynb";
 
 fn parse_notebook_text(text: &str) -> Result<nbformat::v4::Notebook> {
+    // Like opening one, an empty file is an empty notebook.
+    if text.trim().is_empty() {
+        return Ok(nbformat::v4::Notebook {
+            nbformat: 4,
+            nbformat_minor: 5,
+            cells: vec![],
+            metadata: serde_json::from_str("{}")?,
+        });
+    }
     let mut json: serde_json::Value = serde_json::from_str(text)?;
     if let Some(cells) = json.get_mut("cells").and_then(|c| c.as_array_mut()) {
         for cell in cells {
@@ -322,10 +331,20 @@ impl NotebookEditor {
     /// Whether the notebook holds anything a reload would lose, including cell
     /// outputs and execution counts, which do not dirty the source buffers.
     fn has_unsaved_changes(&self, cx: &App) -> bool {
-        self.has_structural_changes()
+        self.has_executing_cells(cx)
+            || self.has_structural_changes()
             || self.has_content_changes(cx)
             || self.saved_cells.is_none()
             || self.serialize_cells(cx) != self.saved_cells
+    }
+
+    /// A running cell's results would land in whatever cell has its ID, so its
+    /// cell must not be replaced by a reload.
+    fn has_executing_cells(&self, cx: &App) -> bool {
+        self.cell_map.values().any(|cell| match cell {
+            Cell::Code(cell) => cell.read(cx).is_executing(),
+            _ => false,
+        })
     }
 
     fn has_structural_changes(&self) -> bool {
@@ -384,6 +403,9 @@ impl NotebookEditor {
         self.cell_order = cell_order.clone();
         self.original_cell_order = cell_order;
         self.cell_map = cell_map;
+        // Results of requests sent for the replaced cells must not reach the
+        // new cells that share their IDs.
+        self.execution_requests.clear();
         self.selected_cell_index = self
             .selected_cell_index
             .min(self.cell_order.len().saturating_sub(1));
@@ -2266,6 +2288,14 @@ mod tests {
             assert_eq!(editor.cell_order.len(), 1);
         });
         assert!(notebook_json(cx).contains("print('external')"));
+
+        // An emptied file reloads as an empty notebook.
+        fs.insert_file(path, Vec::new()).await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, cx| {
+            assert!(!editor.has_conflict(cx));
+            assert!(editor.cell_order.is_empty());
+        });
     }
 
     #[gpui::test]
@@ -2328,6 +2358,21 @@ mod tests {
             })
             .await
             .expect("discard execution results");
+
+        // A running cell keeps the notebook from being replaced.
+        code_cell(0, cx).update(cx, |cell, _| cell.start_execution());
+        let running =
+            NOTEBOOK_WITH_ONE_CODE_CELL.replace("print('hello')", "print('while running')");
+        fs.insert_file(path, running.into_bytes()).await;
+        cx.run_until_parked();
+        notebook_editor.read_with(cx, |editor, cx| assert!(editor.has_conflict(cx)));
+        code_cell(0, cx).update(cx, |cell, _| cell.finish_execution());
+        notebook_editor
+            .update_in(cx, |editor, window, cx| {
+                editor.reload(project.clone(), window, cx)
+            })
+            .await
+            .expect("discard after execution");
 
         // Cells rebuilt by a reload keep their event wiring.
         let two_cells = NOTEBOOK_WITH_ONE_CODE_CELL.replace(
