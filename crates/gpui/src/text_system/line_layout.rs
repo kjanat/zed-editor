@@ -230,7 +230,7 @@ impl LineLayout {
     /// Bidirectional text can interleave the two sides visually, so each glyph
     /// keeps its own advance (up to the next glyph on the line) and each side's
     /// glyphs are packed together in visual order. The two widths therefore
-    /// never overlap and always add up to the width after the first glyph.
+    /// never overlap and always add up to the line's width.
     fn packed_fragment_positions(&self, byte_index: usize) -> (Vec<Pixels>, Pixels, Pixels) {
         let glyphs: Vec<&ShapedGlyph> = self.runs.iter().flat_map(|run| &run.glyphs).collect();
         let mut visual_order: Vec<usize> = (0..glyphs.len()).collect();
@@ -245,6 +245,16 @@ impl LineLayout {
         let mut positions = vec![px(0.); glyphs.len()];
         let mut left_width = px(0.);
         let mut right_width = px(0.);
+        // Positions can include per-glyph offsets, so the leftmost glyph may not
+        // start at zero; that side keeps the leading span to preserve the total.
+        if let Some(&first_ix) = visual_order.first() {
+            let first = glyphs[first_ix];
+            if first.index < byte_index {
+                left_width = first.position.x;
+            } else {
+                right_width = first.position.x;
+            }
+        }
         for (order, &glyph_ix) in visual_order.iter().enumerate() {
             let glyph = glyphs[glyph_ix];
             let next_x = visual_order

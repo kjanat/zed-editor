@@ -1543,6 +1543,26 @@ mod tests {
         assert_eq!(positions(&left), vec![px(0.0), px(10.0)]);
         assert_eq!(right.width(), px(20.0));
         assert_eq!(positions(&right), vec![px(0.0), px(10.0)]);
+
+        // A leading glyph offset stays with the side of the leftmost glyph.
+        let offset = ShapedLine {
+            layout: Arc::new(LineLayout {
+                font_size: px(16.0),
+                width: px(32.0),
+                ascent: px(12.0),
+                descent: px(4.0),
+                runs: vec![ShapedRun {
+                    font_id: FontId(0),
+                    glyphs: vec![glyph(2.0, 4), glyph(12.0, 2), glyph(22.0, 0)],
+                }],
+                len: 6,
+            }),
+            text: "אבג".into(),
+            decoration_runs: SmallVec::new(),
+        };
+        let (left, right) = offset.split_at(2);
+        assert_eq!(positions(&right), vec![px(2.0), px(12.0)]);
+        assert_eq!(left.width() + right.width(), offset.width());
     }
 
     #[test]
