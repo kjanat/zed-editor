@@ -161,10 +161,10 @@ enum UpdateContacts {
     Clear(postage::barrier::Sender),
 }
 
-#[derive(Debug, Clone, Copy, Deref)]
+#[derive(Debug, Clone, Copy, PartialEq, Deref)]
 pub struct EditPredictionUsage(pub RequestUsage);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RequestUsage {
     pub limit: UsageLimit,
     pub amount: i32,
@@ -864,18 +864,18 @@ impl UserStore {
                 .set_authenticated_user_info(Some(response.user.metrics_id.clone()), staff);
         }
 
-        self.organizations = response.organizations.into_iter().map(Arc::new).collect();
-
-        self.current_organization = response
+        let organizations: Vec<Arc<Organization>> =
+            response.organizations.into_iter().map(Arc::new).collect();
+        let current_organization = response
             .default_organization_id
             .and_then(|default_organization_id| {
-                self.organizations
+                organizations
                     .iter()
                     .find(|organization| organization.id == default_organization_id)
                     .cloned()
             })
-            .or_else(|| self.organizations.first().cloned());
-        self.plans_by_organization = response
+            .or_else(|| organizations.first().cloned());
+        let plans_by_organization: HashMap<OrganizationId, Plan> = response
             .plans_by_organization
             .into_iter()
             .map(|(organization_id, plan)| {
@@ -890,15 +890,31 @@ impl UserStore {
                 (organization_id, plan)
             })
             .collect();
-        self.configuration_by_organization =
+        let configuration_by_organization: HashMap<OrganizationId, OrganizationConfiguration> =
             response.configuration_by_organization.into_iter().collect();
-
-        self.edit_prediction_usage = Some(EditPredictionUsage(RequestUsage {
+        let edit_prediction_usage = Some(EditPredictionUsage(RequestUsage {
             limit: response.plan.usage.edit_predictions.limit,
             amount: response.plan.usage.edit_predictions.used as i32,
         }));
-        self.plan_info = Some(response.plan);
-        cx.emit(Event::PrivateUserInfoUpdated);
+        let plan_info = Some(response.plan);
+
+        // This runs on every reconnect, and subscribers refetch models and rebuild
+        // edit prediction providers, so only report what actually changed.
+        let changed = organizations != self.organizations
+            || current_organization != self.current_organization
+            || plans_by_organization != self.plans_by_organization
+            || configuration_by_organization != self.configuration_by_organization
+            || edit_prediction_usage != self.edit_prediction_usage
+            || plan_info != self.plan_info;
+        self.organizations = organizations;
+        self.current_organization = current_organization;
+        self.plans_by_organization = plans_by_organization;
+        self.configuration_by_organization = configuration_by_organization;
+        self.edit_prediction_usage = edit_prediction_usage;
+        self.plan_info = plan_info;
+        if changed {
+            cx.emit(Event::PrivateUserInfoUpdated);
+        }
     }
 
     fn handle_message_to_client(this: WeakEntity<Self>, message: &MessageToClient, cx: &App) {
