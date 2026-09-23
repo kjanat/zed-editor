@@ -72,6 +72,13 @@ pub(crate) const CONTROL_SIZE: f32 = 20.0;
 
 const NOTEBOOK_EXTENSION: &str = "ipynb";
 
+fn cells_on_disk(cells: &[nbformat::v4::Cell]) -> HashMap<CellId, serde_json::Value> {
+    cells
+        .iter()
+        .filter_map(|cell| Some((cell.id(), serde_json::to_value(cell).log_err()?)))
+        .collect()
+}
+
 fn serialize_cell(cell: &Cell, cx: &App) -> String {
     serde_json::to_string(&cell.to_nbformat_cell(cx))
         .log_err()
@@ -148,6 +155,8 @@ pub struct NotebookEditor {
     external_change_pending: bool,
     /// The notebook as last loaded or saved.
     saved: SavedNotebook,
+    /// The cells as they are in the file, so a reload can tell which ones it changed.
+    cells_on_disk: HashMap<CellId, serde_json::Value>,
     /// Each cell's comparison with `saved`, kept until the cell's revision changes
     /// so serializing large outputs doesn't happen on every check.
     cell_comparisons: RefCell<HashMap<CellId, (CellRevision, bool)>>,
@@ -239,6 +248,7 @@ impl NotebookEditor {
             external_change_pending: false,
             saved: SavedNotebook::default(),
             cell_comparisons: RefCell::default(),
+            cells_on_disk: cells_on_disk(&notebook_item.read(cx).notebook.cells),
         };
         editor.launch_kernel(window, cx);
         // Launching a kernel records its kernelspec, which is not a user edit.
@@ -439,12 +449,35 @@ impl NotebookEditor {
         // reload may have changed.
         self.refresh_language(cx);
 
+        let focused_cell_id = self.cell_map.iter().find_map(|(cell_id, cell)| {
+            let editor = cell.editor(cx)?;
+            editor
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+                .then(|| cell_id.clone())
+        });
+        let mut previous_cells = std::mem::take(&mut self.cell_map);
+        let incoming_cells_on_disk = cells_on_disk(&cells);
         let mut cell_order = vec![];
         let mut cell_map = HashMap::default();
 
         for cell in cells.iter() {
             let cell_id = cell.id();
             cell_order.push(cell_id.clone());
+            // Cells the file didn't change keep their editors, and with them their
+            // focus, cursor and editing state, as long as they still show the file.
+            let unchanged_on_disk = incoming_cells_on_disk.get(&cell_id).is_some()
+                && self.cells_on_disk.get(&cell_id) == incoming_cells_on_disk.get(&cell_id);
+            let reusable = unchanged_on_disk
+                && previous_cells.get(&cell_id).is_some_and(|existing| {
+                    !self.is_cell_modified(&cell_id, existing, cx)
+                        && !matches!(existing, Cell::Code(code_cell) if code_cell.read(cx).is_executing())
+                });
+            if reusable && let Some(existing) = previous_cells.remove(&cell_id) {
+                cell_map.insert(cell_id, existing);
+                continue;
+            }
+
             let cell_entity = Cell::load(
                 cell,
                 &self.languages,
@@ -453,11 +486,20 @@ impl NotebookEditor {
                 cx,
             );
             Self::subscribe_to_cell(&cell_id, &cell_entity, window, cx);
-            cell_map.insert(cell_id.clone(), cell_entity);
+            if focused_cell_id.as_ref() == Some(&cell_id) {
+                if let Cell::Markdown(markdown_cell) = &cell_entity {
+                    markdown_cell.update(cx, |cell, _| cell.set_editing(true));
+                }
+                if let Some(editor) = cell_entity.editor(cx).cloned() {
+                    window.focus(&editor.focus_handle(cx), cx);
+                }
+            }
+            cell_map.insert(cell_id, cell_entity);
         }
 
         self.cell_order = cell_order;
         self.cell_map = cell_map;
+        self.cells_on_disk = incoming_cells_on_disk;
         // Results of requests sent for the replaced cells must not reach the
         // new cells that share their IDs.
         self.execution_requests.clear();
@@ -503,6 +545,7 @@ impl NotebookEditor {
         let notebook = self.to_notebook(cx);
         // Taken before the write so that changes made while it runs stay unsaved.
         let saved = self.snapshot(cx);
+        let written_cells = cells_on_disk(&notebook.cells);
         let buffer = self.notebook_item.read(cx).buffer.clone();
 
         cx.spawn(async move |this, cx| {
@@ -556,6 +599,7 @@ impl NotebookEditor {
             this.update(cx, |this, cx| {
                 this.external_change_pending = false;
                 this.mark_saved(saved);
+                this.cells_on_disk = written_cells;
                 cx.notify();
             })
         })
@@ -2537,7 +2581,7 @@ mod tests {
             }"#,
         );
         assert_ne!(two_cells, NOTEBOOK_WITH_ONE_CODE_CELL);
-        fs.insert_file(path, two_cells.into_bytes()).await;
+        fs.insert_file(path, two_cells.clone().into_bytes()).await;
         cx.run_until_parked();
         assert_eq!(
             notebook_editor.read_with(cx, |editor, _| editor.cell_order.len()),
@@ -2549,6 +2593,20 @@ mod tests {
         assert_eq!(
             notebook_editor.read_with(cx, |editor, _| editor.selected_cell_index),
             1
+        );
+
+        // Only the cells the file changed are rebuilt.
+        let first_cell = code_cell(0, cx);
+        let second_cell = code_cell(1, cx);
+        let second_changed = two_cells.replace("print('two')", "print('two changed')");
+        fs.insert_file(path, second_changed.clone().into_bytes())
+            .await;
+        cx.run_until_parked();
+        assert_eq!(code_cell(0, cx).entity_id(), first_cell.entity_id());
+        assert_ne!(code_cell(1, cx).entity_id(), second_cell.entity_id());
+        assert_eq!(
+            code_cell(1, cx).read_with(cx, |cell, cx| cell.current_source(cx)),
+            "print('two changed')"
         );
 
         // A shorter reloaded notebook keeps the selection in range.
