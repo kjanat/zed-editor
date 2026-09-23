@@ -1577,6 +1577,15 @@ struct DispatchingKeystrokes {
 /// A `Workspace` usually consists of 1 or more projects, a central pane group, 3 docks and a status bar.
 /// The `Workspace` owns everybody's state and serves as a default, "global context",
 /// that can be used to register a global action to be triggered from any place in the window.
+#[derive(PartialEq)]
+struct SavedWindowState {
+    window_bounds: WindowBounds,
+    display_uuid: Uuid,
+    native_window_state: Option<Vec<u8>>,
+    database_id: Option<WorkspaceId>,
+    has_paths: bool,
+}
+
 pub struct Workspace {
     weak_self: WeakEntity<Self>,
     workspace_actions: Vec<Box<dyn Fn(Div, &Workspace, &mut Window, &mut Context<Self>) -> Div>>,
@@ -1627,6 +1636,9 @@ pub struct Workspace {
     bounds: Bounds<Pixels>,
     pub centered_layout: bool,
     bounds_save_task_queued: Option<Task<()>>,
+    /// The window state last written, since focusing a window reports its bounds
+    /// as changed even when it didn't move.
+    last_saved_window_state: Option<SavedWindowState>,
     on_prompt_for_new_path: Option<PromptForNewPath>,
     on_prompt_for_open_path: Option<PromptForOpenPath>,
     terminal_provider: Option<Box<dyn TerminalProvider>>,
@@ -2135,6 +2147,7 @@ impl Workspace {
             bounds: Default::default(),
             centered_layout: false,
             bounds_save_task_queued: None,
+            last_saved_window_state: None,
             on_prompt_for_new_path: None,
             on_prompt_for_open_path: None,
             terminal_provider: None,
@@ -7524,7 +7537,7 @@ impl Workspace {
         self.session_id.clone()
     }
 
-    fn save_window_bounds(&self, window: &mut Window, cx: &mut App) -> Task<()> {
+    fn save_window_bounds(&mut self, window: &mut Window, cx: &mut App) -> Task<()> {
         let Some(display) = window.display(cx) else {
             return Task::ready(());
         };
@@ -7542,6 +7555,17 @@ impl Workspace {
         } else {
             None
         };
+        let saved_state = SavedWindowState {
+            window_bounds,
+            display_uuid,
+            native_window_state: native_window_state.clone(),
+            database_id,
+            has_paths,
+        };
+        if self.last_saved_window_state.as_ref() == Some(&saved_state) {
+            return Task::ready(());
+        }
+        self.last_saved_window_state = Some(saved_state);
 
         cx.background_executor().spawn(async move {
             if !has_paths {
