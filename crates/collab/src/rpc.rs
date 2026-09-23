@@ -3582,6 +3582,12 @@ async fn update_channel_buffer(
         &session.peer,
     );
 
+    // Selection-only updates don't change the notes, so members who aren't
+    // collaborating have nothing new to be told about.
+    if version.is_empty() {
+        return Ok(());
+    }
+
     let pool = &*session.connection_pool().await;
 
     let non_collaborators =
