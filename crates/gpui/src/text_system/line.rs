@@ -1515,6 +1515,34 @@ mod tests {
         assert_eq!(right.width(), px(20.0));
         assert_eq!(positions(&right), vec![px(0.0), px(10.0)]);
         assert_eq!(left.width() + right.width(), line.width());
+
+        // Mixed-direction text can interleave the two halves visually; their
+        // widths must still add up to the line instead of overlapping.
+        let interleaved = ShapedLine {
+            layout: Arc::new(LineLayout {
+                font_size: px(16.0),
+                width: px(40.0),
+                ascent: px(12.0),
+                descent: px(4.0),
+                runs: vec![ShapedRun {
+                    font_id: FontId(0),
+                    glyphs: vec![
+                        glyph(0.0, 0),
+                        glyph(10.0, 4),
+                        glyph(20.0, 2),
+                        glyph(30.0, 6),
+                    ],
+                }],
+                len: 8,
+            }),
+            text: "אבגד".into(),
+            decoration_runs: SmallVec::new(),
+        };
+        let (left, right) = interleaved.split_at(4);
+        assert_eq!(left.width(), px(20.0));
+        assert_eq!(positions(&left), vec![px(0.0), px(10.0)]);
+        assert_eq!(right.width(), px(20.0));
+        assert_eq!(positions(&right), vec![px(0.0), px(10.0)]);
     }
 
     #[test]

@@ -141,35 +141,46 @@ impl LineLayout {
             .iter()
             .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.index))
             .is_sorted();
-        let ((left_start, left_end), (right_start, right_end)) = if byte_ordered {
+        let (positions, left_width, right_width) = if byte_ordered {
             let x_offset = self.x_for_index(byte_index);
-            ((px(0.), x_offset), (x_offset, self.width))
+            let positions = self
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| {
+                    if glyph.index < byte_index {
+                        glyph.position.x
+                    } else {
+                        glyph.position.x - x_offset
+                    }
+                })
+                .collect();
+            (positions, x_offset, self.width - x_offset)
         } else {
-            (
-                self.fragment_extent(|index| index < byte_index),
-                self.fragment_extent(|index| index >= byte_index),
-            )
+            self.packed_fragment_positions(byte_index)
         };
 
         // Partition glyph runs. A single run may contribute glyphs to both halves.
         let mut left_runs = Vec::new();
         let mut right_runs = Vec::new();
+        let mut positions = positions.into_iter();
 
         for run in &self.runs {
             // Visually ordered RTL runs can have descending byte indices, so
             // glyphs are partitioned by index rather than by position.
             let mut left_glyphs = Vec::new();
             let mut right_glyphs = Vec::new();
-            for glyph in &run.glyphs {
+            for (glyph, x) in run.glyphs.iter().zip(positions.by_ref()) {
+                let position = point(x, glyph.position.y);
                 if glyph.index < byte_index {
                     left_glyphs.push(ShapedGlyph {
-                        position: point(glyph.position.x - left_start, glyph.position.y),
+                        position,
                         ..glyph.clone()
                     });
                 } else {
                     right_glyphs.push(ShapedGlyph {
                         id: glyph.id,
-                        position: point(glyph.position.x - right_start, glyph.position.y),
+                        position,
                         index: glyph.index - byte_index,
                         is_emoji: glyph.is_emoji,
                     });
@@ -193,7 +204,7 @@ impl LineLayout {
 
         let left = LineLayout {
             font_size: self.font_size,
-            width: left_end - left_start,
+            width: left_width,
             ascent: self.ascent,
             descent: self.descent,
             runs: left_runs,
@@ -202,7 +213,7 @@ impl LineLayout {
 
         let right = LineLayout {
             font_size: self.font_size,
-            width: right_end - right_start,
+            width: right_width,
             ascent: self.ascent,
             descent: self.descent,
             runs: right_runs,
@@ -212,27 +223,42 @@ impl LineLayout {
         (left, right)
     }
 
-    /// Returns the horizontal extent of the glyphs whose byte index satisfies
-    /// `in_fragment`, for layouts whose visual order does not follow byte order.
+    /// Lays out each side of a split for a line whose visual order does not
+    /// follow byte order, returning every glyph's new x position (in run order)
+    /// and the widths of the two sides.
     ///
-    /// The fragment starts at its leftmost glyph and ends at the nearest glyph
-    /// of the rest of the line to its right, or at the end of the line.
-    fn fragment_extent(&self, in_fragment: impl Fn(usize) -> bool) -> (Pixels, Pixels) {
-        let glyphs = || self.runs.iter().flat_map(|run| run.glyphs.iter());
-        let mut own_positions = glyphs()
-            .filter(|glyph| in_fragment(glyph.index))
-            .map(|glyph| glyph.position.x);
-        let Some(first) = own_positions.next() else {
-            return (px(0.), px(0.));
-        };
-        let (start, last) = own_positions.fold((first, first), |(start, last), x| {
-            (start.min(x), last.max(x))
+    /// Bidirectional text can interleave the two sides visually, so each glyph
+    /// keeps its own advance (up to the next glyph on the line) and each side's
+    /// glyphs are packed together in visual order. The two widths therefore
+    /// never overlap and always add up to the width after the first glyph.
+    fn packed_fragment_positions(&self, byte_index: usize) -> (Vec<Pixels>, Pixels, Pixels) {
+        let glyphs: Vec<&ShapedGlyph> = self.runs.iter().flat_map(|run| &run.glyphs).collect();
+        let mut visual_order: Vec<usize> = (0..glyphs.len()).collect();
+        visual_order.sort_by(|&a, &b| {
+            glyphs[a]
+                .position
+                .x
+                .partial_cmp(&glyphs[b].position.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let end = glyphs()
-            .filter(|glyph| !in_fragment(glyph.index) && glyph.position.x > last)
-            .map(|glyph| glyph.position.x)
-            .fold(self.width, Pixels::min);
-        (start, end)
+
+        let mut positions = vec![px(0.); glyphs.len()];
+        let mut left_width = px(0.);
+        let mut right_width = px(0.);
+        for (order, &glyph_ix) in visual_order.iter().enumerate() {
+            let glyph = glyphs[glyph_ix];
+            let next_x = visual_order
+                .get(order + 1)
+                .map_or(self.width, |&next_ix| glyphs[next_ix].position.x);
+            let width = if glyph.index < byte_index {
+                &mut left_width
+            } else {
+                &mut right_width
+            };
+            positions[glyph_ix] = *width;
+            *width += next_x - glyph.position.x;
+        }
+        (positions, left_width, right_width)
     }
 
     fn compute_wrap_boundaries(
