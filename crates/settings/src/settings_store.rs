@@ -567,10 +567,16 @@ impl SettingsStore {
                 async move {
                     let res = async move {
                         let old_text = Self::load_settings(&fs).await?;
-                        let new_text = update(old_text, cx.clone())?;
+                        let new_text = update(old_text.clone(), cx.clone())?;
 
                         let settings_path = paths::settings_file().as_path();
-                        if fs.is_file(settings_path).await {
+                        let exists = fs.is_file(settings_path).await;
+                        // Rewriting identical contents would still change the file on disk,
+                        // which makes an open settings buffer with edits report a conflict.
+                        if exists && new_text == old_text {
+                            return Ok(());
+                        }
+                        if exists {
                             let resolved_path =
                                 fs.canonicalize(settings_path).await.with_context(|| {
                                     format!(
@@ -1838,6 +1844,50 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[gpui::test]
+    async fn test_update_settings_file_skips_unchanged_contents(cx: &mut gpui::TestAppContext) {
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.create_dir(paths::settings_file().parent().unwrap())
+            .await
+            .unwrap();
+        fs.insert_file(
+            paths::settings_file(),
+            r#"{ "tabs": { "close_position": "right" } }"#.as_bytes().to_vec(),
+        )
+        .await;
+        cx.update(|cx| {
+            let mut store = SettingsStore::new(cx, &default_settings());
+            store.register_setting::<ItemSettings>();
+            store.watch_settings_files(fs.clone(), cx, |_, _, _| {});
+            cx.set_global(store);
+        });
+        cx.run_until_parked();
+        let mtime_before = fs
+            .metadata(paths::settings_file())
+            .await
+            .unwrap()
+            .unwrap()
+            .mtime;
+
+        let rx = cx.update(|cx| {
+            cx.global::<SettingsStore>()
+                .update_settings_file_with_completion(fs.clone(), move |settings, _| {
+                    settings.tabs.get_or_insert_default().close_position =
+                        Some(ClosePosition::Right);
+                })
+        });
+        assert!(rx.await.unwrap().is_ok());
+        cx.run_until_parked();
+
+        let mtime_after = fs
+            .metadata(paths::settings_file())
+            .await
+            .unwrap()
+            .unwrap()
+            .mtime;
+        assert_eq!(mtime_before, mtime_after);
     }
 
     #[gpui::test]
