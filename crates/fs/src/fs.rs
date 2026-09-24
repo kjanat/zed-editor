@@ -390,16 +390,21 @@ impl SaveExpectation {
             _ => false,
         };
         if !matches {
-            return Err(SaveConflict { found }.into());
+            return Err(SaveConflict {
+                found,
+                recovery_path: None,
+            }
+            .into());
         }
         Ok(())
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("file changed before save publication")]
+#[error("file changed before save publication{recovery}", recovery = recovery_path.as_ref().map(|path| format!("; displaced contents retained at {path:?}")).unwrap_or_default())]
 pub struct SaveConflict {
     pub found: Option<SaveReceipt>,
+    pub recovery_path: Option<PathBuf>,
 }
 
 /// Filesystem modification time. The purpose of this newtype is to discourage use of operations
@@ -3935,9 +3940,13 @@ async fn file_id(path: impl AsRef<Path>) -> Result<(u64, u64)> {
 ///
 /// The destination is classified before the writer runs. New files are published without
 /// clobbering a concurrent create. Existing regular files are replaced only when their metadata
-/// can be preserved; metadata preparation errors stop the save before writing. Any later staging,
-/// writing, syncing, or publication error leaves the old destination untouched. Symlinks are
-/// resolved first so their targets are replaced without removing the links themselves.
+/// can be preserved; metadata preparation errors stop the save before writing. Errors before the
+/// atomic publication leave the old destination untouched. Symlinks are resolved first so their
+/// targets are replaced without removing the links themselves. Existing
+/// files are published with an atomic name exchange on Unix and a retained `ReplaceFileW` backup
+/// on Windows. If the displaced file differs from the validated file, both versions remain on
+/// disk and the error reports the displaced file's recovery path. Filesystems without the needed
+/// atomic exchange fail the save rather than falling back to a destructive rename.
 ///
 /// Writing in place keeps the truncate window this function exists to close, and that is the
 /// cost of preserving destinations such as hard-linked and non-regular files. Those writes are
@@ -4333,7 +4342,6 @@ fn save_replaceable_file(
         .with_context(|| format!("failed to sync temporary file for {path:?}"))?;
 
     let receipt = save_receipt(temp_file.as_file())?;
-    checkpoint(DurableSavePhase::Publish)?;
     if let Some(expected) = expected {
         let found = match std::fs::File::open(path) {
             Ok(file) => Some(save_receipt(&file)?),
@@ -4357,7 +4365,8 @@ fn save_replaceable_file(
         hard_link_count_for_file(&source)? == 1,
         "destination gained a hard link while saving {path:?}"
     );
-    publish_replacement(path, temp_file)?;
+    checkpoint(DurableSavePhase::Publish)?;
+    publish_replacement(path, temp_file, original, receipt)?;
 
     checkpoint(DurableSavePhase::SyncParent)?;
     sync_parent_directories(path, created_directories)?;
@@ -4401,7 +4410,11 @@ fn create_save_temp_file(path: &Path, new_file: bool) -> Result<tempfile::NamedT
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut builder = tempfile::Builder::new();
-    builder.prefix(".zed-save-");
+    builder.prefix(if new_file {
+        ".zed-save-"
+    } else {
+        SAVE_BACKUP_PREFIX
+    });
     #[cfg(unix)]
     if new_file {
         use std::os::unix::fs::PermissionsExt as _;
@@ -5181,13 +5194,95 @@ fn publish_new_file(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<(
         .with_context(|| format!("failed to publish new file {path:?}"))
 }
 
-#[cfg(not(windows))]
-fn publish_replacement(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<()> {
-    temp_file
-        .persist(path)
-        .map(|_| ())
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to replace {path:?}"))
+#[cfg(unix)]
+fn publish_replacement(
+    path: &Path,
+    temp_file: tempfile::NamedTempFile,
+    expected: SaveReceipt,
+    published: SaveReceipt,
+) -> Result<()> {
+    exchange_paths(temp_file.path(), path)
+        .with_context(|| format!("atomic replacement with recovery is unavailable for {path:?}"))?;
+
+    let recovery_path = temp_file
+        .into_temp_path()
+        .keep()
+        .context("failed to retain displaced file after replacement")?;
+    sync_directory(
+        recovery_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+    )?;
+    let displaced = std::fs::File::open(&recovery_path)
+        .with_context(|| format!("failed to inspect displaced file for {path:?}"))?;
+    let found = save_receipt(&displaced)?;
+    if found != expected || hard_link_count_for_file(&displaced)? != 1 {
+        return Err(SaveConflict {
+            found: Some(published),
+            recovery_path: Some(recovery_path),
+        }
+        .into());
+    }
+    drop(displaced);
+    std::fs::remove_file(&recovery_path)
+        .with_context(|| format!("failed to remove save backup {recovery_path:?}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn exchange_paths(first: &Path, second: &Path) -> io::Result<()> {
+    let first = path_to_c_string(first)?;
+    let second = path_to_c_string(second)?;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            first.as_ptr(),
+            libc::AT_FDCWD,
+            second.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn exchange_paths(first: &Path, second: &Path) -> io::Result<()> {
+    let first = path_to_c_string(first)?;
+    let second = path_to_c_string(second)?;
+    let result = unsafe { libc::renamex_np(first.as_ptr(), second.as_ptr(), libc::RENAME_SWAP) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+fn exchange_paths(first: &Path, second: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let first = std::ffi::CString::new(first.as_os_str().as_bytes())?;
+    let second = std::ffi::CString::new(second.as_os_str().as_bytes())?;
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            first.as_ptr(),
+            libc::AT_FDCWD,
+            second.as_ptr(),
+            libc::RENAME_SWAP,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(windows)]
@@ -5199,7 +5294,12 @@ fn publish_new_file(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<(
 }
 
 #[cfg(windows)]
-fn publish_replacement(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<()> {
+fn publish_replacement(
+    path: &Path,
+    temp_file: tempfile::NamedTempFile,
+    expected: SaveReceipt,
+    published: SaveReceipt,
+) -> Result<()> {
     let (file, mut temp_path) = temp_file.into_parts();
     drop(file);
     windows_make_temp_permanent(&temp_path)?;
@@ -5214,6 +5314,32 @@ fn publish_replacement(path: &Path, temp_file: tempfile::NamedTempFile) -> Resul
                         "replacement was published but could not be flushed; original retained at {backup_path:?}"
                     )
                 });
+            }
+            let found = std::fs::File::open(&backup_path)
+                .with_context(|| format!("failed to inspect displaced file for {path:?}"))
+                .and_then(|file| {
+                    file.sync_all()
+                        .with_context(|| format!("failed to flush displaced file for {path:?}"))?;
+                    Ok((save_receipt(&file)?, hard_link_count_for_file(&file)?))
+                });
+            let (found, hard_link_count) = match found {
+                Ok(found) => found,
+                Err(error) => {
+                    backup_path.disable_cleanup(true);
+                    return Err(error).with_context(|| {
+                        format!("replacement was published; displaced contents retained at {backup_path:?}")
+                    });
+                }
+            };
+            if found != expected || hard_link_count != 1 {
+                let recovery_path = backup_path
+                    .keep()
+                    .context("failed to retain displaced save-conflict contents")?;
+                return Err(SaveConflict {
+                    found: Some(published),
+                    recovery_path: Some(recovery_path),
+                }
+                .into());
             }
             if let Err(error) = std::fs::remove_file(&backup_path)
                 && error.kind() != io::ErrorKind::NotFound
@@ -5249,6 +5375,16 @@ fn publish_replacement(path: &Path, temp_file: tempfile::NamedTempFile) -> Resul
             Err(replace_error).with_context(|| format!("failed to replace {path:?}"))
         }
     }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn publish_replacement(
+    path: &Path,
+    _temp_file: tempfile::NamedTempFile,
+    _expected: SaveReceipt,
+    _published: SaveReceipt,
+) -> Result<()> {
+    anyhow::bail!("atomic replacement with recovery is unavailable for {path:?}")
 }
 
 fn write_rope(file: &mut std::fs::File, text: &Rope, line_ending: LineEnding) -> io::Result<()> {

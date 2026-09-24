@@ -679,17 +679,62 @@ async fn test_checked_save_rejects_replacements_during_publication(executor: Bac
                 Ok(())
             },
         );
-        assert!(
-            result
-                .expect_err("replacement must prevent publication")
-                .downcast_ref::<SaveConflict>()
-                .is_some()
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("read file"),
-            "external"
-        );
+        let error = result.expect_err("replacement must prevent silent data loss");
+        let conflict = error.downcast_ref::<SaveConflict>().expect("save conflict");
+        if phase == DurableSavePhase::Publish {
+            let recovery_path = conflict
+                .recovery_path
+                .as_ref()
+                .expect("displaced contents retained");
+            assert_eq!(
+                std::fs::read_to_string(recovery_path).expect("recovery contents"),
+                "external"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("published file"),
+                "zed"
+            );
+        } else {
+            assert!(conflict.recovery_path.is_none());
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read file"),
+                "external"
+            );
+        }
     }
+}
+
+#[test]
+fn test_durable_save_retains_modification_at_publication_boundary() {
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("file.txt");
+    std::fs::write(&path, "old").expect("original file");
+
+    let result = save_durably_with_checkpoint_for_test(
+        &path,
+        |file| file.write_all(b"zed"),
+        |phase| {
+            if phase == DurableSavePhase::Publish {
+                std::fs::write(&path, "external")?;
+            }
+            Ok(())
+        },
+    );
+
+    let error = result.expect_err("modification must not be silently lost");
+    let conflict = error.downcast_ref::<SaveConflict>().expect("save conflict");
+    let recovery_path = conflict
+        .recovery_path
+        .as_ref()
+        .expect("displaced contents retained");
+    assert_eq!(
+        std::fs::read_to_string(recovery_path).expect("recovery contents"),
+        "external"
+    );
+    assert_eq!(
+        std::fs::read_to_string(path).expect("published file"),
+        "zed"
+    );
 }
 
 #[gpui::test]
@@ -894,8 +939,13 @@ fn test_durable_save_does_not_replace_changed_destination() {
         },
     );
 
-    assert!(result.is_err());
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "other");
+    let error = result.expect_err("changed destination must be retained");
+    let recovery_path = error
+        .downcast_ref::<SaveConflict>()
+        .and_then(|conflict| conflict.recovery_path.as_ref())
+        .expect("recovery path");
+    assert_eq!(std::fs::read_to_string(recovery_path).unwrap(), "other");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "zed");
 }
 
 #[test]
@@ -917,8 +967,13 @@ fn test_durable_save_does_not_detach_new_hard_link() {
         },
     );
 
-    assert!(result.is_err());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
+    let error = result.expect_err("new hard link must retain the displaced file");
+    let recovery_path = error
+        .downcast_ref::<SaveConflict>()
+        .and_then(|conflict| conflict.recovery_path.as_ref())
+        .expect("recovery path");
+    assert_eq!(std::fs::read_to_string(recovery_path).unwrap(), "old");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "zed");
     assert_eq!(std::fs::read_to_string(hard_link).unwrap(), "old");
 }
 
