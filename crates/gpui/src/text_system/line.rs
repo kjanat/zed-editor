@@ -320,6 +320,7 @@ impl<'a> ShapedLineCursor<'a> {
                         .map(|glyph| crate::ShapedGlyph {
                             id: glyph.id,
                             position: point(glyph.position.x - previous_x, glyph.position.y),
+                            advance: glyph.advance,
                             index: glyph.index - previous_index,
                             is_emoji: glyph.is_emoji,
                         })
@@ -981,6 +982,7 @@ mod tests {
             .map(|&(index, x)| ShapedGlyph {
                 id: GlyphId(0),
                 position: point(px(x), px(0.0)),
+                advance: px(10.0),
                 index,
                 is_emoji: false,
             })
@@ -1383,18 +1385,21 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(0.0), px(0.0)),
+                                advance: px(10.0),
                                 index: 0,
                                 is_emoji: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(10.0), px(0.0)),
+                                advance: px(10.0),
                                 index: 1,
                                 is_emoji: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(20.0), px(0.0)),
+                                advance: px(10.0),
                                 index: 2,
                                 is_emoji: false,
                             },
@@ -1406,18 +1411,21 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(30.0), px(0.0)),
+                                advance: px(10.0),
                                 index: 3,
                                 is_emoji: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(40.0), px(0.0)),
+                                advance: px(10.0),
                                 index: 4,
                                 is_emoji: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(50.0), px(0.0)),
+                                advance: px(10.0),
                                 index: 5,
                                 is_emoji: false,
                             },
@@ -1468,6 +1476,7 @@ mod tests {
         let glyph = |x: f32, index: usize| ShapedGlyph {
             id: GlyphId(0),
             position: point(px(x), px(0.0)),
+            advance: px(10.0),
             index,
             is_emoji: false,
         };
@@ -1548,7 +1557,7 @@ mod tests {
         let offset = ShapedLine {
             layout: Arc::new(LineLayout {
                 font_size: px(16.0),
-                width: px(32.0),
+                width: px(30.0),
                 ascent: px(12.0),
                 descent: px(4.0),
                 runs: vec![ShapedRun {
@@ -1561,6 +1570,7 @@ mod tests {
             decoration_runs: SmallVec::new(),
         };
         let (left, right) = offset.split_at(2);
+        assert_eq!(positions(&left), vec![px(2.0)]);
         assert_eq!(positions(&right), vec![px(2.0), px(12.0)]);
         assert_eq!(left.width() + right.width(), offset.width());
     }
@@ -1733,18 +1743,21 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(11),
                                 position: point(px(0.0), px(1.0)),
+                                advance: px(10.0),
                                 index: 0,
                                 is_emoji: true,
                             },
                             ShapedGlyph {
                                 id: GlyphId(12),
                                 position: point(px(17.0), px(1.0)),
+                                advance: px(10.0),
                                 index: 1,
                                 is_emoji: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(13),
                                 position: point(px(19.0), px(-1.0)),
+                                advance: px(10.0),
                                 index: 1,
                                 is_emoji: false,
                             },
@@ -1756,12 +1769,14 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(21),
                                 position: point(px(25.0), px(1.0)),
+                                advance: px(10.0),
                                 index: 5,
                                 is_emoji: true,
                             },
                             ShapedGlyph {
                                 id: GlyphId(22),
                                 position: point(px(41.0), px(1.0)),
+                                advance: px(10.0),
                                 index: 7,
                                 is_emoji: false,
                             },

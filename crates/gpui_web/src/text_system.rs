@@ -225,6 +225,7 @@ impl WebTextSystem {
                     glyph: ShapedGlyph {
                         id: glyph_id,
                         position: glyphs.position,
+                        advance: px(metrics.advance),
                         index: candidate.source.start,
                         is_emoji: candidate.color,
                     },

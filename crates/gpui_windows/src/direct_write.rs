@@ -1600,6 +1600,7 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
                         px(context.width + glyph_offsets[this_glyph_idx].advanceOffset),
                         px(-glyph_offsets[this_glyph_idx].ascenderOffset),
                     ),
+                    advance: px(glyph_advances[this_glyph_idx]),
                     index: context.index_converter.utf8_ix,
                     is_emoji,
                 });

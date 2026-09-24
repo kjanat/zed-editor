@@ -49,6 +49,9 @@ pub struct ShapedGlyph {
     /// The position of this glyph in its containing line.
     pub position: Point<Pixels>,
 
+    /// The horizontal distance by which the text system advances after this glyph.
+    pub advance: Pixels,
+
     /// The index of this glyph in the original text.
     pub index: usize,
 
@@ -181,6 +184,7 @@ impl LineLayout {
                     right_glyphs.push(ShapedGlyph {
                         id: glyph.id,
                         position,
+                        advance: glyph.advance,
                         index: glyph.index - byte_index,
                         is_emoji: glyph.is_emoji,
                     });
@@ -228,7 +232,7 @@ impl LineLayout {
     /// and the widths of the two sides.
     ///
     /// Bidirectional text can interleave the two sides visually, so each glyph
-    /// keeps its own advance (up to the next glyph on the line) and each side's
+    /// keeps its own advance and each side's
     /// glyphs are packed together in visual order. The two widths therefore
     /// never overlap and always add up to the line's width.
     fn packed_fragment_positions(&self, byte_index: usize) -> (Vec<Pixels>, Pixels, Pixels) {
@@ -245,28 +249,17 @@ impl LineLayout {
         let mut positions = vec![px(0.); glyphs.len()];
         let mut left_width = px(0.);
         let mut right_width = px(0.);
-        // Positions can include per-glyph offsets, so the leftmost glyph may not
-        // start at zero; that side keeps the leading span to preserve the total.
-        if let Some(&first_ix) = visual_order.first() {
-            let first = glyphs[first_ix];
-            if first.index < byte_index {
-                left_width = first.position.x;
-            } else {
-                right_width = first.position.x;
-            }
-        }
-        for (order, &glyph_ix) in visual_order.iter().enumerate() {
+        let mut unoffset_x = px(0.);
+        for &glyph_ix in &visual_order {
             let glyph = glyphs[glyph_ix];
-            let next_x = visual_order
-                .get(order + 1)
-                .map_or(self.width, |&next_ix| glyphs[next_ix].position.x);
             let width = if glyph.index < byte_index {
                 &mut left_width
             } else {
                 &mut right_width
             };
-            positions[glyph_ix] = *width;
-            *width += next_x - glyph.position.x;
+            positions[glyph_ix] = *width + glyph.position.x - unoffset_x;
+            *width += glyph.advance;
+            unoffset_x += glyph.advance;
         }
         (positions, left_width, right_width)
     }
@@ -1159,6 +1152,7 @@ mod tests {
         ShapedGlyph {
             id: GlyphId(0),
             position: point(px(x), px(0.)),
+            advance: px(10.0),
             index,
             is_emoji: false,
         }

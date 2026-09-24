@@ -13,6 +13,7 @@ use core_graphics::{
     color_space::CGColorSpace,
     context::{CGContext, CGTextDrawingMode},
     display::CGPoint,
+    geometry::CGSize,
 };
 use core_text::{
     font::CTFont,
@@ -22,6 +23,7 @@ use core_text::{
         kCTFontWidthTrait,
     },
     line::CTLine,
+    run::CTRunRef,
     string_attributes::kCTFontAttributeName,
 };
 use font_kit::{
@@ -49,6 +51,11 @@ use smallvec::SmallVec;
 use std::{borrow::Cow, char, convert::TryFrom, sync::Arc, sync::OnceLock};
 
 use crate::open_type::apply_features_and_fallbacks;
+
+#[link(name = "CoreText", kind = "framework")]
+unsafe extern "C" {
+    fn CTRunGetAdvances(run: CTRunRef, range: CFRange, buffer: *mut CGSize);
+}
 
 #[allow(non_upper_case_globals)]
 const kCGImageAlphaOnly: u32 = 7;
@@ -596,11 +603,20 @@ impl MacTextSystemState {
                     &mut runs.last_mut().unwrap().glyphs
                 }
             };
-            for ((&glyph_id, position), &glyph_utf16_ix) in run
+            let mut advances = vec![CGSize::new(0., 0.); run.glyph_count() as usize];
+            unsafe {
+                CTRunGetAdvances(
+                    run.as_concrete_TypeRef(),
+                    CFRange::init(0, 0),
+                    advances.as_mut_ptr(),
+                );
+            }
+            for (((&glyph_id, position), &glyph_utf16_ix), advance) in run
                 .glyphs()
                 .iter()
                 .zip(run.positions().iter())
                 .zip(run.string_indices().iter())
+                .zip(advances.iter())
             {
                 let glyph_utf16_ix = usize::try_from(glyph_utf16_ix).unwrap();
                 if ix_converter.utf16_ix > glyph_utf16_ix {
@@ -611,6 +627,7 @@ impl MacTextSystemState {
                 glyphs.push(ShapedGlyph {
                     id: GlyphId(glyph_id as u32),
                     position: point(position.x as f32, position.y as f32).map(px),
+                    advance: px(advance.width as f32),
                     index: ix_converter.utf8_ix,
                     is_emoji: self.is_emoji(font_id),
                 });
