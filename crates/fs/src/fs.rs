@@ -5315,7 +5315,10 @@ fn publish_replacement(
                     )
                 });
             }
-            let found = std::fs::File::open(&backup_path)
+            let found = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&backup_path)
                 .with_context(|| format!("failed to inspect displaced file for {path:?}"))
                 .and_then(|file| {
                     file.sync_all()
