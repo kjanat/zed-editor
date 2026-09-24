@@ -1089,16 +1089,18 @@ impl Fs for RealFs {
     #[cfg(target_os = "windows")]
     async fn atomic_write(&self, path: PathBuf, data: String) -> Result<()> {
         smol::unblock(move || {
-            let destination_exists = match std::fs::symlink_metadata(&path) {
-                Ok(_) => true,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            let destination = match std::fs::File::open(&path) {
+                Ok(file) => Some(save_receipt(&file)?),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
                 Err(error) => return Err(error.into()),
             };
+            let destination_exists = destination.is_some();
             let mut temp_file = create_save_temp_file(&path, !destination_exists)?;
             temp_file.write_all(data.as_bytes())?;
             temp_file.as_file().sync_all()?;
-            if destination_exists {
-                publish_replacement(&path, temp_file)?;
+            if let Some(expected) = destination {
+                let published = save_receipt(temp_file.as_file())?;
+                publish_replacement(&path, temp_file, expected, published)?;
             } else {
                 publish_new_file(&path, temp_file)?;
             }
