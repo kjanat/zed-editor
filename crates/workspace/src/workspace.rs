@@ -10066,7 +10066,8 @@ impl Render for Workspace {
                                         })
                                         .child(
                                             div()
-                                                .size_full()
+                                                .h_full()
+                                                .flex_1()
                                                 .debug_selector(|| {
                                                     "zoomed_centered_layout_content".into()
                                                 })
