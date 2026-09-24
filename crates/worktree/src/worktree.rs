@@ -88,12 +88,20 @@ pub enum WriteFileError {
     DiskChanged {
         expected: DiskState,
         found: DiskState,
+        recovery_path: Option<PathBuf>,
     },
 }
 
 impl fmt::Display for WriteFileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DiskChanged {
+                recovery_path: Some(recovery_path),
+                ..
+            } => write!(
+                formatter,
+                "The file changed during save publication. Its displaced contents were retained at {recovery_path:?}. Reloading will not recover those contents."
+            ),
             Self::DiskChanged { .. } => formatter.write_str(
                 "The file changed on disk. Reload it or explicitly confirm overwriting it.",
             ),
@@ -102,6 +110,33 @@ impl fmt::Display for WriteFileError {
 }
 
 impl std::error::Error for WriteFileError {}
+
+fn write_file_error_from_save_conflict(
+    conflict: &fs::SaveConflict,
+    expected: Option<DiskState>,
+) -> WriteFileError {
+    let expected = expected.unwrap_or(DiskState::New);
+    let found = conflict
+        .found
+        .map(|receipt| DiskState::Present {
+            mtime: receipt.mtime,
+            size: Some(receipt.len),
+            inode: Some(receipt.inode),
+            device: Some(receipt.device),
+        })
+        .unwrap_or_else(|| {
+            if expected == DiskState::New {
+                DiskState::New
+            } else {
+                DiskState::Deleted
+            }
+        });
+    WriteFileError::DiskChanged {
+        expected,
+        found,
+        recovery_path: conflict.recovery_path.clone(),
+    }
+}
 
 const RECONCILE_BATCH_SIZE: usize = 64;
 const RECONCILE_MIN_INTERVAL: Duration = Duration::from_secs(1);
@@ -2005,23 +2040,7 @@ impl LocalWorktree {
         cx.spawn(async move |this, cx| {
             let receipt = write.await.map_err(|error| {
                 if let Some(conflict) = error.downcast_ref::<fs::SaveConflict>() {
-                    let expected = expected.unwrap_or(DiskState::New);
-                    let found = conflict
-                        .found
-                        .map(|receipt| DiskState::Present {
-                            mtime: receipt.mtime,
-                            size: Some(receipt.len),
-                            inode: Some(receipt.inode),
-                            device: Some(receipt.device),
-                        })
-                        .unwrap_or_else(|| {
-                            if expected == DiskState::New {
-                                DiskState::New
-                            } else {
-                                DiskState::Deleted
-                            }
-                        });
-                    WriteFileError::DiskChanged { expected, found }.into()
+                    write_file_error_from_save_conflict(conflict, expected).into()
                 } else {
                     error
                 }
@@ -2046,6 +2065,7 @@ impl LocalWorktree {
                         return Err(WriteFileError::DiskChanged {
                             expected: saved,
                             found: DiskState::Deleted,
+                            recovery_path: None,
                         }
                         .into());
                     }
@@ -2065,6 +2085,7 @@ impl LocalWorktree {
                     .ok_or(WriteFileError::DiskChanged {
                         expected: saved,
                         found: DiskState::Deleted,
+                        recovery_path: None,
                     })?;
                 Arc::new(File {
                     worktree,
@@ -2085,6 +2106,7 @@ impl LocalWorktree {
                 return Err(WriteFileError::DiskChanged {
                     expected: saved,
                     found,
+                    recovery_path: None,
                 }
                 .into());
             }
@@ -7945,6 +7967,27 @@ pub fn decode_byte_header(prefix: &[u8]) -> (Option<&'static Encoding>, ByteCont
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_save_conflict_recovery_path_is_reported() {
+        let recovery_path = PathBuf::from("/tmp/.zed-save-backup-recovery");
+        let conflict = fs::SaveConflict {
+            found: None,
+            recovery_path: Some(recovery_path.clone()),
+        };
+
+        let error = write_file_error_from_save_conflict(&conflict, Some(DiskState::New));
+        assert!(matches!(
+            &error,
+            WriteFileError::DiskChanged {
+                recovery_path: Some(found),
+                ..
+            } if found == &recovery_path
+        ));
+        let message = error.to_string();
+        assert!(message.contains(".zed-save-backup-recovery"));
+        assert!(message.contains("Reloading will not recover those contents"));
+    }
 
     /// Streams `bytes` the way `decode_file_text_to_rope` would, returning the
     /// decoded text and detected line ending, or `None` if the fast path bailed.

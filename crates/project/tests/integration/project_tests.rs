@@ -9444,6 +9444,7 @@ async fn test_save_detects_missed_file_replacement(cx: &mut gpui::TestAppContext
                 Some(worktree::WriteFileError::DiskChanged {
                     expected: DiskState::Present { mtime, size, inode, .. },
                     found: DiskState::Present { mtime: found_mtime, size: found_size, inode: found_inode, .. },
+                    ..
                 }) if mtime == found_mtime && size == found_size && inode != found_inode
             ));
             if !dirty {
