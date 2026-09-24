@@ -2296,7 +2296,7 @@ impl Project {
         {
             self.runtime_suspended = true;
             self.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.shutdown_all_language_servers(cx).detach()
+                lsp_store.suspend_language_servers(cx).detach()
             });
         }
     }
@@ -2994,6 +2994,7 @@ impl Project {
     #[inline]
     pub fn unshare(&mut self, cx: &mut Context<Self>) -> Result<()> {
         self.unshare_internal(cx)?;
+        self.suspend_runtime_if_unused(cx);
         cx.emit(Event::RemoteIdChanged(None));
         Ok(())
     }
@@ -6593,6 +6594,7 @@ impl Project {
             }
         }
         self.collaborators = collaborators;
+        self.suspend_runtime_if_unused(cx);
         Ok(())
     }
 

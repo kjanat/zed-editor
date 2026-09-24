@@ -362,6 +362,7 @@ pub struct LocalLspStore {
     last_sent_workspace_configurations: HashMap<LanguageServerId, serde_json::Value>,
     restricted_worktrees_tasks: HashMap<WorktreeId, (Subscription, watch::Receiver<bool>)>,
     all_language_servers_stopped: bool,
+    runtime_suspended: bool,
     stopped_language_servers: HashSet<LanguageServerName>,
 
     buffers_to_refresh_hash_set: HashSet<BufferId>,
@@ -3136,7 +3137,7 @@ impl LocalLspStore {
         only_register_servers: HashSet<LanguageServerSelector>,
         cx: &mut Context<LspStore>,
     ) {
-        if self.all_language_servers_stopped {
+        if self.all_language_servers_stopped || self.runtime_suspended {
             return;
         }
         let buffer = buffer_handle.read(cx);
@@ -4999,6 +5000,7 @@ impl LspStore {
                 last_sent_workspace_configurations: HashMap::default(),
                 restricted_worktrees_tasks: HashMap::default(),
                 all_language_servers_stopped: false,
+                runtime_suspended: false,
                 stopped_language_servers: HashSet::default(),
                 watched_manifest_filenames: ManifestProvidersStore::global(cx)
                     .manifest_file_names(),
@@ -6389,7 +6391,7 @@ impl LspStore {
         {
             let all_stopped = self
                 .as_local()
-                .is_some_and(|local| local.all_language_servers_stopped);
+                .is_some_and(|local| local.all_language_servers_stopped || local.runtime_suspended);
             if !all_stopped {
                 // Restart servers without clearing per-server stopped status.
                 // Individually-stopped servers will be skipped by the guard in
@@ -6407,7 +6409,7 @@ impl LspStore {
         let Some(local) = self.as_local_mut() else {
             return;
         };
-        if local.all_language_servers_stopped {
+        if local.all_language_servers_stopped || local.runtime_suspended {
             return;
         }
         let stopped_language_servers = local.stopped_language_servers.clone();
@@ -13163,6 +13165,13 @@ impl LspStore {
         }
     }
 
+    pub fn suspend_language_servers(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        if let Some(local) = self.as_local_mut() {
+            local.runtime_suspended = true;
+        }
+        self.shutdown_all_language_servers(cx)
+    }
+
     pub fn restart_all_language_servers(&mut self, cx: &mut Context<Self>) {
         if let Some(local) = self.as_local_mut() {
             local.all_language_servers_stopped = false;
@@ -13174,11 +13183,11 @@ impl LspStore {
     }
 
     pub fn resume_language_servers(&mut self, cx: &mut Context<Self>) {
-        if self
-            .as_local()
-            .is_some_and(|local| local.all_language_servers_stopped)
-        {
-            return;
+        if let Some(local) = self.as_local_mut() {
+            local.runtime_suspended = false;
+            if local.all_language_servers_stopped {
+                return;
+            }
         }
         let buffers = self.buffer_store.read(cx).buffers().collect();
         self.restart_language_servers_for_buffers(buffers, HashSet::default(), false, cx);
@@ -13191,6 +13200,9 @@ impl LspStore {
         clear_stopped: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.as_local().is_some_and(|local| local.runtime_suspended) {
+            return;
+        }
         if let Some((client, project_id)) = self.upstream_client() {
             let request = client.request(proto::RestartLanguageServers {
                 project_id,
