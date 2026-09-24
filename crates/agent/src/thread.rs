@@ -35,8 +35,8 @@ use futures::{
 };
 use futures::{StreamExt, stream};
 use gpui::{
-    App, AppContext, AsyncApp, Context, Entity, EventEmitter, ReadGlobal as _, SharedString, Task,
-    WeakEntity,
+    App, AppContext, AsyncApp, Context, Entity, EventEmitter, ReadGlobal as _, SharedString,
+    Subscription, Task, WeakEntity,
 };
 use heck::ToSnakeCase as _;
 use language_model::{
@@ -2673,6 +2673,8 @@ impl Thread {
             BTreeMap::default(),
             cancellation_tx,
             task,
+            self.project
+                .update(cx, |project, cx| project.acquire_runtime_lease(cx)),
         ));
 
         Ok(events_rx)
@@ -2775,7 +2777,16 @@ impl Thread {
                 _ = this.update(cx, |this, _| this.running_turn.take());
             }
         });
-        self.running_turn = Some(RunningTurn::new(event_stream, tools, cancellation_tx, task));
+        let runtime_lease = self
+            .project
+            .update(cx, |project, cx| project.acquire_runtime_lease(cx));
+        self.running_turn = Some(RunningTurn::new(
+            event_stream,
+            tools,
+            cancellation_tx,
+            task,
+            runtime_lease,
+        ));
         Ok(events_rx)
     }
 
@@ -4841,6 +4852,7 @@ struct RunningTurn {
     /// Survives across multiple requests as the model performs tool calls and
     /// we run tools, report their results.
     _task: Task<()>,
+    _runtime_lease: Subscription,
     /// The current event stream for the running turn. Used to report a final
     /// cancellation event if we cancel the turn.
     event_stream: ThreadEventStream,
@@ -4861,9 +4873,11 @@ impl RunningTurn {
         tools: BTreeMap<SharedString, Arc<dyn AnyAgentTool>>,
         cancellation_tx: watch::Sender<bool>,
         task: Task<()>,
+        runtime_lease: Subscription,
     ) -> Self {
         Self {
             _task: task,
+            _runtime_lease: runtime_lease,
             event_stream,
             tools,
             cancellation_tx,

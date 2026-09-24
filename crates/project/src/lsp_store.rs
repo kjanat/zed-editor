@@ -13173,6 +13173,17 @@ impl LspStore {
         self.restart_language_servers_for_buffers(buffers, HashSet::default(), true, cx);
     }
 
+    pub fn resume_language_servers(&mut self, cx: &mut Context<Self>) {
+        if self
+            .as_local()
+            .is_some_and(|local| local.all_language_servers_stopped)
+        {
+            return;
+        }
+        let buffers = self.buffer_store.read(cx).buffers().collect();
+        self.restart_language_servers_for_buffers(buffers, HashSet::default(), false, cx);
+    }
+
     pub fn restart_language_servers_for_buffers(
         &mut self,
         buffers: Vec<Entity<Buffer>>,

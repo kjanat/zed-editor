@@ -2250,9 +2250,8 @@ impl Project {
     /// Keeps the project's runtime services available until the returned lease is dropped.
     pub fn acquire_runtime_lease(&mut self, cx: &mut Context<Self>) -> Subscription {
         if self.runtime_suspended {
-            self.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.restart_all_language_servers(cx)
-            });
+            self.lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.resume_language_servers(cx));
             self.runtime_suspended = false;
         }
         self.runtime_lease_count += 1;
@@ -2283,10 +2282,22 @@ impl Project {
             return;
         };
         self.runtime_lease_count = runtime_lease_count;
-        if runtime_lease_count == 0 {
+        self.suspend_runtime_if_unused(cx);
+    }
+
+    fn suspend_runtime_if_unused(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.client_state, ProjectClientState::Collab { .. }) {
+            return;
+        }
+        let has_connected_collaborators =
+            matches!(self.client_state, ProjectClientState::Shared { .. })
+                && !self.collaborators.is_empty();
+        if self.runtime_lease_count == 0 && !has_connected_collaborators && !self.runtime_suspended
+        {
             self.runtime_suspended = true;
-            self.lsp_store
-                .update(cx, |lsp_store, cx| lsp_store.stop_all_language_servers(cx));
+            self.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.shutdown_all_language_servers(cx).detach()
+            });
         }
     }
 
@@ -5664,6 +5675,11 @@ impl Project {
             cx.emit(Event::CollaboratorJoined(collaborator.peer_id));
             this.collaborators
                 .insert(collaborator.peer_id, collaborator);
+            if this.runtime_suspended {
+                this.lsp_store
+                    .update(cx, |lsp_store, cx| lsp_store.resume_language_servers(cx));
+                this.runtime_suspended = false;
+            }
         });
 
         Ok(())
@@ -5732,6 +5748,8 @@ impl Project {
             this.git_store.update(cx, |git_store, _| {
                 git_store.forget_shared_diffs_for(&peer_id);
             });
+
+            this.suspend_runtime_if_unused(cx);
 
             cx.emit(Event::CollaboratorLeft(peer_id));
             Ok(())
