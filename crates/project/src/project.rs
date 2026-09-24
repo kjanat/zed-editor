@@ -87,7 +87,7 @@ use image_store::{ImageItemEvent, ImageStoreEvent};
 use ::git::{blame::Blame, status::FileStatus};
 use gpui::{
     App, AppContext, AsyncApp, BorrowAppContext, ClipboardItem, Context, Entity, EventEmitter,
-    Hsla, SharedString, Task, TaskExt, WeakEntity, Window,
+    Hsla, SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
 use language::{
     Buffer, BufferEditSource, BufferEvent, Capability, CodeLabel, CursorShape, DiskState, Language,
@@ -239,6 +239,8 @@ pub struct Project {
     context_server_store: Entity<ContextServerStore>,
     image_store: Entity<ImageStore>,
     lsp_store: Entity<LspStore>,
+    runtime_lease_count: usize,
+    runtime_suspended: bool,
     _subscriptions: Vec<gpui::Subscription>,
     buffers_needing_diff: HashSet<WeakEntity<Buffer>>,
     git_diff_debouncer: DebouncedDelay<Self>,
@@ -1381,6 +1383,8 @@ impl Project {
                 buffer_store,
                 image_store,
                 lsp_store,
+                runtime_lease_count: 0,
+                runtime_suspended: false,
                 context_server_store,
                 join_project_response_message_id: 0,
                 client_state: ProjectClientState::Local,
@@ -1608,6 +1612,8 @@ impl Project {
                 buffer_store,
                 image_store,
                 lsp_store,
+                runtime_lease_count: 0,
+                runtime_suspended: false,
                 context_server_store,
                 bookmark_store,
                 breakpoint_store,
@@ -1913,6 +1919,8 @@ impl Project {
                 image_store,
                 worktree_store: worktree_store.clone(),
                 lsp_store: lsp_store.clone(),
+                runtime_lease_count: 0,
+                runtime_suspended: false,
                 context_server_store,
                 active_entry: None,
                 collaborators: Default::default(),
@@ -2237,6 +2245,49 @@ impl Project {
     #[inline]
     pub fn lsp_store(&self) -> Entity<LspStore> {
         self.lsp_store.clone()
+    }
+
+    /// Keeps the project's runtime services available until the returned lease is dropped.
+    pub fn acquire_runtime_lease(&mut self, cx: &mut Context<Self>) -> Subscription {
+        if self.runtime_suspended {
+            self.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.restart_all_language_servers(cx)
+            });
+            self.runtime_suspended = false;
+        }
+        self.runtime_lease_count += 1;
+
+        let project = cx.weak_entity();
+        let executor = cx.foreground_executor().clone();
+        let mut async_cx = cx.to_async();
+        Subscription::new(move || {
+            executor
+                .spawn(async move {
+                    project
+                        .update(&mut async_cx, |project, cx| {
+                            project.release_runtime_lease(cx)
+                        })
+                        .log_err();
+                })
+                .detach();
+        })
+    }
+
+    pub fn runtime_is_suspended(&self) -> bool {
+        self.runtime_suspended
+    }
+
+    fn release_runtime_lease(&mut self, cx: &mut Context<Self>) {
+        let Some(runtime_lease_count) = self.runtime_lease_count.checked_sub(1) else {
+            debug_assert!(false, "released a project runtime lease more than once");
+            return;
+        };
+        self.runtime_lease_count = runtime_lease_count;
+        if runtime_lease_count == 0 {
+            self.runtime_suspended = true;
+            self.lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.stop_all_language_servers(cx));
+        }
     }
 
     #[inline]
