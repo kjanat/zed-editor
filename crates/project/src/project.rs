@@ -87,7 +87,7 @@ use image_store::{ImageItemEvent, ImageStoreEvent};
 use ::git::{blame::Blame, status::FileStatus};
 use gpui::{
     App, AppContext, AsyncApp, BorrowAppContext, ClipboardItem, Context, Entity, EventEmitter,
-    Hsla, SharedString, Task, TaskExt, WeakEntity, Window,
+    Hsla, SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
 use language::{
     Buffer, BufferEditSource, BufferEvent, Capability, CodeLabel, CursorShape, DiskState, Language,
@@ -239,6 +239,9 @@ pub struct Project {
     context_server_store: Entity<ContextServerStore>,
     image_store: Entity<ImageStore>,
     lsp_store: Entity<LspStore>,
+    runtime_lease_count: usize,
+    runtime_suspended: bool,
+    runtime_suspension_task: Option<Task<Result<()>>>,
     _subscriptions: Vec<gpui::Subscription>,
     buffers_needing_diff: HashSet<WeakEntity<Buffer>>,
     git_diff_debouncer: DebouncedDelay<Self>,
@@ -1381,6 +1384,9 @@ impl Project {
                 buffer_store,
                 image_store,
                 lsp_store,
+                runtime_lease_count: 0,
+                runtime_suspended: false,
+                runtime_suspension_task: None,
                 context_server_store,
                 join_project_response_message_id: 0,
                 client_state: ProjectClientState::Local,
@@ -1608,6 +1614,9 @@ impl Project {
                 buffer_store,
                 image_store,
                 lsp_store,
+                runtime_lease_count: 0,
+                runtime_suspended: false,
+                runtime_suspension_task: None,
                 context_server_store,
                 bookmark_store,
                 breakpoint_store,
@@ -1913,6 +1922,9 @@ impl Project {
                 image_store,
                 worktree_store: worktree_store.clone(),
                 lsp_store: lsp_store.clone(),
+                runtime_lease_count: 0,
+                runtime_suspended: false,
+                runtime_suspension_task: None,
                 context_server_store,
                 active_entry: None,
                 collaborators: Default::default(),
@@ -2237,6 +2249,94 @@ impl Project {
     #[inline]
     pub fn lsp_store(&self) -> Entity<LspStore> {
         self.lsp_store.clone()
+    }
+
+    /// Keeps the project's runtime services available until the returned lease is dropped.
+    pub fn acquire_runtime_lease(&mut self, cx: &mut Context<Self>) -> Subscription {
+        self.runtime_lease_count += 1;
+        self.resume_runtime_if_needed(cx);
+
+        let project = cx.weak_entity();
+        let executor = cx.foreground_executor().clone();
+        let mut async_cx = cx.to_async();
+        Subscription::new(move || {
+            executor
+                .spawn(async move {
+                    project
+                        .update(&mut async_cx, |project, cx| {
+                            project.release_runtime_lease(cx)
+                        })
+                        .log_err();
+                })
+                .detach();
+        })
+    }
+
+    pub fn runtime_is_suspended(&self) -> bool {
+        self.runtime_suspended
+    }
+
+    fn release_runtime_lease(&mut self, cx: &mut Context<Self>) {
+        let Some(runtime_lease_count) = self.runtime_lease_count.checked_sub(1) else {
+            debug_assert!(false, "released a project runtime lease more than once");
+            return;
+        };
+        self.runtime_lease_count = runtime_lease_count;
+        self.suspend_runtime_if_unused(cx);
+    }
+
+    fn suspend_runtime_if_unused(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.client_state, ProjectClientState::Collab { .. }) {
+            return;
+        }
+        let has_connected_collaborators =
+            matches!(self.client_state, ProjectClientState::Shared { .. })
+                && !self.collaborators.is_empty();
+        if self.runtime_lease_count == 0 && !has_connected_collaborators && !self.runtime_suspended
+        {
+            self.runtime_suspended = true;
+            let suspension_task = self
+                .lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.suspend_language_servers(cx));
+            self.runtime_suspension_task = Some(cx.spawn(async move |this, cx| {
+                if let Err(error) = suspension_task.await {
+                    log::error!("failed to suspend project runtime: {error:#}");
+                    this.update(cx, |project, _| {
+                        project.runtime_suspended = false;
+                    })?;
+                    return Err(error);
+                }
+                Ok(())
+            }));
+        }
+    }
+
+    fn resume_runtime_if_needed(&mut self, cx: &mut Context<Self>) {
+        let has_connected_collaborators =
+            matches!(self.client_state, ProjectClientState::Shared { .. })
+                && !self.collaborators.is_empty();
+        if !self.runtime_suspended
+            || (self.runtime_lease_count == 0 && !has_connected_collaborators)
+        {
+            return;
+        }
+
+        self.runtime_suspended = false;
+        let suspension_task = self.runtime_suspension_task.take();
+        cx.spawn(async move |this, cx| {
+            if let Some(suspension_task) = suspension_task {
+                suspension_task.await.log_err();
+            }
+            this.update(cx, |project, cx| {
+                if !project.runtime_suspended {
+                    project
+                        .lsp_store
+                        .update(cx, |lsp_store, cx| lsp_store.resume_language_servers(cx));
+                }
+            })
+            .log_err();
+        })
+        .detach();
     }
 
     #[inline]
@@ -2932,6 +3032,7 @@ impl Project {
     #[inline]
     pub fn unshare(&mut self, cx: &mut Context<Self>) -> Result<()> {
         self.unshare_internal(cx)?;
+        self.suspend_runtime_if_unused(cx);
         cx.emit(Event::RemoteIdChanged(None));
         Ok(())
     }
@@ -5613,6 +5714,7 @@ impl Project {
             cx.emit(Event::CollaboratorJoined(collaborator.peer_id));
             this.collaborators
                 .insert(collaborator.peer_id, collaborator);
+            this.resume_runtime_if_needed(cx);
         });
 
         Ok(())
@@ -5681,6 +5783,8 @@ impl Project {
             this.git_store.update(cx, |git_store, _| {
                 git_store.forget_shared_diffs_for(&peer_id);
             });
+
+            this.suspend_runtime_if_unused(cx);
 
             cx.emit(Event::CollaboratorLeft(peer_id));
             Ok(())
@@ -6524,6 +6628,8 @@ impl Project {
             }
         }
         self.collaborators = collaborators;
+        self.resume_runtime_if_needed(cx);
+        self.suspend_runtime_if_unused(cx);
         Ok(())
     }
 

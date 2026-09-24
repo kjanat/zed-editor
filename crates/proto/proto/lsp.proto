@@ -1106,6 +1106,7 @@ message RestartLanguageServers {
   repeated uint64 buffer_ids = 2;
   repeated LanguageServerSelector only_servers = 3;
   bool all = 4;
+  bool runtime_resumption = 5;
 }
 
 message StopLanguageServers {
@@ -1113,6 +1114,7 @@ message StopLanguageServers {
   repeated uint64 buffer_ids = 2;
   repeated LanguageServerSelector also_servers = 3;
   bool all = 4;
+  bool runtime_suspension = 5;
 }
 
 message LspExtRunnables {

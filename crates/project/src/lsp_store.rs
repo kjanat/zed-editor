@@ -362,6 +362,7 @@ pub struct LocalLspStore {
     last_sent_workspace_configurations: HashMap<LanguageServerId, serde_json::Value>,
     restricted_worktrees_tasks: HashMap<WorktreeId, (Subscription, watch::Receiver<bool>)>,
     all_language_servers_stopped: bool,
+    runtime_suspended: bool,
     stopped_language_servers: HashSet<LanguageServerName>,
 
     buffers_to_refresh_hash_set: HashSet<BufferId>,
@@ -3136,7 +3137,7 @@ impl LocalLspStore {
         only_register_servers: HashSet<LanguageServerSelector>,
         cx: &mut Context<LspStore>,
     ) {
-        if self.all_language_servers_stopped {
+        if self.all_language_servers_stopped || self.runtime_suspended {
             return;
         }
         let buffer = buffer_handle.read(cx);
@@ -4591,6 +4592,7 @@ impl LspStoreMode {
 
 pub struct LspStore {
     mode: LspStoreMode,
+    runtime_suspended: bool,
     last_formatting_failure: Option<String>,
     downstream_client: Option<(AnyProtoClient, u64)>,
     nonce: u128,
@@ -4999,10 +5001,12 @@ impl LspStore {
                 last_sent_workspace_configurations: HashMap::default(),
                 restricted_worktrees_tasks: HashMap::default(),
                 all_language_servers_stopped: false,
+                runtime_suspended: false,
                 stopped_language_servers: HashSet::default(),
                 watched_manifest_filenames: ManifestProvidersStore::global(cx)
                     .manifest_file_names(),
             }),
+            runtime_suspended: false,
             last_formatting_failure: None,
             downstream_client: None,
             buffer_store,
@@ -5066,6 +5070,7 @@ impl LspStore {
                 upstream_client: Some(upstream_client),
                 upstream_project_id: project_id,
             }),
+            runtime_suspended: false,
             downstream_client: None,
             last_formatting_failure: None,
             buffer_store,
@@ -6387,9 +6392,10 @@ impl LspStore {
             .semantic_token_config
             .update_global_mode(new_global_semantic_tokens_mode)
         {
-            let all_stopped = self
-                .as_local()
-                .is_some_and(|local| local.all_language_servers_stopped);
+            let all_stopped = self.runtime_suspended
+                || self
+                    .as_local()
+                    .is_some_and(|local| local.all_language_servers_stopped);
             if !all_stopped {
                 // Restart servers without clearing per-server stopped status.
                 // Individually-stopped servers will be skipped by the guard in
@@ -6407,7 +6413,7 @@ impl LspStore {
         let Some(local) = self.as_local_mut() else {
             return;
         };
-        if local.all_language_servers_stopped {
+        if local.all_language_servers_stopped || local.runtime_suspended {
             return;
         }
         let stopped_language_servers = local.stopped_language_servers.clone();
@@ -12529,6 +12535,10 @@ impl LspStore {
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
         this.update(&mut cx, |lsp_store, cx| {
+            if envelope.payload.runtime_resumption {
+                lsp_store.resume_language_servers(cx);
+                return;
+            }
             let buffers =
                 lsp_store.buffer_ids_to_buffers(envelope.payload.buffer_ids.into_iter(), cx);
             lsp_store.restart_language_servers_for_buffers(
@@ -12564,7 +12574,11 @@ impl LspStore {
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
         lsp_store.update(&mut cx, |lsp_store, cx| {
-            if envelope.payload.all
+            if envelope.payload.runtime_suspension {
+                lsp_store
+                    .suspend_language_servers(cx)
+                    .detach_and_log_err(cx);
+            } else if envelope.payload.all
                 && envelope.payload.also_servers.is_empty()
                 && envelope.payload.buffer_ids.is_empty()
             {
@@ -13139,6 +13153,7 @@ impl LspStore {
                 buffer_ids: Vec::new(),
                 also_servers: Vec::new(),
                 all: true,
+                runtime_suspension: false,
             });
             cx.background_spawn(async move {
                 request.await.ok();
@@ -13163,6 +13178,36 @@ impl LspStore {
         }
     }
 
+    pub fn suspend_language_servers(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        self.runtime_suspended = true;
+        if let Some((client, project_id)) = self.upstream_client() {
+            let request = client.request(proto::StopLanguageServers {
+                project_id,
+                buffer_ids: Vec::new(),
+                also_servers: Vec::new(),
+                all: true,
+                runtime_suspension: true,
+            });
+            return cx.spawn(async move |this, cx| {
+                if let Err(error) = request.await {
+                    this.update(cx, |lsp_store, _| {
+                        lsp_store.runtime_suspended = false;
+                    })?;
+                    return Err(error);
+                }
+                Ok(())
+            });
+        }
+        if let Some(local) = self.as_local_mut() {
+            local.runtime_suspended = true;
+        }
+        let shutdown = self.shutdown_all_language_servers(cx);
+        cx.background_spawn(async move {
+            shutdown.await;
+            Ok(())
+        })
+    }
+
     pub fn restart_all_language_servers(&mut self, cx: &mut Context<Self>) {
         if let Some(local) = self.as_local_mut() {
             local.all_language_servers_stopped = false;
@@ -13173,6 +13218,29 @@ impl LspStore {
         self.restart_language_servers_for_buffers(buffers, HashSet::default(), true, cx);
     }
 
+    pub fn resume_language_servers(&mut self, cx: &mut Context<Self>) {
+        self.runtime_suspended = false;
+        if let Some((client, project_id)) = self.upstream_client() {
+            let request = client.request(proto::RestartLanguageServers {
+                project_id,
+                buffer_ids: Vec::new(),
+                only_servers: Vec::new(),
+                all: false,
+                runtime_resumption: true,
+            });
+            cx.background_spawn(request).detach_and_log_err(cx);
+            return;
+        }
+        if let Some(local) = self.as_local_mut() {
+            local.runtime_suspended = false;
+            if local.all_language_servers_stopped {
+                return;
+            }
+        }
+        let buffers = self.buffer_store.read(cx).buffers().collect();
+        self.restart_language_servers_for_buffers(buffers, HashSet::default(), false, cx);
+    }
+
     pub fn restart_language_servers_for_buffers(
         &mut self,
         buffers: Vec<Entity<Buffer>>,
@@ -13180,6 +13248,9 @@ impl LspStore {
         clear_stopped: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.runtime_suspended {
+            return;
+        }
         if let Some((client, project_id)) = self.upstream_client() {
             let request = client.request(proto::RestartLanguageServers {
                 project_id,
@@ -13208,6 +13279,7 @@ impl LspStore {
                     })
                     .collect(),
                 all: false,
+                runtime_resumption: false,
             });
             cx.background_spawn(request).detach_and_log_err(cx);
         } else {
@@ -13286,6 +13358,7 @@ impl LspStore {
                     })
                     .collect(),
                 all: false,
+                runtime_suspension: false,
             });
             cx.background_spawn(async move {
                 let _ = request.await?;

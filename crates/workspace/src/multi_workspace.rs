@@ -313,6 +313,7 @@ pub struct MultiWorkspace {
     /// chrome ownership, as that might cause a double lease. Kept in sync with
     /// `active_workspace`.
     active_workspace_id: Rc<Cell<EntityId>>,
+    active_runtime_lease: Subscription,
     sidebar: Option<Box<dyn SidebarHandle>>,
     sidebar_open: bool,
     sidebar_overlay: Option<AnyView>,
@@ -365,6 +366,9 @@ impl MultiWorkspace {
         workspace.update(cx, |workspace, cx| {
             workspace.set_multi_workspace(weak_self, active_workspace_id.clone(), cx);
         });
+        let project = workspace.read(cx).project().clone();
+        let active_runtime_lease =
+            project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
         Self {
             window_id: window.window_handle().window_id(),
             held: vec![HeldWorkspace {
@@ -374,6 +378,7 @@ impl MultiWorkspace {
             }],
             project_groups: Vec::new(),
             active_workspace_id,
+            active_runtime_lease,
             sidebar: None,
             sidebar_open: false,
             sidebar_overlay: None,
@@ -1338,6 +1343,11 @@ impl MultiWorkspace {
         // Publish the new active workspace before anyone reads the shared cell
         // to decide who owns the window chrome.
         self.active_workspace_id.set(workspace.entity_id());
+
+        let project = workspace.read(cx).project().clone();
+        let active_runtime_lease =
+            project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+        self.active_runtime_lease = active_runtime_lease;
 
         let stamp = self
             .held
