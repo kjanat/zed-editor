@@ -1483,7 +1483,9 @@ mod tests {
         let line = ShapedLine {
             layout: Arc::new(LineLayout {
                 font_size: px(16.0),
-                width: px(30.0),
+                // cosmic-text can report a line width a few ulps away from the
+                // sum of its glyph advances.
+                width: px(30.000004),
                 ascent: px(12.0),
                 descent: px(4.0),
                 runs: vec![ShapedRun {
@@ -1519,7 +1521,7 @@ mod tests {
                 .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.position.x))
                 .collect()
         };
-        assert_eq!(left.width(), px(10.0));
+        assert_eq!(left.width(), line.width() - px(20.0));
         assert_eq!(positions(&left), vec![px(0.0)]);
         assert_eq!(right.width(), px(20.0));
         assert_eq!(positions(&right), vec![px(0.0), px(10.0)]);
@@ -1572,6 +1574,8 @@ mod tests {
         let (left, right) = offset.split_at(2);
         assert_eq!(positions(&left), vec![px(2.0)]);
         assert_eq!(positions(&right), vec![px(2.0), px(12.0)]);
+        assert_eq!(left.width(), offset.width() - px(20.0));
+        assert_eq!(right.width(), px(20.0));
         assert_eq!(left.width() + right.width(), offset.width());
     }
 

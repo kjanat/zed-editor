@@ -261,6 +261,16 @@ impl LineLayout {
             *width += glyph.advance;
             unoffset_x += glyph.advance;
         }
+
+        // Some shapers compute the line width differently from the sum of the
+        // glyph advances. Keep that residual at the visual end of the line.
+        if let Some(&last_glyph_ix) = visual_order.last() {
+            if glyphs[last_glyph_ix].index < byte_index {
+                left_width = self.width - right_width;
+            } else {
+                right_width = self.width - left_width;
+            }
+        }
         (positions, left_width, right_width)
     }
 
