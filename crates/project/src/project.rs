@@ -241,6 +241,7 @@ pub struct Project {
     lsp_store: Entity<LspStore>,
     runtime_lease_count: usize,
     runtime_suspended: bool,
+    runtime_suspension_task: Option<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
     buffers_needing_diff: HashSet<WeakEntity<Buffer>>,
     git_diff_debouncer: DebouncedDelay<Self>,
@@ -1385,6 +1386,7 @@ impl Project {
                 lsp_store,
                 runtime_lease_count: 0,
                 runtime_suspended: false,
+                runtime_suspension_task: None,
                 context_server_store,
                 join_project_response_message_id: 0,
                 client_state: ProjectClientState::Local,
@@ -1614,6 +1616,7 @@ impl Project {
                 lsp_store,
                 runtime_lease_count: 0,
                 runtime_suspended: false,
+                runtime_suspension_task: None,
                 context_server_store,
                 bookmark_store,
                 breakpoint_store,
@@ -1921,6 +1924,7 @@ impl Project {
                 lsp_store: lsp_store.clone(),
                 runtime_lease_count: 0,
                 runtime_suspended: false,
+                runtime_suspension_task: None,
                 context_server_store,
                 active_entry: None,
                 collaborators: Default::default(),
@@ -2249,12 +2253,8 @@ impl Project {
 
     /// Keeps the project's runtime services available until the returned lease is dropped.
     pub fn acquire_runtime_lease(&mut self, cx: &mut Context<Self>) -> Subscription {
-        if self.runtime_suspended {
-            self.lsp_store
-                .update(cx, |lsp_store, cx| lsp_store.resume_language_servers(cx));
-            self.runtime_suspended = false;
-        }
         self.runtime_lease_count += 1;
+        self.resume_runtime_if_needed(cx);
 
         let project = cx.weak_entity();
         let executor = cx.foreground_executor().clone();
@@ -2295,10 +2295,39 @@ impl Project {
         if self.runtime_lease_count == 0 && !has_connected_collaborators && !self.runtime_suspended
         {
             self.runtime_suspended = true;
-            self.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.suspend_language_servers(cx).detach()
-            });
+            self.runtime_suspension_task = Some(
+                self.lsp_store
+                    .update(cx, |lsp_store, cx| lsp_store.suspend_language_servers(cx)),
+            );
         }
+    }
+
+    fn resume_runtime_if_needed(&mut self, cx: &mut Context<Self>) {
+        let has_connected_collaborators =
+            matches!(self.client_state, ProjectClientState::Shared { .. })
+                && !self.collaborators.is_empty();
+        if !self.runtime_suspended
+            || (self.runtime_lease_count == 0 && !has_connected_collaborators)
+        {
+            return;
+        }
+
+        self.runtime_suspended = false;
+        let suspension_task = self.runtime_suspension_task.take();
+        cx.spawn(async move |this, cx| {
+            if let Some(suspension_task) = suspension_task {
+                suspension_task.await;
+            }
+            this.update(cx, |project, cx| {
+                if !project.runtime_suspended {
+                    project
+                        .lsp_store
+                        .update(cx, |lsp_store, cx| lsp_store.resume_language_servers(cx));
+                }
+            })
+            .log_err();
+        })
+        .detach();
     }
 
     #[inline]
@@ -5676,11 +5705,7 @@ impl Project {
             cx.emit(Event::CollaboratorJoined(collaborator.peer_id));
             this.collaborators
                 .insert(collaborator.peer_id, collaborator);
-            if this.runtime_suspended {
-                this.lsp_store
-                    .update(cx, |lsp_store, cx| lsp_store.resume_language_servers(cx));
-                this.runtime_suspended = false;
-            }
+            this.resume_runtime_if_needed(cx);
         });
 
         Ok(())
@@ -6594,6 +6619,7 @@ impl Project {
             }
         }
         self.collaborators = collaborators;
+        self.resume_runtime_if_needed(cx);
         self.suspend_runtime_if_unused(cx);
         Ok(())
     }
