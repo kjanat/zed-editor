@@ -12575,7 +12575,9 @@ impl LspStore {
     ) -> Result<proto::Ack> {
         lsp_store.update(&mut cx, |lsp_store, cx| {
             if envelope.payload.runtime_suspension {
-                lsp_store.suspend_language_servers(cx).detach();
+                lsp_store
+                    .suspend_language_servers(cx)
+                    .detach_and_log_err(cx);
             } else if envelope.payload.all
                 && envelope.payload.also_servers.is_empty()
                 && envelope.payload.buffer_ids.is_empty()
@@ -13176,7 +13178,7 @@ impl LspStore {
         }
     }
 
-    pub fn suspend_language_servers(&mut self, cx: &mut Context<Self>) -> Task<()> {
+    pub fn suspend_language_servers(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         self.runtime_suspended = true;
         if let Some((client, project_id)) = self.upstream_client() {
             let request = client.request(proto::StopLanguageServers {
@@ -13186,14 +13188,24 @@ impl LspStore {
                 all: true,
                 runtime_suspension: true,
             });
-            return cx.background_spawn(async move {
-                request.await.ok();
+            return cx.spawn(async move |this, cx| {
+                if let Err(error) = request.await {
+                    this.update(cx, |lsp_store, _| {
+                        lsp_store.runtime_suspended = false;
+                    })?;
+                    return Err(error);
+                }
+                Ok(())
             });
         }
         if let Some(local) = self.as_local_mut() {
             local.runtime_suspended = true;
         }
-        self.shutdown_all_language_servers(cx)
+        let shutdown = self.shutdown_all_language_servers(cx);
+        cx.background_spawn(async move {
+            shutdown.await;
+            Ok(())
+        })
     }
 
     pub fn restart_all_language_servers(&mut self, cx: &mut Context<Self>) {

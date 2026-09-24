@@ -241,7 +241,7 @@ pub struct Project {
     lsp_store: Entity<LspStore>,
     runtime_lease_count: usize,
     runtime_suspended: bool,
-    runtime_suspension_task: Option<Task<()>>,
+    runtime_suspension_task: Option<Task<Result<()>>>,
     _subscriptions: Vec<gpui::Subscription>,
     buffers_needing_diff: HashSet<WeakEntity<Buffer>>,
     git_diff_debouncer: DebouncedDelay<Self>,
@@ -2295,10 +2295,19 @@ impl Project {
         if self.runtime_lease_count == 0 && !has_connected_collaborators && !self.runtime_suspended
         {
             self.runtime_suspended = true;
-            self.runtime_suspension_task = Some(
-                self.lsp_store
-                    .update(cx, |lsp_store, cx| lsp_store.suspend_language_servers(cx)),
-            );
+            let suspension_task = self
+                .lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.suspend_language_servers(cx));
+            self.runtime_suspension_task = Some(cx.spawn(async move |this, cx| {
+                if let Err(error) = suspension_task.await {
+                    log::error!("failed to suspend project runtime: {error:#}");
+                    this.update(cx, |project, _| {
+                        project.runtime_suspended = false;
+                    })?;
+                    return Err(error);
+                }
+                Ok(())
+            }));
         }
     }
 
@@ -2316,7 +2325,7 @@ impl Project {
         let suspension_task = self.runtime_suspension_task.take();
         cx.spawn(async move |this, cx| {
             if let Some(suspension_task) = suspension_task {
-                suspension_task.await;
+                suspension_task.await.log_err();
             }
             this.update(cx, |project, cx| {
                 if !project.runtime_suspended {
