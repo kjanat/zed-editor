@@ -5210,16 +5210,30 @@ fn publish_replacement(
         .into_temp_path()
         .keep()
         .context("failed to retain displaced file after replacement")?;
+    let recovery_error = |error: anyhow::Error| {
+        error.context(SaveConflict {
+            found: Some(published),
+            recovery_path: Some(recovery_path.clone()),
+        })
+    };
+    let displaced = std::fs::File::open(&recovery_path)
+        .with_context(|| format!("failed to inspect displaced file for {path:?}"))
+        .map_err(recovery_error)?;
+    displaced
+        .sync_all()
+        .with_context(|| format!("failed to flush displaced file for {path:?}"))
+        .map_err(recovery_error)?;
+    let found = save_receipt(&displaced).map_err(recovery_error)?;
+    let hard_link_count =
+        hard_link_count_for_file(&displaced).map_err(|error| recovery_error(error.into()))?;
     sync_directory(
         recovery_path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new(".")),
-    )?;
-    let displaced = std::fs::File::open(&recovery_path)
-        .with_context(|| format!("failed to inspect displaced file for {path:?}"))?;
-    let found = save_receipt(&displaced)?;
-    if found != expected || hard_link_count_for_file(&displaced)? != 1 {
+    )
+    .map_err(recovery_error)?;
+    if found != expected || hard_link_count != 1 {
         return Err(SaveConflict {
             found: Some(published),
             recovery_path: Some(recovery_path),
@@ -5228,7 +5242,8 @@ fn publish_replacement(
     }
     drop(displaced);
     std::fs::remove_file(&recovery_path)
-        .with_context(|| format!("failed to remove save backup {recovery_path:?}"))?;
+        .with_context(|| format!("failed to remove save backup {recovery_path:?}"))
+        .map_err(recovery_error)?;
     Ok(())
 }
 
