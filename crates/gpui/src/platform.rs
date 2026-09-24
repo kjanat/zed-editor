@@ -1300,6 +1300,11 @@ impl PlatformTextSystem for NoopTextSystem {
                 glyphs.push(ShapedGlyph {
                     id: glyph,
                     position: point(position, px(0.)),
+                    advance: if glyph.0 == 2 {
+                        em_width * 2.0
+                    } else {
+                        em_width
+                    },
                     index: ix,
                     is_emoji: glyph.0 == 2,
                 });

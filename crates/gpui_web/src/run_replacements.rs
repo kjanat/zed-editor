@@ -210,6 +210,7 @@ mod tests {
         ShapedGlyph {
             id: GlyphId(id),
             position: point(px(x), px(2.0)),
+            advance: px(10.0),
             index,
             is_emoji: color,
         }
@@ -360,6 +361,7 @@ mod tests {
         ShapedGlyph {
             id: GlyphId(index as u32),
             position: point(px(index as f32 * 10.0), px(2.0)),
+            advance: px(10.0),
             index: index * 2,
             is_emoji: false,
         }
