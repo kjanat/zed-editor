@@ -1462,6 +1462,16 @@ pub mod test {
         pub reload_count: usize,
         pub is_dirty: bool,
         pub save_error: Option<String>,
+        save_as_callback: Option<
+            Box<
+                dyn FnMut(
+                    Entity<Project>,
+                    ProjectPath,
+                    Option<language::DiskState>,
+                    &mut Context<TestItem>,
+                ) -> Task<anyhow::Result<()>>,
+            >,
+        >,
         pub buffer_kind: ItemBufferKind,
         pub has_conflict: bool,
         pub has_deleted_file: bool,
@@ -1555,6 +1565,7 @@ pub mod test {
                 reload_count: 0,
                 is_dirty: false,
                 save_error: None,
+                save_as_callback: None,
                 has_conflict: false,
                 has_deleted_file: false,
                 capability: Capability::ReadWrite,
@@ -1597,6 +1608,20 @@ pub mod test {
 
         pub fn with_save_error(mut self, message: impl Into<String>) -> Self {
             self.save_error = Some(message.into());
+            self
+        }
+
+        pub fn with_save_as_callback(
+            mut self,
+            callback: impl FnMut(
+                Entity<Project>,
+                ProjectPath,
+                Option<language::DiskState>,
+                &mut Context<TestItem>,
+            ) -> Task<anyhow::Result<()>>
+            + 'static,
+        ) -> Self {
+            self.save_as_callback = Some(Box::new(callback));
             self
         }
 
@@ -1755,6 +1780,7 @@ pub mod test {
                     reload_count: self.reload_count,
                     is_dirty: self.is_dirty,
                     save_error: self.save_error.clone(),
+                    save_as_callback: None,
                     buffer_kind: self.buffer_kind,
                     has_conflict: self.has_conflict,
                     has_deleted_file: self.has_deleted_file,
@@ -1827,12 +1853,15 @@ pub mod test {
 
         fn save_as(
             &mut self,
-            _: Entity<Project>,
-            _: ProjectPath,
-            _expected: Option<language::DiskState>,
+            project: Entity<Project>,
+            path: ProjectPath,
+            expected: Option<language::DiskState>,
             _window: &mut Window,
-            _: &mut Context<Self>,
+            cx: &mut Context<Self>,
         ) -> Task<anyhow::Result<()>> {
+            if let Some(callback) = &mut self.save_as_callback {
+                return callback(project, path, expected, cx);
+            }
             if let Some(error) = &self.save_error {
                 return Task::ready(Err(anyhow::anyhow!("{error}")));
             }

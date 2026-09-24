@@ -5137,6 +5137,7 @@ mod tests {
         Member,
         item::test::{TestItem, TestProjectItem},
     };
+    use fs::Fs as _;
     use gpui::{
         AppContext, Axis, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
         TestAppContext, VisualTestContext, size,
@@ -8269,7 +8270,7 @@ mod tests {
             serde_json::json!({ "dest.txt": "disk" }),
         )
         .await;
-        let project = Project::test(fs, [util::path!("/root").as_ref()], cx).await;
+        let project = Project::test(fs.clone(), [util::path!("/root").as_ref()], cx).await;
         let worktree_id = project.update(cx, |project, cx| {
             project.worktrees(cx).next().unwrap().read(cx).id()
         });
@@ -8300,7 +8301,19 @@ mod tests {
                         .with_dirty(true)
                         .with_project_items(&[TestProjectItem::new_untitled(cx)]);
                     if save_fails {
-                        source.with_save_error("destination changed")
+                        let fs = fs.clone();
+                        source.with_save_as_callback(move |_, _, expected, cx| {
+                            assert!(expected.is_some(), "destination identity was captured");
+                            let fs = fs.clone();
+                            cx.background_spawn(async move {
+                                fs.insert_file(
+                                    util::path!("/root/dest.txt"),
+                                    b"external replacement".to_vec(),
+                                )
+                                .await;
+                                Err(anyhow::anyhow!("destination changed"))
+                            })
+                        })
                     } else {
                         source
                     }
@@ -8331,6 +8344,13 @@ mod tests {
                     "a failed Save As must keep the destination"
                 );
                 assert!(destination.read_with(cx, |item, _| item.is_dirty));
+                assert_eq!(
+                    fs.load(std::path::Path::new(util::path!("/root/dest.txt")))
+                        .await
+                        .unwrap(),
+                    "external replacement",
+                    "a failed Save As must not overwrite the replacement"
+                );
             } else if destination_dirty {
                 result.unwrap();
                 assert!(
