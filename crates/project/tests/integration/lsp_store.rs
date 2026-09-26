@@ -1077,3 +1077,99 @@ fn worktree_entries(project: &Entity<Project>, cx: &TestAppContext) -> Vec<Strin
             .collect()
     })
 }
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_preserves_buffers_and_manual_stop(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp("Rust", FakeLspAdapter::default());
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let background = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut shutdowns = server
+        .set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| futures::future::ready(Ok(())));
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    drop(background);
+    shutdowns.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    buffer.update(cx, |buffer, cx| {
+        buffer.edit([(0..0, "// retained edit\n")], None, cx)
+    });
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    let opened = resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(opened.text_document.text, "// retained edit\nfn main() {}");
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let store = project.read_with(cx, |project, _| project.lsp_store());
+    store.update(cx, |store, cx| store.stop_all_language_servers(cx));
+    cx.run_until_parked();
+    drop(foreground);
+    cx.run_until_parked();
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(servers.next().now_or_never().is_none());
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_reacquired_during_shutdown(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp("Rust", FakeLspAdapter::default());
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let server = servers.next().await.unwrap();
+    let (release, wait) = futures::channel::oneshot::channel();
+    let mut wait = Some(wait);
+    let mut shutdowns = server.set_request_handler::<lsp::request::Shutdown, _, _>(move |_, _| {
+        let wait = wait.take().unwrap();
+        async move {
+            wait.await.unwrap();
+            Ok(())
+        }
+    });
+    drop(foreground);
+    cx.run_until_parked();
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    cx.run_until_parked();
+    assert!(servers.next().now_or_never().is_none());
+    release.send(()).unwrap();
+    shutdowns.next().await.unwrap();
+    let _resumed = servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}

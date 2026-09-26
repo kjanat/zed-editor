@@ -2318,10 +2318,11 @@ impl Thread {
             return Task::ready(());
         };
 
-        let turn_task = running_turn.cancel();
+        let (turn_task, runtime_lease) = running_turn.cancel();
 
         cx.spawn(async move |this, cx| {
             turn_task.await;
+            drop(runtime_lease);
             this.update(cx, |this, cx| {
                 this.flush_pending_message(cx);
             })
@@ -4885,11 +4886,11 @@ impl RunningTurn {
         }
     }
 
-    fn cancel(mut self) -> Task<()> {
+    fn cancel(mut self) -> (Task<()>, Subscription) {
         log::debug!("Cancelling in progress turn");
         self.cancellation_tx.send(true).ok();
         self.event_stream.send_canceled();
-        self._task
+        (self._task, self._runtime_lease)
     }
 }
 
@@ -6982,6 +6983,36 @@ mod tests {
     use serde_json::json;
     use settings::LanguageModelProviderSetting;
     use std::sync::Arc;
+
+    #[gpui::test]
+    async fn test_cancel_retains_runtime_lease_until_tools_finish(cx: &mut TestAppContext) {
+        let (thread, event_stream) = setup_thread_for_test(cx).await;
+        let (finish, wait) = futures::channel::oneshot::channel();
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lease = Subscription::new({
+            let released = released.clone();
+            move || released.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+        thread.update(cx, |thread, cx| {
+            let (cancellation, _) = watch::channel(false);
+            let task = cx.background_spawn(async move {
+                wait.await.unwrap();
+            });
+            thread.running_turn = Some(RunningTurn::new(
+                event_stream,
+                BTreeMap::default(),
+                cancellation,
+                task,
+                lease,
+            ));
+        });
+        let cancellation = thread.update(cx, |thread, cx| thread.cancel(cx));
+        cx.run_until_parked();
+        assert!(!released.load(std::sync::atomic::Ordering::SeqCst));
+        finish.send(()).unwrap();
+        cancellation.await;
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn compaction_capacity_respects_prompt_and_combined_limits() {

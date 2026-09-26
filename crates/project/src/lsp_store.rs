@@ -12534,11 +12534,12 @@ impl LspStore {
         envelope: TypedEnvelope<proto::RestartLanguageServers>,
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
+        if envelope.payload.runtime_resumption {
+            this.update(&mut cx, |store, cx| store.resume_language_servers(cx))
+                .await?;
+            return Ok(proto::Ack {});
+        }
         this.update(&mut cx, |lsp_store, cx| {
-            if envelope.payload.runtime_resumption {
-                lsp_store.resume_language_servers(cx);
-                return;
-            }
             let buffers =
                 lsp_store.buffer_ids_to_buffers(envelope.payload.buffer_ids.into_iter(), cx);
             lsp_store.restart_language_servers_for_buffers(
@@ -12573,12 +12574,14 @@ impl LspStore {
         envelope: TypedEnvelope<proto::StopLanguageServers>,
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
+        if envelope.payload.runtime_suspension {
+            lsp_store
+                .update(&mut cx, |store, cx| store.suspend_language_servers(cx))
+                .await?;
+            return Ok(proto::Ack {});
+        }
         lsp_store.update(&mut cx, |lsp_store, cx| {
-            if envelope.payload.runtime_suspension {
-                lsp_store
-                    .suspend_language_servers(cx)
-                    .detach_and_log_err(cx);
-            } else if envelope.payload.all
+            if envelope.payload.all
                 && envelope.payload.also_servers.is_empty()
                 && envelope.payload.buffer_ids.is_empty()
             {
@@ -13218,7 +13221,7 @@ impl LspStore {
         self.restart_language_servers_for_buffers(buffers, HashSet::default(), true, cx);
     }
 
-    pub fn resume_language_servers(&mut self, cx: &mut Context<Self>) {
+    pub fn resume_language_servers(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         self.runtime_suspended = false;
         if let Some((client, project_id)) = self.upstream_client() {
             let request = client.request(proto::RestartLanguageServers {
@@ -13228,17 +13231,23 @@ impl LspStore {
                 all: false,
                 runtime_resumption: true,
             });
-            cx.background_spawn(request).detach_and_log_err(cx);
-            return;
+            return cx.spawn(async move |this, cx| {
+                if let Err(error) = request.await {
+                    this.update(cx, |store, _| store.runtime_suspended = true)?;
+                    return Err(error);
+                }
+                Ok(())
+            });
         }
         if let Some(local) = self.as_local_mut() {
             local.runtime_suspended = false;
             if local.all_language_servers_stopped {
-                return;
+                return Task::ready(Ok(()));
             }
         }
         let buffers = self.buffer_store.read(cx).buffers().collect();
         self.restart_language_servers_for_buffers(buffers, HashSet::default(), false, cx);
+        Task::ready(Ok(()))
     }
 
     pub fn restart_language_servers_for_buffers(
