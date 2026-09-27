@@ -5101,9 +5101,8 @@ impl LspStore {
         request: R,
         cx: &mut Context<LspStore>,
     ) -> Task<anyhow::Result<<R as LspCommand>::Response>> {
-        if !self.is_capable_for_proto_request(&buffer, &request, cx) {
-            return Task::ready(Ok(R::Response::default()));
-        }
+        // The host checks the actual request capabilities after pending startup. Synced
+        // guest capabilities can still be empty while a resumed server initializes.
         let message = request.to_proto(upstream_project_id, buffer.read(cx));
         cx.spawn(async move |this, cx| {
             let response = client.request(message).await?;
@@ -6296,6 +6295,16 @@ impl LspStore {
             );
         }
 
+        if let LanguageServerToQuery::Other(id) = server
+            && self
+                .as_local()
+                .is_none_or(|local| !local.language_servers.contains_key(&id))
+        {
+            return Task::ready(Err(anyhow!(
+                "The language server for this request is no longer available; request a fresh result"
+            )));
+        }
+
         let query_outcome = buffer.update(cx, |buffer, cx| {
             let mut early_response = None;
             if let Some(local) = self.as_local() {
@@ -6696,6 +6705,25 @@ impl LspStore {
     pub fn apply_code_action(
         &self,
         buffer_handle: Entity<Buffer>,
+        action: CodeAction,
+        push_to_history: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<ProjectTransaction>> {
+        self.with_ready_language_servers(
+            vec![buffer_handle.clone()],
+            Some(action.server_id),
+            "textDocument/codeAction",
+            false,
+            cx,
+            move |store, cx| {
+                store.apply_code_action_ready(buffer_handle, action, push_to_history, cx)
+            },
+        )
+    }
+
+    fn apply_code_action_ready(
+        &self,
+        buffer_handle: Entity<Buffer>,
         mut action: CodeAction,
         push_to_history: bool,
         cx: &mut Context<Self>,
@@ -6876,6 +6904,26 @@ impl LspStore {
     pub fn resolve_code_action(
         &self,
         buffer: &Entity<Buffer>,
+        action: CodeAction,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<CodeAction>> {
+        if action.resolved {
+            return Task::ready(Ok(action));
+        }
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            Some(action.server_id),
+            "textDocument/codeAction",
+            false,
+            cx,
+            move |store, cx| store.resolve_code_action_ready(&buffer, action, cx),
+        )
+    }
+
+    fn resolve_code_action_ready(
+        &self,
+        buffer: &Entity<Buffer>,
         mut action: CodeAction,
         cx: &mut Context<Self>,
     ) -> Task<Result<CodeAction>> {
@@ -6950,6 +6998,23 @@ impl LspStore {
     }
 
     pub fn apply_code_action_kind(
+        &mut self,
+        buffers: HashSet<Entity<Buffer>>,
+        kind: CodeActionKind,
+        push_to_history: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<ProjectTransaction>> {
+        self.with_ready_language_servers(
+            buffers.iter().cloned().collect(),
+            None,
+            "textDocument/codeAction",
+            true,
+            cx,
+            move |store, cx| store.apply_code_action_kind_ready(buffers, kind, push_to_history, cx),
+        )
+    }
+
+    fn apply_code_action_kind_ready(
         &mut self,
         buffers: HashSet<Entity<Buffer>>,
         kind: CodeActionKind,
@@ -7067,6 +7132,23 @@ impl LspStore {
     }
 
     pub(crate) fn linked_edits(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: Anchor,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<Range<Anchor>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/linkedEditingRange",
+            false,
+            cx,
+            move |store, cx| store.linked_edits_ready(&buffer, position, cx),
+        )
+    }
+
+    fn linked_edits_ready(
         &mut self,
         buffer: &Entity<Buffer>,
         position: Anchor,
@@ -7199,17 +7281,34 @@ impl LspStore {
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<Option<Transaction>>>> {
-        if !self.check_if_any_relevant_text_document_server_matches(
-            &buffer,
-            "textDocument/onTypeFormatting",
-            |_, capabilities| {
-                OnTypeFormatting::supports_on_type_formatting(
-                    &trigger,
-                    &capabilities.server_capabilities,
-                )
-            },
-            cx,
-        ) {
+        let may_be_starting = if let Some(local) = self.as_local() {
+            buffer.update(cx, |buffer, cx| {
+                local
+                    .language_server_ids_for_buffer(buffer, cx)
+                    .into_iter()
+                    .any(|id| {
+                        matches!(
+                            local.language_servers.get(&id),
+                            Some(LanguageServerState::Starting { .. })
+                        )
+                    })
+            })
+        } else {
+            self.upstream_client().is_some()
+        };
+        if !may_be_starting
+            && !self.check_if_any_relevant_text_document_server_matches(
+                &buffer,
+                "textDocument/onTypeFormatting",
+                |_, capabilities| {
+                    OnTypeFormatting::supports_on_type_formatting(
+                        &trigger,
+                        &capabilities.server_capabilities,
+                    )
+                },
+                cx,
+            )
+        {
             return None;
         }
 
@@ -7257,6 +7356,23 @@ impl LspStore {
     }
 
     pub fn definitions(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<LocationLink>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/definition",
+            true,
+            cx,
+            move |store, cx| store.definitions_ready(&buffer, position, cx),
+        )
+    }
+
+    fn definitions_ready(
         &mut self,
         buffer: &Entity<Buffer>,
         position: PointUtf16,
@@ -7403,6 +7519,31 @@ impl LspStore {
         include_type_definitions: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<EditPredictionDefinition>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/definition",
+            true,
+            cx,
+            move |store, cx| {
+                store.edit_prediction_definitions_ready(
+                    &buffer,
+                    position,
+                    include_type_definitions,
+                    cx,
+                )
+            },
+        )
+    }
+
+    fn edit_prediction_definitions_ready(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        include_type_definitions: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<EditPredictionDefinition>>> {
         let definitions = self.edit_prediction_definitions_for_command(
             buffer,
             GetEditPredictionDefinitions { position },
@@ -7429,6 +7570,23 @@ impl LspStore {
     }
 
     pub fn declarations(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<LocationLink>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/declaration",
+            true,
+            cx,
+            move |store, cx| store.declarations_ready(&buffer, position, cx),
+        )
+    }
+
+    fn declarations_ready(
         &mut self,
         buffer: &Entity<Buffer>,
         position: PointUtf16,
@@ -7503,6 +7661,23 @@ impl LspStore {
         position: PointUtf16,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/typeDefinition",
+            true,
+            cx,
+            move |store, cx| store.type_definitions_ready(&buffer, position, cx),
+        )
+    }
+
+    fn type_definitions_ready(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<LocationLink>>>> {
         if let Some((upstream_client, project_id)) = self.upstream_client() {
             let request = GetTypeDefinitions { position };
             if !self.is_capable_for_proto_request(buffer, &request, cx) {
@@ -7567,6 +7742,23 @@ impl LspStore {
     }
 
     pub fn implementations(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<LocationLink>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/implementation",
+            true,
+            cx,
+            move |store, cx| store.implementations_ready(&buffer, position, cx),
+        )
+    }
+
+    fn implementations_ready(
         &mut self,
         buffer: &Entity<Buffer>,
         position: PointUtf16,
@@ -7642,6 +7834,23 @@ impl LspStore {
         position: PointUtf16,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<Location>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/references",
+            true,
+            cx,
+            move |store, cx| store.references_ready(&buffer, position, cx),
+        )
+    }
+
+    fn references_ready(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<Location>>>> {
         if let Some((upstream_client, project_id)) = self.upstream_client() {
             let request = GetReferences { position };
             if !self.is_capable_for_proto_request(buffer, &request, cx) {
@@ -7710,6 +7919,23 @@ impl LspStore {
         position: PointUtf16,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<CallHierarchyItem>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/prepareCallHierarchy",
+            true,
+            cx,
+            move |store, cx| store.prepare_call_hierarchy_ready(&buffer, position, cx),
+        )
+    }
+
+    fn prepare_call_hierarchy_ready(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<CallHierarchyItem>>>> {
         if let Some((upstream_client, project_id)) = self.upstream_client() {
             let request = PrepareCallHierarchy { position };
             if !self.is_capable_for_proto_request(buffer, &request, cx) {
@@ -7772,6 +7998,21 @@ impl LspStore {
         item: CallHierarchyItem,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<IncomingCall>>>> {
+        self.with_ready_language_servers(
+            vec![item.buffer.clone()],
+            Some(item.server_id),
+            "callHierarchy/incomingCalls",
+            false,
+            cx,
+            move |store, cx| store.incoming_calls_ready(item, cx),
+        )
+    }
+
+    fn incoming_calls_ready(
+        &mut self,
+        item: CallHierarchyItem,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<IncomingCall>>>> {
         let buffer = item.buffer.clone();
         let server_id = item.server_id;
         if let Some((upstream_client, project_id)) = self.upstream_client() {
@@ -7828,6 +8069,21 @@ impl LspStore {
         item: CallHierarchyItem,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<OutgoingCall>>>> {
+        self.with_ready_language_servers(
+            vec![item.buffer.clone()],
+            Some(item.server_id),
+            "callHierarchy/outgoingCalls",
+            false,
+            cx,
+            move |store, cx| store.outgoing_calls_ready(item, cx),
+        )
+    }
+
+    fn outgoing_calls_ready(
+        &mut self,
+        item: CallHierarchyItem,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<OutgoingCall>>>> {
         let buffer = item.buffer.clone();
         let server_id = item.server_id;
         if let Some((upstream_client, project_id)) = self.upstream_client() {
@@ -7880,6 +8136,24 @@ impl LspStore {
     }
 
     pub fn code_actions(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        range: Range<Anchor>,
+        kinds: Option<Vec<CodeActionKind>>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<Vec<CodeAction>>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/codeAction",
+            true,
+            cx,
+            move |store, cx| store.code_actions_ready(&buffer, range, kinds, cx),
+        )
+    }
+
+    fn code_actions_ready(
         &mut self,
         buffer: &Entity<Buffer>,
         range: Range<Anchor>,
@@ -7956,6 +8230,24 @@ impl LspStore {
 
     #[inline(never)]
     pub fn completions(
+        &self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        context: CompletionContext,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<CompletionResponse>>> {
+        let buffer = buffer.clone();
+        self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/completion",
+            true,
+            cx,
+            move |store, cx| store.completions_ready(&buffer, position, context, cx),
+        )
+    }
+
+    fn completions_ready(
         &self,
         buffer: &Entity<Buffer>,
         position: PointUtf16,
@@ -9276,6 +9568,32 @@ impl LspStore {
         cx: &mut Context<Self>,
     ) -> Task<Option<Vec<SignatureHelp>>> {
         let position = position.to_point_utf16(buffer.read(cx));
+        let buffer = buffer.clone();
+        let ready = self.wait_for_buffer_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/signatureHelp".into(),
+            true,
+            cx,
+        );
+        cx.spawn(async move |store, cx| {
+            ready.await.log_err()?;
+            store
+                .update(cx, |store, cx| {
+                    store.signature_help_ready(&buffer, position, cx)
+                })
+                .log_err()?
+                .await
+        })
+    }
+
+    fn signature_help_ready<T: ToPointUtf16>(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: T,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Vec<SignatureHelp>>> {
+        let position = position.to_point_utf16(buffer.read(cx));
 
         if let Some((client, upstream_project_id)) = self.upstream_client() {
             let request = GetSignatureHelp { position };
@@ -9339,6 +9657,27 @@ impl LspStore {
     }
 
     pub fn hover(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Vec<Hover>>> {
+        let buffer = buffer.clone();
+        let task = self.with_ready_language_servers(
+            vec![buffer.clone()],
+            None,
+            "textDocument/hover",
+            true,
+            cx,
+            move |store, cx| {
+                let task = store.hover_ready(&buffer, position, cx);
+                cx.spawn(async move |_, _| Ok(task.await))
+            },
+        );
+        cx.spawn(async move |_, _| task.await.log_err().flatten())
+    }
+
+    fn hover_ready(
         &mut self,
         buffer: &Entity<Buffer>,
         position: PointUtf16,
@@ -9412,6 +9751,18 @@ impl LspStore {
     }
 
     pub fn symbols(&self, query: &str, cx: &mut Context<Self>) -> Task<Result<Vec<Symbol>>> {
+        let query = query.to_owned();
+        self.with_ready_language_servers(
+            Vec::new(),
+            None,
+            "workspace/symbol",
+            true,
+            cx,
+            move |store, cx| store.symbols_ready(&query, cx),
+        )
+    }
+
+    fn symbols_ready(&self, query: &str, cx: &mut Context<Self>) -> Task<Result<Vec<Symbol>>> {
         let language_registry = self.languages.clone();
 
         if let Some((upstream_client, project_id)) = self.upstream_client().as_ref() {
@@ -10841,6 +11192,52 @@ impl LspStore {
     }
 
     fn request_filtered_lsp_locally<P, R>(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: Option<P>,
+        request: R,
+        only_servers: Option<&HashSet<LanguageServerId>>,
+        cx: &mut Context<Self>,
+    ) -> Task<Vec<(LanguageServerId, R::Response)>>
+    where
+        P: ToOffset,
+        R: LspCommand + Clone,
+        <R::LspRequest as lsp::request::Request>::Result: Send,
+        <R::LspRequest as lsp::request::Request>::Params: Send,
+    {
+        let position = position.map(|position| position.to_offset(buffer.read(cx)));
+        let buffer = buffer.clone();
+        let only_servers = only_servers.cloned();
+        let ready = self.wait_for_buffer_language_servers(
+            vec![buffer.clone()],
+            None,
+            <R::LspRequest as lsp::request::Request>::METHOD.into(),
+            true,
+            cx,
+        );
+        cx.spawn(async move |store, cx| {
+            if ready.await.log_err().is_none() {
+                return Vec::new();
+            }
+            let Some(task) = store
+                .update(cx, |store, cx| {
+                    store.request_filtered_lsp_locally_ready(
+                        &buffer,
+                        position,
+                        request,
+                        only_servers.as_ref(),
+                        cx,
+                    )
+                })
+                .log_err()
+            else {
+                return Vec::new();
+            };
+            task.await
+        })
+    }
+
+    fn request_filtered_lsp_locally_ready<P, R>(
         &mut self,
         buffer: &Entity<Buffer>,
         position: Option<P>,
@@ -12844,6 +13241,24 @@ impl LspStore {
         trigger: FormatTrigger,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<ProjectTransaction>> {
+        self.with_ready_language_servers(
+            buffers.iter().cloned().collect(),
+            None,
+            "textDocument/formatting",
+            true,
+            cx,
+            move |store, cx| store.format_ready(buffers, target, push_to_history, trigger, cx),
+        )
+    }
+
+    fn format_ready(
+        &mut self,
+        buffers: HashSet<Entity<Buffer>>,
+        target: LspFormatTarget,
+        push_to_history: bool,
+        trigger: FormatTrigger,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<ProjectTransaction>> {
         let logger = zlog::scoped!("format");
         if self.as_local().is_some() {
             zlog::trace!(logger => "Formatting locally");
@@ -13340,11 +13755,45 @@ impl LspStore {
                 return Task::ready(Ok(()));
             }
         }
-        let buffers = self.buffer_store.read(cx).buffers().collect::<Vec<_>>();
+        let buffers = self
+            .buffer_store
+            .read(cx)
+            .buffers()
+            .filter(|buffer| {
+                self.as_local().is_some_and(|local| {
+                    local
+                        .registered_buffers
+                        .get(&buffer.read(cx).remote_id())
+                        .is_some_and(|count| *count > 0)
+                })
+            })
+            .collect::<Vec<_>>();
         for buffer in buffers {
             self.register_buffer_with_language_servers(&buffer, HashSet::default(), true, cx);
         }
         Task::ready(Ok(()))
+    }
+
+    fn with_ready_language_servers<T: 'static>(
+        &self,
+        buffers: Vec<Entity<Buffer>>,
+        server_id: Option<LanguageServerId>,
+        method: &'static str,
+        all_servers: bool,
+        cx: &mut Context<Self>,
+        operation: impl 'static + FnOnce(&mut Self, &mut Context<Self>) -> Task<Result<T>>,
+    ) -> Task<Result<T>> {
+        let ready = self.wait_for_buffer_language_servers(
+            buffers,
+            server_id,
+            method.into(),
+            all_servers,
+            cx,
+        );
+        cx.spawn(async move |store, cx| {
+            ready.await?;
+            store.update(cx, operation)?.await
+        })
     }
 
     pub(crate) fn wait_for_buffer_language_servers(
@@ -13381,7 +13830,7 @@ impl LspStore {
                 loop {
                     let startups = this.update(cx, |store, cx| {
                         let Some(local) = store.as_local() else {
-                            return Vec::new();
+                            return Ok(Vec::new());
                         };
                         let ids = if let Some(buffer) = &buffer {
                             buffer.update(cx, |buffer, cx| {
@@ -13390,6 +13839,12 @@ impl LspStore {
                         } else {
                             local.language_servers.keys().copied().collect()
                         };
+                        if let Some(server_id) = server_id {
+                            anyhow::ensure!(
+                                ids.contains(&server_id) && local.language_servers.contains_key(&server_id),
+                                "The language server for this request is no longer available; request a fresh result"
+                            );
+                        }
                         let mut startups = Vec::new();
                         for id in ids {
                             if server_id.is_some_and(|requested| requested != id) {
@@ -13401,20 +13856,12 @@ impl LspStore {
                                 }) => {
                                     if !all_servers
                                         && let Some(buffer) = &buffer
-                                        && text_document_capabilities_for_buffer(
-                                            local,
-                                            &method,
-                                            buffer.read(cx),
-                                            adapter,
-                                            server,
-                                        )
-                                        .any(
-                                            |capabilities| {
-                                                supports_runtime_request(&method, capabilities)
-                                            },
-                                        )
+                                        && (server_id.is_some()
+                                            || text_document_capabilities_for_buffer(
+                                                local, &method, buffer.read(cx), adapter, server,
+                                            ).any(|capabilities| supports_runtime_request(&method, capabilities)))
                                     {
-                                        return Vec::new();
+                                        return Ok(Vec::new());
                                     }
                                 }
                                 Some(LanguageServerState::Starting { startup, .. }) => {
@@ -13423,8 +13870,8 @@ impl LspStore {
                                 None => {}
                             }
                         }
-                        startups
-                    })?;
+                        Ok(startups)
+                    })??;
                     if startups.is_empty() {
                         break;
                     }
