@@ -704,7 +704,7 @@ impl LocalLspStore {
             })
         };
         let state = LanguageServerState::Starting {
-            startup,
+            startup: startup.shared(),
             pending_workspace_folders,
         };
 
@@ -13245,9 +13245,37 @@ impl LspStore {
                 return Task::ready(Ok(()));
             }
         }
-        let buffers = self.buffer_store.read(cx).buffers().collect();
-        self.restart_language_servers_for_buffers(buffers, HashSet::default(), false, cx);
-        Task::ready(Ok(()))
+        let buffers = self.buffer_store.read(cx).buffers().collect::<Vec<_>>();
+        for buffer in buffers {
+            self.register_buffer_with_language_servers(&buffer, HashSet::default(), true, cx);
+        }
+        let startups = self
+            .as_local()
+            .into_iter()
+            .flat_map(|local| {
+                local
+                    .language_servers
+                    .values()
+                    .filter_map(|state| match state {
+                        LanguageServerState::Starting { startup, .. } => Some(startup.clone()),
+                        LanguageServerState::Running { .. } => None,
+                    })
+            })
+            .collect::<Vec<_>>();
+        cx.spawn(async move |this, cx| {
+            for startup in startups {
+                if startup.await.is_none() {
+                    this.update(cx, |store, _| {
+                        store.runtime_suspended = true;
+                        if let Some(local) = store.as_local_mut() {
+                            local.runtime_suspended = true;
+                        }
+                    })?;
+                    anyhow::bail!("Failed to start a project language server");
+                }
+            }
+            Ok(())
+        })
     }
 
     pub fn restart_language_servers_for_buffers(
@@ -16356,7 +16384,7 @@ pub struct WorkspaceRefreshTask {
 
 pub enum LanguageServerState {
     Starting {
-        startup: Task<Option<Arc<LanguageServer>>>,
+        startup: Shared<Task<Option<Arc<LanguageServer>>>>,
         /// List of language servers that will be added to the workspace once it's initialization completes.
         pending_workspace_folders: Arc<Mutex<BTreeSet<Uri>>>,
     },

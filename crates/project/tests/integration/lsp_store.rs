@@ -1253,3 +1253,84 @@ async fn test_runtime_lease_keeps_pending_editor_requests_alive(cx: &mut TestApp
     cx.run_until_parked();
     assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
 }
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_waits_for_resumed_server_initialization(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (initialized, initialize_wait) = futures::channel::oneshot::channel();
+    let initialize_wait = Arc::new(Mutex::new(Some(initialize_wait)));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                rename_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let requests = requests.clone();
+                move |server| {
+                    if starts.fetch_add(1, Ordering::SeqCst) > 0 {
+                        let initialize_wait = initialize_wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = initialize_wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            rename_provider: Some(lsp::OneOf::Left(true)),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let rename = project.update(cx, |project, cx| {
+        project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    initialized.send(()).unwrap();
+    rename.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
