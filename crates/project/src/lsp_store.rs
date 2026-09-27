@@ -636,15 +636,7 @@ impl LocalLspStore {
                                 cx,
                             )
                         })
-                        .await
-                        .inspect_err(|_| {
-                            if let Some(lsp_store) = lsp_store.upgrade() {
-                                lsp_store.update(cx, |lsp_store, cx| {
-                                    lsp_store.cleanup_lsp_data(server_id);
-                                    cx.emit(LspStoreEvent::LanguageServerRemoved(server_id))
-                                });
-                            }
-                        })?;
+                        .await?;
 
                     let initial_configuration = did_change_configuration_params.settings.clone();
                     language_server.notify::<lsp::notification::DidChangeConfiguration>(
@@ -660,6 +652,11 @@ impl LocalLspStore {
                         lsp_store
                             .update(cx, |lsp_store, cx| {
                                 if let Some(local) = lsp_store.as_local_mut() {
+                                    if local.language_server_ids.get(&key).map(|state| state.id)
+                                        != Some(server_id)
+                                    {
+                                        return;
+                                    }
                                     local
                                         .last_sent_workspace_configurations
                                         .insert(server_id, initial_configuration);
@@ -698,6 +695,22 @@ impl LocalLspStore {
                         if !log.is_empty() {
                             log::error!("server stderr: {}", redact_command(&log));
                         }
+                        lsp_store
+                            .update(cx, |store, cx| {
+                                if let Some(local) = store.as_local_mut() {
+                                    local.language_servers.remove(&server_id);
+                                    local
+                                        .language_server_ids
+                                        .retain(|_, state| state.id != server_id);
+                                    local
+                                        .lsp_tree
+                                        .remove_nodes(&BTreeSet::from_iter([server_id]));
+                                }
+                                store.cleanup_lsp_data(server_id);
+                                store.language_server_statuses.remove(&server_id);
+                                cx.emit(LspStoreEvent::LanguageServerRemoved(server_id));
+                            })
+                            .log_err();
                         None
                     }
                 }
@@ -6272,7 +6285,37 @@ impl LspStore {
         });
         let language_server = match query_outcome {
             LanguageServerQueryOutcome::Query(language_server) => language_server,
-            LanguageServerQueryOutcome::Respond(response) => return Task::ready(Ok(response)),
+            LanguageServerQueryOutcome::Respond(response) => {
+                let startups = buffer.update(cx, |buffer, cx| {
+                    let Some(local) = self.as_local() else {
+                        return Vec::new();
+                    };
+                    local
+                        .language_server_ids_for_buffer(buffer, cx)
+                        .into_iter()
+                        .filter(|id| match &server {
+                            LanguageServerToQuery::FirstCapable => true,
+                            LanguageServerToQuery::Other(requested) => id == requested,
+                        })
+                        .filter_map(|id| match local.language_servers.get(&id) {
+                            Some(LanguageServerState::Starting { startup, .. }) => {
+                                Some(startup.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                });
+                if startups.is_empty() {
+                    return Task::ready(Ok(response));
+                }
+                return cx.spawn(async move |this, cx| {
+                    futures::future::select_all(startups).await;
+                    this.update(cx, |store, cx| {
+                        store.request_lsp(buffer, server, request, cx)
+                    })?
+                    .await
+                });
+            }
         };
 
         let file = File::from_dyn(buffer.read(cx).file()).and_then(File::as_local);
@@ -13249,47 +13292,45 @@ impl LspStore {
         for buffer in buffers {
             self.register_buffer_with_language_servers(&buffer, HashSet::default(), true, cx);
         }
-        let startups = self
-            .as_local()
-            .into_iter()
-            .flat_map(|local| {
-                local
-                    .language_servers
-                    .iter()
-                    .filter_map(|(server_id, state)| match state {
-                        LanguageServerState::Starting { startup, .. } => {
-                            Some((*server_id, startup.clone()))
-                        }
-                        LanguageServerState::Running { .. } => None,
-                    })
-            })
-            .collect::<Vec<_>>();
+        Task::ready(Ok(()))
+    }
+
+    pub(crate) fn wait_for_buffer_language_servers(
+        &self,
+        buffers: Vec<Entity<Buffer>>,
+        server_id: Option<LanguageServerId>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         cx.spawn(async move |this, cx| {
-            for (server_id, startup) in startups {
-                if startup.await.is_none() {
-                    this.update(cx, |store, cx| {
-                        let Some(local) = store.as_local_mut() else {
-                            return;
+            for buffer in buffers {
+                loop {
+                    let startups = this.update(cx, |store, cx| {
+                        let Some(local) = store.as_local() else {
+                            return Vec::new();
                         };
-                        if !matches!(
-                            local.language_servers.get(&server_id),
-                            Some(LanguageServerState::Starting { .. })
-                        ) {
-                            return;
+                        let ids = buffer.update(cx, |buffer, cx| {
+                            local.language_server_ids_for_buffer(buffer, cx)
+                        });
+                        let mut startups = Vec::new();
+                        for id in ids {
+                            if server_id.is_some_and(|requested| requested != id) {
+                                continue;
+                            }
+                            match local.language_servers.get(&id) {
+                                Some(LanguageServerState::Running { .. }) => return Vec::new(),
+                                Some(LanguageServerState::Starting { startup, .. }) => {
+                                    startups.push(startup.clone())
+                                }
+                                None => {}
+                            }
                         }
-                        // A failed optional server must neither disable healthy servers nor
-                        // leave a completed startup cached for the next registration attempt.
-                        local.language_servers.remove(&server_id);
-                        local
-                            .language_server_ids
-                            .retain(|_, state| state.id != server_id);
-                        local
-                            .lsp_tree
-                            .remove_nodes(&BTreeSet::from_iter([server_id]));
-                        store.cleanup_lsp_data(server_id);
-                        store.language_server_statuses.remove(&server_id);
-                        cx.emit(LspStoreEvent::LanguageServerRemoved(server_id));
+                        startups
                     })?;
+                    if startups.is_empty() {
+                        break;
+                    }
+                    // A slow optional server must not hold up an already usable server.
+                    futures::future::select_all(startups).await;
                 }
             }
             Ok(())
@@ -13745,12 +13786,7 @@ impl LspStore {
         };
         // If the language server for this key doesn't match the server id, don't store the
         // server. Which will cause it to be dropped, killing the process
-        if local
-            .language_server_ids
-            .get(&key)
-            .map(|state| state.id != server_id)
-            .unwrap_or(false)
-        {
+        if local.language_server_ids.get(&key).map(|state| state.id) != Some(server_id) {
             return;
         }
 
