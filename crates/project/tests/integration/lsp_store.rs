@@ -1118,7 +1118,12 @@ async fn test_runtime_lease_preserves_buffers_and_manual_stop(cx: &mut TestAppCo
     let opened = resumed
         .receive_notification::<lsp::notification::DidOpenTextDocument>()
         .await;
-    assert_eq!(opened.text_document.text, "// retained edit\nfn main() {}");
+    let expected_text = buffer.read_with(cx, |buffer, _| {
+        buffer
+            .line_ending()
+            .apply("// retained edit\nfn main() {}".into())
+    });
+    assert_eq!(opened.text_document.text, expected_text);
     cx.run_until_parked();
     assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
     let store = project.read_with(cx, |project, _| project.lsp_store());
@@ -1181,7 +1186,7 @@ async fn test_runtime_resume_only_registers_buffers_with_live_lsp_handles(cx: &m
             .now_or_never()
             .is_none()
     );
-    drop(handle);
+    cx.update(|_| drop(handle));
     resumed
         .receive_notification::<lsp::notification::DidCloseTextDocument>()
         .await;
@@ -1332,6 +1337,7 @@ async fn test_runtime_resume_does_not_wait_for_optional_server(cx: &mut TestAppC
         },
     );
     let starts = Arc::new(AtomicUsize::new(0));
+    let optional_requests = Arc::new(AtomicUsize::new(0));
     let (release, wait) = futures::channel::oneshot::channel();
     let wait = Arc::new(Mutex::new(Some(wait)));
     let mut optional_servers = languages.register_fake_lsp(
@@ -1340,7 +1346,13 @@ async fn test_runtime_resume_does_not_wait_for_optional_server(cx: &mut TestAppC
             name: "optional-server",
             initializer: Some(Box::new({
                 let starts = starts.clone();
+                let optional_requests = optional_requests.clone();
                 move |server| {
+                    let optional_requests = optional_requests.clone();
+                    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+                        optional_requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
                     if starts.fetch_add(1, Ordering::SeqCst) == 1 {
                         let wait = wait.clone();
                         server.set_request_handler::<lsp::request::Initialize, _, _>(
@@ -1348,7 +1360,13 @@ async fn test_runtime_resume_does_not_wait_for_optional_server(cx: &mut TestAppC
                                 let wait = wait.lock().take().unwrap();
                                 async move {
                                     wait.await.unwrap();
-                                    Ok(lsp::InitializeResult::default())
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            rename_provider: Some(lsp::OneOf::Left(true)),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
                                 }
                             },
                         );
@@ -1393,10 +1411,26 @@ async fn test_runtime_resume_does_not_wait_for_optional_server(cx: &mut TestAppC
         .unwrap();
     assert_eq!(requests.load(Ordering::SeqCst), 1);
 
+    let mut targeted_rename = project.update(cx, |project, cx| {
+        project.perform_rename(
+            buffer.clone(),
+            3,
+            "targeted".into(),
+            Some(pending.server.server_id()),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert!((&mut targeted_rename).now_or_never().is_none());
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(optional_requests.load(Ordering::SeqCst), 0);
     release.send(()).unwrap();
     pending
         .receive_notification::<lsp::notification::DidOpenTextDocument>()
         .await;
+    targeted_rename.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(optional_requests.load(Ordering::SeqCst), 1);
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     assert!(servers.next().now_or_never().is_none());
 }

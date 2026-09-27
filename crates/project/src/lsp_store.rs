@@ -12650,6 +12650,24 @@ impl LspStore {
         });
     }
 
+    pub(crate) fn wait_for_language_server_startup(
+        &self,
+        id: LanguageServerId,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let startup = self
+            .as_local()
+            .and_then(|local| match local.language_servers.get(&id) {
+                Some(LanguageServerState::Starting { startup, .. }) => Some(startup.clone()),
+                _ => None,
+            });
+        cx.spawn(async move |_, _| {
+            if let Some(startup) = startup {
+                drop(startup.await);
+            }
+        })
+    }
+
     pub fn language_server_for_id(&self, id: LanguageServerId) -> Option<Arc<LanguageServer>> {
         self.as_local()?.language_server_for_id(id)
     }

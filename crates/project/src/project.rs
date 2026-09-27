@@ -5065,21 +5065,38 @@ impl Project {
             push_to_history,
             language_server_id,
         };
-        if let Some(server_id) = request.language_server_id {
-            let server_is_capable = !self.is_local()
-                || self.lsp_store.update(cx, |lsp_store, cx| {
-                    lsp_store
-                        .language_server_capable_of_lsp_request(&buffer, server_id, &request, cx)
-                });
-            if !server_is_capable {
-                request.language_server_id = None;
-            }
-        }
-        let server_to_query = request
-            .language_server_id
-            .map(LanguageServerToQuery::Other)
-            .unwrap_or(LanguageServerToQuery::FirstCapable);
-        self.request_lsp(buffer, server_to_query, request, cx)
+        self.run_with_runtime_lease(cx, move |project, cx| {
+            let startup = request.language_server_id.map(|server_id| {
+                project.lsp_store.update(cx, |store, cx| {
+                    store.wait_for_language_server_startup(server_id, cx)
+                })
+            });
+            cx.spawn(async move |project, cx| {
+                if let Some(startup) = startup {
+                    startup.await;
+                }
+                project
+                    .update(cx, |project, cx| {
+                        if let Some(server_id) = request.language_server_id {
+                            let server_is_capable = !project.is_local()
+                                || project.lsp_store.update(cx, |store, cx| {
+                                    store.language_server_capable_of_lsp_request(
+                                        &buffer, server_id, &request, cx,
+                                    )
+                                });
+                            if !server_is_capable {
+                                request.language_server_id = None;
+                            }
+                        }
+                        let server_to_query = request
+                            .language_server_id
+                            .map(LanguageServerToQuery::Other)
+                            .unwrap_or(LanguageServerToQuery::FirstCapable);
+                        project.request_lsp(buffer, server_to_query, request, cx)
+                    })?
+                    .await
+            })
+        })
     }
 
     pub fn on_type_format<T: ToPointUtf16>(
