@@ -3971,10 +3971,12 @@ async fn file_id(path: impl AsRef<Path>) -> Result<(u64, u64)> {
 /// can be preserved; metadata preparation errors stop the save before writing. Errors before the
 /// atomic publication leave the old destination untouched. Symlinks are resolved first so their
 /// targets are replaced without removing the links themselves. Existing
-/// files are published with an atomic name exchange on Unix and a retained `ReplaceFileW` backup
-/// on Windows. If the displaced file differs from the validated file, both versions remain on
+/// files are published with an atomic name exchange on Linux/macOS and a retained `ReplaceFileW`
+/// backup on Windows. FreeBSD moves the destination to a recovery path before publishing without
+/// clobbering: the destination can briefly be absent, including after a crash, but its contents
+/// remain recoverable. If the displaced file differs from the validated file, both versions remain on
 /// disk and the error reports the displaced file's recovery path. Filesystems without the needed
-/// atomic exchange fail the save rather than falling back to a destructive rename.
+/// publication primitives fail the save rather than falling back to a destructive rename.
 ///
 /// Writing in place keeps the truncate window this function exists to close, and that is the
 /// cost of preserving destinations such as hard-linked and non-regular files. Those writes are
@@ -5222,7 +5224,7 @@ fn publish_new_file(path: &Path, temp_file: tempfile::NamedTempFile) -> Result<(
         .with_context(|| format!("failed to publish new file {path:?}"))
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn publish_replacement(
     path: &Path,
     temp_file: tempfile::NamedTempFile,
@@ -5236,6 +5238,16 @@ fn publish_replacement(
         .into_temp_path()
         .keep()
         .context("failed to retain displaced file after replacement")?;
+    finish_replacement(path, recovery_path, expected, published)
+}
+
+#[cfg(unix)]
+fn finish_replacement(
+    path: &Path,
+    recovery_path: PathBuf,
+    expected: SaveReceipt,
+    published: SaveReceipt,
+) -> Result<()> {
     let recovery_error = |error: anyhow::Error| {
         error.context(SaveConflict {
             found: Some(published),
@@ -5307,24 +5319,177 @@ fn exchange_paths(first: &Path, second: &Path) -> io::Result<()> {
 }
 
 #[cfg(target_os = "freebsd")]
-fn exchange_paths(first: &Path, second: &Path) -> io::Result<()> {
-    use std::os::unix::ffi::OsStrExt as _;
+fn publish_replacement(
+    path: &Path,
+    temp_file: tempfile::NamedTempFile,
+    expected: SaveReceipt,
+    published: SaveReceipt,
+) -> Result<()> {
+    publish_replacement_with_recovery(path, temp_file, expected, published, || Ok(()))
+}
 
-    let first = std::ffi::CString::new(first.as_os_str().as_bytes())?;
-    let second = std::ffi::CString::new(second.as_os_str().as_bytes())?;
-    let result = unsafe {
-        libc::renameatx_np(
-            libc::AT_FDCWD,
-            first.as_ptr(),
-            libc::AT_FDCWD,
-            second.as_ptr(),
-            libc::RENAME_SWAP,
-        )
-    };
-    if result == 0 {
+#[cfg(all(unix, any(target_os = "freebsd", test)))]
+fn publish_replacement_with_recovery(
+    path: &Path,
+    temp_file: tempfile::NamedTempFile,
+    expected: SaveReceipt,
+    published: SaveReceipt,
+    before_publish: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    // FreeBSD 13.2 cannot exchange names atomically. Moving the actual destination
+    // retains even a concurrent replacement; a hard-link backup followed by rename
+    // could instead overwrite an inode that was never backed up.
+    let mut recovery_path = create_save_temp_file(path, false)?.into_temp_path();
+    recovery_path.disable_cleanup(true);
+    if let Err(error) = std::fs::rename(path, &recovery_path) {
+        recovery_path.disable_cleanup(false);
+        return Err(error).with_context(|| format!("failed to retain destination {path:?}"));
+    }
+
+    let mut replacement_path = temp_file.into_temp_path();
+    replacement_path.disable_cleanup(true);
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let publish = (|| -> Result<()> {
+        std::fs::File::open(&recovery_path)?.sync_all()?;
+        sync_directory(parent)?;
+        before_publish()?;
+        // link fails if another writer populated the name during the gap.
+        std::fs::hard_link(&replacement_path, path)?;
         Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+    })();
+    if let Err(error) = publish {
+        let restore = std::fs::hard_link(&recovery_path, path)
+            .map_err(anyhow::Error::from)
+            .and_then(|()| {
+                sync_directory(parent)?;
+                std::fs::remove_file(&recovery_path)?;
+                sync_directory(parent)
+            });
+        return Err(error).with_context(|| match restore {
+            Ok(()) => format!(
+                "failed to publish {path:?}; restored destination; replacement retained at {replacement_path:?}"
+            ),
+            Err(restore_error) => format!(
+                "failed to publish {path:?}; recovery incomplete: {restore_error:#}; inspect destination and recovery path {recovery_path:?}; replacement retained at {replacement_path:?}"
+            ),
+        });
+    }
+
+    // Keep both recovery names until the destination link is durable.
+    sync_directory(parent).with_context(|| format!(
+        "failed to flush replacement for {path:?}; original retained at {recovery_path:?}, replacement retained at {replacement_path:?}"
+    ))?;
+    std::fs::remove_file(&replacement_path).with_context(|| format!(
+        "failed to remove staging file {replacement_path:?}; original retained at {recovery_path:?}"
+    ))?;
+    finish_replacement(path, recovery_path.to_path_buf(), expected, published)
+}
+
+#[cfg(all(test, unix))]
+mod recovery_publication_tests {
+    use super::*;
+
+    fn staged_replacement(path: &Path) -> Result<(tempfile::NamedTempFile, SaveReceipt)> {
+        let mut staged = create_save_temp_file(path, false)?;
+        staged.write_all(b"new")?;
+        staged.as_file().sync_all()?;
+        let receipt = save_receipt(staged.as_file())?;
+        Ok((staged, receipt))
+    }
+
+    #[test]
+    fn replacement_succeeds_and_cleans_recovery_files() -> Result<()> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("file");
+        std::fs::write(&path, b"old")?;
+        let expected = save_receipt(&std::fs::File::open(&path)?)?;
+        let (staged, published) = staged_replacement(&path)?;
+
+        publish_replacement_with_recovery(&path, staged, expected, published, || Ok(()))?;
+
+        assert_eq!(std::fs::read(&path)?, b"new");
+        assert_eq!(std::fs::read_dir(directory.path())?.count(), 1);
+        assert_eq!(hard_link_count_for_file(&std::fs::File::open(path)?)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_replacement_is_retained() -> Result<()> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("file");
+        std::fs::write(&path, b"old")?;
+        let original = std::fs::File::open(&path)?;
+        let expected = save_receipt(&original)?;
+        let (staged, published) = staged_replacement(&path)?;
+        std::fs::remove_file(&path)?;
+        std::fs::write(&path, b"external")?;
+
+        let error =
+            publish_replacement_with_recovery(&path, staged, expected, published, || Ok(()))
+                .expect_err("concurrent replacement must be reported");
+
+        let conflict = error.downcast_ref::<SaveConflict>().expect("save conflict");
+        assert_eq!(std::fs::read(&path)?, b"new");
+        assert_eq!(
+            std::fs::read(conflict.recovery_path.as_ref().expect("recovery path"))?,
+            b"external"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_failure_restores_destination_and_retains_contents() -> Result<()> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("file");
+        std::fs::write(&path, b"old")?;
+        let expected = save_receipt(&std::fs::File::open(&path)?)?;
+        let (staged, published) = staged_replacement(&path)?;
+        let replacement_path = staged.path().to_path_buf();
+
+        let error = publish_replacement_with_recovery(&path, staged, expected, published, || {
+            anyhow::bail!("injected publication failure")
+        })
+        .expect_err("publication must fail");
+
+        assert!(format!("{error:#}").contains("restored destination"));
+        assert_eq!(std::fs::read(&path)?, b"old");
+        assert_eq!(hard_link_count_for_file(&std::fs::File::open(&path)?)?, 1);
+        assert_eq!(std::fs::read(replacement_path)?, b"new");
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_create_is_not_clobbered_by_publication_or_restore() -> Result<()> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("file");
+        std::fs::write(&path, b"old")?;
+        let expected = save_receipt(&std::fs::File::open(&path)?)?;
+        let (staged, published) = staged_replacement(&path)?;
+        let replacement_path = staged.path().to_path_buf();
+
+        let error = publish_replacement_with_recovery(&path, staged, expected, published, || {
+            assert!(!path.exists());
+            std::fs::write(&path, b"external")?;
+            Ok(())
+        })
+        .expect_err("concurrent create must prevent publication");
+
+        assert!(format!("{error:#}").contains("recovery incomplete"));
+        assert_eq!(std::fs::read(&path)?, b"external");
+        assert_eq!(std::fs::read(&replacement_path)?, b"new");
+        let recovery_paths = std::fs::read_dir(directory.path())?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<io::Result<Vec<_>>>()?;
+        let originals = recovery_paths
+            .iter()
+            .filter(|candidate| **candidate != path && **candidate != replacement_path)
+            .map(std::fs::read)
+            .collect::<io::Result<Vec<_>>>()?;
+        assert_eq!(originals, vec![b"old".to_vec()]);
+        Ok(())
     }
 }
 
