@@ -9640,7 +9640,7 @@ impl LspStore {
         })
     }
 
-    pub fn signature_help<T: ToPointUtf16>(
+    pub(crate) fn signature_help<T: ToPointUtf16>(
         &mut self,
         buffer: &Entity<Buffer>,
         position: T,

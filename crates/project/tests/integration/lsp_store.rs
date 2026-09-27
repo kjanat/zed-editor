@@ -8,7 +8,7 @@ use std::{
 use collections::HashMap;
 use fs::{FakeFs, Fs};
 use futures::{FutureExt, StreamExt};
-use gpui::{Entity, TestAppContext};
+use gpui::{Entity, TestAppContext, UpdateGlobal as _};
 use language::{
     Buffer, CodeLabel, DiagnosticSourceKind, FakeLspAdapter, HighlightId, LocalFile, rust_lang,
 };
@@ -2114,7 +2114,9 @@ async fn test_runtime_lease_waits_for_resumed_server_initialization(cx: &mut Tes
 }
 
 #[gpui::test(iterations = 10)]
-async fn test_direct_signature_help_waits_for_resumed_server(cx: &mut TestAppContext) {
+async fn test_signature_help_holds_runtime_lease_through_initialization_and_response(
+    cx: &mut TestAppContext,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
@@ -2127,6 +2129,8 @@ async fn test_direct_signature_help_waits_for_resumed_server(cx: &mut TestAppCon
     let requests = Arc::new(AtomicUsize::new(0));
     let (initialized, initialize_wait) = futures::channel::oneshot::channel();
     let initialize_wait = Arc::new(Mutex::new(Some(initialize_wait)));
+    let (respond, response_wait) = futures::channel::oneshot::channel();
+    let response_wait = Arc::new(Mutex::new(Some(response_wait)));
     let mut servers = languages.register_fake_lsp(
         "Rust",
         FakeLspAdapter {
@@ -2159,10 +2163,13 @@ async fn test_direct_signature_help_waits_for_resumed_server(cx: &mut TestAppCon
                         );
                     }
                     let requests = requests.clone();
+                    let response_wait = response_wait.clone();
                     server.set_request_handler::<lsp::request::SignatureHelpRequest, _, _>(
                         move |_, _| {
                             requests.fetch_add(1, Ordering::SeqCst);
+                            let wait = response_wait.lock().take().unwrap();
                             async move {
+                                wait.await.unwrap();
                                 Ok(Some(lsp::SignatureHelp {
                                     signatures: vec![lsp::SignatureInformation {
                                         label: "main()".into(),
@@ -2196,19 +2203,76 @@ async fn test_direct_signature_help_waits_for_resumed_server(cx: &mut TestAppCon
     cx.run_until_parked();
     assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
     let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
-    let _resumed = servers.next().await.unwrap();
+    let resumed = servers.next().await.unwrap();
+    let mut shutdowns =
+        resumed.set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| async { Ok(()) });
     cx.run_until_parked();
-    let store = project.read_with(cx, |project, _| project.lsp_store());
-    let mut help = store.update(cx, |store, cx| store.signature_help(&buffer, 3, cx));
+    let mut help = project.update(cx, |project, cx| project.signature_help(&buffer, 3, cx));
+    drop(foreground);
     cx.run_until_parked();
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     assert_eq!(requests.load(Ordering::SeqCst), 0);
     assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
     assert!((&mut help).now_or_never().is_none());
     initialized.send(()).unwrap();
-    assert_eq!(help.await.unwrap().len(), 1);
+    cx.run_until_parked();
     assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    assert!((&mut help).now_or_never().is_none());
+    respond.send(()).unwrap();
+    assert_eq!(help.await.unwrap().len(), 1);
+    shutdowns.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_cancelled_signature_help_releases_runtime_lease(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                signature_help_provider: Some(lsp::SignatureHelpOptions::default()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let (started, request_started) = futures::channel::oneshot::channel();
+    let mut started = Some(started);
+    server.set_request_handler::<lsp::request::SignatureHelpRequest, _, _>(move |_, _| {
+        started.take().unwrap().send(()).unwrap();
+        futures::future::pending()
+    });
+    let mut shutdowns =
+        server.set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| async { Ok(()) });
+    let help = project.update(cx, |project, cx| project.signature_help(&buffer, 3, cx));
+    request_started.await.unwrap();
     drop(foreground);
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    drop(help);
+    shutdowns.next().await.unwrap();
     cx.run_until_parked();
     assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
 }

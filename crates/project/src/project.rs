@@ -4881,6 +4881,23 @@ impl Project {
         })
     }
 
+    pub fn signature_help<T: ToPointUtf16>(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: T,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Vec<lsp_command::SignatureHelp>>> {
+        let position = position.to_point_utf16(buffer.read(cx));
+        let buffer = buffer.clone();
+        let task = self.run_with_runtime_lease(cx, move |project, cx| {
+            let task = project
+                .lsp_store
+                .update(cx, |store, cx| store.signature_help(&buffer, position, cx));
+            cx.spawn(async move |_, _| Ok(task.await))
+        });
+        cx.spawn(async move |_, _| task.await.log_err().flatten())
+    }
+
     pub fn hover<T: ToPointUtf16>(
         &mut self,
         buffer: &Entity<Buffer>,
