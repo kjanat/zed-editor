@@ -138,12 +138,12 @@ Register benchmark functions with `gpui::bench_group!` and `gpui::bench_main!` (
 
 `gpui::BenchMeasurement` (from the gpui-independent `bench_metrics` crate) records several metrics per Criterion sample. Criterion analyzes one of them (the *primary*, shown on its `time:` line with confidence intervals and baseline comparison); the rest are *secondaries*, printed per iteration in the GPUI bench report as median/min/max. `BENCH_MEASUREMENT` selects the arrangement:
 
-| `BENCH_MEASUREMENT` | Criterion analyzes | Reported as secondaries |
-|---|---|---|
-| unset (default) | wall time | every counter the machine supports (below) |
-| `instructions` | process-wide retired instructions; fails fast if counters are unavailable | the rest, plus wall time |
-| `foreground-instructions` | the benchmark thread's retired instructions; fails fast if unavailable | the rest, plus wall time |
-| `wall-time` | wall time | nothing; no counters are opened |
+| `BENCH_MEASUREMENT`       | Criterion analyzes                                                        | Reported as secondaries                    |
+| ------------------------- | ------------------------------------------------------------------------- | ------------------------------------------ |
+| unset (default)           | wall time                                                                 | every counter the machine supports (below) |
+| `instructions`            | process-wide retired instructions; fails fast if counters are unavailable | the rest, plus wall time                   |
+| `foreground-instructions` | the benchmark thread's retired instructions; fails fast if unavailable    | the rest, plus wall time                   |
+| `wall-time`               | wall time                                                                 | nothing; no counters are opened            |
 
 For a CI gate on frame cost prefer `foreground-instructions`: it excludes background parsing and GPU-driver submission threads, whose work varies run to run, and on Apple Silicon the process-wide count includes driver jitter that widens the interval (about ±0.6% versus ±0.01% for the foreground thread).
 

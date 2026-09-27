@@ -39,6 +39,8 @@
 		]
 	},
 	"excludes": [
+		"!.agents",
+		"!.agents/**",
 		"**/*.hbs",
 		"**/*.lock",
 		"**/fixtures",
