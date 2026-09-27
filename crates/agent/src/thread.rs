@@ -35,8 +35,8 @@ use futures::{
 };
 use futures::{StreamExt, stream};
 use gpui::{
-    App, AppContext, AsyncApp, Context, Entity, EventEmitter, ReadGlobal as _, SharedString, Task,
-    WeakEntity,
+    App, AppContext, AsyncApp, Context, Entity, EventEmitter, ReadGlobal as _, SharedString,
+    Subscription, Task, WeakEntity,
 };
 use heck::ToSnakeCase as _;
 use language_model::{
@@ -2332,10 +2332,11 @@ impl Thread {
             return Task::ready(());
         };
 
-        let turn_task = running_turn.cancel();
+        let (turn_task, runtime_lease) = running_turn.cancel();
 
         cx.spawn(async move |this, cx| {
             turn_task.await;
+            drop(runtime_lease);
             this.update(cx, |this, cx| {
                 this.flush_pending_message(cx);
             })
@@ -2684,6 +2685,8 @@ impl Thread {
             BTreeMap::default(),
             cancellation_tx,
             task,
+            self.project
+                .update(cx, |project, cx| project.acquire_runtime_lease(cx)),
         ));
 
         Ok(events_rx)
@@ -2786,7 +2789,16 @@ impl Thread {
                 _ = this.update(cx, |this, _| this.running_turn.take());
             }
         });
-        self.running_turn = Some(RunningTurn::new(event_stream, tools, cancellation_tx, task));
+        let runtime_lease = self
+            .project
+            .update(cx, |project, cx| project.acquire_runtime_lease(cx));
+        self.running_turn = Some(RunningTurn::new(
+            event_stream,
+            tools,
+            cancellation_tx,
+            task,
+            runtime_lease,
+        ));
         Ok(events_rx)
     }
 
@@ -4868,6 +4880,7 @@ struct RunningTurn {
     /// Survives across multiple requests as the model performs tool calls and
     /// we run tools, report their results.
     _task: Task<()>,
+    _runtime_lease: Subscription,
     /// The current event stream for the running turn. Used to report a final
     /// cancellation event if we cancel the turn.
     event_stream: ThreadEventStream,
@@ -4888,9 +4901,11 @@ impl RunningTurn {
         tools: BTreeMap<SharedString, Arc<dyn AnyAgentTool>>,
         cancellation_tx: watch::Sender<bool>,
         task: Task<()>,
+        runtime_lease: Subscription,
     ) -> Self {
         Self {
             _task: task,
+            _runtime_lease: runtime_lease,
             event_stream,
             tools,
             cancellation_tx,
@@ -4898,11 +4913,11 @@ impl RunningTurn {
         }
     }
 
-    fn cancel(mut self) -> Task<()> {
+    fn cancel(mut self) -> (Task<()>, Subscription) {
         log::debug!("Cancelling in progress turn");
         self.cancellation_tx.send(true).ok();
         self.event_stream.send_canceled();
-        self._task
+        (self._task, self._runtime_lease)
     }
 }
 
@@ -6997,6 +7012,36 @@ mod tests {
     use serde_json::json;
     use settings::LanguageModelProviderSetting;
     use std::sync::Arc;
+
+    #[gpui::test]
+    async fn test_cancel_retains_runtime_lease_until_tools_finish(cx: &mut TestAppContext) {
+        let (thread, event_stream) = setup_thread_for_test(cx).await;
+        let (finish, wait) = futures::channel::oneshot::channel();
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lease = Subscription::new({
+            let released = released.clone();
+            move || released.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+        thread.update(cx, |thread, cx| {
+            let (cancellation, _) = watch::channel(false);
+            let task = cx.background_spawn(async move {
+                wait.await.unwrap();
+            });
+            thread.running_turn = Some(RunningTurn::new(
+                event_stream,
+                BTreeMap::default(),
+                cancellation,
+                task,
+                lease,
+            ));
+        });
+        let cancellation = thread.update(cx, |thread, cx| thread.cancel(cx));
+        cx.run_until_parked();
+        assert!(!released.load(std::sync::atomic::Ordering::SeqCst));
+        finish.send(()).unwrap();
+        cancellation.await;
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn compaction_capacity_respects_prompt_and_combined_limits() {

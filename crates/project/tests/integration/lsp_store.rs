@@ -8,7 +8,7 @@ use std::{
 use collections::HashMap;
 use fs::{FakeFs, Fs};
 use futures::{FutureExt, StreamExt};
-use gpui::{Entity, TestAppContext};
+use gpui::{Entity, TestAppContext, UpdateGlobal as _};
 use language::{
     Buffer, CodeLabel, DiagnosticSourceKind, FakeLspAdapter, HighlightId, LocalFile, rust_lang,
 };
@@ -1076,4 +1076,1400 @@ fn worktree_entries(project: &Entity<Project>, cx: &TestAppContext) -> Vec<Strin
             .map(|entry| entry.path.as_unix_str().to_string())
             .collect()
     })
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_preserves_buffers_and_manual_stop(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp("Rust", FakeLspAdapter::default());
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let background = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut shutdowns = server
+        .set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| futures::future::ready(Ok(())));
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    drop(background);
+    shutdowns.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    buffer.update(cx, |buffer, cx| {
+        buffer.edit([(0..0, "// retained edit\n")], None, cx)
+    });
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    let opened = resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let expected_text = buffer.read_with(cx, |buffer, _| {
+        buffer
+            .line_ending()
+            .apply("// retained edit\nfn main() {}".into())
+    });
+    assert_eq!(opened.text_document.text, expected_text);
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let store = project.read_with(cx, |project, _| project.lsp_store());
+    store.update(cx, |store, cx| store.stop_all_language_servers(cx));
+    cx.run_until_parked();
+    drop(foreground);
+    cx.run_until_parked();
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(servers.next().now_or_never().is_none());
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_resume_only_registers_buffers_with_live_lsp_handles(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/runtime"),
+        json!({ "main.rs": "fn main() {}", "background.rs": "fn background() {}" }),
+    )
+    .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp("Rust", FakeLspAdapter::default());
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let background = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/runtime/background.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    let opened = resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(
+        opened.text_document.uri,
+        Uri::from_file_path(path!("/runtime/main.rs")).unwrap()
+    );
+    cx.run_until_parked();
+    assert!(
+        resumed
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .now_or_never()
+            .is_none()
+    );
+    cx.update(|_| drop(handle));
+    resumed
+        .receive_notification::<lsp::notification::DidCloseTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(servers.next().now_or_never().is_none());
+    assert_eq!(
+        buffer.read_with(cx, |buffer, _| buffer.text()),
+        "fn main() {}"
+    );
+    assert_eq!(
+        background.read_with(cx, |buffer, _| buffer.text()),
+        "fn background() {}"
+    );
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_resume_tolerates_failed_optional_server(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                rename_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let mut optional_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "optional-server",
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                move |server| {
+                    if starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            |_, _| async move { anyhow::bail!("optional server unavailable") },
+                        );
+                    }
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut optional = optional_servers.next().await.unwrap();
+    optional
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let _failed = optional_servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    project
+        .update(cx, |project, cx| {
+            project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    let store = project.read_with(cx, |project, _| project.lsp_store());
+    store
+        .update(cx, |store, cx| store.resume_language_servers(cx))
+        .await
+        .unwrap();
+    let mut retried = optional_servers.next().await.unwrap();
+    retried
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(starts.load(Ordering::SeqCst), 3);
+    assert!(servers.next().now_or_never().is_none());
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_resume_does_not_wait_for_optional_server(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                rename_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let optional_requests = Arc::new(AtomicUsize::new(0));
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = Arc::new(Mutex::new(Some(wait)));
+    let mut optional_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "optional-server",
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let optional_requests = optional_requests.clone();
+                move |server| {
+                    let optional_requests = optional_requests.clone();
+                    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+                        optional_requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
+                    if starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                        let wait = wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            rename_provider: Some(lsp::OneOf::Left(true)),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut optional = optional_servers.next().await.unwrap();
+    optional
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut pending = optional_servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    project
+        .update(cx, |project, cx| {
+            project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    let mut targeted_rename = project.update(cx, |project, cx| {
+        project.perform_rename(
+            buffer.clone(),
+            3,
+            "targeted".into(),
+            Some(pending.server.server_id()),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert!((&mut targeted_rename).now_or_never().is_none());
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(optional_requests.load(Ordering::SeqCst), 0);
+    release.send(()).unwrap();
+    pending
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    targeted_rename.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(optional_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert!(servers.next().now_or_never().is_none());
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_formatting_waits_only_for_selected_servers(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::Formatting, _, _>(move |_, _| {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = Arc::new(Mutex::new(Some(wait)));
+    let mut optional_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "optional-server",
+            capabilities: lsp::ServerCapabilities {
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::Formatting, _, _>(move |_, _| {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
+                    if starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                        let wait = wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            document_formatting_provider: Some(lsp::OneOf::Left(
+                                                true,
+                                            )),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut optional = optional_servers.next().await.unwrap();
+    optional
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut pending = optional_servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    use language::language_settings::{Formatter, FormatterList};
+    use settings::{LanguageServerFormatterSpecifier, SettingsStore};
+    for formatter in [
+        Formatter::None,
+        Formatter::LanguageServer(LanguageServerFormatterSpecifier::Specific {
+            name: "the-fake-language-server".into(),
+        }),
+        Formatter::LanguageServer(LanguageServerFormatterSpecifier::Current),
+    ] {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.project.all_languages.defaults.formatter =
+                        Some(FormatterList::Single(formatter));
+                });
+            })
+        });
+        project
+            .update(cx, |project, cx| {
+                project.format(
+                    collections::HashSet::from_iter([buffer.clone()]),
+                    LspFormatTarget::Buffers,
+                    false,
+                    FormatTrigger::Manual,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.all_languages.defaults.formatter =
+                    Some(FormatterList::Single(Formatter::External {
+                        command: "nonexistent-runtime-test-formatter".into(),
+                        arguments: None,
+                    }));
+            });
+        })
+    });
+    let external_error = project
+        .update(cx, |project, cx| {
+            project.format(
+                collections::HashSet::from_iter([buffer.clone()]),
+                LspFormatTarget::Buffers,
+                false,
+                FormatTrigger::Manual,
+                cx,
+            )
+        })
+        .await
+        .unwrap_err();
+    assert!(external_error.to_string().contains("external command"));
+
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.all_languages.defaults.formatter = Some(FormatterList::Single(
+                    Formatter::LanguageServer(LanguageServerFormatterSpecifier::Specific {
+                        name: "optional-server".into(),
+                    }),
+                ));
+            });
+        })
+    });
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.all_languages.defaults.format_on_save =
+                    Some(language::language_settings::FormatOnSave::Off);
+            });
+        })
+    });
+    project
+        .update(cx, |project, cx| {
+            project.format(
+                collections::HashSet::from_iter([buffer.clone()]),
+                LspFormatTarget::Buffers,
+                false,
+                FormatTrigger::Save,
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    let mut format = project.update(cx, |project, cx| {
+        project.format(
+            collections::HashSet::from_iter([buffer.clone()]),
+            LspFormatTarget::Buffers,
+            false,
+            FormatTrigger::Manual,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert!((&mut format).now_or_never().is_none());
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+
+    release.send(()).unwrap();
+    pending
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    format.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert!(servers.next().now_or_never().is_none());
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_code_action_waits_for_its_originating_server(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                code_action_provider: Some(lsp::CodeActionProviderCapability::Options(
+                    lsp::CodeActionOptions {
+                        resolve_provider: Some(true),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::CodeActionResolveRequest, _, _>(
+                        move |action, _| {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            async move { Ok(action) }
+                        },
+                    );
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = Arc::new(Mutex::new(Some(wait)));
+    let mut optional_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "optional-server",
+            capabilities: lsp::ServerCapabilities {
+                code_action_provider: Some(lsp::CodeActionProviderCapability::Options(
+                    lsp::CodeActionOptions {
+                        resolve_provider: Some(true),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::CodeActionResolveRequest, _, _>(
+                        move |action, _| {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            async move { Ok(action) }
+                        },
+                    );
+                    if starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                        let wait = wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            code_action_provider: Some(
+                                                lsp::CodeActionProviderCapability::Options(
+                                                    lsp::CodeActionOptions {
+                                                        resolve_provider: Some(true),
+                                                        ..Default::default()
+                                                    },
+                                                ),
+                                            ),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut optional = optional_servers.next().await.unwrap();
+    optional
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut pending = optional_servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let range = buffer.read_with(cx, |buffer, _| {
+        buffer.anchor_before(0)..buffer.anchor_after(3)
+    });
+    let action = project::CodeAction {
+        server_id: pending.server.server_id(),
+        range,
+        lsp_action: project::LspAction::Action(Box::new(lsp::CodeAction {
+            title: "Fix".into(),
+            data: Some(json!({ "resolve": true })),
+            ..Default::default()
+        })),
+        resolved: false,
+    };
+    let mut stale_action = action.clone();
+    stale_action.server_id = optional.server.server_id();
+    let stale_result = project
+        .update(cx, |project, cx| {
+            project.apply_code_action(buffer.clone(), stale_action, false, cx)
+        })
+        .await;
+    assert!(
+        stale_result
+            .unwrap_err()
+            .to_string()
+            .contains("no longer available")
+    );
+    let mut apply = project.update(cx, |project, cx| {
+        project.apply_code_action(buffer.clone(), action, false, cx)
+    });
+    cx.run_until_parked();
+    assert!((&mut apply).now_or_never().is_none());
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+    release.send(()).unwrap();
+    pending
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    apply.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert!(servers.next().now_or_never().is_none());
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_definitions_wait_for_all_capable_servers(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::GotoDefinition, _, _>(
+                        move |_, _| {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            async move { Ok(None) }
+                        },
+                    );
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = Arc::new(Mutex::new(Some(wait)));
+    let mut optional_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "optional-server",
+            capabilities: lsp::ServerCapabilities {
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let requests = requests.clone();
+                move |server| {
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::GotoDefinition, _, _>(
+                        move |_, _| {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            async move { Ok(None) }
+                        },
+                    );
+                    if starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                        let wait = wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            definition_provider: Some(lsp::OneOf::Left(true)),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut optional = optional_servers.next().await.unwrap();
+    optional
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+
+    let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let mut resumed = servers.next().await.unwrap();
+    resumed
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut pending = optional_servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let mut definitions = project.update(cx, |project, cx| project.definitions(&buffer, 3, cx));
+    cx.run_until_parked();
+    assert!((&mut definitions).now_or_never().is_none());
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+    release.send(()).unwrap();
+    pending
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    definitions.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert!(servers.next().now_or_never().is_none());
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_reacquired_during_shutdown(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp("Rust", FakeLspAdapter::default());
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let (release, wait) = futures::channel::oneshot::channel();
+    let mut wait = Some(wait);
+    let (shutdown_started, shutdown_entered) = futures::channel::oneshot::channel();
+    let mut shutdown_started = Some(shutdown_started);
+    let mut shutdowns = server.set_request_handler::<lsp::request::Shutdown, _, _>(move |_, _| {
+        let wait = wait.take().unwrap();
+        shutdown_started.take().unwrap().send(()).unwrap();
+        async move {
+            wait.await.unwrap();
+            Ok(())
+        }
+    });
+    drop(foreground);
+    shutdown_entered.await.unwrap();
+    cx.run_until_parked();
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    cx.run_until_parked();
+    assert!(servers.next().now_or_never().is_none());
+    release.send(()).unwrap();
+    shutdowns.next().await.unwrap();
+    let _resumed = servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_keeps_pending_editor_requests_alive(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                rename_provider: Some(lsp::OneOf::Left(true)),
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let (finish_rename, rename_wait) = futures::channel::oneshot::channel();
+    let mut rename_wait = Some(rename_wait);
+    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+        let wait = rename_wait.take().unwrap();
+        async move {
+            wait.await.unwrap();
+            Ok(None)
+        }
+    });
+    let (finish_format, format_wait) = futures::channel::oneshot::channel();
+    let mut format_wait = Some(format_wait);
+    server.set_request_handler::<lsp::request::Formatting, _, _>(move |_, _| {
+        let wait = format_wait.take().unwrap();
+        async move {
+            wait.await.unwrap();
+            Ok(None)
+        }
+    });
+    let mut shutdowns = server
+        .set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| futures::future::ready(Ok(())));
+    let rename = project.update(cx, |project, cx| {
+        project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
+    });
+    let format = project.update(cx, |project, cx| {
+        project.format(
+            [buffer.clone()].into_iter().collect(),
+            LspFormatTarget::Buffers,
+            true,
+            FormatTrigger::Save,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    finish_rename.send(()).unwrap();
+    rename.await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    finish_format.send(()).unwrap();
+    format.await.unwrap();
+    shutdowns.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_waits_for_resumed_server_initialization(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (initialized, initialize_wait) = futures::channel::oneshot::channel();
+    let initialize_wait = Arc::new(Mutex::new(Some(initialize_wait)));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                rename_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let requests = requests.clone();
+                move |server| {
+                    if starts.fetch_add(1, Ordering::SeqCst) > 0 {
+                        let initialize_wait = initialize_wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = initialize_wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            rename_provider: Some(lsp::OneOf::Left(true)),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(None) }
+                    });
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let rename = project.update(cx, |project, cx| {
+        project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    initialized.send(()).unwrap();
+    rename.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_signature_help_holds_runtime_lease_through_initialization_and_response(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (initialized, initialize_wait) = futures::channel::oneshot::channel();
+    let initialize_wait = Arc::new(Mutex::new(Some(initialize_wait)));
+    let (respond, response_wait) = futures::channel::oneshot::channel();
+    let response_wait = Arc::new(Mutex::new(Some(response_wait)));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                signature_help_provider: Some(lsp::SignatureHelpOptions::default()),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let requests = requests.clone();
+                move |server| {
+                    if starts.fetch_add(1, Ordering::SeqCst) > 0 {
+                        let initialize_wait = initialize_wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = initialize_wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            signature_help_provider: Some(
+                                                lsp::SignatureHelpOptions::default(),
+                                            ),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                    let requests = requests.clone();
+                    let response_wait = response_wait.clone();
+                    server.set_request_handler::<lsp::request::SignatureHelpRequest, _, _>(
+                        move |_, _| {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            let wait = response_wait.lock().take().unwrap();
+                            async move {
+                                wait.await.unwrap();
+                                Ok(Some(lsp::SignatureHelp {
+                                    signatures: vec![lsp::SignatureInformation {
+                                        label: "main()".into(),
+                                        documentation: None,
+                                        parameters: None,
+                                        active_parameter: None,
+                                    }],
+                                    active_signature: None,
+                                    active_parameter: None,
+                                }))
+                            }
+                        },
+                    );
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let resumed = servers.next().await.unwrap();
+    let mut shutdowns =
+        resumed.set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| async { Ok(()) });
+    cx.run_until_parked();
+    let mut help = project.update(cx, |project, cx| project.signature_help(&buffer, 3, cx));
+    drop(foreground);
+    cx.run_until_parked();
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!((&mut help).now_or_never().is_none());
+    initialized.send(()).unwrap();
+    cx.run_until_parked();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    assert!((&mut help).now_or_never().is_none());
+    respond.send(()).unwrap();
+    assert_eq!(help.await.unwrap().len(), 1);
+    shutdowns.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_cancelled_signature_help_releases_runtime_lease(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                signature_help_provider: Some(lsp::SignatureHelpOptions::default()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let (started, request_started) = futures::channel::oneshot::channel();
+    let mut started = Some(started);
+    server.set_request_handler::<lsp::request::SignatureHelpRequest, _, _>(move |_, _| {
+        started.take().unwrap().send(()).unwrap();
+        futures::future::pending()
+    });
+    let mut shutdowns =
+        server.set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| async { Ok(()) });
+    let help = project.update(cx, |project, cx| project.signature_help(&buffer, 3, cx));
+    request_started.await.unwrap();
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    drop(help);
+    shutdowns.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_requests_wait_for_capable_servers_and_workspace_symbols(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (initialized, initialize_wait) = futures::channel::oneshot::channel();
+    let initialize_wait = Arc::new(Mutex::new(Some(initialize_wait)));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let starts = starts.clone();
+                let requests = requests.clone();
+                move |server| {
+                    if starts.fetch_add(1, Ordering::SeqCst) > 0 {
+                        let initialize_wait = initialize_wait.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = initialize_wait.lock().take().unwrap();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities: lsp::ServerCapabilities {
+                                            definition_provider: Some(lsp::OneOf::Left(true)),
+                                            workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::GotoDefinition, _, _>(
+                        move |_, _| {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            async move { Ok(None) }
+                        },
+                    );
+                    server.set_request_handler::<lsp::request::WorkspaceSymbolRequest, _, _>(
+                        |_, _| async move { Ok(None) },
+                    );
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let mut incapable_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "incapable",
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let mut incapable = incapable_servers.next().await.unwrap();
+    incapable
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let mut definitions = project.update(cx, |project, cx| project.definitions(&buffer, 3, cx));
+    let mut symbols = project.update(cx, |project, cx| project.symbols("main", cx));
+    let mut incapable = incapable_servers.next().await.unwrap();
+    incapable
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    cx.run_until_parked();
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!((&mut definitions).now_or_never().is_none());
+    assert!((&mut symbols).now_or_never().is_none());
+    initialized.send(()).unwrap();
+    definitions.await.unwrap();
+    symbols.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
+
+#[gpui::test(iterations = 10)]
+async fn test_suspension_discards_late_server_startup(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = Arc::new(Mutex::new(Some(wait)));
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            initializer: Some(Box::new(move |server| {
+                let wait = wait.clone();
+                server.set_request_handler::<lsp::request::Initialize, _, _>(move |_, _| {
+                    let wait = wait.lock().take().unwrap();
+                    async move {
+                        wait.await.unwrap();
+                        Ok(lsp::InitializeResult::default())
+                    }
+                });
+            })),
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let server = servers.next().await.unwrap();
+    let server_id = server.server.server_id();
+    let store = project.read_with(cx, |project, _| project.lsp_store());
+    // Keep a startup waiter alive so shutdown cannot cancel initialization before it finishes.
+    let definitions = store.update(cx, |store, cx| {
+        store.definitions(&buffer, Default::default(), cx)
+    });
+    cx.run_until_parked();
+    drop(foreground);
+    cx.run_until_parked();
+    release.send(()).unwrap();
+    definitions.await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    project.read_with(cx, |project, cx| {
+        let store = project.lsp_store();
+        let store = store.read(cx);
+        assert!(store.language_server_for_id(server_id).is_none());
+        assert!(store.language_server_statuses().next().is_none());
+    });
 }

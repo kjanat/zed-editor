@@ -1732,3 +1732,50 @@ async fn test_nearest_retained_workspace_skips_disconnected_workspace(cx: &mut T
         );
     });
 }
+
+#[gpui::test]
+async fn test_runtime_lease_follows_active_retained_workspace(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "retained" }))
+        .await;
+    fs.insert_tree("/root_b", json!({ "file.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs, ["/root_b".as_ref()], cx).await;
+    let background = project_a.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a.clone(), window, cx));
+    let workspace_a = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+    let session_a = workspace_a.read_with(cx, |workspace, _| workspace.session_id());
+    let workspace_b = multi_workspace.update_in(cx, |workspace, window, cx| {
+        workspace.test_add_workspace(project_b.clone(), window, cx)
+    });
+    cx.run_until_parked();
+    assert!(!project_a.read_with(cx, |project, _| project.runtime_is_suspended()));
+    drop(background);
+    cx.run_until_parked();
+    assert!(project_a.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project_b.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert_eq!(
+        workspace_a.read_with(cx, |workspace, _| workspace.session_id()),
+        session_a
+    );
+    multi_workspace.update_in(cx, |workspace, window, cx| {
+        workspace.activate(workspace_a.clone(), None, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(!project_a.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project_b.read_with(cx, |project, _| project.runtime_is_suspended()));
+    multi_workspace.read_with(cx, |workspace, _| {
+        assert_eq!(workspace.workspace(), &workspace_a);
+        assert!(
+            workspace
+                .workspaces()
+                .any(|retained| retained == &workspace_b)
+        );
+    });
+    assert_eq!(
+        workspace_a.read_with(cx, |workspace, _| workspace.session_id()),
+        session_a
+    );
+}

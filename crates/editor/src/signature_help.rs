@@ -195,11 +195,11 @@ impl Editor {
         else {
             return;
         };
-        let Some(lsp_store) = self.project().map(|p| p.read(cx).lsp_store()) else {
+        let Some(project) = self.project() else {
             return;
         };
-        let lsp_task = lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.signature_help(&buffer, buffer_position, cx)
+        let lsp_task = project.update(cx, |project, cx| {
+            project.signature_help(&buffer, buffer_position, cx)
         });
         let language = self.language_at(position, cx);
 
