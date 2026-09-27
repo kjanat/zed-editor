@@ -2258,6 +2258,11 @@ impl Project {
     /// Keeps the project's runtime services available until the returned lease is dropped.
     pub fn acquire_runtime_lease(&mut self, cx: &mut Context<Self>) -> Subscription {
         self.runtime_managed = true;
+        self.acquire_runtime_activity_lease(cx)
+    }
+
+    // Requests must not enroll standalone projects in workspace suspension.
+    fn acquire_runtime_activity_lease(&mut self, cx: &mut Context<Self>) -> Subscription {
         self.runtime_lease_count += 1;
         self.update_runtime_state(cx);
 
@@ -2274,6 +2279,20 @@ impl Project {
                     }
                 })
                 .detach();
+        })
+    }
+
+    fn run_with_runtime_lease<T: 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        operation: impl FnOnce(&mut Self, &mut Context<Self>) -> Task<T>,
+    ) -> Task<T> {
+        let lease = self.acquire_runtime_activity_lease(cx);
+        let task = operation(self, cx);
+        cx.spawn(async move |_, _| {
+            let result = task.await;
+            drop(lease);
+            result
         })
     }
 
@@ -4564,8 +4583,10 @@ impl Project {
         trigger: lsp_store::FormatTrigger,
         cx: &mut Context<Project>,
     ) -> Task<anyhow::Result<ProjectTransaction>> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.format(buffers, target, push_to_history, trigger, cx)
+        self.run_with_runtime_lease(cx, |project, cx| {
+            project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.format(buffers, target, push_to_history, trigger, cx)
+            })
         })
     }
 
@@ -4581,15 +4602,17 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.definitions(buffer, position, cx)
-        });
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.definitions(buffer, position, cx)
+            });
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4600,9 +4623,16 @@ impl Project {
         include_type_definitions: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<EditPredictionDefinition>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.edit_prediction_definitions(buffer, position, include_type_definitions, cx)
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.edit_prediction_definitions(
+                    buffer,
+                    position,
+                    include_type_definitions,
+                    cx,
+                )
+            })
         })
     }
 
@@ -4612,15 +4642,17 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.declarations(buffer, position, cx)
-        });
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.declarations(buffer, position, cx)
+            });
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4630,15 +4662,17 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.type_definitions(buffer, position, cx)
-        });
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.type_definitions(buffer, position, cx)
+            });
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4648,15 +4682,17 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.implementations(buffer, position, cx)
-        });
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.implementations(buffer, position, cx)
+            });
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4666,15 +4702,17 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<Location>>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.references(buffer, position, cx)
-        });
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.references(buffer, position, cx)
+            });
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4684,15 +4722,17 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<CallHierarchyItem>>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.prepare_call_hierarchy(buffer, position, cx)
-        });
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.prepare_call_hierarchy(buffer, position, cx)
+            });
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4701,14 +4741,16 @@ impl Project {
         item: CallHierarchyItem,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<IncomingCall>>>> {
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self
-            .lsp_store
-            .update(cx, |lsp_store, cx| lsp_store.incoming_calls(item, cx));
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project
+                .lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.incoming_calls(item, cx));
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4717,14 +4759,16 @@ impl Project {
         item: CallHierarchyItem,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<OutgoingCall>>>> {
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self
-            .lsp_store
-            .update(cx, |lsp_store, cx| lsp_store.outgoing_calls(item, cx));
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project
+                .lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.outgoing_calls(item, cx));
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 
@@ -4756,9 +4800,12 @@ impl Project {
         )
     }
 
-    pub fn symbols(&self, query: &str, cx: &mut Context<Self>) -> Task<Result<Vec<Symbol>>> {
-        self.lsp_store
-            .update(cx, |lsp_store, cx| lsp_store.symbols(query, cx))
+    pub fn symbols(&mut self, query: &str, cx: &mut Context<Self>) -> Task<Result<Vec<Symbol>>> {
+        self.run_with_runtime_lease(cx, |project, cx| {
+            project
+                .lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.symbols(query, cx))
+        })
     }
 
     pub fn open_buffer_for_symbol(
@@ -4814,37 +4861,44 @@ impl Project {
     }
 
     pub fn hover<T: ToPointUtf16>(
-        &self,
+        &mut self,
         buffer: &Entity<Buffer>,
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Option<Vec<Hover>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        self.lsp_store
-            .update(cx, |lsp_store, cx| lsp_store.hover(buffer, position, cx))
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            project
+                .lsp_store
+                .update(cx, |lsp_store, cx| lsp_store.hover(buffer, position, cx))
+        })
     }
 
     pub fn linked_edits(
-        &self,
+        &mut self,
         buffer: &Entity<Buffer>,
         position: Anchor,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<Range<Anchor>>>> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.linked_edits(buffer, position, cx)
+        self.run_with_runtime_lease(cx, |project, cx| {
+            project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.linked_edits(buffer, position, cx)
+            })
         })
     }
 
     pub fn completions<T: ToOffset + ToPointUtf16>(
-        &self,
+        &mut self,
         buffer: &Entity<Buffer>,
         position: T,
         context: CompletionContext,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<CompletionResponse>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.completions(buffer, position, context, cx)
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let position = position.to_point_utf16(buffer.read(cx));
+            project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.completions(buffer, position, context, cx)
+            })
         })
     }
 
@@ -4855,24 +4909,27 @@ impl Project {
         kinds: Option<Vec<CodeActionKind>>,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<CodeAction>>>> {
-        let buffer = buffer_handle.read(cx);
-        let range = buffer.anchor_before(range.start)..buffer.anchor_before(range.end);
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.code_actions(buffer_handle, range, kinds, cx)
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let buffer = buffer_handle.read(cx);
+            let range = buffer.anchor_before(range.start)..buffer.anchor_before(range.end);
+            project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.code_actions(buffer_handle, range, kinds, cx)
+            })
         })
     }
 
     pub fn apply_code_action(
-        &self,
+        &mut self,
         buffer_handle: Entity<Buffer>,
         action: CodeAction,
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<ProjectTransaction>> {
-        let resolve = self.lsp_store.update(cx, |lsp_store, cx| {
+        self.run_with_runtime_lease(cx, |project, cx| {
+        let resolve = project.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.resolve_code_action(&buffer_handle, action, cx)
         });
-        let lsp_store = self.lsp_store.clone();
+        let lsp_store = project.lsp_store.clone();
         cx.spawn(async move |_, cx| {
             let mut action = resolve.await?;
             let clipboard_text = action
@@ -4916,17 +4973,20 @@ impl Project {
             }
             Ok(transaction)
         })
+            })
     }
 
     pub fn apply_code_action_kind(
-        &self,
+        &mut self,
         buffers: HashSet<Entity<Buffer>>,
         kind: CodeActionKind,
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<ProjectTransaction>> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.apply_code_action_kind(buffers, kind, push_to_history, cx)
+        self.run_with_runtime_lease(cx, |project, cx| {
+            project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.apply_code_action_kind(buffers, kind, push_to_history, cx)
+            })
         })
     }
 
@@ -4986,9 +5046,15 @@ impl Project {
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<Option<Transaction>>>> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
+        let lease = self.acquire_runtime_activity_lease(cx);
+        let task = self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.on_type_format(buffer, position, trigger, push_to_history, cx)
-        })
+        })?;
+        Some(cx.spawn(async move |_, _| {
+            let result = task.await;
+            drop(lease);
+            result
+        }))
     }
 
     pub fn inline_values(
@@ -5082,14 +5148,16 @@ impl Project {
         <R::LspRequest as lsp::request::Request>::Result: Send,
         <R::LspRequest as lsp::request::Request>::Params: Send,
     {
-        let guard = self.retain_remotely_created_models(cx);
-        let task = self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.request_lsp(buffer_handle, server, request, cx)
-        });
-        cx.background_spawn(async move {
-            let result = task.await;
-            drop(guard);
-            result
+        self.run_with_runtime_lease(cx, |project, cx| {
+            let guard = project.retain_remotely_created_models(cx);
+            let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.request_lsp(buffer_handle, server, request, cx)
+            });
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
+            })
         })
     }
 

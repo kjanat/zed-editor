@@ -1173,3 +1173,83 @@ async fn test_runtime_lease_reacquired_during_shutdown(cx: &mut TestAppContext) 
     cx.run_until_parked();
     assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
 }
+
+#[gpui::test(iterations = 10)]
+async fn test_runtime_lease_keeps_pending_editor_requests_alive(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                rename_provider: Some(lsp::OneOf::Left(true)),
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    let (finish_rename, rename_wait) = futures::channel::oneshot::channel();
+    let mut rename_wait = Some(rename_wait);
+    server.set_request_handler::<lsp::request::Rename, _, _>(move |_, _| {
+        let wait = rename_wait.take().unwrap();
+        async move {
+            wait.await.unwrap();
+            Ok(None)
+        }
+    });
+    let (finish_format, format_wait) = futures::channel::oneshot::channel();
+    let mut format_wait = Some(format_wait);
+    server.set_request_handler::<lsp::request::Formatting, _, _>(move |_, _| {
+        let wait = format_wait.take().unwrap();
+        async move {
+            wait.await.unwrap();
+            Ok(None)
+        }
+    });
+    let mut shutdowns = server
+        .set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| futures::future::ready(Ok(())));
+    let rename = project.update(cx, |project, cx| {
+        project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
+    });
+    let format = project.update(cx, |project, cx| {
+        project.format(
+            [buffer.clone()].into_iter().collect(),
+            LspFormatTarget::Buffers,
+            true,
+            FormatTrigger::Save,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    finish_rename.send(()).unwrap();
+    rename.await.unwrap();
+    cx.run_until_parked();
+    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(shutdowns.next().now_or_never().is_none());
+    finish_format.send(()).unwrap();
+    format.await.unwrap();
+    shutdowns.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+}
