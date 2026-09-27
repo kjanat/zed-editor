@@ -16,7 +16,6 @@ path    = "src/language_models.rs"
 ai_onboarding.workspace         = true
 anthropic                       = { workspace = true, features = ["schemars"] }
 anyhow.workspace                = true
-async-lock.workspace            = true
 aws-config                      = { workspace = true, features = ["behavior-version-latest"] }
 aws-credential-types            = { workspace = true, features = ["hardcoded-credentials"] }
 aws_http_client.workspace       = true
@@ -63,7 +62,6 @@ serde_json.workspace            = true
 settings.workspace              = true
 sha2.workspace                  = true
 strum.workspace                 = true
-tokio                           = { workspace = true, features = ["rt", "rt-multi-thread"] }
 ui.workspace                    = true
 ui_input.workspace              = true
 util.workspace                  = true

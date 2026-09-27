@@ -59,7 +59,7 @@ pub(crate) async fn watch(
         pending_paths.clone(),
     ));
 
-    if let Err(e) = watcher.add(path) {
+    if let Err(e) = fs.add_watch(watcher.clone(), path.to_path_buf()).await {
         log::warn!("Failed to watch {}:\n{e}", path.display());
     }
 
@@ -75,13 +75,23 @@ pub(crate) async fn watch(
                 target = SanitizedPath::new(&canonical).as_path().to_path_buf();
             }
         }
-        watcher.add(&target).ok();
-        // Skipped for poll watchers: PollWatcher::watch() recursively scans
-        // at registration, blocking on large virtual filesystem mounts
-        if let Some(parent) = target.parent()
-            && !fs.requires_poll_watcher(parent)
-        {
-            watcher.add(parent).log_err();
+        let register = {
+            let watcher = watcher.clone();
+            let fs = fs.clone();
+            move || {
+                watcher.add(&target).log_err();
+                // Poll registration recursively scans the parent, which may be a large mount.
+                if let Some(parent) = target.parent()
+                    && !fs.requires_poll_watcher(parent)
+                {
+                    watcher.add(parent).log_err();
+                }
+            }
+        };
+        if fs.is_fake() {
+            register();
+        } else {
+            smol::unblock(register).await;
         }
     }
 
@@ -122,6 +132,24 @@ pub struct FsWatcher {
 struct FsWatcherRegistration {
     id: WatcherRegistrationId,
     os_watcher: Arc<OsWatcher>,
+    invalidated: Arc<AtomicBool>,
+}
+
+impl FsWatcherRegistration {
+    fn publish(&self, key: WatchKey, registrations: &Mutex<HashMap<WatchKey, Self>>) -> bool {
+        let mut registrations = registrations.lock();
+        if self.invalidated.load(Ordering::SeqCst) {
+            return false;
+        }
+        registrations.insert(key, self.clone());
+        true
+    }
+
+    fn with_cleanup(self) -> (Self, util::Deferred<impl FnOnce()>) {
+        let registration = self.clone();
+        let cleanup = util::defer(move || registration.os_watcher.remove(registration.id));
+        (self, cleanup)
+    }
 }
 
 impl FsWatcher {
@@ -167,7 +195,13 @@ impl FsWatcher {
             self.dropped.clone(),
         )? {
             Some(registration) => {
-                self.registrations.lock().insert(key, registration);
+                let (registration, cleanup) = registration.with_cleanup();
+                if registration.publish(key, &self.registrations) {
+                    cleanup.abort();
+                } else {
+                    drop(cleanup);
+                    self.add_pending_path(path);
+                }
             }
             None => {
                 // Registration was skipped (e.g. the native watch-limit cooldown
@@ -364,7 +398,9 @@ fn register_existing_path(
         native_watcher
     };
     let root_path = SanitizedPath::new_arc(path.as_ref());
+    let invalidated = Arc::new(AtomicBool::new(false));
     let rearm = watch_needs_rearm(os_watcher.kind).then(|| WatchRearm {
+        invalidated: invalidated.clone(),
         fs: Arc::downgrade(fs),
         native_watcher: Arc::downgrade(native_watcher),
         poll_watcher: Arc::downgrade(poll_watcher),
@@ -402,6 +438,7 @@ fn register_existing_path(
     Ok(Some(FsWatcherRegistration {
         id: registration_id,
         os_watcher: os_watcher.clone(),
+        invalidated,
     }))
 }
 
@@ -412,6 +449,7 @@ fn register_existing_path(
 /// final `Remove`, but our registration bookkeeping still holds the path. Without repair, a
 /// later `add` is deduplicated against a watch that no longer exists.
 struct WatchRearm {
+    invalidated: Arc<AtomicBool>,
     fs: Weak<dyn Fs>,
     native_watcher: Weak<OsWatcher>,
     poll_watcher: Weak<OsWatcher>,
@@ -439,7 +477,19 @@ impl WatchRearm {
         if self.dropped.load(Ordering::SeqCst) {
             return;
         }
-        let registration = self.registrations.lock().remove(&self.key);
+        let registration = {
+            let mut registrations = self.registrations.lock();
+            // Synchronize invalidation with publication, including callbacks that
+            // arrive before the blocking registration result has been consumed.
+            self.invalidated.store(true, Ordering::SeqCst);
+            if registrations.get(&self.key).is_some_and(|registration| {
+                Arc::ptr_eq(&registration.invalidated, &self.invalidated)
+            }) {
+                registrations.remove(&self.key)
+            } else {
+                None
+            }
+        };
         let Some(registration) = registration else {
             return;
         };
@@ -726,14 +776,33 @@ async fn poll_path_until_created(
             return;
         }
 
-        if !fs.path_exists(&path) {
+        let exists = if fs.is_fake() {
+            fs.path_exists(&path)
+        } else {
+            smol::unblock({
+                let fs = fs.clone();
+                let path = path.clone();
+                move || fs.path_exists(&path)
+            })
+            .await
+        };
+        if !exists {
             executor.timer(poll_interval()).await;
             continue;
         }
 
         // Probe case sensitivity now that the path exists, rather than at add
         // time when it didn't.
-        let case_insensitive = !fs.is_path_case_sensitive(&path);
+        let case_insensitive = if fs.is_fake() {
+            !fs.is_path_case_sensitive(&path)
+        } else {
+            smol::unblock({
+                let path = path.clone();
+                let fs = fs.clone();
+                move || !fs.is_path_case_sensitive(&path)
+            })
+            .await
+        };
         let key = WatchKey::for_registration(SanitizedPath::new(&path), case_insensitive);
 
         if registrations.lock().contains_key(&key) {
@@ -741,37 +810,70 @@ async fn poll_path_until_created(
             return;
         }
 
-        match register_existing_path(
-            &native_watcher,
-            &poll_watcher,
-            &fs,
-            path.clone(),
-            case_insensitive,
-            tx.clone(),
-            pending_path_events.clone(),
-            executor.clone(),
-            registrations.clone(),
-            pending_registrations.clone(),
-            dropped.clone(),
-        ) {
-            Ok(Some(registration)) => {
-                {
+        let register = {
+            let path = path.clone();
+            let tx = tx.clone();
+            let pending_path_events = pending_path_events.clone();
+            let fs = fs.clone();
+            let native_watcher = native_watcher.clone();
+            let poll_watcher = poll_watcher.clone();
+            let executor = executor.clone();
+            let registrations = registrations.clone();
+            let pending_registrations = pending_registrations.clone();
+            let dropped = dropped.clone();
+            move || {
+                register_existing_path(
+                    &native_watcher,
+                    &poll_watcher,
+                    &fs,
+                    path,
+                    case_insensitive,
+                    tx,
+                    pending_path_events,
+                    executor,
+                    registrations,
+                    pending_registrations,
+                    dropped,
+                )
+                // The blocking worker outlives a cancelled polling task. Its result
+                // must own cleanup until the registration map takes ownership.
+                .map(|registration| registration.map(FsWatcherRegistration::with_cleanup))
+            }
+        };
+        let registration = if fs.is_fake() {
+            register()
+        } else {
+            smol::unblock(register).await
+        };
+
+        match registration {
+            Ok(Some((registration, cleanup))) => {
+                let published = {
                     let mut pending_registrations = pending_registrations.lock();
-                    if pending_registrations.remove(path.as_ref()).is_none() {
-                        registration.os_watcher.remove(registration.id);
+                    if !pending_registrations.contains_key(path.as_ref()) {
                         return;
                     }
-                    registrations.lock().insert(key, registration);
+                    if registration.publish(key, &registrations) {
+                        pending_registrations.remove(path.as_ref());
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if published {
+                    cleanup.abort();
+                    enqueue_path_events(
+                        &tx,
+                        &pending_path_events,
+                        vec![PathEvent {
+                            path: path.to_path_buf(),
+                            kind: Some(registered_path_event_kind),
+                        }],
+                    );
+                    return;
                 }
-                enqueue_path_events(
-                    &tx,
-                    &pending_path_events,
-                    vec![PathEvent {
-                        path: path.to_path_buf(),
-                        kind: Some(registered_path_event_kind),
-                    }],
-                );
-                return;
+                // Keep the pending poller alive when its OS watch died before publication.
+                drop(cleanup);
             }
             Ok(None) => {}
             Err(error) => {
@@ -1450,6 +1552,63 @@ mod tests {
     use super::*;
     use std::{collections::HashSet, path::PathBuf};
 
+    #[gpui::test]
+    fn watch_registration_uses_blocking_workers_only_for_real_filesystems(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct ThreadCheckingWatcher {
+            caller: std::thread::ThreadId,
+            expect_same_thread: bool,
+            paths: Mutex<Vec<PathBuf>>,
+        }
+
+        impl ThreadCheckingWatcher {
+            fn check_thread(&self) {
+                assert_eq!(
+                    std::thread::current().id() == self.caller,
+                    self.expect_same_thread
+                );
+            }
+        }
+
+        impl Watcher for ThreadCheckingWatcher {
+            fn add(&self, path: &Path) -> anyhow::Result<()> {
+                self.check_thread();
+                self.paths.lock().push(path.to_path_buf());
+                anyhow::bail!("registration failed")
+            }
+
+            fn remove(&self, _: &Path) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn file_watch_follows_inode(&self, _: &Path) -> bool {
+                self.check_thread();
+                true
+            }
+        }
+
+        let filesystems: [Arc<dyn Fs>; 2] = [
+            crate::RealFs::new(None, cx.executor()),
+            crate::FakeFs::new(cx.executor()),
+        ];
+        for fs in filesystems {
+            let watcher = Arc::new(ThreadCheckingWatcher {
+                caller: std::thread::current().id(),
+                expect_same_thread: fs.is_fake(),
+                paths: Mutex::new(Vec::new()),
+            });
+            let path = PathBuf::from("repo/file.txt");
+            let error = smol::block_on(fs.add_watch(watcher.clone(), path.clone()))
+                .expect_err("registration errors must propagate");
+            assert_eq!(error.to_string(), "registration failed");
+            let error = smol::block_on(fs.add_file_parent_watch(watcher.clone(), path.clone()))
+                .expect_err("parent registration errors must propagate");
+            assert_eq!(error.to_string(), "registration failed");
+            assert_eq!(*watcher.paths.lock(), vec![path, PathBuf::from("repo")]);
+        }
+    }
+
     fn rescan(path: &str) -> PathEvent {
         PathEvent {
             path: PathBuf::from(path),
@@ -1470,6 +1629,9 @@ mod tests {
         watch_calls: Vec<PathBuf>,
         unwatch_calls: Vec<PathBuf>,
         fail_with_watch_limit: bool,
+        watch_started: Option<std::sync::mpsc::SyncSender<()>>,
+        continue_watch: Option<std::sync::mpsc::Receiver<()>>,
+        watch_removed: Option<std::sync::mpsc::SyncSender<()>>,
     }
 
     struct SharedFakeWatchBackend(Arc<Mutex<FakeWatchBackend>>);
@@ -1479,6 +1641,15 @@ mod tests {
             let path = path.to_path_buf();
             let mut backend = self.0.lock();
             backend.watch_calls.push(path.clone());
+            if let Some(started) = backend.watch_started.take() {
+                started.send(()).expect("signal watch entry");
+                backend
+                    .continue_watch
+                    .take()
+                    .expect("watch barrier")
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("release watch registration");
+            }
             if backend.fail_with_watch_limit {
                 return Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch));
             }
@@ -1491,6 +1662,9 @@ mod tests {
             let mut backend = self.0.lock();
             backend.unwatch_calls.push(path.clone());
             if backend.watched_paths.remove(&path) {
+                if let Some(removed) = backend.watch_removed.take() {
+                    removed.send(()).expect("signal watch removal");
+                }
                 Ok(())
             } else {
                 Err(notify::Error::generic("path was not watched"))
@@ -1534,6 +1708,131 @@ mod tests {
         expected_path_events: Vec<PathEvent>,
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[gpui::test]
+    async fn removal_before_publication_retries_without_publishing_a_stale_watch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fs = crate::FakeFs::new(cx.executor());
+        fs.insert_tree(util::path!("/repo"), serde_json::json!({}))
+            .await;
+        let backend = Arc::new(Mutex::new(FakeWatchBackend::default()));
+        let native = Arc::new(test_os_watcher(
+            OsWatcherKind::Native,
+            Some(backend.clone()),
+        ));
+        let poll = Arc::new(test_os_watcher(OsWatcherKind::Poll, None));
+        let (tx, _rx) = async_channel::unbounded();
+        let watcher = FsWatcher::new(
+            native.clone(),
+            poll.clone(),
+            fs,
+            cx.executor(),
+            tx,
+            Default::default(),
+        );
+        let path: Arc<Path> = Path::new(util::path!("/repo")).into();
+        watcher.add_pending_path(path.clone());
+        let registration = register_existing_path(
+            &native,
+            &poll,
+            &watcher.fs,
+            path.clone(),
+            false,
+            watcher.tx.clone(),
+            watcher.pending_path_events.clone(),
+            cx.executor(),
+            watcher.registrations.clone(),
+            watcher.pending_registrations.clone(),
+            watcher.dropped.clone(),
+        )
+        .expect("register path")
+        .expect("registration is not skipped");
+        let old_callback = native
+            .state
+            .lock()
+            .watchers
+            .get(&registration.id)
+            .expect("callback registered")
+            .callback
+            .clone();
+        let event = notify::Event::new(EventKind::Remove(notify::event::RemoveKind::Any))
+            .add_path(path.to_path_buf());
+        old_callback(&event);
+        let (registration, cleanup) = registration.with_cleanup();
+        let key = WatchKey::for_registration(SanitizedPath::new(&path), false);
+        assert!(!registration.publish(key, &watcher.registrations));
+        assert!(watcher.registrations.lock().is_empty());
+        assert!(
+            watcher
+                .pending_registrations
+                .lock()
+                .contains_key(path.as_ref())
+        );
+        drop(cleanup);
+
+        cx.run_until_parked();
+        assert!(watcher.pending_registrations.lock().is_empty());
+        assert_eq!(watcher.registrations.lock().len(), 1);
+        assert_eq!(backend.lock().watch_calls.len(), 2);
+        assert_eq!(backend.lock().unwatch_calls.len(), 1);
+        old_callback(&event);
+        assert_eq!(watcher.registrations.lock().len(), 1);
+        assert!(watcher.pending_registrations.lock().is_empty());
+    }
+
+    #[test]
+    fn cancelled_blocking_registration_unregisters_its_result() {
+        use futures::FutureExt as _;
+
+        let (started, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        let (removed, removed_rx) = std::sync::mpsc::sync_channel(1);
+        let backend = Arc::new(Mutex::new(FakeWatchBackend {
+            watch_started: Some(started),
+            continue_watch: Some(release_rx),
+            watch_removed: Some(removed),
+            ..Default::default()
+        }));
+        let watcher = Arc::new(test_os_watcher(
+            OsWatcherKind::Native,
+            Some(backend.clone()),
+        ));
+        let directory = tempfile::tempdir().expect("create watched directory");
+        let path = directory.path().to_path_buf();
+        let mut registration = Box::pin(smol::unblock({
+            let watcher = watcher.clone();
+            let path = path.clone();
+            move || {
+                let id = watcher
+                    .add(path.as_path().into(), false, |_| {})
+                    .expect("register watch")
+                    .expect("watch is not skipped");
+                FsWatcherRegistration {
+                    id,
+                    os_watcher: watcher,
+                    invalidated: Default::default(),
+                }
+                .with_cleanup()
+            }
+        }));
+        assert!(registration.as_mut().now_or_never().is_none());
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("registration started");
+        drop(registration);
+        release.send(()).expect("release blocking worker");
+        removed_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("cancelled result unregistered");
+        let backend = backend.lock();
+        assert_eq!(backend.watch_calls, std::slice::from_ref(&path));
+        assert_eq!(backend.unwatch_calls, [path]);
+        assert!(backend.watched_paths.is_empty());
+        drop(backend);
+        assert!(watcher.state.lock().watchers.is_empty());
+    }
+
     #[test]
     fn covered_child_registration_is_not_unwatched_after_parent_is_removed() {
         let backend = Arc::new(Mutex::new(FakeWatchBackend::default()));
@@ -1560,6 +1859,8 @@ mod tests {
 
     #[gpui::test]
     async fn pending_path_is_registered_once_created(cx: &mut gpui::TestAppContext) {
+        // Real filesystem probes and registration run outside the deterministic executor.
+        cx.executor().allow_parking();
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let path = temp_dir.path().join("file.txt");
 
@@ -1610,10 +1911,14 @@ mod tests {
     }
 
     #[gpui::test]
-    fn pending_watch_yields_during_watch_limit_cooldown(cx: &mut gpui::TestAppContext) {
-        let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let path = temp_dir.path().join("file.txt");
-        std::fs::write(&path, b"contents").expect("create path");
+    async fn pending_watch_yields_during_watch_limit_cooldown(cx: &mut gpui::TestAppContext) {
+        let fs = crate::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            util::path!("/repo"),
+            serde_json::json!({ "file.txt": "contents" }),
+        )
+        .await;
+        let path = PathBuf::from(util::path!("/repo/file.txt"));
         let backend = Arc::new(Mutex::new(FakeWatchBackend {
             fail_with_watch_limit: true,
             ..Default::default()
@@ -1625,8 +1930,8 @@ mod tests {
         let (tx, _rx) = async_channel::unbounded();
         let watcher = FsWatcher::new(
             native_watcher.clone(),
-            OsWatcher::new(OsWatcherKind::Poll, cx.executor()),
-            crate::RealFs::new(None, cx.executor()),
+            Arc::new(test_os_watcher(OsWatcherKind::Poll, None)),
+            fs,
             cx.executor(),
             tx,
             Default::default(),

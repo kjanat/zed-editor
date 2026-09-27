@@ -1988,7 +1988,7 @@ fn watch_languages(fs: Arc<dyn fs::Fs>, languages: Arc<LanguageRegistry>, cx: &m
                 if let Some(path) = path.log_err()
                     && fs.is_dir(&path).await
                 {
-                    watcher.add(&path).log_err();
+                    fs.add_watch(watcher.clone(), path).await.log_err();
                 }
             }
         }
