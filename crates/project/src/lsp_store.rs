@@ -4814,6 +4814,58 @@ impl SymbolLocation {
     }
 }
 
+fn supports_runtime_request(method: &str, capabilities: AdapterServerCapabilities<'_>) -> bool {
+    let position = PointUtf16::default();
+    match method {
+        "textDocument/definition" => GetDefinitions { position }.check_capabilities(capabilities),
+        "textDocument/declaration" => GetDeclarations { position }.check_capabilities(capabilities),
+        "textDocument/typeDefinition" => {
+            GetTypeDefinitions { position }.check_capabilities(capabilities)
+        }
+        "textDocument/implementation" => {
+            GetImplementations { position }.check_capabilities(capabilities)
+        }
+        "textDocument/references" => GetReferences { position }.check_capabilities(capabilities),
+        "textDocument/prepareCallHierarchy" => {
+            PrepareCallHierarchy { position }.check_capabilities(capabilities)
+        }
+        "textDocument/hover" => GetHover { position }.check_capabilities(capabilities),
+        "textDocument/completion" => capabilities
+            .server_capabilities
+            .completion_provider
+            .is_some(),
+        "textDocument/codeAction" => GetCodeActions {
+            range: Anchor::MIN..Anchor::MAX,
+            kinds: None,
+        }
+        .check_capabilities(capabilities),
+        "textDocument/formatting" => {
+            !matches!(
+                capabilities
+                    .server_capabilities
+                    .document_formatting_provider,
+                None | Some(lsp::OneOf::Left(false))
+            ) || !matches!(
+                capabilities
+                    .server_capabilities
+                    .document_range_formatting_provider,
+                None | Some(lsp::OneOf::Left(false))
+            )
+        }
+        "textDocument/onTypeFormatting" => capabilities
+            .server_capabilities
+            .document_on_type_formatting_provider
+            .is_some(),
+        "textDocument/linkedEditingRange" => !matches!(
+            capabilities
+                .server_capabilities
+                .linked_editing_range_provider,
+            None | Some(lsp::LinkedEditingRangeServerCapabilities::Simple(false))
+        ),
+        _ => true,
+    }
+}
+
 fn should_log_lsp_request_failure(message: &str) -> bool {
     // "content modified" and "server cancelled the request" are noisy failure
     // modes of rust-analyzer where requests are denied before it has loaded a
@@ -4838,6 +4890,7 @@ impl LspStore {
         client.add_entity_request_handler(Self::handle_lsp_query);
         client.add_entity_message_handler(Self::handle_lsp_query_response);
         client.add_entity_request_handler(Self::handle_restart_language_servers);
+        client.add_entity_request_handler(Self::handle_wait_for_language_servers);
         client.add_entity_request_handler(Self::handle_stop_language_servers);
         client.add_entity_request_handler(Self::handle_cancel_language_server_work);
         client.add_entity_message_handler(Self::handle_start_language_server);
@@ -13299,25 +13352,69 @@ impl LspStore {
         &self,
         buffers: Vec<Entity<Buffer>>,
         server_id: Option<LanguageServerId>,
+        method: String,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        if let Some((client, project_id)) = self.upstream_client() {
+            let request = client.request(proto::WaitForLanguageServers {
+                project_id,
+                buffer_ids: buffers
+                    .iter()
+                    .map(|buffer| buffer.read(cx).remote_id().to_proto())
+                    .collect(),
+                server_id: server_id.map(|id| id.0 as u64),
+                method,
+            });
+            return cx.background_spawn(async move {
+                request.await?;
+                Ok(())
+            });
+        }
         cx.spawn(async move |this, cx| {
-            for buffer in buffers {
+            let scopes = if method == "workspace/symbol" {
+                vec![None]
+            } else {
+                buffers.into_iter().map(Some).collect()
+            };
+            for buffer in scopes {
                 loop {
                     let startups = this.update(cx, |store, cx| {
                         let Some(local) = store.as_local() else {
                             return Vec::new();
                         };
-                        let ids = buffer.update(cx, |buffer, cx| {
-                            local.language_server_ids_for_buffer(buffer, cx)
-                        });
+                        let ids = if let Some(buffer) = &buffer {
+                            buffer.update(cx, |buffer, cx| {
+                                local.language_server_ids_for_buffer(buffer, cx)
+                            })
+                        } else {
+                            local.language_servers.keys().copied().collect()
+                        };
                         let mut startups = Vec::new();
                         for id in ids {
                             if server_id.is_some_and(|requested| requested != id) {
                                 continue;
                             }
                             match local.language_servers.get(&id) {
-                                Some(LanguageServerState::Running { .. }) => return Vec::new(),
+                                Some(LanguageServerState::Running {
+                                    adapter, server, ..
+                                }) => {
+                                    if let Some(buffer) = &buffer
+                                        && text_document_capabilities_for_buffer(
+                                            local,
+                                            &method,
+                                            buffer.read(cx),
+                                            adapter,
+                                            server,
+                                        )
+                                        .any(
+                                            |capabilities| {
+                                                supports_runtime_request(&method, capabilities)
+                                            },
+                                        )
+                                    {
+                                        return Vec::new();
+                                    }
+                                }
                                 Some(LanguageServerState::Starting { startup, .. }) => {
                                     startups.push(startup.clone())
                                 }
@@ -13329,12 +13426,29 @@ impl LspStore {
                     if startups.is_empty() {
                         break;
                     }
-                    // A slow optional server must not hold up an already usable server.
                     futures::future::select_all(startups).await;
                 }
             }
             Ok(())
         })
+    }
+
+    async fn handle_wait_for_language_servers(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::WaitForLanguageServers>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        this.update(&mut cx, |store, cx| {
+            let buffers = store.buffer_ids_to_buffers(envelope.payload.buffer_ids.into_iter(), cx);
+            store.wait_for_buffer_language_servers(
+                buffers,
+                envelope.payload.server_id.map(LanguageServerId::from_proto),
+                envelope.payload.method,
+                cx,
+            )
+        })
+        .await?;
+        Ok(proto::Ack {})
     }
 
     pub fn restart_language_servers_for_buffers(

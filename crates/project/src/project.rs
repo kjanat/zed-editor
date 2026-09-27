@@ -2284,6 +2284,7 @@ impl Project {
 
     fn run_with_runtime_lease<T: 'static>(
         &mut self,
+        method: &'static str,
         buffers: Vec<Entity<Buffer>>,
         server_id: Option<LanguageServerId>,
         cx: &mut Context<Self>,
@@ -2298,7 +2299,12 @@ impl Project {
             project
                 .update(cx, |project, cx| {
                     project.lsp_store.update(cx, |store, cx| {
-                        store.wait_for_buffer_language_servers(buffers, server_id, cx)
+                        store.wait_for_buffer_language_servers(
+                            buffers,
+                            server_id,
+                            method.to_owned(),
+                            cx,
+                        )
                     })
                 })?
                 .await?;
@@ -4606,6 +4612,7 @@ impl Project {
         cx: &mut Context<Project>,
     ) -> Task<anyhow::Result<ProjectTransaction>> {
         self.run_with_runtime_lease(
+            "textDocument/formatting",
             buffers.iter().cloned().collect(),
             None,
             cx,
@@ -4631,17 +4638,23 @@ impl Project {
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            let guard = project.retain_remotely_created_models(cx);
-            let task = project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.definitions(&buffer, position, cx)
-            });
-            cx.background_spawn(async move {
-                let result = task.await;
-                drop(guard);
-                result
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/definition",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                let guard = project.retain_remotely_created_models(cx);
+                let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.definitions(&buffer, position, cx)
+                });
+                cx.background_spawn(async move {
+                    let result = task.await;
+                    drop(guard);
+                    result
+                })
+            },
+        )
     }
 
     pub fn edit_prediction_definitions<T: ToPointUtf16>(
@@ -4653,16 +4666,22 @@ impl Project {
     ) -> Task<Result<Vec<EditPredictionDefinition>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.edit_prediction_definitions(
-                    &buffer,
-                    position,
-                    include_type_definitions,
-                    cx,
-                )
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/definition",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.edit_prediction_definitions(
+                        &buffer,
+                        position,
+                        include_type_definitions,
+                        cx,
+                    )
+                })
+            },
+        )
     }
 
     pub fn declarations<T: ToPointUtf16>(
@@ -4673,17 +4692,23 @@ impl Project {
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            let guard = project.retain_remotely_created_models(cx);
-            let task = project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.declarations(&buffer, position, cx)
-            });
-            cx.background_spawn(async move {
-                let result = task.await;
-                drop(guard);
-                result
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/declaration",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                let guard = project.retain_remotely_created_models(cx);
+                let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.declarations(&buffer, position, cx)
+                });
+                cx.background_spawn(async move {
+                    let result = task.await;
+                    drop(guard);
+                    result
+                })
+            },
+        )
     }
 
     pub fn type_definitions<T: ToPointUtf16>(
@@ -4694,17 +4719,23 @@ impl Project {
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            let guard = project.retain_remotely_created_models(cx);
-            let task = project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.type_definitions(&buffer, position, cx)
-            });
-            cx.background_spawn(async move {
-                let result = task.await;
-                drop(guard);
-                result
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/typeDefinition",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                let guard = project.retain_remotely_created_models(cx);
+                let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.type_definitions(&buffer, position, cx)
+                });
+                cx.background_spawn(async move {
+                    let result = task.await;
+                    drop(guard);
+                    result
+                })
+            },
+        )
     }
 
     pub fn implementations<T: ToPointUtf16>(
@@ -4715,17 +4746,23 @@ impl Project {
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            let guard = project.retain_remotely_created_models(cx);
-            let task = project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.implementations(&buffer, position, cx)
-            });
-            cx.background_spawn(async move {
-                let result = task.await;
-                drop(guard);
-                result
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/implementation",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                let guard = project.retain_remotely_created_models(cx);
+                let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.implementations(&buffer, position, cx)
+                });
+                cx.background_spawn(async move {
+                    let result = task.await;
+                    drop(guard);
+                    result
+                })
+            },
+        )
     }
 
     pub fn references<T: ToPointUtf16>(
@@ -4736,17 +4773,23 @@ impl Project {
     ) -> Task<Result<Option<Vec<Location>>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            let guard = project.retain_remotely_created_models(cx);
-            let task = project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.references(&buffer, position, cx)
-            });
-            cx.background_spawn(async move {
-                let result = task.await;
-                drop(guard);
-                result
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/references",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                let guard = project.retain_remotely_created_models(cx);
+                let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.references(&buffer, position, cx)
+                });
+                cx.background_spawn(async move {
+                    let result = task.await;
+                    drop(guard);
+                    result
+                })
+            },
+        )
     }
 
     pub fn prepare_call_hierarchy<T: ToPointUtf16>(
@@ -4757,17 +4800,23 @@ impl Project {
     ) -> Task<Result<Option<Vec<CallHierarchyItem>>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            let guard = project.retain_remotely_created_models(cx);
-            let task = project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.prepare_call_hierarchy(&buffer, position, cx)
-            });
-            cx.background_spawn(async move {
-                let result = task.await;
-                drop(guard);
-                result
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/prepareCallHierarchy",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                let guard = project.retain_remotely_created_models(cx);
+                let task = project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.prepare_call_hierarchy(&buffer, position, cx)
+                });
+                cx.background_spawn(async move {
+                    let result = task.await;
+                    drop(guard);
+                    result
+                })
+            },
+        )
     }
 
     pub fn incoming_calls(
@@ -4776,6 +4825,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<IncomingCall>>>> {
         self.run_with_runtime_lease(
+            "callHierarchy/incomingCalls",
             vec![item.buffer.clone()],
             Some(item.server_id),
             cx,
@@ -4799,6 +4849,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<OutgoingCall>>>> {
         self.run_with_runtime_lease(
+            "callHierarchy/outgoingCalls",
             vec![item.buffer.clone()],
             Some(item.server_id),
             cx,
@@ -4846,11 +4897,17 @@ impl Project {
 
     pub fn symbols(&mut self, query: &str, cx: &mut Context<Self>) -> Task<Result<Vec<Symbol>>> {
         let query = query.to_owned();
-        self.run_with_runtime_lease(Vec::new(), None, cx, move |project, cx| {
-            project
-                .lsp_store
-                .update(cx, |lsp_store, cx| lsp_store.symbols(&query, cx))
-        })
+        self.run_with_runtime_lease(
+            "workspace/symbol",
+            Vec::new(),
+            None,
+            cx,
+            move |project, cx| {
+                project
+                    .lsp_store
+                    .update(cx, |lsp_store, cx| lsp_store.symbols(&query, cx))
+            },
+        )
     }
 
     pub fn open_buffer_for_symbol(
@@ -4913,13 +4970,18 @@ impl Project {
     ) -> Task<Option<Vec<Hover>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        let task =
-            self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
+        let task = self.run_with_runtime_lease(
+            "textDocument/hover",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
                 let task = project
                     .lsp_store
                     .update(cx, |store, cx| store.hover(&buffer, position, cx));
                 cx.spawn(async move |_, _| Ok(task.await))
-            });
+            },
+        );
         cx.spawn(async move |_, _| task.await.log_err().flatten())
     }
 
@@ -4930,11 +4992,17 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<Range<Anchor>>>> {
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.linked_edits(&buffer, position, cx)
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/linkedEditingRange",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.linked_edits(&buffer, position, cx)
+                })
+            },
+        )
     }
 
     pub fn completions<T: ToOffset + ToPointUtf16>(
@@ -4946,11 +5014,17 @@ impl Project {
     ) -> Task<Result<Vec<CompletionResponse>>> {
         let position = position.to_point_utf16(buffer.read(cx));
         let buffer = buffer.clone();
-        self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
-            project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.completions(&buffer, position, context, cx)
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/completion",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.completions(&buffer, position, context, cx)
+                })
+            },
+        )
     }
 
     pub fn code_actions<T: Clone + ToOffset>(
@@ -4963,11 +5037,17 @@ impl Project {
         let buffer = buffer_handle.read(cx);
         let range = buffer.anchor_before(range.start)..buffer.anchor_before(range.end);
         let buffer_handle = buffer_handle.clone();
-        self.run_with_runtime_lease(vec![buffer_handle.clone()], None, cx, move |project, cx| {
-            project.lsp_store.update(cx, |lsp_store, cx| {
-                lsp_store.code_actions(&buffer_handle, range, kinds, cx)
-            })
-        })
+        self.run_with_runtime_lease(
+            "textDocument/codeAction",
+            vec![buffer_handle.clone()],
+            None,
+            cx,
+            move |project, cx| {
+                project.lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.code_actions(&buffer_handle, range, kinds, cx)
+                })
+            },
+        )
     }
 
     pub fn apply_code_action(
@@ -4977,7 +5057,7 @@ impl Project {
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<ProjectTransaction>> {
-        self.run_with_runtime_lease(vec![buffer_handle.clone()], None, cx, move |project, cx| {
+        self.run_with_runtime_lease("textDocument/codeAction", vec![buffer_handle.clone()], None, cx, move |project, cx| {
         let resolve = project.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.resolve_code_action(&buffer_handle, action, cx)
         });
@@ -5036,6 +5116,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Task<Result<ProjectTransaction>> {
         self.run_with_runtime_lease(
+            "textDocument/codeAction",
             buffers.iter().cloned().collect(),
             None,
             cx,
@@ -5115,15 +5196,19 @@ impl Project {
             }));
         }
         let position = position.to_point_utf16(buffer.read(cx));
-        Some(
-            self.run_with_runtime_lease(vec![buffer.clone()], None, cx, move |project, cx| {
+        Some(self.run_with_runtime_lease(
+            "textDocument/onTypeFormatting",
+            vec![buffer.clone()],
+            None,
+            cx,
+            move |project, cx| {
                 project.lsp_store.update(cx, |store, cx| {
                     store
                         .on_type_format(buffer, position, trigger, push_to_history, cx)
                         .unwrap_or_else(|| Task::ready(Ok(None)))
                 })
-            }),
-        )
+            },
+        ))
     }
 
     pub fn inline_values(
@@ -5218,6 +5303,7 @@ impl Project {
         <R::LspRequest as lsp::request::Request>::Params: Send,
     {
         self.run_with_runtime_lease(
+            <R::LspRequest as lsp::request::Request>::METHOD,
             vec![buffer_handle.clone()],
             match &server {
                 LanguageServerToQuery::Other(id) => Some(*id),

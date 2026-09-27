@@ -423,6 +423,7 @@ impl Server {
             .add_request_handler(lsp_query)
             .add_message_handler(forward_lsp_query_response)
             .add_request_handler(forward_mutating_project_request::<proto::RestartLanguageServers>)
+            .add_request_handler(forward_mutating_project_request::<proto::WaitForLanguageServers>)
             .add_request_handler(forward_mutating_project_request::<proto::StopLanguageServers>)
             .add_request_handler(forward_mutating_project_request::<proto::LinkedEditingRange>)
             .add_message_handler(create_buffer_for_peer)

@@ -5763,3 +5763,99 @@ fn build_project(ssh: Entity<RemoteClient>, cx: &mut TestAppContext) -> Entity<P
 
     cx.update(|cx| Project::remote(ssh, client, node, user_store, languages, fs, false, cx))
 }
+
+#[gpui::test]
+async fn test_remote_runtime_waits_for_capable_server(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    use futures::FutureExt as _;
+    let fs = FakeFs::new(server_cx.executor());
+    fs.insert_tree(path!("/code/project"), json!({ "lib.rs": "fn main() {}" }))
+        .await;
+    let (project, headless) = init_test(&fs, cx, server_cx).await;
+    let capabilities = lsp::ServerCapabilities {
+        definition_provider: Some(lsp::OneOf::Left(true)),
+        ..Default::default()
+    };
+    project.update(cx, |project, _| {
+        project.languages().add(rust_lang());
+        project.languages().register_fake_lsp_adapter(
+            "Rust",
+            FakeLspAdapter {
+                name: "rust-analyzer",
+                capabilities: capabilities.clone(),
+                ..Default::default()
+            },
+        );
+    });
+    let starts = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (release, wait) = futures::channel::oneshot::channel();
+    let wait = Arc::new(parking_lot::Mutex::new(Some(wait)));
+    let mut servers = server_cx.update(|cx| {
+        headless.read(cx).languages.register_fake_lsp_server(
+            LanguageServerName("rust-analyzer".into()),
+            capabilities.clone(),
+            Some(Box::new({
+                let requests = requests.clone();
+                move |server| {
+                    if starts.fetch_add(1, Ordering::SeqCst) > 0 {
+                        let wait = wait.clone();
+                        let capabilities = capabilities.clone();
+                        server.set_request_handler::<lsp::request::Initialize, _, _>(
+                            move |_, _| {
+                                let wait = wait.lock().take().unwrap();
+                                let capabilities = capabilities.clone();
+                                async move {
+                                    wait.await.unwrap();
+                                    Ok(lsp::InitializeResult {
+                                        capabilities,
+                                        ..Default::default()
+                                    })
+                                }
+                            },
+                        );
+                    }
+                    let requests = requests.clone();
+                    server.set_request_handler::<lsp::request::GotoDefinition, _, _>(
+                        move |_, _| {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            async move { Ok(None) }
+                        },
+                    );
+                }
+            })),
+        )
+    });
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let worktree_id = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/code/project"), true, cx)
+        })
+        .await
+        .unwrap()
+        .0
+        .read_with(cx, |worktree, _| worktree.id());
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_buffer_with_lsp((worktree_id, rel_path("lib.rs")), cx)
+        })
+        .await
+        .unwrap();
+    let mut server = servers.next().await.unwrap();
+    server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    let mut definitions = project.update(cx, |project, cx| project.definitions(&buffer, 3, cx));
+    let _resumed = servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!((&mut definitions).now_or_never().is_none());
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    release.send(()).unwrap();
+    definitions.await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
