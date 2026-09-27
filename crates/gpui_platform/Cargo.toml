@@ -15,7 +15,8 @@ name              = "inspector_render"
 required-features = ["bench-support"]
 
 [dependencies]
-gpui.workspace = true
+anyhow.workspace = true
+gpui.workspace   = true
 
 [dev-dependencies]
 criterion.workspace = true
@@ -27,6 +28,9 @@ gpui_linux.workspace = true
 console_error_panic_hook.workspace = true
 gpui_web.workspace                 = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_wgpu = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_macos.workspace = true
 
@@ -36,12 +40,12 @@ gpui_windows.workspace = true
 
 [features]
 default         = []
-bench-support   = ["gpui_macos/bench-support", "gpui/bench-support"]
+bench-support   = ["gpui_macos/bench-support", "gpui_wgpu/bench-support", "gpui/bench-support"]
 font-kit        = ["gpui_macos/font-kit"]
 inspector       = ["gpui/inspector"]
 runtime_shaders = ["gpui_macos/runtime_shaders"]
 screen-capture  = ["gpui_linux/screen-capture", "gpui_macos/screen-capture", "gpui_windows/screen-capture", "gpui/screen-capture"]
-test-support    = ["gpui_macos/test-support", "gpui_windows/test-support", "gpui/test-support"]
+test-support    = ["gpui_macos/test-support", "gpui_wgpu/test-support", "gpui_windows/test-support", "gpui/test-support"]
 wayland         = ["gpui_linux/wayland"]
 x11             = ["gpui_linux/x11"]
 

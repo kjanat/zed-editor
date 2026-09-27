@@ -1489,11 +1489,10 @@ impl LocalWorktree {
                 // the scanner takes on each directory it walks; a single-file one has none,
                 // so it watches the parent. Events for siblings arrive too and are dropped
                 // for failing to strip the root.
-                if is_single_file
-                    && watcher.file_watch_follows_inode(&abs_path)
-                    && let Some(parent) = abs_path.parent()
-                {
-                    watcher.add(parent).log_err();
+                if is_single_file {
+                    fs.add_file_parent_watch(watcher.clone(), abs_path.to_path_buf())
+                        .await
+                        .log_err();
                 }
                 let mut scanner = BackgroundScanner {
                     fs,
@@ -4756,37 +4755,47 @@ impl BackgroundScanner {
                 .watch(root_abs_path.as_path(), FS_WATCH_LATENCY)
                 .await;
             self.watcher = watcher;
-            if self.is_single_file
-                && self
-                    .watcher
-                    .file_watch_follows_inode(root_abs_path.as_path())
-                && let Some(parent) = root_abs_path.as_path().parent()
-            {
-                self.watcher.add(parent).log_err();
+            if self.is_single_file {
+                self.fs
+                    .add_file_parent_watch(
+                        self.watcher.clone(),
+                        root_abs_path.as_path().to_path_buf(),
+                    )
+                    .await
+                    .log_err();
             }
             fs_events_rx = Box::pin(events.map(|events| events.into_iter().collect()));
 
-            let state = self.state.lock().await;
-            for target in state.symlink_paths_by_target.keys() {
-                if !target.starts_with(root_abs_path.as_path()) {
-                    self.watcher.add(target).log_err();
+            let paths = {
+                let state = self.state.lock().await;
+                let mut paths = Vec::new();
+                for target in state.symlink_paths_by_target.keys() {
+                    if !target.starts_with(root_abs_path.as_path()) {
+                        paths.push(target.to_path_buf());
+                    }
                 }
+                for repo in state.snapshot.git_repositories.values() {
+                    if !repo
+                        .common_dir_abs_path
+                        .starts_with(root_abs_path.as_path())
+                    {
+                        paths.push(repo.common_dir_abs_path.to_path_buf());
+                    }
+                    if !repo
+                        .repository_dir_abs_path
+                        .starts_with(root_abs_path.as_path())
+                    {
+                        paths.push(repo.repository_dir_abs_path.to_path_buf());
+                    }
+                }
+                paths
+            };
+            for path in paths {
+                self.fs
+                    .add_watch(self.watcher.clone(), path)
+                    .await
+                    .log_err();
             }
-            for repo in state.snapshot.git_repositories.values() {
-                if !repo
-                    .common_dir_abs_path
-                    .starts_with(root_abs_path.as_path())
-                {
-                    self.watcher.add(&repo.common_dir_abs_path).log_err();
-                }
-                if !repo
-                    .repository_dir_abs_path
-                    .starts_with(root_abs_path.as_path())
-                {
-                    self.watcher.add(&repo.repository_dir_abs_path).log_err();
-                }
-            }
-            drop(state);
         }
 
         // Process any any FS events that occurred while performing the initial scan.
@@ -5901,15 +5910,16 @@ impl BackgroundScanner {
                 .canonicalize(job.abs_path.as_ref())
                 .await
                 .ok()
-                .map(|canonical| {
-                    let canonical: Arc<Path> = canonical.into();
-                    self.watcher.add(&canonical).log_err();
-                    canonical
-                })
+                .map(Into::into)
         } else {
-            self.watcher.add(job.abs_path.as_ref()).log_err();
             Some(job.abs_path.clone())
         };
+        if let Some(path) = &watched_abs_path {
+            self.fs
+                .add_watch(self.watcher.clone(), path.to_path_buf())
+                .await
+                .log_err();
+        }
 
         let child_paths = match self.fs.read_dir(&job.abs_path).await {
             Ok(child_paths) => child_paths,

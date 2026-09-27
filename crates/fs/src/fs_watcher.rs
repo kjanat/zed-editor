@@ -59,7 +59,7 @@ pub(crate) async fn watch(
         pending_paths.clone(),
     ));
 
-    if let Err(e) = watcher.add(path) {
+    if let Err(e) = fs.add_watch(watcher.clone(), path.to_path_buf()).await {
         log::warn!("Failed to watch {}:\n{e}", path.display());
     }
 
@@ -75,13 +75,23 @@ pub(crate) async fn watch(
                 target = SanitizedPath::new(&canonical).as_path().to_path_buf();
             }
         }
-        watcher.add(&target).ok();
-        // Skipped for poll watchers: PollWatcher::watch() recursively scans
-        // at registration, blocking on large virtual filesystem mounts
-        if let Some(parent) = target.parent()
-            && !fs.requires_poll_watcher(parent)
-        {
-            watcher.add(parent).log_err();
+        let register = {
+            let watcher = watcher.clone();
+            let fs = fs.clone();
+            move || {
+                watcher.add(&target).log_err();
+                // Poll registration recursively scans the parent, which may be a large mount.
+                if let Some(parent) = target.parent()
+                    && !fs.requires_poll_watcher(parent)
+                {
+                    watcher.add(parent).log_err();
+                }
+            }
+        };
+        if fs.is_fake() {
+            register();
+        } else {
+            smol::unblock(register).await;
         }
     }
 
@@ -726,14 +736,33 @@ async fn poll_path_until_created(
             return;
         }
 
-        if !fs.path_exists(&path) {
+        let exists = if fs.is_fake() {
+            fs.path_exists(&path)
+        } else {
+            smol::unblock({
+                let fs = fs.clone();
+                let path = path.clone();
+                move || fs.path_exists(&path)
+            })
+            .await
+        };
+        if !exists {
             executor.timer(poll_interval()).await;
             continue;
         }
 
         // Probe case sensitivity now that the path exists, rather than at add
         // time when it didn't.
-        let case_insensitive = !fs.is_path_case_sensitive(&path);
+        let case_insensitive = if fs.is_fake() {
+            !fs.is_path_case_sensitive(&path)
+        } else {
+            smol::unblock({
+                let path = path.clone();
+                let fs = fs.clone();
+                move || !fs.is_path_case_sensitive(&path)
+            })
+            .await
+        };
         let key = WatchKey::for_registration(SanitizedPath::new(&path), case_insensitive);
 
         if registrations.lock().contains_key(&key) {
@@ -741,19 +770,40 @@ async fn poll_path_until_created(
             return;
         }
 
-        match register_existing_path(
-            &native_watcher,
-            &poll_watcher,
-            &fs,
-            path.clone(),
-            case_insensitive,
-            tx.clone(),
-            pending_path_events.clone(),
-            executor.clone(),
-            registrations.clone(),
-            pending_registrations.clone(),
-            dropped.clone(),
-        ) {
+        let register = {
+            let path = path.clone();
+            let tx = tx.clone();
+            let pending_path_events = pending_path_events.clone();
+            let fs = fs.clone();
+            let native_watcher = native_watcher.clone();
+            let poll_watcher = poll_watcher.clone();
+            let executor = executor.clone();
+            let registrations = registrations.clone();
+            let pending_registrations = pending_registrations.clone();
+            let dropped = dropped.clone();
+            move || {
+                register_existing_path(
+                    &native_watcher,
+                    &poll_watcher,
+                    &fs,
+                    path,
+                    case_insensitive,
+                    tx,
+                    pending_path_events,
+                    executor,
+                    registrations,
+                    pending_registrations,
+                    dropped,
+                )
+            }
+        };
+        let registration = if fs.is_fake() {
+            register()
+        } else {
+            smol::unblock(register).await
+        };
+
+        match registration {
             Ok(Some(registration)) => {
                 {
                     let mut pending_registrations = pending_registrations.lock();
@@ -1449,6 +1499,63 @@ pub fn poll_interval() -> Duration {
 mod tests {
     use super::*;
     use std::{collections::HashSet, path::PathBuf};
+
+    #[gpui::test]
+    fn watch_registration_uses_blocking_workers_only_for_real_filesystems(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct ThreadCheckingWatcher {
+            caller: std::thread::ThreadId,
+            expect_same_thread: bool,
+            paths: Mutex<Vec<PathBuf>>,
+        }
+
+        impl ThreadCheckingWatcher {
+            fn check_thread(&self) {
+                assert_eq!(
+                    std::thread::current().id() == self.caller,
+                    self.expect_same_thread
+                );
+            }
+        }
+
+        impl Watcher for ThreadCheckingWatcher {
+            fn add(&self, path: &Path) -> Result<()> {
+                self.check_thread();
+                self.paths.lock().push(path.to_path_buf());
+                anyhow::bail!("registration failed")
+            }
+
+            fn remove(&self, _: &Path) -> Result<()> {
+                Ok(())
+            }
+
+            fn file_watch_follows_inode(&self, _: &Path) -> bool {
+                self.check_thread();
+                true
+            }
+        }
+
+        let filesystems: [Arc<dyn Fs>; 2] = [
+            crate::RealFs::new(None, cx.executor()),
+            crate::FakeFs::new(cx.executor()),
+        ];
+        for fs in filesystems {
+            let watcher = Arc::new(ThreadCheckingWatcher {
+                caller: std::thread::current().id(),
+                expect_same_thread: fs.is_fake(),
+                paths: Mutex::new(Vec::new()),
+            });
+            let path = PathBuf::from("repo/file.txt");
+            let error = smol::block_on(fs.add_watch(watcher.clone(), path.clone()))
+                .expect_err("registration errors must propagate");
+            assert_eq!(error.to_string(), "registration failed");
+            let error = smol::block_on(fs.add_file_parent_watch(watcher.clone(), path.clone()))
+                .expect_err("parent registration errors must propagate");
+            assert_eq!(error.to_string(), "registration failed");
+            assert_eq!(*watcher.paths.lock(), vec![path, PathBuf::from("repo")]);
+        }
+    }
 
     fn rescan(path: &str) -> PathEvent {
         PathEvent {

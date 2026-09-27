@@ -175,8 +175,8 @@ pub trait Fs: Send + Sync {
         None
     }
 
-    /// Whether `path` exists, without following a final symlink. Synchronous
-    /// because watches are registered synchronously by the worktree scanner.
+    /// Whether `path` exists, without following a final symlink.
+    /// Call from a blocking worker when using a real filesystem.
     fn path_exists(&self, path: &Path) -> bool;
     /// Whether the volume holding `path` compares file names case-sensitively.
     fn is_path_case_sensitive(&self, path: &Path) -> bool;
@@ -192,6 +192,32 @@ pub trait Fs: Send + Sync {
         Pin<Box<dyn Send + Stream<Item = Vec<PathEvent>>>>,
         Arc<dyn Watcher>,
     );
+
+    /// Waits for registration before the caller scans the watched path.
+    async fn add_watch(&self, watcher: Arc<dyn Watcher>, path: PathBuf) -> Result<()> {
+        if self.is_fake() {
+            watcher.add(&path)
+        } else {
+            smol::unblock(move || watcher.add(&path)).await
+        }
+    }
+
+    /// Watches the parent when atomic replacement would invalidate a file watch.
+    async fn add_file_parent_watch(&self, watcher: Arc<dyn Watcher>, path: PathBuf) -> Result<()> {
+        let register = move || {
+            if watcher.file_watch_follows_inode(&path)
+                && let Some(parent) = path.parent()
+            {
+                watcher.add(parent)?;
+            }
+            Ok(())
+        };
+        if self.is_fake() {
+            register()
+        } else {
+            smol::unblock(register).await
+        }
+    }
 
     fn open_repo(
         &self,
