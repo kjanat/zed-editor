@@ -53,6 +53,10 @@ async fn test_channel_guests(
         Some(project_id),
     );
     assert!(project_b.read_with(cx_b, |project, cx| project.is_read_only(cx)));
+    project_b
+        .update(cx_b, |project, cx| project.symbols("", cx))
+        .await
+        .expect("read-only guests can wait for language servers and query symbols");
     assert!(
         project_b
             .update(cx_b, |project, cx| {

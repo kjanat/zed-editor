@@ -1106,6 +1106,7 @@ message WaitForLanguageServers {
   repeated uint64 buffer_ids = 2;
   optional uint64 server_id = 3;
   string method = 4;
+  bool all_servers = 5;
 }
 
 message RestartLanguageServers {

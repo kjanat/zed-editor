@@ -2285,6 +2285,7 @@ impl Project {
     fn run_with_runtime_lease<T: 'static>(
         &mut self,
         method: &'static str,
+        all_servers: bool,
         buffers: Vec<Entity<Buffer>>,
         server_id: Option<LanguageServerId>,
         cx: &mut Context<Self>,
@@ -2303,6 +2304,7 @@ impl Project {
                             buffers,
                             server_id,
                             method.to_owned(),
+                            all_servers,
                             cx,
                         )
                     })
@@ -4613,6 +4615,7 @@ impl Project {
     ) -> Task<anyhow::Result<ProjectTransaction>> {
         self.run_with_runtime_lease(
             "textDocument/formatting",
+            true,
             buffers.iter().cloned().collect(),
             None,
             cx,
@@ -4640,6 +4643,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/definition",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4668,6 +4672,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/definition",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4694,6 +4699,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/declaration",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4721,6 +4727,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/typeDefinition",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4748,6 +4755,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/implementation",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4775,6 +4783,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/references",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4802,6 +4811,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/prepareCallHierarchy",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4826,6 +4836,7 @@ impl Project {
     ) -> Task<Result<Option<Vec<IncomingCall>>>> {
         self.run_with_runtime_lease(
             "callHierarchy/incomingCalls",
+            false,
             vec![item.buffer.clone()],
             Some(item.server_id),
             cx,
@@ -4850,6 +4861,7 @@ impl Project {
     ) -> Task<Result<Option<Vec<OutgoingCall>>>> {
         self.run_with_runtime_lease(
             "callHierarchy/outgoingCalls",
+            false,
             vec![item.buffer.clone()],
             Some(item.server_id),
             cx,
@@ -4899,6 +4911,7 @@ impl Project {
         let query = query.to_owned();
         self.run_with_runtime_lease(
             "workspace/symbol",
+            true,
             Vec::new(),
             None,
             cx,
@@ -4972,6 +4985,7 @@ impl Project {
         let buffer = buffer.clone();
         let task = self.run_with_runtime_lease(
             "textDocument/hover",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -4994,6 +5008,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/linkedEditingRange",
+            false,
             vec![buffer.clone()],
             None,
             cx,
@@ -5016,6 +5031,7 @@ impl Project {
         let buffer = buffer.clone();
         self.run_with_runtime_lease(
             "textDocument/completion",
+            true,
             vec![buffer.clone()],
             None,
             cx,
@@ -5039,6 +5055,7 @@ impl Project {
         let buffer_handle = buffer_handle.clone();
         self.run_with_runtime_lease(
             "textDocument/codeAction",
+            true,
             vec![buffer_handle.clone()],
             None,
             cx,
@@ -5057,7 +5074,7 @@ impl Project {
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<ProjectTransaction>> {
-        self.run_with_runtime_lease("textDocument/codeAction", vec![buffer_handle.clone()], None, cx, move |project, cx| {
+        self.run_with_runtime_lease("textDocument/codeAction", false, vec![buffer_handle.clone()], None, cx, move |project, cx| {
         let resolve = project.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.resolve_code_action(&buffer_handle, action, cx)
         });
@@ -5117,6 +5134,7 @@ impl Project {
     ) -> Task<Result<ProjectTransaction>> {
         self.run_with_runtime_lease(
             "textDocument/codeAction",
+            true,
             buffers.iter().cloned().collect(),
             None,
             cx,
@@ -5198,6 +5216,7 @@ impl Project {
         let position = position.to_point_utf16(buffer.read(cx));
         Some(self.run_with_runtime_lease(
             "textDocument/onTypeFormatting",
+            false,
             vec![buffer.clone()],
             None,
             cx,
@@ -5304,6 +5323,7 @@ impl Project {
     {
         self.run_with_runtime_lease(
             <R::LspRequest as lsp::request::Request>::METHOD,
+            false,
             vec![buffer_handle.clone()],
             match &server {
                 LanguageServerToQuery::Other(id) => Some(*id),

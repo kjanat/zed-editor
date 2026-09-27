@@ -4834,11 +4834,10 @@ fn supports_runtime_request(method: &str, capabilities: AdapterServerCapabilitie
             .server_capabilities
             .completion_provider
             .is_some(),
-        "textDocument/codeAction" => GetCodeActions {
-            range: Anchor::MIN..Anchor::MAX,
-            kinds: None,
-        }
-        .check_capabilities(capabilities),
+        "textDocument/codeAction" => !matches!(
+            capabilities.server_capabilities.code_action_provider,
+            None | Some(lsp::CodeActionProviderCapability::Simple(false))
+        ),
         "textDocument/formatting" => {
             !matches!(
                 capabilities
@@ -13353,6 +13352,7 @@ impl LspStore {
         buffers: Vec<Entity<Buffer>>,
         server_id: Option<LanguageServerId>,
         method: String,
+        all_servers: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         if let Some((client, project_id)) = self.upstream_client() {
@@ -13364,6 +13364,7 @@ impl LspStore {
                     .collect(),
                 server_id: server_id.map(|id| id.0 as u64),
                 method,
+                all_servers,
             });
             return cx.background_spawn(async move {
                 request.await?;
@@ -13398,7 +13399,8 @@ impl LspStore {
                                 Some(LanguageServerState::Running {
                                     adapter, server, ..
                                 }) => {
-                                    if let Some(buffer) = &buffer
+                                    if !all_servers
+                                        && let Some(buffer) = &buffer
                                         && text_document_capabilities_for_buffer(
                                             local,
                                             &method,
@@ -13444,6 +13446,7 @@ impl LspStore {
                 buffers,
                 envelope.payload.server_id.map(LanguageServerId::from_proto),
                 envelope.payload.method,
+                envelope.payload.all_servers,
                 cx,
             )
         })
