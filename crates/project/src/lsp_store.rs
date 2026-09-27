@@ -1682,29 +1682,14 @@ impl LocalLspStore {
         logger: zlog::Logger,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        let (adapters_and_servers, settings, request_timeout) =
-            lsp_store.update(cx, |lsp_store, cx| {
-                buffer.handle.update(cx, |buffer, cx| {
-                    let adapters_and_servers =
-                        if LocalLspStore::language_server_line_length_limit_exceeded(buffer, cx)
-                            .is_some()
-                        {
-                            Vec::new()
-                        } else {
-                            lsp_store
-                                .as_local()
-                                .unwrap()
-                                .language_servers_for_buffer(buffer, cx)
-                                .map(|(adapter, lsp)| (adapter.clone(), lsp.clone()))
-                                .collect::<Vec<_>>()
-                        };
-                    let settings = LanguageSettings::for_buffer(buffer, cx);
-                    let request_timeout = ProjectSettings::get_global(cx)
-                        .global_lsp_settings
-                        .get_request_timeout();
-                    (adapters_and_servers, settings, request_timeout)
-                })
-            })?;
+        let (settings, request_timeout) = buffer.handle.read_with(cx, |buffer, cx| {
+            (
+                LanguageSettings::for_buffer(buffer, cx),
+                ProjectSettings::get_global(cx)
+                    .global_lsp_settings
+                    .get_request_timeout(),
+            )
+        });
         let had_existing_line_endings = buffer
             .handle
             .read_with(cx, |buffer, _| buffer.max_point().row > 0);
@@ -1843,7 +1828,6 @@ impl LocalLspStore {
                 &lsp_store,
                 buffer,
                 formatting_transaction_id,
-                &adapters_and_servers,
                 &settings,
                 request_timeout,
                 trigger,
@@ -1865,18 +1849,113 @@ impl LocalLspStore {
         }
     }
 
+    async fn ready_servers_for_formatter(
+        formatter: &Formatter,
+        lsp_store: &WeakEntity<LspStore>,
+        buffer: &FormattableBuffer,
+        settings: &LanguageSettings,
+        trigger: FormatTrigger,
+        cx: &mut AsyncApp,
+    ) -> Result<Vec<(Arc<CachedLspAdapter>, Arc<LanguageServer>)>> {
+        if !matches!(
+            formatter,
+            Formatter::LanguageServer(_) | Formatter::CodeAction(_)
+        ) {
+            return Ok(Vec::new());
+        }
+        loop {
+            let (servers, startups) = lsp_store.update(cx, |store, cx| {
+                buffer.handle.update(cx, |buffer_snapshot, cx| {
+                    let local = store
+                        .as_local()
+                        .context("formatting requires a local LSP store")?;
+                    if Self::language_server_line_length_limit_exceeded(buffer_snapshot, cx)
+                        .is_some()
+                    {
+                        return Ok((Vec::new(), Vec::new()));
+                    }
+                    let ids = local.language_server_ids_for_buffer(buffer_snapshot, cx);
+                    let mut servers = Vec::new();
+                    let mut startups = Vec::new();
+                    for id in ids {
+                        if let Formatter::LanguageServer(
+                            settings::LanguageServerFormatterSpecifier::Specific { name },
+                        ) = formatter
+                            && !local
+                                .language_server_ids
+                                .iter()
+                                .any(|(key, state)| state.id == id && key.name.0.as_ref() == name)
+                        {
+                            continue;
+                        }
+                        match local.language_servers.get(&id) {
+                            Some(LanguageServerState::Starting { startup, .. }) => {
+                                startups.push(startup.clone())
+                            }
+                            Some(LanguageServerState::Running {
+                                adapter, server, ..
+                            }) => servers.push((adapter.clone(), server.clone())),
+                            None => {}
+                        }
+                    }
+                    let selected_server_is_ready = match formatter {
+                        Formatter::LanguageServer(
+                            settings::LanguageServerFormatterSpecifier::Specific { .. },
+                        ) => !servers.is_empty(),
+                        Formatter::LanguageServer(
+                            settings::LanguageServerFormatterSpecifier::Current,
+                        ) => servers.iter().any(|(adapter, server)| {
+                            let range_supported = buffer_supports_lsp_range_formatting(
+                                local,
+                                buffer_snapshot,
+                                adapter,
+                                server,
+                            );
+                            let full_supported = buffer_supports_lsp_formatting(
+                                local,
+                                buffer_snapshot,
+                                adapter,
+                                server,
+                            );
+                            if buffer.ranges.is_some() {
+                                range_supported
+                                    || (trigger == FormatTrigger::Save
+                                        && settings.format_on_save
+                                            == FormatOnSave::ModificationsIfAvailable
+                                        && full_supported)
+                            } else {
+                                range_supported || full_supported
+                            }
+                        }),
+                        _ => false,
+                    };
+                    if selected_server_is_ready {
+                        startups.clear();
+                    }
+                    anyhow::Ok((servers, startups))
+                })
+            })??;
+            if startups.is_empty() {
+                return Ok(servers);
+            }
+            futures::future::select_all(startups).await;
+        }
+    }
+
     async fn apply_formatter(
         formatter: &Formatter,
         lsp_store: &WeakEntity<LspStore>,
         buffer: &FormattableBuffer,
         formatting_transaction_id: clock::Lamport,
-        adapters_and_servers: &[(Arc<CachedLspAdapter>, Arc<LanguageServer>)],
         settings: &LanguageSettings,
         request_timeout: Duration,
         trigger: FormatTrigger,
         logger: zlog::Logger,
         cx: &mut AsyncApp,
     ) -> anyhow::Result<()> {
+        let adapters_and_servers =
+            Self::ready_servers_for_formatter(formatter, lsp_store, buffer, settings, trigger, cx)
+                .await?;
         match formatter {
             Formatter::None => {
                 zlog::trace!(logger => "skipping formatter 'none'");
@@ -13234,24 +13313,6 @@ impl LspStore {
     }
 
     pub fn format(
-        &mut self,
-        buffers: HashSet<Entity<Buffer>>,
-        target: LspFormatTarget,
-        push_to_history: bool,
-        trigger: FormatTrigger,
-        cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<ProjectTransaction>> {
-        self.with_ready_language_servers(
-            buffers.iter().cloned().collect(),
-            None,
-            "textDocument/formatting",
-            true,
-            cx,
-            move |store, cx| store.format_ready(buffers, target, push_to_history, trigger, cx),
-        )
-    }
-
-    fn format_ready(
         &mut self,
         buffers: HashSet<Entity<Buffer>>,
         target: LspFormatTarget,
