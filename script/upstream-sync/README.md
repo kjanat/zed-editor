@@ -26,6 +26,10 @@ so upstream changes there, including new workflows and edits to workflows the
 fork removed, are dropped and listed in the sync PR instead of stopping the
 sync. Adopting one means porting it by hand.
 
+Conflicts in the root `.rules` file are resolved with the fork's `master`
+version, including keeping a fork-side deletion. They do not block the sync.
+Upstream changes that merge cleanly are retained.
+
 New or unassigned sync PRs and issues are assigned to `kjanat`. Existing
 assignees are preserved.
 

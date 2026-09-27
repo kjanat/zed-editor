@@ -9,6 +9,81 @@ import unittest
 from pathlib import Path
 
 
+class ForkRulesTests(unittest.TestCase):
+    def test_rules_conflicts_keep_fork_and_clean_changes_merge(self):
+        script = Path(__file__).resolve().with_name("prepare.sh")
+        cases = (
+            ("base\n", "fork\n", "upstream\n", True),
+            ("base\n", "base\n", "clean upstream edit\n", False),
+            ("base\n", "fork\n", None, True),
+            ("base\n", None, "upstream\n", True),
+            (None, None, "upstream addition\n", False),
+            (None, "fork addition\n", "upstream addition\n", True),
+        )
+        for base, ours, theirs, conflict in cases:
+            with self.subTest(base=base, ours=ours, theirs=theirs):
+                with tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+
+                    def git(*arguments, check=True):
+                        return subprocess.run(
+                            ["git", "-c", "core.hooksPath=/dev/null", *arguments],
+                            cwd=directory,
+                            check=check,
+                            text=True,
+                            capture_output=True,
+                        )
+
+                    def commit(contents):
+                        rules = directory / ".rules"
+                        if contents is None:
+                            rules.unlink(missing_ok=True)
+                        else:
+                            rules.write_text(contents)
+                        git("add", "-A")
+                        git(
+                            "-c",
+                            "commit.gpgsign=false",
+                            "commit",
+                            "--allow-empty",
+                            "-m",
+                            "fixture",
+                        )
+
+                    git("init", "-b", "master")
+                    git("config", "user.name", "Test")
+                    git("config", "user.email", "test@example.com")
+                    commit(base)
+                    git("branch", "upstream")
+                    commit(ours)
+                    git("switch", "upstream")
+                    commit(theirs)
+                    git("switch", "master")
+                    merge = git(
+                        "merge", "--no-ff", "--no-commit", "upstream", check=False
+                    )
+                    self.assertEqual(merge.returncode, 1 if conflict else 0)
+                    subprocess.run(
+                        ["bash", str(script), "--restore-fork-rules"],
+                        cwd=directory,
+                        check=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(git("ls-files", "-u").stdout, "")
+                    git(
+                        "diff",
+                        "--exit-code",
+                        "master" if conflict else "upstream",
+                        "--",
+                        ".rules",
+                    )
+                    rules = directory / ".rules"
+                    self.assertEqual(
+                        rules.read_text() if rules.exists() else None,
+                        ours if conflict else theirs,
+                    )
+
+
 @unittest.skipUnless(
     shutil.which("dprint") or os.environ.get("SYNC_TEST_IMAGE"),
     "Requires dprint or SYNC_TEST_IMAGE",

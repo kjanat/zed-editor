@@ -4,6 +4,11 @@ version           = "0.1.0"
 edition.workspace = true
 publish.workspace = true
 
+[[bin]]
+name              = "project_benchmarks"
+path              = "src/main.rs"
+required-features = ["test-support"]
+
 [dependencies]
 anyhow.workspace          = true
 askpass.workspace         = true
@@ -12,7 +17,7 @@ client.workspace          = true
 futures.workspace         = true
 gpui.workspace            = true
 gpui_platform.workspace   = true
-http_client               = { workspace = true, features = ["test-support"] }
+http_client.workspace     = true
 language.workspace        = true
 node_runtime.workspace    = true
 project.workspace         = true
@@ -22,6 +27,9 @@ rpassword                 = "7.4"
 semver.workspace          = true
 settings.workspace        = true
 watch.workspace           = true
+
+[features]
+test-support = ["http_client/test-support"]
 
 [lints]
 workspace = true
