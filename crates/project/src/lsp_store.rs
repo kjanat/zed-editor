@@ -13255,23 +13255,41 @@ impl LspStore {
             .flat_map(|local| {
                 local
                     .language_servers
-                    .values()
-                    .filter_map(|state| match state {
-                        LanguageServerState::Starting { startup, .. } => Some(startup.clone()),
+                    .iter()
+                    .filter_map(|(server_id, state)| match state {
+                        LanguageServerState::Starting { startup, .. } => {
+                            Some((*server_id, startup.clone()))
+                        }
                         LanguageServerState::Running { .. } => None,
                     })
             })
             .collect::<Vec<_>>();
         cx.spawn(async move |this, cx| {
-            for startup in startups {
+            for (server_id, startup) in startups {
                 if startup.await.is_none() {
-                    this.update(cx, |store, _| {
-                        store.runtime_suspended = true;
-                        if let Some(local) = store.as_local_mut() {
-                            local.runtime_suspended = true;
+                    this.update(cx, |store, cx| {
+                        let Some(local) = store.as_local_mut() else {
+                            return;
+                        };
+                        if !matches!(
+                            local.language_servers.get(&server_id),
+                            Some(LanguageServerState::Starting { .. })
+                        ) {
+                            return;
                         }
+                        // A failed optional server must neither disable healthy servers nor
+                        // leave a completed startup cached for the next registration attempt.
+                        local.language_servers.remove(&server_id);
+                        local
+                            .language_server_ids
+                            .retain(|_, state| state.id != server_id);
+                        local
+                            .lsp_tree
+                            .remove_nodes(&BTreeSet::from_iter([server_id]));
+                        store.cleanup_lsp_data(server_id);
+                        store.language_server_statuses.remove(&server_id);
+                        cx.emit(LspStoreEvent::LanguageServerRemoved(server_id));
                     })?;
-                    anyhow::bail!("Failed to start a project language server");
                 }
             }
             Ok(())
