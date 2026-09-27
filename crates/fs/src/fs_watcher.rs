@@ -1859,6 +1859,8 @@ mod tests {
 
     #[gpui::test]
     async fn pending_path_is_registered_once_created(cx: &mut gpui::TestAppContext) {
+        // Real filesystem probes and registration run outside the deterministic executor.
+        cx.executor().allow_parking();
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let path = temp_dir.path().join("file.txt");
 
@@ -1909,10 +1911,14 @@ mod tests {
     }
 
     #[gpui::test]
-    fn pending_watch_yields_during_watch_limit_cooldown(cx: &mut gpui::TestAppContext) {
-        let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let path = temp_dir.path().join("file.txt");
-        std::fs::write(&path, b"contents").expect("create path");
+    async fn pending_watch_yields_during_watch_limit_cooldown(cx: &mut gpui::TestAppContext) {
+        let fs = crate::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            util::path!("/repo"),
+            serde_json::json!({ "file.txt": "contents" }),
+        )
+        .await;
+        let path = PathBuf::from(util::path!("/repo/file.txt"));
         let backend = Arc::new(Mutex::new(FakeWatchBackend {
             fail_with_watch_limit: true,
             ..Default::default()
@@ -1924,8 +1930,8 @@ mod tests {
         let (tx, _rx) = async_channel::unbounded();
         let watcher = FsWatcher::new(
             native_watcher.clone(),
-            OsWatcher::new(OsWatcherKind::Poll, cx.executor()),
-            crate::RealFs::new(None, cx.executor()),
+            Arc::new(test_os_watcher(OsWatcherKind::Poll, None)),
+            fs,
             cx.executor(),
             tx,
             Default::default(),
