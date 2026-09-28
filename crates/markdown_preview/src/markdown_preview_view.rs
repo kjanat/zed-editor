@@ -84,6 +84,15 @@ pub struct MarkdownPreviewView {
     markdown_parse_pending: bool,
 }
 
+impl Drop for MarkdownPreviewView {
+    fn drop(&mut self) {
+        // Persistent changes must finish even after the preview is closed.
+        if let Some(save) = self.pending_font_size_save.take() {
+            save.detach();
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MarkdownPreviewMode {
     /// The preview will always show the contents of the provided editor.
@@ -2608,6 +2617,44 @@ mod tests {
             first.read_with(cx, |preview, cx| preview.max_width(cx)),
             Some(px(800.))
         );
+    }
+
+    #[gpui::test]
+    async fn persisting_preview_zoom_survives_preview_drop(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"font_size":18}}"#},
+                "readme.md": "# Readme"
+            }),
+            false,
+        )
+        .await;
+        open_project_file(cx, &project, &multi_workspace, "readme.md", None, true).await;
+        let preview = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let editor = workspace.active_item_as::<Editor>(cx).unwrap();
+                    MarkdownPreviewView::create_markdown_view(workspace, editor, window, cx)
+                })
+            })
+            .unwrap();
+        let weak_preview = preview.downgrade();
+        preview.update(cx, |preview, cx| {
+            preview.adjust_font_size(true, px(1.), cx);
+            preview.adjust_font_size(true, px(1.), cx);
+        });
+        drop(preview);
+        cx.run_until_parked();
+        assert!(weak_preview.upgrade().is_none());
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        let saved: serde_json::Value = serde_json::from_str(
+            &fs.load(Path::new(path!("/project/.zed/settings.json")))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["markdown_preview"]["font_size"].as_f64(), Some(20.0));
     }
 
     #[gpui::test]
