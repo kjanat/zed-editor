@@ -3,7 +3,7 @@
 ---
 name: fork_upstream_sync
 on:
-  schedule: [cron: "0 6,18 * * *"]
+  schedule: [{ cron: "37 7 * * *", timezone: &Adam Europe/Amsterdam }, { cron: "37 11 * * *", timezone: *Adam }]
   workflow_dispatch: null
 concurrency: { group: "${{ github.workflow }}", cancel-in-progress: false }
 permissions: { contents: read }
