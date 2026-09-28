@@ -32,6 +32,25 @@ def fib(n):
 
 ## Configuration
 
+### Preview Width
+
+Markdown preview width can be configured in user settings or overridden in a
+project's `.zed/settings.json`. For example, use the full pane width for a
+project with wide tables:
+
+```json
+{
+  "markdown_preview": {
+    "limit_content_width": false
+  }
+}
+```
+
+To constrain the preview to a different width, set `limit_content_width` to
+`true` and `max_width` to the desired width in pixels. Omitted values inherit
+from user settings, or from a parent directory's project settings. Changes
+apply to open previews; untitled previews use user settings.
+
 ### Format
 
 Zed supports using Prettier to automatically re-format Markdown documents. You

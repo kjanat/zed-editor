@@ -10583,7 +10583,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
             }),
             SettingsPageItem::DynamicItem(DynamicItem {
                 discriminant: SettingItem {
-                    files: USER,
+                    files: USER | PROJECT,
                     title: "Limit Markdown Preview Width",
                     description: "Whether to constrain the markdown preview content to a maximum width, centering it when the pane is wider, for optimal readability.",
                     field: Box::new(SettingField::<bool> {
@@ -10591,10 +10591,17 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                         json_path: Some("markdown_preview.limit_content_width"),
                         pick: |settings_content| {
                             settings_content
+                                .project
                                 .markdown_preview
-                                .as_ref()?
-                                .limit_content_width
                                 .as_ref()
+                                .and_then(|settings| settings.limit_content_width.as_ref())
+                                .or_else(|| {
+                                    settings_content
+                                        .markdown_preview
+                                        .as_ref()?
+                                        .limit_content_width
+                                        .as_ref()
+                                })
                         },
                         write: |settings_content, value, _| {
                             settings_content
@@ -10607,16 +10614,22 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                 },
                 pick_discriminant: |settings_content| {
                     let enabled = settings_content
+                        .project
                         .markdown_preview
-                        .as_ref()?
-                        .limit_content_width
-                        .unwrap_or(true);
+                        .as_ref()
+                        .and_then(|settings| settings.limit_content_width)
+                        .or_else(|| {
+                            settings_content
+                                .markdown_preview
+                                .as_ref()?
+                                .limit_content_width
+                        })?;
                     Some(if enabled { 1 } else { 0 })
                 },
                 fields: vec![
                     vec![],
                     vec![SettingItem {
-                        files: USER,
+                        files: USER | PROJECT,
                         title: "Max Width",
                         description: "Maximum content width in pixels. Content will be centered when the pane is wider than this value.",
                         field: Box::new(SettingField {
@@ -10624,10 +10637,17 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                             json_path: Some("markdown_preview.max_width"),
                             pick: |settings_content| {
                                 settings_content
+                                    .project
                                     .markdown_preview
-                                    .as_ref()?
-                                    .max_width
                                     .as_ref()
+                                    .and_then(|settings| settings.max_width.as_ref())
+                                    .or_else(|| {
+                                        settings_content
+                                            .markdown_preview
+                                            .as_ref()?
+                                            .max_width
+                                            .as_ref()
+                                    })
                             },
                             write: |settings_content, value, _| {
                                 settings_content

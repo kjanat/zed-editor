@@ -26,7 +26,7 @@ use markdown::{
 };
 use project::search::SearchQuery;
 use project::{Project, ProjectPath, image_store};
-use settings::{SeedQuerySetting, Settings, update_settings_file};
+use settings::{SeedQuerySetting, Settings, SettingsLocation, update_settings_file};
 use theme::{SystemAppearance, Theme, ThemeRegistry};
 use theme_settings::ThemeSettings;
 use ui::utils::WithRemSize;
@@ -69,6 +69,7 @@ pub struct MarkdownPreviewView {
     focus_handle: FocusHandle,
     markdown: Entity<Markdown>,
     _markdown_subscription: Subscription,
+    _settings_subscription: Subscription,
     active_source_index: Option<usize>,
     scroll_handle: ScrollHandle,
     image_cache: Entity<RetainAllImageCache>,
@@ -409,6 +410,9 @@ impl MarkdownPreviewView {
                     },
                 ),
                 markdown,
+                _settings_subscription: cx.observe_global::<settings::SettingsStore>(|_, cx| {
+                    cx.notify();
+                }),
                 active_source_index: None,
                 scroll_handle: ScrollHandle::new(),
                 image_cache: RetainAllImageCache::new(cx),
@@ -830,6 +834,18 @@ impl MarkdownPreviewView {
     fn line_scroll_amount(&self, cx: &App) -> Pixels {
         let settings = ThemeSettings::get_global(cx);
         settings.markdown_preview_font_size(cx) * settings.buffer_line_height.value()
+    }
+
+    fn max_width(&self, cx: &App) -> Option<Pixels> {
+        let project_path = self
+            .active_editor
+            .as_ref()
+            .and_then(|state| Self::project_path_for_active_editor(state.editor.read(cx), cx));
+        let location = project_path.as_ref().map(|path| SettingsLocation {
+            worktree_id: path.worktree_id,
+            path: &path.path,
+        });
+        MarkdownPreviewSettings::get(location, cx).max_width
     }
 
     fn increase_font_size(
@@ -1801,7 +1817,7 @@ impl Render for MarkdownPreviewView {
                             let markdown_element =
                                 self.render_markdown_element(&preview_theme, window, cx);
                             let markdown = self.markdown.clone();
-                            let max_width = MarkdownPreviewSettings::get_global(cx).max_width;
+                            let max_width = self.max_width(cx);
                             let content = right_click_menu("markdown-preview-context-menu")
                                 .trigger(move |_, _, _| markdown_element)
                                 .maybe_menu(move |window, cx| {
@@ -2278,6 +2294,106 @@ mod tests {
         assert_eq!(
             preview.read_with(cx, |preview, cx| preview.tab_tooltip_text(cx)),
             source_tooltip
+        );
+    }
+
+    #[gpui::test]
+    async fn preview_width_follows_source_worktree_and_settings_changes(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/first"),
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"limit_content_width":false}}"#},
+                "readme.md": "# First"
+            }),
+        )
+        .await;
+        fs.insert_tree(
+            path!("/second"),
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"max_width":1200}}"#},
+                "readme.md": "# Second"
+            }),
+        )
+        .await;
+        let project = Project::test(
+            fs.clone(),
+            [path!("/first").as_ref(), path!("/second").as_ref()],
+            cx,
+        )
+        .await;
+        register_markdown_language(&project, cx);
+        let multi_workspace =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let mut previews = Vec::new();
+        for root in [path!("/first"), path!("/second")] {
+            let project_path = project.read_with(cx, |project, cx| ProjectPath {
+                worktree_id: project
+                    .worktrees(cx)
+                    .find(|worktree| worktree.read(cx).abs_path().as_ref() == Path::new(root))
+                    .unwrap()
+                    .read(cx)
+                    .id(),
+                path: rel_path("readme.md").into(),
+            });
+            multi_workspace
+                .update(cx, |multi_workspace, window, cx| {
+                    multi_workspace.workspace().update(cx, |workspace, cx| {
+                        workspace.open_path(project_path, None, true, window, cx)
+                    })
+                })
+                .unwrap()
+                .await
+                .unwrap();
+            cx.run_until_parked();
+            previews.push(open_preview_for_active_editor(cx, &multi_workspace));
+        }
+        let first = previews.remove(0);
+        let second = previews.remove(0);
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            None
+        );
+        assert_eq!(
+            second.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(1200.))
+        );
+
+        fs.insert_file(
+            path!("/first/.zed/settings.json"),
+            br#"{"markdown_preview":{"limit_content_width":true,"max_width":640}}"#.to_vec(),
+        )
+        .await;
+        cx.run_until_parked();
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(640.))
+        );
+        assert_eq!(
+            second.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(1200.))
+        );
+
+        fs.insert_file(path!("/first/.zed/settings.json"), b"{}".to_vec())
+            .await;
+        cx.run_until_parked();
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(800.))
+        );
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                let buffer = cx.new(|cx| Buffer::local("# Untitled", cx));
+                let editor =
+                    cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+                first.update(cx, |preview, cx| preview.set_editor(editor, window, cx));
+            })
+            .unwrap();
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(800.))
         );
     }
 

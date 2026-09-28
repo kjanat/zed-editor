@@ -540,6 +540,7 @@ impl VsCodeSettings {
             worktree: self.worktree_settings_content(),
             lsp: Default::default(),
             terminal: None,
+            markdown_preview: None,
             dap: Default::default(),
             context_servers: self.context_servers(),
             context_server_timeout: None,
