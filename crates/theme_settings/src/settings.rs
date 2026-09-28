@@ -449,9 +449,12 @@ impl ThemeSettings {
     pub fn markdown_preview_font_size(&self, cx: &App) -> Pixels {
         cx.try_global::<MarkdownPreviewFontSize>()
             .map(|size| size.0)
-            .or(self.markdown_preview_font_size)
             .map(clamp_font_size)
-            .unwrap_or_else(|| clamp_font_size(self.ui_font_size))
+            .unwrap_or_else(|| self.markdown_preview_base_font_size())
+    }
+
+    pub fn markdown_preview_base_font_size(&self) -> Pixels {
+        clamp_font_size(self.markdown_preview_font_size.unwrap_or(self.ui_font_size))
     }
 
     /// Returns the buffer font size, read from the settings.
@@ -704,7 +707,7 @@ fn font_fallbacks_from_settings(
 impl settings::Settings for ThemeSettings {
     fn from_settings(settings_content: &settings::SettingsContent) -> Self {
         let content = &settings_content.theme;
-        let markdown_preview = settings_content.markdown_preview.as_ref();
+        let markdown_preview = settings_content.project.markdown_preview.as_ref();
         let theme_selection: ThemeSelection = content.theme.clone().unwrap().into();
         let icon_theme_selection: IconThemeSelection = content.icon_theme.clone().unwrap().into();
         Self {

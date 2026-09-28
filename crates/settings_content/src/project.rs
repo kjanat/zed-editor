@@ -13,8 +13,9 @@ use settings_macros::{MergeFrom, with_fallible_options};
 use util::serde::default_true;
 
 use crate::{
-    AllLanguageSettingsContent, DelayMs, ExtendingVec, ParseStatus, ProjectTerminalSettingsContent,
-    RootUserSettings, SaturatingBool, SplicingVec, fallible_options,
+    AllLanguageSettingsContent, DelayMs, ExtendingVec, MarkdownPreviewSettingsContent, ParseStatus,
+    ProjectTerminalSettingsContent, RootUserSettings, SaturatingBool, SplicingVec,
+    fallible_options,
 };
 
 #[with_fallible_options]
@@ -61,6 +62,8 @@ pub struct ProjectSettingsContent {
 
     pub terminal: Option<ProjectTerminalSettingsContent>,
 
+    pub markdown_preview: Option<MarkdownPreviewSettingsContent>,
+
     /// Configuration for Debugger-related features
     #[serde(default)]
     pub dap: HashMap<Arc<str>, DapSettingsContent>,
@@ -90,7 +93,7 @@ pub struct ProjectSettingsContent {
 crate::fallible_options::flattened_deserialize!(ProjectSettingsContent {
     sections: { all_languages, worktree },
     options: {
-        terminal, context_server_timeout, load_direnv, git_hosting_providers, disable_ai,
+        terminal, markdown_preview, context_server_timeout, load_direnv, git_hosting_providers, disable_ai,
     },
     defaults: { lsp, dap, context_servers },
 });

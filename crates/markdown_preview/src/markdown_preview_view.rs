@@ -26,7 +26,7 @@ use markdown::{
 };
 use project::search::SearchQuery;
 use project::{Project, ProjectPath, image_store};
-use settings::{SeedQuerySetting, Settings, update_settings_file};
+use settings::{SeedQuerySetting, Settings, SettingsLocation, update_settings_file};
 use theme::{SystemAppearance, Theme, ThemeRegistry};
 use theme_settings::ThemeSettings;
 use ui::utils::WithRemSize;
@@ -58,7 +58,7 @@ use crate::{ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp,
 const REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
 
 fn reset_persisted_font_size(settings: &mut settings::SettingsContent) {
-    if let Some(markdown_preview) = settings.markdown_preview.as_mut() {
+    if let Some(markdown_preview) = settings.project.markdown_preview.as_mut() {
         markdown_preview.font_size = None;
     }
 }
@@ -69,16 +69,28 @@ pub struct MarkdownPreviewView {
     focus_handle: FocusHandle,
     markdown: Entity<Markdown>,
     _markdown_subscription: Subscription,
+    _settings_subscription: Subscription,
     active_source_index: Option<usize>,
     scroll_handle: ScrollHandle,
     image_cache: Entity<RetainAllImageCache>,
     base_directory: Option<PathBuf>,
     pending_update_task: Option<Task<Result<()>>>,
+    pending_font_size_save: Option<Task<()>>,
+    font_size_override: Option<(Pixels, Pixels)>,
     hovered_url: Option<SharedString>,
     mode: MarkdownPreviewMode,
     /// Search results depend on the parsed markdown, which lags behind the source while a
     /// background parse is in flight. Tracked so matches can be invalidated once it lands.
     markdown_parse_pending: bool,
+}
+
+impl Drop for MarkdownPreviewView {
+    fn drop(&mut self) {
+        // Persistent changes must finish even after the preview is closed.
+        if let Some(save) = self.pending_font_size_save.take() {
+            save.detach();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,15 +156,16 @@ impl MarkdownPreviewView {
                 {
                     return;
                 }
-                if !MarkdownPreviewSettings::get_global(cx).open_markdown_files_in_preview
-                    || workspace.is_restoring()
-                {
+                if workspace.is_restoring() {
                     return;
                 }
                 let Some(editor) = item.downcast::<Editor>() else {
                     return;
                 };
-                if !Self::is_markdown_editor(workspace, &editor, cx) {
+                if !Self::settings_for_editor::<MarkdownPreviewSettings>(Some(editor.read(cx)), cx)
+                    .open_markdown_files_in_preview
+                    || !Self::is_markdown_editor(workspace, &editor, cx)
+                {
                     return;
                 }
                 let Some(pane) = workspace.pane_for_item_id(item.item_id()) else {
@@ -409,11 +422,27 @@ impl MarkdownPreviewView {
                     },
                 ),
                 markdown,
+                _settings_subscription: cx.observe_global::<settings::SettingsStore>(
+                    |this: &mut Self, cx| {
+                        let base_size = this
+                            .settings::<ThemeSettings>(cx)
+                            .markdown_preview_base_font_size();
+                        if this
+                            .font_size_override
+                            .is_some_and(|(base, _)| base != base_size)
+                        {
+                            this.font_size_override = None;
+                        }
+                        cx.notify();
+                    },
+                ),
                 active_source_index: None,
                 scroll_handle: ScrollHandle::new(),
                 image_cache: RetainAllImageCache::new(cx),
                 base_directory: None,
                 pending_update_task: None,
+                pending_font_size_save: None,
+                font_size_override: None,
                 hovered_url: None,
                 mode,
                 markdown_parse_pending: false,
@@ -545,6 +574,7 @@ impl MarkdownPreviewView {
             return;
         }
 
+        self.font_size_override = None;
         let had_active_editor = self.active_editor.is_some();
         let subscription = cx.subscribe_in(
             &editor,
@@ -828,8 +858,45 @@ impl MarkdownPreviewView {
     }
 
     fn line_scroll_amount(&self, cx: &App) -> Pixels {
-        let settings = ThemeSettings::get_global(cx);
-        settings.markdown_preview_font_size(cx) * settings.buffer_line_height.value()
+        self.font_size(cx)
+            * self
+                .settings::<ThemeSettings>(cx)
+                .buffer_line_height
+                .value()
+    }
+
+    fn settings_for_editor<'a, T: Settings>(editor: Option<&Editor>, cx: &'a App) -> &'a T {
+        let project_path =
+            editor.and_then(|editor| Self::project_path_for_active_editor(editor, cx));
+        T::get(
+            project_path.as_ref().map(|path| SettingsLocation {
+                worktree_id: path.worktree_id,
+                path: &path.path,
+            }),
+            cx,
+        )
+    }
+
+    fn settings<'a, T: Settings>(&self, cx: &'a App) -> &'a T {
+        Self::settings_for_editor(
+            self.active_editor
+                .as_ref()
+                .map(|state| state.editor.read(cx)),
+            cx,
+        )
+    }
+
+    fn max_width(&self, cx: &App) -> Option<Pixels> {
+        self.settings::<MarkdownPreviewSettings>(cx).max_width
+    }
+
+    fn font_size(&self, cx: &App) -> Pixels {
+        let base_size = self
+            .settings::<ThemeSettings>(cx)
+            .markdown_preview_base_font_size();
+        self.font_size_override
+            .filter(|(base, _)| *base == base_size)
+            .map_or(base_size, |(_, size)| size)
     }
 
     fn increase_font_size(
@@ -851,20 +918,14 @@ impl MarkdownPreviewView {
     }
 
     fn adjust_font_size(&mut self, persist: bool, delta: Pixels, cx: &mut Context<Self>) {
+        let base_size = self
+            .settings::<ThemeSettings>(cx)
+            .markdown_preview_base_font_size();
+        let size = theme_settings::clamp_font_size(self.font_size(cx) + delta);
+        self.font_size_override = Some((base_size, size));
+        cx.notify();
         if persist {
-            let Ok(fs) = self
-                .workspace
-                .read_with(cx, |workspace, _| workspace.app_state().fs.clone())
-            else {
-                return;
-            };
-            update_settings_file(fs, cx, move |settings, cx| {
-                let size = ThemeSettings::get_global(cx).markdown_preview_font_size(cx) + delta;
-                settings.markdown_preview.get_or_insert_default().font_size =
-                    Some(f32::from(theme_settings::clamp_font_size(size)).into());
-            });
-        } else {
-            theme_settings::adjust_markdown_preview_font_size(cx, |size| size + delta);
+            self.persist_font_size(Some(size), cx);
         }
     }
 
@@ -874,18 +935,91 @@ impl MarkdownPreviewView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.font_size_override = None;
+        cx.notify();
         if action.persist {
-            let Ok(fs) = self
-                .workspace
-                .read_with(cx, |workspace, _| workspace.app_state().fs.clone())
-            else {
-                return;
-            };
-            update_settings_file(fs, cx, move |settings, _| {
-                reset_persisted_font_size(settings);
-            });
+            self.persist_font_size(None, cx);
+        }
+    }
+
+    fn persist_font_size(&mut self, size: Option<Pixels>, cx: &mut Context<Self>) {
+        let project_path = self
+            .active_editor
+            .as_ref()
+            .and_then(|state| Self::project_path_for_active_editor(state.editor.read(cx), cx));
+        let settings_path = project_path.and_then(|path| {
+            cx.global::<settings::SettingsStore>()
+                .local_settings(path.worktree_id)
+                .filter(|(directory, settings)| {
+                    path.path.starts_with(directory)
+                        && settings
+                            .markdown_preview
+                            .as_ref()
+                            .is_some_and(|settings| settings.font_size.is_some())
+                })
+                .max_by_key(|(directory, _)| directory.as_unix_str().len())
+                .map(|(directory, _)| (path.worktree_id, directory))
+        });
+        let workspace = self.workspace.clone();
+        let Ok((project, fs)) = workspace.read_with(cx, |workspace, _| {
+            (
+                workspace.project().clone(),
+                workspace.app_state().fs.clone(),
+            )
+        }) else {
+            return;
+        };
+        let font_size = size.map(|size| f32::from(size).into());
+        if let Some((worktree_id, directory)) = settings_path {
+            let previous = self.pending_font_size_save.take();
+            self.pending_font_size_save = Some(cx.spawn(async move |_, cx| {
+                if let Some(previous) = previous {
+                    previous.await;
+                }
+                let result: Result<()> = async {
+                    let path = directory.join(RelPath::from_unix_str(".zed/settings.json")?);
+                    let buffer = project
+                        .update(cx, |project, cx| {
+                            project.open_buffer(ProjectPath { worktree_id, path: path.into() }, cx)
+                        })
+                        .await?;
+                    buffer.update(cx, |buffer, cx| -> Result<()> {
+                        anyhow::ensure!(
+                            !buffer.is_dirty() && !buffer.has_conflict(),
+                            "Save or resolve changes in the project settings file before persisting preview zoom"
+                        );
+                        let new_text = cx.global::<settings::SettingsStore>().new_text_for_update(
+                            buffer.text(),
+                            |settings| {
+                                if let Some(font_size) = font_size {
+                                    settings.project.markdown_preview.get_or_insert_default().font_size = Some(font_size);
+                                } else {
+                                    reset_persisted_font_size(settings);
+                                }
+                            },
+                        )?;
+                        buffer.edit([(0..buffer.len(), new_text)], None, cx);
+                        Ok(())
+                    })?;
+                    let store = project.read_with(cx, |project, _| project.buffer_store().clone());
+                    store.update(cx, |store, cx| store.save_buffer(buffer, cx)).await?;
+                    Ok(())
+                }
+                .await;
+                result.notify_workspace_async_err(workspace, cx);
+            }));
         } else {
-            theme_settings::reset_markdown_preview_font_size(cx);
+            update_settings_file(fs, cx, move |settings, _| {
+                if let Some(font_size) = font_size {
+                    settings
+                        .project
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .font_size = Some(font_size);
+                } else {
+                    reset_persisted_font_size(settings);
+                }
+            });
         }
     }
 
@@ -1044,7 +1178,7 @@ impl MarkdownPreviewView {
     /// Returns the theme chosen in `markdown_preview.theme`, or `None` if the
     /// user hasn't set one or it can't be resolved.
     fn resolve_preview_theme(&self, cx: &App) -> Option<Arc<Theme>> {
-        let theme_settings = ThemeSettings::get_global(cx);
+        let theme_settings = self.settings::<ThemeSettings>(cx);
         let theme_selection = theme_settings.markdown_preview_theme.as_ref()?;
         let theme_name = theme_selection.name(SystemAppearance::global(cx).0);
         ThemeRegistry::global(cx).get(&theme_name.0).ok()
@@ -1074,17 +1208,16 @@ impl MarkdownPreviewView {
             project = Some(project_entity);
         }
 
-        let markdown_style = if let Some(theme) = preview_theme {
-            MarkdownStyle::themed_with_overrides(
-                MarkdownFont::Preview,
-                theme.colors(),
-                theme.syntax(),
-                window,
-                cx,
-            )
-        } else {
-            MarkdownStyle::themed(MarkdownFont::Preview, window, cx)
-        };
+        let theme = preview_theme.as_ref().unwrap_or_else(|| cx.theme());
+        let markdown_style = MarkdownStyle::themed_with_settings(
+            MarkdownFont::Preview,
+            theme.colors(),
+            theme.syntax(),
+            self.settings::<ThemeSettings>(cx),
+            Some(self.font_size(cx)),
+            window,
+            cx,
+        );
 
         let mut markdown_element = MarkdownElement::new(self.markdown.clone(), markdown_style)
             .input_focus_handle(self.focus_handle.clone())
@@ -1759,7 +1892,7 @@ impl Render for MarkdownPreviewView {
             .as_ref()
             .map(|theme| theme.colors().editor_background)
             .unwrap_or_else(|| cx.theme().colors().editor_background);
-        let preview_font_size = ThemeSettings::get_global(cx).markdown_preview_font_size(cx);
+        let preview_font_size = self.font_size(cx);
         let hovered_url = self.hovered_url.clone();
         div()
             .image_cache(self.image_cache.clone())
@@ -1801,7 +1934,7 @@ impl Render for MarkdownPreviewView {
                             let markdown_element =
                                 self.render_markdown_element(&preview_theme, window, cx);
                             let markdown = self.markdown.clone();
-                            let max_width = MarkdownPreviewSettings::get_global(cx).max_width;
+                            let max_width = self.max_width(cx);
                             let content = right_click_menu("markdown-preview-context-menu")
                                 .trigger(move |_, _, _| markdown_element)
                                 .maybe_menu(move |window, cx| {
@@ -2209,7 +2342,7 @@ mod tests {
     use buffer_diff::BufferDiff;
     use editor::Editor;
     use editor::items::open_resolved_target;
-    use fs::FakeFs;
+    use fs::{FakeFs, Fs as _};
     use gpui::UpdateGlobal as _;
     use gpui::{
         App, AppContext as _, Entity, Focusable as _, Modifiers, TestAppContext, WindowHandle, px,
@@ -2278,6 +2411,285 @@ mod tests {
         assert_eq!(
             preview.read_with(cx, |preview, cx| preview.tab_tooltip_text(cx)),
             source_tooltip
+        );
+    }
+
+    #[gpui::test]
+    async fn preview_settings_follow_source_worktree_and_settings_changes(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/first"),
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"limit_content_width":false,"font_size":18,"font_family":"First Font","code_font_family":"First Code","theme":"One Dark"}}"#},
+                "readme.md": "# First"
+            }),
+        )
+        .await;
+        fs.insert_tree(
+            path!("/second"),
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"max_width":1200,"font_size":24,"font_family":"Second Font","code_font_family":"Second Code"}}"#},
+                "readme.md": "# Second"
+            }),
+        )
+        .await;
+        let project = Project::test(
+            fs.clone(),
+            [path!("/first").as_ref(), path!("/second").as_ref()],
+            cx,
+        )
+        .await;
+        register_markdown_language(&project, cx);
+        let multi_workspace =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let mut previews = Vec::new();
+        for root in [path!("/first"), path!("/second")] {
+            let project_path = project.read_with(cx, |project, cx| ProjectPath {
+                worktree_id: project
+                    .worktrees(cx)
+                    .find(|worktree| worktree.read(cx).abs_path().as_ref() == Path::new(root))
+                    .unwrap()
+                    .read(cx)
+                    .id(),
+                path: rel_path("readme.md").into(),
+            });
+            multi_workspace
+                .update(cx, |multi_workspace, window, cx| {
+                    multi_workspace.workspace().update(cx, |workspace, cx| {
+                        workspace.open_path(project_path, None, true, window, cx)
+                    })
+                })
+                .unwrap()
+                .await
+                .unwrap();
+            cx.run_until_parked();
+            previews.push(open_preview_for_active_editor(cx, &multi_workspace));
+        }
+        let first = previews.remove(0);
+        let second = previews.remove(0);
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            None
+        );
+        assert_eq!(
+            second.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(1200.))
+        );
+
+        for (preview, body_font, code_font, size) in [
+            (&first, "First Font", "First Code", px(18.)),
+            (&second, "Second Font", "Second Code", px(24.)),
+        ] {
+            preview.read_with(cx, |preview, cx| {
+                let settings = preview.settings::<theme_settings::ThemeSettings>(cx);
+                assert_eq!(settings.markdown_preview_font_family().as_ref(), body_font);
+                assert_eq!(
+                    settings.markdown_preview_code_font_family().as_ref(),
+                    code_font
+                );
+                assert_eq!(preview.font_size(cx), size);
+            });
+        }
+        first.read_with(cx, |preview, cx| {
+            assert_eq!(
+                preview.resolve_preview_theme(cx).unwrap().name.as_ref(),
+                "One Dark"
+            );
+        });
+        assert!(
+            second
+                .read_with(cx, |preview, cx| preview.resolve_preview_theme(cx))
+                .is_none()
+        );
+        first.update(cx, |preview, cx| {
+            preview.adjust_font_size(false, px(2.), cx)
+        });
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.font_size(cx)),
+            px(20.)
+        );
+        assert_eq!(
+            second.read_with(cx, |preview, cx| preview.font_size(cx)),
+            px(24.)
+        );
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                first.update(cx, |preview, cx| {
+                    preview.reset_font_size(
+                        &zed_actions::ResetBufferFontSize { persist: false },
+                        window,
+                        cx,
+                    )
+                });
+            })
+            .unwrap();
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.font_size(cx)),
+            px(18.)
+        );
+        first.update(cx, |preview, cx| preview.adjust_font_size(true, px(1.), cx));
+        first
+            .update(cx, |preview, _| preview.pending_font_size_save.take())
+            .unwrap()
+            .await;
+        cx.run_until_parked();
+        let saved: serde_json::Value = serde_json::from_str(
+            &fs.load(Path::new(path!("/first/.zed/settings.json")))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["markdown_preview"]["font_size"].as_f64(), Some(19.0));
+        assert_eq!(saved["markdown_preview"]["font_family"], "First Font");
+        assert_eq!(
+            second.read_with(cx, |preview, cx| preview.font_size(cx)),
+            px(24.)
+        );
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                first.update(cx, |preview, cx| {
+                    preview.reset_font_size(
+                        &zed_actions::ResetBufferFontSize { persist: true },
+                        window,
+                        cx,
+                    )
+                });
+            })
+            .unwrap();
+        first
+            .update(cx, |preview, _| preview.pending_font_size_save.take())
+            .unwrap()
+            .await;
+        cx.run_until_parked();
+        let saved: serde_json::Value = serde_json::from_str(
+            &fs.load(Path::new(path!("/first/.zed/settings.json")))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(saved["markdown_preview"].get("font_size").is_none());
+
+        fs.insert_file(
+            path!("/first/.zed/settings.json"),
+            br#"{"markdown_preview":{"limit_content_width":true,"max_width":640,"font_size":22,"font_family":"Updated Font","theme":"missing-theme"}}"#.to_vec(),
+        )
+        .await;
+        cx.run_until_parked();
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(640.))
+        );
+        assert_eq!(
+            second.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(1200.))
+        );
+
+        first.read_with(cx, |preview, cx| {
+            assert_eq!(preview.font_size(cx), px(22.));
+            assert_eq!(
+                preview
+                    .settings::<theme_settings::ThemeSettings>(cx)
+                    .markdown_preview_font_family()
+                    .as_ref(),
+                "Updated Font"
+            );
+            assert!(preview.resolve_preview_theme(cx).is_none());
+        });
+
+        fs.insert_file(path!("/first/.zed/settings.json"), b"{}".to_vec())
+            .await;
+        cx.run_until_parked();
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(800.))
+        );
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                let buffer = cx.new(|cx| Buffer::local("# Untitled", cx));
+                let editor =
+                    cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+                first.update(cx, |preview, cx| preview.set_editor(editor, window, cx));
+            })
+            .unwrap();
+        assert_eq!(
+            first.read_with(cx, |preview, cx| preview.max_width(cx)),
+            Some(px(800.))
+        );
+    }
+
+    #[gpui::test]
+    async fn persisting_preview_zoom_survives_preview_drop(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"font_size":18}}"#},
+                "readme.md": "# Readme"
+            }),
+            false,
+        )
+        .await;
+        open_project_file(cx, &project, &multi_workspace, "readme.md", None, true).await;
+        let preview = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let editor = workspace.active_item_as::<Editor>(cx).unwrap();
+                    MarkdownPreviewView::create_markdown_view(workspace, editor, window, cx)
+                })
+            })
+            .unwrap();
+        let weak_preview = preview.downgrade();
+        preview.update(cx, |preview, cx| {
+            preview.adjust_font_size(true, px(1.), cx);
+            preview.adjust_font_size(true, px(1.), cx);
+        });
+        drop(preview);
+        cx.run_until_parked();
+        assert!(weak_preview.upgrade().is_none());
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        let saved: serde_json::Value = serde_json::from_str(
+            &fs.load(Path::new(path!("/project/.zed/settings.json")))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["markdown_preview"]["font_size"].as_f64(), Some(20.0));
+    }
+
+    #[gpui::test]
+    async fn persisting_preview_zoom_preserves_unsaved_project_settings(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"font_size":18}}"#},
+                "readme.md": "# Readme"
+            }),
+            false,
+        )
+        .await;
+        open_project_file(cx, &project, &multi_workspace, "readme.md", None, true).await;
+        let preview = open_preview_for_active_editor(cx, &multi_workspace);
+        let settings_path = project.read_with(cx, |_, cx| {
+            test_project_path(&project, ".zed/settings.json", cx)
+        });
+        let buffer = project
+            .update(cx, |project, cx| project.open_buffer(settings_path, cx))
+            .await
+            .unwrap();
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "\n")], None, cx));
+        let before = buffer.read_with(cx, |buffer, _| buffer.text());
+        preview.update(cx, |preview, cx| preview.adjust_font_size(true, px(1.), cx));
+        preview
+            .update(cx, |preview, _| preview.pending_font_size_save.take())
+            .unwrap()
+            .await;
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), before);
+        assert!(buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        assert!(
+            !workspace
+                .read_with(cx, |workspace, _| workspace.notification_ids())
+                .is_empty()
         );
     }
 
@@ -3706,6 +4118,40 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn project_settings_control_automatic_preview_opening(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"open_markdown_files_in_preview":false}}"#},
+                "source.md": "# Source",
+                "docs": {
+                    ".zed": {"settings.json": r#"{"markdown_preview":{"open_markdown_files_in_preview":true}}"#},
+                    "preview.md": "# Preview"
+                }
+            }),
+            false,
+        ).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "source.md", None, true).await;
+        assert!(
+            workspace
+                .read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
+                .is_some()
+        );
+        cx.update(|cx| set_auto_preview_enabled(cx, false));
+        let editor = open_project_file(
+            cx,
+            &project,
+            &multi_workspace,
+            "docs/preview.md",
+            None,
+            true,
+        )
+        .await;
+        cx.update(|cx| assert_editor_replaced_by_preview(workspace.read(cx), editor.as_ref(), cx));
+    }
+
+    #[gpui::test]
     async fn opens_markdown_files_in_preview_when_enabled(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) = markdown_workspace(
             cx,
@@ -4306,6 +4752,7 @@ mod tests {
         settings::SettingsStore::update_global(cx, |store, cx| {
             store.update_user_settings(cx, |settings| {
                 settings
+                    .project
                     .markdown_preview
                     .get_or_insert_default()
                     .open_markdown_files_in_preview = Some(enabled);
