@@ -2,6 +2,7 @@ FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d4
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git unzip \
     && rm -rf /var/lib/apt/lists/*
+RUN git config --system advice.detachedHead false
 ENV CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 RUN npm install --global dprint@0.57.4
