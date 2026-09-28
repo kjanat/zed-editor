@@ -3404,7 +3404,6 @@ mod tests {
         let user_preview = user_schema["properties"]["markdown_preview"].to_string();
         let project_preview = project_schema["properties"]["markdown_preview"].to_string();
         assert!(user_preview.contains("MarkdownPreviewSettingsContent"));
-        assert!(!user_preview.contains("ProjectMarkdownPreviewSettingsContent"));
-        assert!(project_preview.contains("ProjectMarkdownPreviewSettingsContent"));
+        assert!(project_preview.contains("MarkdownPreviewSettingsContent"));
     }
 }

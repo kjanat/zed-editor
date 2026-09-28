@@ -190,7 +190,26 @@ impl MarkdownStyle {
         window: &Window,
         cx: &App,
     ) -> Self {
-        let theme_settings = ThemeSettings::get_global(cx);
+        Self::themed_with_settings(
+            font,
+            colors,
+            syntax,
+            ThemeSettings::get_global(cx),
+            None,
+            window,
+            cx,
+        )
+    }
+
+    pub fn themed_with_settings(
+        font: MarkdownFont,
+        colors: &theme::ThemeColors,
+        syntax: &Arc<SyntaxTheme>,
+        theme_settings: &ThemeSettings,
+        preview_font_size: Option<Pixels>,
+        window: &Window,
+        cx: &App,
+    ) -> Self {
         let is_preview = matches!(font, MarkdownFont::Preview);
 
         let buffer_font_weight = theme_settings.buffer_font.weight;
@@ -204,7 +223,7 @@ impl MarkdownStyle {
                 theme_settings.ui_font_size(cx),
             ),
             MarkdownFont::Preview => (
-                theme_settings.markdown_preview_font_size(cx),
+                preview_font_size.unwrap_or_else(|| theme_settings.markdown_preview_font_size(cx)),
                 theme_settings.ui_font_size(cx),
             ),
         };
@@ -7458,7 +7477,11 @@ mod tests {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
                     settings.theme.ui_font_size = Some(16.0.into());
-                    settings.markdown_preview.get_or_insert_default().font_size = None;
+                    settings
+                        .project
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .font_size = None;
                 });
             });
         });
@@ -7486,7 +7509,11 @@ mod tests {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
                     settings.theme.ui_font_size = Some(20.0.into());
-                    settings.markdown_preview.get_or_insert_default().font_size = None;
+                    settings
+                        .project
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .font_size = None;
                 });
             });
         });
@@ -7547,7 +7574,11 @@ mod tests {
         cx.update(|cx| {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
-                    settings.markdown_preview.get_or_insert_default().font_size = Some(14.0.into());
+                    settings
+                        .project
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .font_size = Some(14.0.into());
                     settings.theme.buffer_line_height =
                         Some(settings::BufferLineHeight::Custom(1.5));
                 });
@@ -8008,8 +8039,11 @@ mod tests {
         cx.update(|cx| {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
-                    settings.markdown_preview.get_or_insert_default().font_size =
-                        Some(font_size.into());
+                    settings
+                        .project
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .font_size = Some(font_size.into());
                     settings.theme.buffer_line_height =
                         Some(settings::BufferLineHeight::Custom(buffer_line_height));
                 });

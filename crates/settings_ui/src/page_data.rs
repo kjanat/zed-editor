@@ -1257,6 +1257,7 @@ fn appearance_page() -> SettingsPage {
                     json_path: Some("markdown_preview.font_family"),
                     pick: |settings_content| {
                         settings_content
+                            .project
                             .markdown_preview
                             .as_ref()?
                             .font_family
@@ -1264,13 +1265,14 @@ fn appearance_page() -> SettingsPage {
                     },
                     write: |settings_content, value, _| {
                         settings_content
+                            .project
                             .markdown_preview
                             .get_or_insert_default()
                             .font_family = value;
                     },
                 }),
                 metadata: None,
-                files: USER,
+                files: USER | PROJECT,
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Code Font Family",
@@ -1280,6 +1282,7 @@ fn appearance_page() -> SettingsPage {
                     json_path: Some("markdown_preview.code_font_family"),
                     pick: |settings_content| {
                         settings_content
+                            .project
                             .markdown_preview
                             .as_ref()?
                             .code_font_family
@@ -1287,36 +1290,39 @@ fn appearance_page() -> SettingsPage {
                     },
                     write: |settings_content, value, _| {
                         settings_content
+                            .project
                             .markdown_preview
                             .get_or_insert_default()
                             .code_font_family = value;
                     },
                 }),
                 metadata: None,
-                files: USER,
+                files: USER | PROJECT,
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Font Size",
-                description: "Font size for the markdown preview. Falls back to the editor font size.",
+                description: "Font size for the markdown preview. Falls back to the UI font size.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("markdown_preview.font_size"),
                     pick: |settings_content| {
                         settings_content
+                            .project
                             .markdown_preview
+                            .as_ref()?
+                            .font_size
                             .as_ref()
-                            .and_then(|preview| preview.font_size.as_ref())
-                            .or(settings_content.theme.buffer_font_size.as_ref())
                     },
                     write: |settings_content, value, _| {
                         settings_content
+                            .project
                             .markdown_preview
                             .get_or_insert_default()
                             .font_size = value;
                     },
                 }),
                 metadata: None,
-                files: USER,
+                files: USER | PROJECT,
             }),
         ]
     }
@@ -10566,6 +10572,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                     json_path: Some("markdown_preview.open_markdown_files_in_preview"),
                     pick: |settings_content| {
                         settings_content
+                            .project
                             .markdown_preview
                             .as_ref()?
                             .open_markdown_files_in_preview
@@ -10573,13 +10580,14 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                     },
                     write: |settings_content, value, _| {
                         settings_content
+                            .project
                             .markdown_preview
                             .get_or_insert_default()
                             .open_markdown_files_in_preview = value;
                     },
                 }),
                 metadata: None,
-                files: USER,
+                files: USER | PROJECT,
             }),
             SettingsPageItem::DynamicItem(DynamicItem {
                 discriminant: SettingItem {
@@ -10593,18 +10601,13 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                             settings_content
                                 .project
                                 .markdown_preview
+                                .as_ref()?
+                                .limit_content_width
                                 .as_ref()
-                                .and_then(|settings| settings.limit_content_width.as_ref())
-                                .or_else(|| {
-                                    settings_content
-                                        .markdown_preview
-                                        .as_ref()?
-                                        .limit_content_width
-                                        .as_ref()
-                                })
                         },
                         write: |settings_content, value, _| {
                             settings_content
+                                .project
                                 .markdown_preview
                                 .get_or_insert_default()
                                 .limit_content_width = value;
@@ -10616,14 +10619,8 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                     let enabled = settings_content
                         .project
                         .markdown_preview
-                        .as_ref()
-                        .and_then(|settings| settings.limit_content_width)
-                        .or_else(|| {
-                            settings_content
-                                .markdown_preview
-                                .as_ref()?
-                                .limit_content_width
-                        })?;
+                        .as_ref()?
+                        .limit_content_width?;
                     Some(if enabled { 1 } else { 0 })
                 },
                 fields: vec![
@@ -10639,18 +10636,13 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                                 settings_content
                                     .project
                                     .markdown_preview
+                                    .as_ref()?
+                                    .max_width
                                     .as_ref()
-                                    .and_then(|settings| settings.max_width.as_ref())
-                                    .or_else(|| {
-                                        settings_content
-                                            .markdown_preview
-                                            .as_ref()?
-                                            .max_width
-                                            .as_ref()
-                                    })
                             },
                             write: |settings_content, value, _| {
                                 settings_content
+                                    .project
                                     .markdown_preview
                                     .get_or_insert_default()
                                     .max_width = value;

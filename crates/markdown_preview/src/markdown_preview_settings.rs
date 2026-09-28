@@ -13,17 +13,9 @@ pub struct MarkdownPreviewSettings {
 
 impl Settings for MarkdownPreviewSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
-        let project_content = content.project.markdown_preview.as_ref();
-        let content = content.markdown_preview.clone().unwrap_or_default();
-        let limit_content_width = project_content
-            .and_then(|settings| settings.limit_content_width)
-            .or(content.limit_content_width)
-            .unwrap_or(true);
-        let max_width = if limit_content_width {
-            project_content
-                .and_then(|settings| settings.max_width)
-                .or(content.max_width)
-                .map(IntoGpui::into_gpui)
+        let content = content.project.markdown_preview.clone().unwrap_or_default();
+        let max_width = if content.limit_content_width.unwrap_or(true) {
+            content.max_width.map(IntoGpui::into_gpui)
         } else {
             None
         };

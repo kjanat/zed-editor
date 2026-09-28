@@ -13,7 +13,7 @@ use settings_macros::{MergeFrom, with_fallible_options};
 use util::serde::default_true;
 
 use crate::{
-    AllLanguageSettingsContent, DelayMs, ExtendingVec, ParseStatus, PixelSetting,
+    AllLanguageSettingsContent, DelayMs, ExtendingVec, MarkdownPreviewSettingsContent, ParseStatus,
     ProjectTerminalSettingsContent, RootUserSettings, SaturatingBool, SplicingVec,
     fallible_options,
 };
@@ -62,7 +62,7 @@ pub struct ProjectSettingsContent {
 
     pub terminal: Option<ProjectTerminalSettingsContent>,
 
-    pub markdown_preview: Option<ProjectMarkdownPreviewSettingsContent>,
+    pub markdown_preview: Option<MarkdownPreviewSettingsContent>,
 
     /// Configuration for Debugger-related features
     #[serde(default)]
@@ -97,17 +97,6 @@ crate::fallible_options::flattened_deserialize!(ProjectSettingsContent {
     },
     defaults: { lsp, dap, context_servers },
 });
-
-#[with_fallible_options]
-#[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
-pub struct ProjectMarkdownPreviewSettingsContent {
-    /// Whether to constrain Markdown previews to `max_width` and center them.
-    /// Inherits the user setting when omitted.
-    pub limit_content_width: Option<bool>,
-    /// Maximum preview content width in pixels when `limit_content_width` is enabled.
-    /// Inherits the user setting when omitted.
-    pub max_width: Option<PixelSetting>,
-}
 
 /// When to scan content of linked directories.
 #[derive(
