@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+restore_fork_rules() {
+	[[ -n "$(git ls-files --unmerged -- .rules)" ]] || return 0
+	# Rules conflicts must not block the sync or revive rules the fork removed.
+	git rm -r -q -f --ignore-unmatch -- .rules
+	if git cat-file -e master:.rules 2>/dev/null; then
+		git checkout master -- .rules
+	fi
+}
 format_merge_input() (
 	set -euo pipefail
 	case "$1" in
@@ -54,6 +62,10 @@ if [[ "${1:-}" == --format-merge-input ]]; then
 	format_merge_input "$2"
 	exit 0
 fi
+if [[ "${1:-}" == --restore-fork-rules ]]; then
+	restore_fork_rules
+	exit 0
+fi
 # Only /source (read-only) and /output cross the container boundary.
 # Do not pass runner credentials or mount a host home directory here.
 git clone --no-local /source /tmp/work
@@ -93,6 +105,7 @@ attempt_merge() {
 	if git cat-file -e master:.github 2>/dev/null; then
 		git checkout master -- .github
 	fi
+	restore_fork_rules
 
 	if [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
 		git commit --message "Merge upstream main"

@@ -20,6 +20,7 @@ members         = [
   "crates/auto_update_ui",
   "crates/aws_http_client",
   "crates/bedrock",
+  "crates/bench_metrics",
   "crates/benchmarks",
   "crates/breadcrumbs",
   "crates/buffer_diff",
@@ -294,6 +295,7 @@ auto_update               = { path = "crates/auto_update" }
 auto_update_ui            = { path = "crates/auto_update_ui" }
 aws_http_client           = { path = "crates/aws_http_client" }
 bedrock                   = { path = "crates/bedrock" }
+bench_metrics             = { path = "crates/bench_metrics" }
 breadcrumbs               = { path = "crates/breadcrumbs" }
 buffer_diff               = { path = "crates/buffer_diff" }
 call                      = { path = "crates/call" }
@@ -557,12 +559,16 @@ async-task                    = "4.7"
 async-trait                   = "0.1"
 async-tungstenite             = "0.33"
 async_zip                     = { version = "0.0.18", features = ["deflate", "deflate64"] }
-aws-config                    = { version = "1.8.10", features = ["behavior-version-latest"] }
+aws-config                    = { version = "1.8.10", default-features = false, features = [
+  "behavior-version-latest",
+  "credentials-process",
+  "rt-tokio",
+  "sso",
+] }
 aws-credential-types          = { version = "1.2.8", features = [
   "hardcoded-credentials",
 ] }
 aws-sdk-bedrockruntime        = { version = "1.112.0", default-features = false, features = [
-  "default-https-client",
   "behavior-version-latest",
   "rt-tokio",
 ] }
@@ -598,7 +604,7 @@ core-text                     = "21"
 core-video                    = { version = "0.5.2", features = ["metal"] }
 cpal                          = "0.17"
 crash-handler                 = "0.8"
-criterion                     = { version = "0.5", features = ["html_reports"] }
+criterion                     = { version = "0.8.2", features = ["html_reports"] }
 crossbeam                     = "0.8.4"
 ctor                          = "1.0.12"
 dap-types                     = { git = "https://github.com/zed-industries/dap-types", rev = "1b461b310481d01e02b2603c16d7144b926339f8" }
@@ -770,6 +776,7 @@ partial-json-fixer            = "0.5.3"
 pathfinder_geometry           = "0.5"
 pciid-parser                  = "0.8.0"
 percent-encoding              = "2.3.2"
+perf-event                    = { package = "perf-event2", version = "0.7.4" }
 pet                           = { git = "https://github.com/zed-industries/python-environment-tools.git", rev = "5aad7164bfc2a58977b103c8ef8fdd7302ed2e9f" }
 pet-conda                     = { git = "https://github.com/zed-industries/python-environment-tools.git", rev = "5aad7164bfc2a58977b103c8ef8fdd7302ed2e9f" }
 pet-core                      = { git = "https://github.com/zed-industries/python-environment-tools.git", rev = "5aad7164bfc2a58977b103c8ef8fdd7302ed2e9f" }
@@ -927,7 +934,7 @@ wasmtime                      = { version = "48", default-features = false, feat
   "parallel-compilation",
   "runtime",
 ] }
-wasmtime-wasi                 = "48"
+wasmtime-wasi                 = { version = "48", default-features = false, features = ["p2"] }
 wax                           = "0.7"
 web-time                      = "1.1.0"
 webpki-roots                  = "1.0.8"
