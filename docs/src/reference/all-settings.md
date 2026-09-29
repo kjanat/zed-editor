@@ -3688,6 +3688,7 @@ The following settings can be overridden for each specific language:
 - [`show_whitespaces`](#show-whitespaces)
 - [`whitespace_map`](#whitespace-map)
 - [`soft_wrap`](#soft-wrap)
+- [`soft_wrap_indent`](#soft-wrap-indent)
 - [`tab_size`](#tab-size)
 - [`use_autoclose`](#use-autoclose)
 - [`always_treat_brackets_as_autoclosed`](#always-treat-brackets-as-autoclosed)
@@ -4906,6 +4907,19 @@ Positive integer values
 4. `bounded` to wrap lines at the minimum of `editor_width` and
    `preferred_line_length`
 
+## Soft Wrap Indent
+
+- Description: How to indent soft-wrapped continuation lines.
+- Setting: `soft_wrap_indent`
+- Default: `same`
+
+**Options**
+
+1. `none` to start continuation lines at column 0
+2. `same` to match the original line's indentation
+3. `extra_one` to add 1 extra indent level beyond the original line
+4. `extra_two` to add 2 extra indent levels beyond the original line
+
 ## Show Wrap Guides
 
 - Description: Whether to show wrap guides (vertical rulers) in the editor.
@@ -5920,6 +5934,7 @@ current list of valid theme names.
     "show_user_menu": true,
     "show_sign_in": true,
     "show_menus": false,
+    "open_menus_on_hover": false,
     "button_layout": "platform_default"
   }
 }
@@ -5940,6 +5955,8 @@ current list of valid theme names.
   Keymap, Themes, etc.)
 - `show_sign_in`: Whether to show the sign in button in the titlebar
 - `show_menus`: Whether to show the menus in the titlebar
+- `open_menus_on_hover`: Whether to open title-bar menus on hover. Once a menu
+  is open, hovering always switches between menus.
 - `button_layout`: The layout of window control buttons in the title bar (Linux
   only). Can be set to `"platform_default"` to follow the system setting,
   `"standard"` to use Zed's built-in layout, or a custom format like

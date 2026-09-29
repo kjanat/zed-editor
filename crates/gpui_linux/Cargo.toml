@@ -6,7 +6,7 @@ license           = "Apache-2.0"
 publish.workspace = true
 
 [package.metadata.cargo-shear]
-ignored = ["bitflags", "scap", "x11-clipboard"]
+ignored = ["bitflags", "scap"]
 
 [lib]
 doctest = false
@@ -74,7 +74,6 @@ wayland-protocols-wlr    = { version = "0.3.9", features = [
 
 # X11
 as-raw-xcb-connection = { version = "1", optional = true }
-x11-clipboard         = { version = "0.9.3", optional = true }
 x11rb                 = { version = "0.13.1", features = [
   "allow-unsafe-code",
   "cursor",
@@ -126,7 +125,6 @@ x11            = [
   "filedescriptor",
   "open",
   "scap?/x11",
-  "x11-clipboard",
   "x11rb",
   "xim",
   "xkbcommon/x11",
