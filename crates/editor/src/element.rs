@@ -13,8 +13,8 @@ use crate::{
     EditDisplayMode, EditPrediction, Editor, EditorMode, EditorSettings, EditorSnapshot,
     EditorStyle, FILE_HEADER_HEIGHT, FocusedBlock, GutterDimensions, HalfPageDown, HalfPageUp,
     HandleInput, HoveredCursor, InlayHintRefreshReason, LineDown, LineHighlight, LineUp,
-    MAX_LINE_LEN, MINIMAP_FONT_SIZE, PageDown, PageUp, Point, RowExt, RowRangeExt, Selection,
-    SelectionDragState, SizingBehavior, SoftWrap, ToPoint,
+    MINIMAP_FONT_SIZE, PageDown, PageUp, Point, RowExt, RowRangeExt, Selection, SelectionDragState,
+    SizingBehavior, SoftWrap, ToPoint,
     code_context_menus::{CodeActionsMenu, MENU_ASIDE_MAX_WIDTH, MENU_ASIDE_MIN_WIDTH, MENU_GAP},
     column_pixels,
     cursor_animation::{CursorViewport, LogicalCursorPosition, animated_corners_overlap_target},
@@ -3231,7 +3231,6 @@ impl EditorElement {
             LineWithInvisibles::from_chunks(
                 chunks,
                 style,
-                MAX_LINE_LEN,
                 rows.len(),
                 &snapshot.mode,
                 editor_width,
@@ -7381,7 +7380,6 @@ impl LineWithInvisibles {
     fn from_chunks<'a>(
         chunks: impl Iterator<Item = HighlightedChunk<'a>>,
         editor_style: &EditorStyle,
-        max_line_len: usize,
         max_line_count: usize,
         editor_mode: &EditorMode,
         text_width: Pixels,
@@ -7405,7 +7403,6 @@ impl LineWithInvisibles {
         let mut styles = Vec::new();
         let mut non_whitespace_added = false;
         let mut row = 0;
-        let mut line_exceeded_max_len = false;
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let min_contrast = EditorSettings::get_global(cx).minimum_contrast_for_highlights;
 
@@ -7420,15 +7417,6 @@ impl LineWithInvisibles {
             replacement: None,
         }]) {
             if let Some(replacement) = highlighted_chunk.replacement {
-                if line_exceeded_max_len {
-                    continue;
-                }
-
-                if len + line.len() + highlighted_chunk.text.len() > max_line_len {
-                    line_exceeded_max_len = true;
-                    continue;
-                }
-
                 if !line.is_empty() {
                     let segments = bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]);
                     let text_runs: &[TextRun] = if segments.is_empty() {
@@ -7525,7 +7513,7 @@ impl LineWithInvisibles {
                     }
                 }
             } else {
-                for (ix, mut line_chunk) in highlighted_chunk.text.split('\n').enumerate() {
+                for (ix, line_chunk) in highlighted_chunk.text.split('\n').enumerate() {
                     if ix > 0 {
                         let segments = bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]);
                         let text_runs = if segments.is_empty() {
@@ -7559,33 +7547,18 @@ impl LineWithInvisibles {
                         line_byte_offset = 0;
                         styles.clear();
                         row += 1;
-                        line_exceeded_max_len = false;
                         non_whitespace_added = false;
                         if row == max_line_count {
                             return layouts;
                         }
                     }
 
-                    if !line_chunk.is_empty() && !line_exceeded_max_len {
+                    if !line_chunk.is_empty() {
                         let text_style = if let Some(style) = highlighted_chunk.style {
                             Cow::Owned(text_style.clone().highlight(style))
                         } else {
                             Cow::Borrowed(text_style)
                         };
-
-                        let current_line_len = len + line.len();
-                        if current_line_len + line_chunk.len() > max_line_len {
-                            let mut chunk_len = max_line_len - current_line_len;
-                            while !line_chunk.is_char_boundary(chunk_len) {
-                                chunk_len -= 1;
-                            }
-                            line_chunk = &line_chunk[..chunk_len];
-                            line_exceeded_max_len = true;
-                        }
-
-                        if line_chunk.is_empty() {
-                            continue;
-                        }
 
                         styles.push(TextRun {
                             len: line_chunk.len(),
@@ -10857,7 +10830,6 @@ pub fn layout_line(
     LineWithInvisibles::from_chunks(
         chunks,
         style,
-        MAX_LINE_LEN,
         1,
         &snapshot.mode,
         text_width,
@@ -11258,7 +11230,7 @@ fn calculate_wrap_width(
 
     match soft_wrap {
         SoftWrap::GitDiff => None,
-        SoftWrap::None => Some(wrap_width_for(MAX_LINE_LEN as u32 / 2)),
+        SoftWrap::None => None,
         SoftWrap::EditorWidth => Some(editor_width),
         SoftWrap::Bounded(column) => Some(editor_width.min(wrap_width_for(column))),
     }
@@ -12966,7 +12938,74 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_replacement_chunks_are_clipped_to_max_line_len(cx: &mut TestAppContext) {
+    fn test_long_lines_do_not_wrap_or_truncate(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let rows = [
+            format!("| {} | notes |", "column ".repeat(130)),
+            format!("| {} | ---- |", "-".repeat(4096)),
+            format!("| {} | end |", "é中 ".repeat(2048)),
+        ];
+        let window = cx.add_window(|window, cx| {
+            let buffer = MultiBuffer::build_simple(&rows.join("\n"), cx);
+            let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+            editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+            editor
+        });
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        let editor = window.root(cx).unwrap();
+        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+        let (_, state) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        assert_eq!(state.position_map.snapshot.max_point().row(), DisplayRow(2));
+        assert!(state.position_map.scroll_max.x > 0.);
+        for (row, text) in rows.iter().enumerate() {
+            let layout = &state.position_map.line_layouts[row];
+            assert_eq!(layout.len, text.len());
+            assert!(layout.width > px(500.));
+            let last_column = text.len() - 1;
+            let x = layout.x_for_index(last_column);
+            assert_eq!(layout.index_for_x(x + px(0.1)), Some(last_column));
+            let measured = cx.update(|window, cx| {
+                layout_line(
+                    DisplayRow(row as u32),
+                    &state.position_map.snapshot,
+                    &style,
+                    px(500.),
+                    |_| false,
+                    window,
+                    cx,
+                )
+            });
+            assert_eq!(measured.len, text.len());
+            assert_eq!(measured.width, layout.width);
+        }
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                    selections
+                        .select_ranges([Point::new(0, 0)..Point::new(2, rows[2].len() as u32)]);
+                });
+                let snapshot = editor.display_snapshot(cx);
+                assert_eq!(
+                    editor.selections.all::<Point>(&snapshot)[0].end,
+                    Point::new(2, rows[2].len() as u32)
+                );
+                editor.set_soft_wrap_mode(language_settings::SoftWrap::EditorWidth, cx);
+            });
+        });
+        cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        cx.executor().run_until_parked();
+        let (_, wrapped) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        assert!(wrapped.position_map.snapshot.max_point().row() > DisplayRow(2));
+    }
+
+    #[gpui::test]
+    fn test_long_line_replacement_chunks_are_not_clipped(cx: &mut TestAppContext) {
         init_test(cx, |_| {});
 
         let window = cx.add_window(|window, cx| {
@@ -12977,7 +13016,7 @@ mod tests {
         let editor = window.root(cx).unwrap();
         let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
         let editor_mode = EditorMode::full();
-        let max_line_len = "\u{00a0}abcdef".len();
+        let text = "é".repeat(2048);
 
         window
             .update(cx, |_, window, cx| {
@@ -12990,7 +13029,7 @@ mod tests {
                     replacement: Some(ChunkReplacement::Str("\u{2007}".into())),
                 })
                 .chain(std::iter::once(HighlightedChunk {
-                    text: "abcdefghi",
+                    text: &text,
                     style: None,
                     diagnostic_underline_severity: None,
                     is_tab: false,
@@ -13012,7 +13051,6 @@ mod tests {
                 let layouts = LineWithInvisibles::from_chunks(
                     chunks,
                     &style,
-                    max_line_len,
                     1,
                     &editor_mode,
                     px(500.),
@@ -13023,8 +13061,8 @@ mod tests {
                 );
 
                 assert_eq!(layouts.len(), 1);
-                assert_eq!(layouts[0].len, max_line_len);
-                assert!(layouts[0].fragments.len() <= max_line_len);
+                assert_eq!(layouts[0].len, text.len() + "\u{00a0}".len() * 9);
+                assert_eq!(layouts[0].fragments.len(), 11);
             })
             .unwrap();
     }
@@ -13572,7 +13610,7 @@ mod tests {
 
         assert_eq!(
             calculate_wrap_width(SoftWrap::None, editor_width, em_width),
-            Some(px((MAX_LINE_LEN as f32 / 2.0 * 8.0).ceil())),
+            None,
         );
 
         assert_eq!(

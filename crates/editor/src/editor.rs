@@ -299,7 +299,7 @@ pub const FILE_HEADER_HEIGHT: u32 = 2;
 pub const BUFFER_HEADER_PADDING: Rems = rems(0.25);
 pub const MULTI_BUFFER_EXCERPT_HEADER_HEIGHT: u32 = 1;
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_LINE_LEN: usize = 1024;
+const INITIAL_LINE_CAPACITY: usize = 1024;
 const MIN_NAVIGATION_HISTORY_ROW_DELTA: i64 = 10;
 const MAX_SELECTION_HISTORY_LEN: usize = 1024;
 const MIN_LANGUAGE_DETECTION_LEN: usize = 20;
@@ -529,10 +529,9 @@ impl EditorMode {
 pub enum SoftWrap {
     /// Prefer not to wrap at all.
     ///
-    /// Note: this is currently internal, as actually limited by [`crate::MAX_LINE_LEN`] until it wraps.
     /// The mode is used inside git diff hunks, where it's seems currently more useful to not wrap as much as possible.
     GitDiff,
-    /// Prefer a single line generally, unless an overly long line is encountered.
+    /// Do not soft wrap lines.
     None,
     /// Soft wrap lines that exceed the editor width.
     EditorWidth,
@@ -7111,7 +7110,7 @@ impl Editor {
 
         self.manipulate_mutable_lines(window, cx, |lines| {
             // Allocates a reasonably sized scratch buffer once for the whole loop
-            let mut reindented_line = String::with_capacity(MAX_LINE_LEN);
+            let mut reindented_line = String::with_capacity(INITIAL_LINE_CAPACITY);
             // Avoids recomputing spaces that could be inserted many times
             let space_cache: Vec<Vec<char>> = (1..=tab_size)
                 .map(|n| IndentSize::spaces(n as u32).chars().collect())
@@ -7166,7 +7165,7 @@ impl Editor {
 
         self.manipulate_mutable_lines(window, cx, |lines| {
             // Allocates a reasonably sized buffer once for the whole loop
-            let mut reindented_line = String::with_capacity(MAX_LINE_LEN);
+            let mut reindented_line = String::with_capacity(INITIAL_LINE_CAPACITY);
             // Avoids recomputing spaces that could be inserted many times
             let space_cache: Vec<Vec<char>> = (1..=tab_size)
                 .map(|n| IndentSize::spaces(n as u32).chars().collect())
