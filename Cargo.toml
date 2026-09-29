@@ -699,6 +699,7 @@ metal                         = "0.33"
 mime                          = "0.3.17"
 minidumper                    = "0.11"
 moka                          = { version = "0.12.10", features = ["sync"] }
+mos-text-layout               = { git = "https://github.com/kjanat/mosaic", rev = "0565c4b80c017605c8ccefe96bcdde2b348e8e71" }
 nanoid                        = "0.4"
 nbformat                      = "1.2.0"
 nix                           = "0.30"

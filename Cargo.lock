@@ -5739,6 +5739,7 @@ dependencies = [
  "lsp",
  "markdown",
  "menu",
+ "mos-text-layout",
  "multi_buffer",
  "ordered-float 5.5.0",
  "parking_lot",
@@ -11422,6 +11423,11 @@ dependencies = [
  "tagptr",
  "uuid",
 ]
+
+[[package]]
+name = "mos-text-layout"
+version = "0.0.2"
+source = "git+https://github.com/kjanat/mosaic?rev=0565c4b80c017605c8ccefe96bcdde2b348e8e71#0565c4b80c017605c8ccefe96bcdde2b348e8e71"
 
 [[package]]
 name = "moxcms"
