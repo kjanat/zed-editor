@@ -58,6 +58,7 @@ use language::{
     language_settings::ShowWhitespaceSetting,
 };
 use markdown::Markdown;
+use mos_text_layout::SegmentIndex;
 use multi_buffer::{
     Anchor, ExcerptRange, ExpandExcerptDirection, ExpandInfo, MultiBufferOffset, MultiBufferPoint,
     MultiBufferRow, MultiBufferSnapshot, RowInfo, ToOffset,
@@ -3213,6 +3214,7 @@ impl EditorElement {
                         width: line.width,
                         len: line.len,
                         fragments: smallvec![LineFragment::Text(line)],
+                        fragment_index: None,
                         invisibles: Vec::new(),
                         diagnostic_underline_severity_ranges: Vec::new(),
                         point_diagnostics: Vec::new(),
@@ -7345,6 +7347,7 @@ fn render_blame_entry(
 #[derive(Debug)]
 pub(crate) struct LineWithInvisibles {
     fragments: SmallVec<[LineFragment; 1]>,
+    fragment_index: Option<SegmentIndex>,
     invisibles: Vec<Invisible>,
     diagnostic_underline_severity_ranges: Vec<(Range<usize>, lsp::DiagnosticSeverity)>,
     point_diagnostics: Vec<PointDiagnostic>,
@@ -7377,6 +7380,18 @@ impl fmt::Debug for LineFragment {
 }
 
 impl LineWithInvisibles {
+    fn index_fragments(fragments: &[LineFragment]) -> Option<SegmentIndex> {
+        // Single-fragment lines already delegate lookup directly to GPUI.
+        if fragments.len() <= 1 {
+            return None;
+        }
+        SegmentIndex::new(fragments.iter().map(|fragment| match fragment {
+            LineFragment::Text(line) => (line.len, f32::from(line.width)),
+            LineFragment::Element { len, size, .. } => (*len, f32::from(size.width)),
+        }))
+        .log_err()
+    }
+
     fn from_chunks<'a>(
         chunks: impl Iterator<Item = HighlightedChunk<'a>>,
         editor_style: &EditorStyle,
@@ -7534,6 +7549,7 @@ impl LineWithInvisibles {
                         layouts.push(Self {
                             width: mem::take(&mut width),
                             len: mem::take(&mut len),
+                            fragment_index: Self::index_fragments(&fragments),
                             fragments: mem::take(&mut fragments),
                             invisibles: std::mem::take(&mut invisibles),
                             diagnostic_underline_severity_ranges: mem::take(
@@ -8173,6 +8189,20 @@ impl LineWithInvisibles {
     }
 
     pub fn x_for_index(&self, index: usize) -> Pixels {
+        if let Some(fragment_index) = &self.fragment_index {
+            let Some(segment_index) = fragment_index.segment_for_offset(index) else {
+                return self.width;
+            };
+            if let Some(segment) = fragment_index.segment(segment_index)
+                && let Some(fragment) = self.fragments.get(segment_index)
+            {
+                return px(segment.horizontal.start)
+                    + match fragment {
+                        LineFragment::Text(line) => line.x_for_index(index - segment.source.start),
+                        LineFragment::Element { .. } => Pixels::ZERO,
+                    };
+            }
+        }
         let mut fragment_start_x = Pixels::ZERO;
         let mut fragment_start_index = 0;
 
@@ -8202,6 +8232,22 @@ impl LineWithInvisibles {
     }
 
     pub fn index_for_x(&self, x: Pixels) -> Option<usize> {
+        if let Some(fragment_index) = &self.fragment_index {
+            let segment_index = fragment_index.segment_for_position(f32::from(x))?;
+            if let Some(segment) = fragment_index.segment(segment_index)
+                && let Some(fragment) = self.fragments.get(segment_index)
+            {
+                return Some(
+                    segment.source.start
+                        + match fragment {
+                            LineFragment::Text(line) => {
+                                line.index_for_x(x - px(segment.horizontal.start))?
+                            }
+                            LineFragment::Element { .. } => 0,
+                        },
+                );
+            }
+        }
         let mut fragment_start_x = Pixels::ZERO;
         let mut fragment_start_index = 0;
 
@@ -8232,6 +8278,19 @@ impl LineWithInvisibles {
     }
 
     pub fn font_id_for_index(&self, index: usize) -> Option<FontId> {
+        if let Some(fragment_index) = &self.fragment_index {
+            let segment_index = fragment_index.segment_for_offset(index)?;
+            if let Some(segment) = fragment_index.segment(segment_index)
+                && let Some(fragment) = self.fragments.get(segment_index)
+            {
+                return match fragment {
+                    LineFragment::Text(line) => {
+                        line.font_id_for_index(index - segment.source.start)
+                    }
+                    LineFragment::Element { .. } => None,
+                };
+            }
+        }
         let mut fragment_start_index = 0;
 
         for fragment in &self.fragments {
@@ -13117,6 +13176,39 @@ mod tests {
                 assert_eq!(layouts.len(), 1);
                 assert_eq!(layouts[0].len, text.len() + "\u{00a0}".len() * 9);
                 assert_eq!(layouts[0].fragments.len(), 11);
+                let mut line = layouts.into_iter().next().expect("one line");
+                let index = line
+                    .fragment_index
+                    .take()
+                    .expect("multiple fragments are indexed");
+                let offsets = [0, 1, 2, 1024, line.len - 1, line.len, line.len + 1];
+                let expected: Vec<_> = offsets
+                    .iter()
+                    .map(|offset| (line.x_for_index(*offset), line.font_id_for_index(*offset)))
+                    .collect();
+                let mut positions = vec![px(-1.), px(0.), line.width, line.width + px(1.)];
+                for segment_index in 0..index.len() {
+                    let segment = index.segment(segment_index).expect("indexed segment");
+                    positions.extend([
+                        px(segment.horizontal.start),
+                        px((segment.horizontal.start + segment.horizontal.end) / 2.),
+                        px(segment.horizontal.end),
+                    ]);
+                }
+                let expected_hits: Vec<_> = positions
+                    .iter()
+                    .map(|position| line.index_for_x(*position))
+                    .collect();
+                line.fragment_index = Some(index);
+                for (offset, expected) in offsets.into_iter().zip(expected) {
+                    assert_eq!(
+                        (line.x_for_index(offset), line.font_id_for_index(offset)),
+                        expected
+                    );
+                }
+                for (position, expected) in positions.into_iter().zip(expected_hits) {
+                    assert_eq!(line.index_for_x(position), expected);
+                }
             })
             .unwrap();
     }
@@ -13738,6 +13830,7 @@ mod tests {
     fn test_point_diagnostic_admission_preserves_covered_column() {
         let mut line = LineWithInvisibles {
             fragments: SmallVec::new(),
+            fragment_index: None,
             invisibles: Vec::new(),
             diagnostic_underline_severity_ranges: vec![(0..1, ERROR)],
             point_diagnostics: Vec::new(),
