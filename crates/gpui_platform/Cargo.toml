@@ -14,12 +14,18 @@ harness           = false
 name              = "inspector_render"
 required-features = ["bench-support"]
 
+[[bench]]
+harness           = false
+name              = "randomized_element_tree"
+required-features = ["bench-support"]
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace   = true
 
 [dev-dependencies]
-criterion.workspace = true
+bench_metrics.workspace = true
+criterion.workspace     = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_linux.workspace = true
