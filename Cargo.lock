@@ -95,6 +95,7 @@ dependencies = [
  "buffer_diff",
  "chrono",
  "collections",
+ "diffy",
  "env_logger 0.11.11",
  "feature_flags",
  "file_icons",
@@ -7827,6 +7828,7 @@ name = "gpui_platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bench_metrics",
  "console_error_panic_hook",
  "criterion",
  "gpui",
@@ -9955,6 +9957,7 @@ version = "0.1.0"
 dependencies = [
  "anthropic",
  "anyhow",
+ "cloud_api_client",
  "cloud_llm_client",
  "futures 0.3.34",
  "google_ai",
