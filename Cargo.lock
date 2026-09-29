@@ -3267,10 +3267,12 @@ dependencies = [
  "gpui",
  "gpui_tokio",
  "http_client",
+ "http_client_tls",
  "parking_lot",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio-rustls",
  "yawc",
 ]
 

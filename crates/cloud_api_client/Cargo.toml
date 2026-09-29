@@ -30,7 +30,9 @@ async-lock = { version = "3.4.2", default-features = false }
 async-lock.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-gpui_tokio.workspace = true
+gpui_tokio.workspace      = true
+http_client_tls.workspace = true
+tokio-rustls.workspace    = true
 
 [lints]
 workspace = true
