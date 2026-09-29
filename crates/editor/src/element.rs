@@ -11272,7 +11272,7 @@ fn compute_auto_height_layout(
     let editor_width = text_width - gutter_dimensions.margin - overscroll.width - em_width;
     let wrap_width = calculate_wrap_width(editor.soft_wrap_mode(cx), editor_width, em_width)
         .map(|width| width.min(editor_width));
-    if wrap_width.is_some() && editor.set_wrap_width(wrap_width, cx) {
+    if editor.set_wrap_width(wrap_width, cx) {
         snapshot = editor.snapshot(window, cx);
     }
 
@@ -11561,6 +11561,60 @@ mod tests {
                 state.position_map.scroll_max.x == 0.,
                 "Soft wrapped editor should have no horizontal scrolling!"
             );
+        }
+    }
+
+    #[gpui::test]
+    fn test_auto_height_clears_disabled_wrapping(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        for mode in [
+            language_settings::SoftWrap::EditorWidth,
+            language_settings::SoftWrap::Bounded,
+        ] {
+            let window = cx.add_window(|window, cx| {
+                let buffer = MultiBuffer::build_simple(&"word ".repeat(200), cx);
+                let mut editor = Editor::new(
+                    EditorMode::AutoHeight {
+                        min_lines: 1,
+                        max_lines: None,
+                    },
+                    buffer,
+                    None,
+                    window,
+                    cx,
+                );
+                editor.set_soft_wrap_mode(mode, cx);
+                editor
+            });
+            let cx = &mut VisualTestContext::from_window(*window, cx);
+            let editor = window.root(cx).unwrap();
+            let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+            cx.draw(Default::default(), size(px(200.), px(500.)), |_, _| {
+                EditorElement::new(&editor, style.clone())
+            });
+            cx.executor().run_until_parked();
+            cx.update(|window, cx| {
+                editor.update(cx, |editor, cx| {
+                    assert!(editor.snapshot(window, cx).max_point().row() > DisplayRow(0));
+                    editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+                    // Exercise measurement before prepaint can clear the stale wrap width.
+                    let measured = compute_auto_height_layout(
+                        editor,
+                        1,
+                        None,
+                        size(Some(px(200.)), None),
+                        AvailableSpace::Definite(px(200.)),
+                        window,
+                        cx,
+                    )
+                    .unwrap();
+                    assert_eq!(editor.snapshot(window, cx).max_point().row(), DisplayRow(0));
+                    assert_eq!(
+                        measured.height,
+                        style.text.line_height_in_pixels(window.rem_size())
+                    );
+                });
+            });
         }
     }
 
