@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{
-    NodeRuntimeTrait, NpmCommand, SystemNodeRuntime, build_npm_command_args, npm_command_env,
+    NodeRuntimeTrait, NpmCommand, SystemNode, build_npm_command_args, npm_command_env,
     proxy_argument, read_package_installed_version, runtime_adapter::prepare_node_adapter,
 };
 
@@ -82,9 +82,9 @@ fn validate_adapter_versions(output: &[u8], expected: &Version) -> Result<()> {
         .context("Bun does not support the Node.js executable adapter")?;
     ensure!(versions.bun == *expected, "Bun executable adapter is stale");
     ensure!(
-        versions.node >= SystemNodeRuntime::MIN_VERSION,
+        versions.node >= SystemNode::MIN_VERSION,
         "Bun must support Node.js {} or newer; found {}",
-        SystemNodeRuntime::MIN_VERSION,
+        SystemNode::MIN_VERSION,
         versions.node
     );
     Ok(())
