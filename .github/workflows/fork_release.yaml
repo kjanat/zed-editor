@@ -2,25 +2,26 @@
 name: fork_release
 run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0}{1}{2}{3}{4}{5}{6}{7}', inputs.tag || format('{0} bump', inputs.bump || 'patch'), inputs.linux && ' linux' || '', inputs.mac && ' mac' || '', inputs.windows && ' windows' || '', inputs.freebsd && ' freebsd' || '', inputs.bwrap && ' bwrap' || '', inputs.pacman && ' pacman' || '', !inputs.upload && ' (dry run)' || '') || '' }}
 on:
-  push: { tags: ["v*"] }
+  push: { tags: [v*] }
+  # pretty-yaml-ignore
   workflow_dispatch:
     inputs:
-      tag: { description: Release tag (overrides bump), required: false, type: string }
       bump:
         description: Version bump
-        type: choice
-        options: [patch, minor, major]
-        default: patch
-      linux: { description: Build the Linux bundles, type: boolean, default: true }
-      mac: { description: Build the macOS bundles, type: boolean, default: true }
-      windows: { description: Build the Windows bundles, type: boolean, default: true }
-      freebsd: { description: Build the FreeBSD remote server, type: boolean, default: true }
-      bwrap: { description: Build static bubblewrap, type: boolean, default: true }
-      pacman: { description: Build the pacman packages and repository, type: boolean, default: true }
+        type:        choice
+        options:     [patch, minor, major]
+        default:     patch
       upload:
         description: Upload onto the tag's release; off tests only whether the builds work
-        type: boolean
-        default: true
+        type:        boolean
+        default:     true
+      tag:     { description: Release tag (overrides bump),             type: string,  required: false }
+      linux:   { description: Build the Linux bundles,                  type: boolean, default: true }
+      mac:     { description: Build the macOS bundles,                  type: boolean, default: true }
+      windows: { description: Build the Windows bundles,                type: boolean, default: true }
+      freebsd: { description: Build the FreeBSD remote server,          type: boolean, default: true }
+      bwrap:   { description: Build static bubblewrap,                  type: boolean, default: true }
+      pacman:  { description: Build the pacman packages and repository, type: boolean, default: true }
 permissions: { contents: read }
 env: { CARGO_TERM_COLOR: always, CARGO_INCREMENTAL: 0, RUST_BACKTRACE: 1 }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
@@ -30,6 +31,7 @@ jobs:
     if: github.repository == 'kjanat/zed-editor'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    cancel-timeout-minutes: 1
     permissions: { contents: write }
     outputs: { tag: "${{ steps.resolve.outputs.tag }}" }
     steps:
@@ -81,10 +83,12 @@ jobs:
       matrix: { include: [{ arch: x86_64, runner: ubuntu-latest }, { arch: aarch64, runner: ubuntu-24.04-arm }] }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { CC: "clang-18", CXX: "clang++-18", GH_REPO: "${{ github.repository }}" }
+    env: { CC: "clang-18", CXX: "clang++-18", GH_REPO: &REPO "${{ github.repository }}" }
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.arch == 'x86_64'
@@ -92,7 +96,7 @@ jobs:
       - name: Build as the stable release channel
         run: echo stable > crates/zed/RELEASE_CHANNEL
       - name: Bake the release version from the tag
-        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        env: { tag: &TAG "${{ needs.create_draft_release.outputs.tag }}" }
         run: |
           if [[ "${tag}" == v[0-9]* ]]; then
             sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
@@ -109,20 +113,21 @@ jobs:
       - name: Bundle
         run: ./script/bundle-linux
       - name: Attest build provenance
-        if: github.event_name == 'push' || inputs.upload
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: &PushOrUpload github.event_name == 'push' || inputs.upload
+        uses: &attest actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             target/release/zed-linux-${{ matrix.arch }}.tar.gz
             target/zed-remote-server-linux-${{ matrix.arch }}.gz
-      - name: Show disk usage
+      - &DiskUsage
+        name: Show disk usage
         if: always()
         run: df -h /
       - name: Upload to the draft release
-        if: github.event_name == 'push' || inputs.upload
+        if: *PushOrUpload
         env:
-          GH_TOKEN: ${{ github.token }}
-          tag: ${{ needs.create_draft_release.outputs.tag }}
+          GH_TOKEN: &TOKEN ${{ github.token }}
+          tag: *TAG
           arch: ${{ matrix.arch }}
         run: |
           gh release upload "${tag}" --clobber \
@@ -137,17 +142,17 @@ jobs:
       matrix: { include: [{ arch: aarch64, target: aarch64-apple-darwin }, { arch: x86_64, target: x86_64-apple-darwin }] }
     runs-on: macos-15
     timeout-minutes: 240
+    cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { GH_REPO: "${{ github.repository }}" }
+    env: { GH_REPO: *REPO }
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
+      - *checkout
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with: { node-version: "24", check-latest: true, package-manager-cache: false }
       - name: Build as the stable release channel
         run: echo stable > crates/zed/RELEASE_CHANNEL
       - name: Bake the release version from the tag
-        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        env: { tag: *TAG }
         run: |
           if [[ "${tag}" == v[0-9]* ]]; then
             sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
@@ -157,22 +162,16 @@ jobs:
         env: { target: "${{ matrix.target }}" }
         run: ./script/bundle-mac "${target}"
       - name: Attest build provenance
-        if: github.event_name == 'push' || inputs.upload
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: *PushOrUpload
+        uses: *attest
         with:
           subject-path: |
             target/${{ matrix.target }}/release/Zed-${{ matrix.arch }}.dmg
             target/zed-remote-server-macos-${{ matrix.arch }}.gz
-      - name: Show disk usage
-        if: always()
-        run: df -h /
+      - *DiskUsage
       - name: Upload to the draft release
-        if: github.event_name == 'push' || inputs.upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-          tag: ${{ needs.create_draft_release.outputs.tag }}
-          target: ${{ matrix.target }}
-          arch: ${{ matrix.arch }}
+        if: *PushOrUpload
+        env: { GH_TOKEN: *TOKEN, tag: *TAG, target: "${{ matrix.target }}", arch: "${{ matrix.arch }}" }
         run: |
           gh release upload "${tag}" --clobber \
             "target/${target}/release/Zed-${arch}.dmg#Zed for macOS (${arch}, DMG)" \
@@ -184,11 +183,11 @@ jobs:
     strategy: { fail-fast: false, matrix: { arch: [x86_64, aarch64] } }
     runs-on: windows-2022
     timeout-minutes: 180
+    cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { ZED_WORKSPACE: "${{ github.workspace }}", GH_REPO: "${{ github.repository }}" }
+    env: { ZED_WORKSPACE: "${{ github.workspace }}", GH_REPO: *REPO }
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
+      - *checkout
       - name: Point the Community install path at the installed edition
         shell: pwsh
         run: |
@@ -205,7 +204,7 @@ jobs:
       - name: Build as the stable release channel
         run: echo stable > crates/zed/RELEASE_CHANNEL
       - name: Bake the release version from the tag
-        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        env: { tag: *TAG }
         run: |
           if [[ "${tag}" == v[0-9]* ]]; then
             sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
@@ -215,17 +214,15 @@ jobs:
         shell: pwsh
         run: |
           $toml = Get-Content crates/zed/Cargo.toml -Raw
-          if ($toml -notmatch '(?m)^version[ \t]*=[ \t]*"([^"]+)"') {
-            throw 'no version in crates/zed/Cargo.toml'
-          }
+          if ($toml -notmatch '(?m)^version[ \t]*=[ \t]*"([^"]+)"') { throw 'no version in crates/zed/Cargo.toml' }
           "RELEASE_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
       - name: Bundle
         shell: pwsh
         env: { arch: "${{ matrix.arch }}" }
         run: script/bundle-windows.ps1 -Architecture $env:arch
       - name: Attest build provenance
-        if: github.event_name == 'push' || inputs.upload
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: *PushOrUpload
+        uses: *attest
         with:
           subject-path: |
             target/Zed-${{ matrix.arch }}.exe
@@ -235,11 +232,8 @@ jobs:
         shell: pwsh
         run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
       - name: Upload to the draft release
-        if: github.event_name == 'push' || inputs.upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-          arch: ${{ matrix.arch }}
-          tag: ${{ needs.create_draft_release.outputs.tag }}
+        if: *PushOrUpload
+        env: { GH_TOKEN: *TOKEN, arch: "${{ matrix.arch }}", tag: *TAG }
         run: |
           gh release upload "${tag}" --clobber \
             "target/Zed-${arch}.exe#Zed for Windows (${arch}, installer)" \
@@ -251,17 +245,17 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 180
+    cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { GH_REPO: "${{ github.repository }}" }
+    env: { GH_REPO: *REPO }
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
+      - *checkout
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { shared-key: remote-server-freebsd, cache-on-failure: true }
       - name: Build as the stable release channel
         run: echo stable > crates/zed/RELEASE_CHANNEL
       - name: Bake the release version from the tag
-        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
+        env: { tag: *TAG }
         run: |
           if [[ "${tag}" == v[0-9]* ]]; then
             sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
@@ -285,18 +279,13 @@ jobs:
             chmod +x zed-remote-server-freebsd-x86_64
             ./zed-remote-server-freebsd-x86_64 version
       - name: Attest build provenance
-        if: github.event_name == 'push' || inputs.upload
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: zed-remote-server-freebsd-x86_64.gz
+        if: *PushOrUpload
+        uses: *attest
+        with: { subject-path: zed-remote-server-freebsd-x86_64.gz }
       - name: Upload to the draft release
-        if: github.event_name == 'push' || inputs.upload
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ needs.create_draft_release.outputs.tag }}
-        run: |
-          gh release upload "${tag}" --clobber \
-            "zed-remote-server-freebsd-x86_64.gz#Zed remote server for FreeBSD (x86_64)"
+        if: *PushOrUpload
+        env: { GH_TOKEN: *TOKEN, tag: *TAG }
+        run: gh release upload "${tag}" --clobber "zed-remote-server-freebsd-x86_64.gz#Zed remote server for FreeBSD (x86_64)"
 
   bwrap_linux:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.bwrap)
@@ -306,11 +295,12 @@ jobs:
       matrix: { include: [{ arch: x86_64, runner: ubuntu-latest }, { arch: aarch64, runner: ubuntu-24.04-arm }] }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { GH_REPO: "${{ github.repository }}" }
+    env: { GH_REPO: *REPO }
     steps:
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with: { github_access_token: "${{ secrets.GITHUB_TOKEN }}" }
+        with: { github_access_token: *TOKEN }
       - name: Build static bubblewrap
         env: { arch: "${{ matrix.arch }}" }
         run: |
@@ -319,30 +309,22 @@ jobs:
           chmod 755 "bwrap-linux-${arch}"
           gzip -f --stdout --best "bwrap-linux-${arch}" > "bwrap-linux-${arch}.gz"
       - name: Attest build provenance
-        if: github.event_name == 'push' || inputs.upload
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: bwrap-linux-${{ matrix.arch }}.gz
+        if: *PushOrUpload
+        uses: *attest
+        with: { subject-path: "bwrap-linux-${{ matrix.arch }}.gz" }
       - name: Upload to the draft release
-        if: github.event_name == 'push' || inputs.upload
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ needs.create_draft_release.outputs.tag }}
-          arch: ${{ matrix.arch }}
-        run: |
-          gh release upload "${tag}" --clobber \
-            "bwrap-linux-${arch}.gz#Static bubblewrap (${arch})"
+        if: *PushOrUpload
+        env: { GH_TOKEN: *TOKEN, tag: *TAG, arch: "${{ matrix.arch }}" }
+        run: gh release upload "${tag}" --clobber "bwrap-linux-${arch}.gz#Static bubblewrap (${arch})"
 
   pacman_repo:
     if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && startsWith(needs.create_draft_release.outputs.tag, 'v') && (github.event_name == 'push' || inputs.pacman) && (github.event_name == 'push' || inputs.upload)
     needs: [create_draft_release, bundle_linux]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env:
-      GH_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      tag: ${{ needs.create_draft_release.outputs.tag }}
+    env: { GH_REPO: *REPO, GH_TOKEN: *TOKEN, tag: *TAG }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -380,8 +362,8 @@ jobs:
             cp "${target}" "${link}"
           done
       - name: Attest build provenance
-        if: github.event_name == 'push' || inputs.upload
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: *PushOrUpload
+        uses: *attest
         with:
           subject-path: |
             zed-kjanat-*.pkg.tar.zst
@@ -390,7 +372,7 @@ jobs:
             zed-kjanat-aarch64.db
             zed-kjanat-aarch64.files
       - name: Upload to the draft release
-        if: github.event_name == 'push' || inputs.upload
+        if: *PushOrUpload
         run: |
           version="${tag#v}"
           gh release upload "${tag}" --clobber \
@@ -406,11 +388,11 @@ jobs:
     needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, remote_server_freebsd, bwrap_linux, pacman_repo]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    cancel-timeout-minutes: 1
     permissions: { contents: write }
-    env: { GH_REPO: "${{ github.repository }}", GH_TOKEN: "${{ github.token }}" }
+    env: { GH_REPO: *REPO, GH_TOKEN: *TOKEN, tag: *TAG }
     steps:
       - name: Take the release out of draft
-        env: { tag: "${{ needs.create_draft_release.outputs.tag }}" }
-        run: |
-          gh release edit "${tag}" --draft=false
-          gh release view "${tag}"
+        run: gh release edit "${tag}" --draft=false
+      - name: Show release
+        run: gh release view "${tag}"

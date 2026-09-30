@@ -12,6 +12,7 @@ jobs:
     if: github.repository == 'kjanat/zed-editor' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    cancel-timeout-minutes: 1
     steps:
       - parallel:
           - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +41,7 @@ jobs:
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/source,readonly" \
             --mount "type=bind,src=${sync_output},dst=/output" \
             upstream-sync-tools bash /source/script/upstream-sync/prepare.sh
-      - uses: kjanat/actions-shells@697bb547ef1ce427e202b4cbcdb19886aa587da7 # v0.1.0 # v0
+      - uses: kjanat/actions-shells@v0
       - name: Export container output
         shell: "actions-shell perl {0}"
         run: |
@@ -78,6 +79,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    cancel-timeout-minutes: 1
     permissions: { contents: write, pull-requests: write, issues: write }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
