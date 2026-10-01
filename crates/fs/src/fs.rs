@@ -183,7 +183,7 @@ pub trait Fs: Send + Sync {
     /// Whether `path` sits on a filesystem where native file watching does not
     /// deliver events (network mounts, some FUSE and WSL mounts), so it must be polled.
     fn requires_poll_watcher(&self, path: &Path) -> bool;
-    /// Whether watching can miss changes, as non-recursive inotify watches do.
+    /// Whether watching can currently miss changes, as non-recursive inotify watches do.
     fn watches_may_miss_events(&self) -> bool;
 
     async fn watch(
@@ -3785,7 +3785,8 @@ impl Fs for FakeFs {
     }
 
     fn watches_may_miss_events(&self) -> bool {
-        !self.state.lock().recursive_watches
+        let state = self.state.lock();
+        !state.recursive_watches || state.events_paused
     }
 
     fn is_fake(&self) -> bool {
