@@ -100,6 +100,7 @@ mod tests {
     fn platform_component(
         engine: &Engine,
         operating_systems: &[&str],
+        architectures: &[&str],
     ) -> anyhow::Result<Component> {
         let mut instance = InstanceType::new();
         instance
@@ -107,7 +108,10 @@ mod tests {
             .defined_type()
             .enum_type(operating_systems.iter().copied());
         instance.export("os", ComponentTypeRef::Type(TypeBounds::Eq(0)));
-        instance.ty().defined_type().enum_type(["aarch64", "x8664"]);
+        instance
+            .ty()
+            .defined_type()
+            .enum_type(architectures.iter().copied());
         instance.export("architecture", ComponentTypeRef::Type(TypeBounds::Eq(2)));
         instance
             .ty()
@@ -129,32 +133,91 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_platform_linker_compatibility(cx: &mut TestAppContext) -> anyhow::Result<()> {
-        let new_linker = linker(cx.background_executor());
-        let old_linker = since_v0_8_0::linker(cx.background_executor());
-        let legacy_component =
-            platform_component(old_linker.engine(), &["mac", "linux", "windows"])?;
-        let freebsd_component =
-            platform_component(new_linker.engine(), &["mac", "linux", "windows", "freebsd"])?;
+    fn test_platform_linker_compatibility(cx: &mut TestAppContext) {
+        const LEGACY_OPERATING_SYSTEMS: &[&str] = &["mac", "linux", "windows"];
+        const OPERATING_SYSTEMS: &[&str] = &["mac", "linux", "windows", "freebsd"];
+        const LEGACY_ARCHITECTURES: &[&str] = &["aarch64", "x86", "x8664"];
+        const ARCHITECTURES: &[&str] = &["aarch64", "x8664"];
 
-        for legacy_linker in [
-            super::super::since_v0_0_1::linker(cx.background_executor()),
-            super::super::since_v0_0_4::linker(cx.background_executor()),
-            super::super::since_v0_0_6::linker(cx.background_executor()),
-            super::super::since_v0_1_0::linker(cx.background_executor()),
-            super::super::since_v0_2_0::linker(cx.background_executor()),
-            super::super::since_v0_3_0::linker(cx.background_executor()),
-            super::super::since_v0_4_0::linker(cx.background_executor()),
-            super::super::since_v0_5_0::linker(cx.background_executor()),
-            super::super::since_v0_6_0::linker(cx.background_executor()),
-            old_linker,
+        let executor = cx.executor();
+        let mut failures = Vec::new();
+        for (version, version_linker, architectures, accepts_freebsd) in [
+            (
+                "0.0.6",
+                super::super::since_v0_0_6::linker(&executor),
+                LEGACY_ARCHITECTURES,
+                false,
+            ),
+            (
+                "0.1.0",
+                super::super::since_v0_1_0::linker(&executor),
+                LEGACY_ARCHITECTURES,
+                false,
+            ),
+            (
+                "0.2.0",
+                super::super::since_v0_2_0::linker(&executor),
+                LEGACY_ARCHITECTURES,
+                false,
+            ),
+            (
+                "0.3.0",
+                super::super::since_v0_3_0::linker(&executor),
+                LEGACY_ARCHITECTURES,
+                false,
+            ),
+            (
+                "0.4.0",
+                super::super::since_v0_4_0::linker(&executor),
+                LEGACY_ARCHITECTURES,
+                false,
+            ),
+            (
+                "0.5.0",
+                super::super::since_v0_5_0::linker(&executor),
+                LEGACY_ARCHITECTURES,
+                false,
+            ),
+            (
+                "0.6.0",
+                super::super::since_v0_6_0::linker(&executor),
+                LEGACY_ARCHITECTURES,
+                false,
+            ),
+            (
+                "0.8.0",
+                since_v0_8_0::linker(&executor),
+                ARCHITECTURES,
+                false,
+            ),
+            ("0.9.0", linker(&executor), ARCHITECTURES, true),
         ] {
-            legacy_linker.instantiate_pre(&legacy_component)?;
-            assert!(legacy_linker.instantiate_pre(&freebsd_component).is_err());
+            let legacy = platform_component(
+                version_linker.engine(),
+                LEGACY_OPERATING_SYSTEMS,
+                architectures,
+            )
+            .expect("legacy platform component");
+            let freebsd =
+                platform_component(version_linker.engine(), OPERATING_SYSTEMS, architectures)
+                    .expect("FreeBSD platform component");
+            let (accepted, rejected) = if accepts_freebsd {
+                (&freebsd, &legacy)
+            } else {
+                (&legacy, &freebsd)
+            };
+            if let Err(error) = version_linker.instantiate_pre(accepted) {
+                failures.push(format!(
+                    "{version} rejects its own platform interface: {error}"
+                ));
+            }
+            if version_linker.instantiate_pre(rejected).is_ok() {
+                failures.push(format!(
+                    "{version} accepts an operating system list it does not define"
+                ));
+            }
         }
-        new_linker.instantiate_pre(&freebsd_component)?;
-        assert!(new_linker.instantiate_pre(&legacy_component).is_err());
-        Ok(())
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     #[test]

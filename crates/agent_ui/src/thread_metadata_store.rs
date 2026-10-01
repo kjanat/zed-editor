@@ -2706,7 +2706,7 @@ mod tests {
         assert_eq!(updated_at(cx), long_ago);
 
         thread.update_in(&mut vcx, |thread, _window, cx| {
-            thread.push_user_content_block(None, "Again".into(), cx);
+            thread.push_assistant_content_block("Reply".into(), false, cx);
         });
         vcx.run_until_parked();
         assert!(updated_at(cx) > long_ago);

@@ -48,14 +48,16 @@ git fetch origin master --no-tags
 git fetch upstream main --no-tags
 ```
 
-Work in a sibling worktree so the user's checkout is left alone. Point cargo at the main checkout's target directory, because a fresh target directory means a full rebuild of Zed:
+Work in the main checkout. Cargo's build directory is keyed on the workspace path, so a second worktree rebuilds all of Zed from nothing. `git status --short` must print nothing. Stop and ask the user if it prints anything.
+
+A local `sync/upstream` left from an earlier sync can be reset when `origin/master` already contains it:
 
 ```sh
-MAIN="$(git rev-parse --show-toplevel)"
-git worktree add "$MAIN/../zed-editor-sync-upstream" -b sync/upstream origin/master
-cd "$MAIN/../zed-editor-sync-upstream"
-export CARGO_TARGET_DIR="$MAIN/target"
+git merge-base --is-ancestor sync/upstream origin/master
+git switch -C sync/upstream origin/master
 ```
+
+Run the second command only when the first exits 0, or when the branch does not exist. Otherwise stop and ask.
 
 Use `origin/master` as the fork side everywhere. The local `master` can be behind. The issue's commands say `master` because the automation's clone has only that one branch.
 
@@ -127,14 +129,19 @@ git diff --cached --check
 dprint check
 ```
 
-Compile every crate that contains a hand-resolved file, and lint it:
+Compile the whole workspace, tests included. Upstream renames and moves break fork-only code in files that merged without a conflict, such as a fork test calling a function upstream moved to another crate:
 
 ```sh
-cargo check --locked -p <crate> -p <crate>
+cargo check --locked --workspace --all-targets --keep-going
+```
+
+`--keep-going` reports every crate that fails. Without it cargo stops at the first one. Then lint every crate that contains a hand-resolved file:
+
+```sh
 ./script/clippy --no-deps -p <crate> -p <crate>
 ```
 
-The fork's CI only builds and tests its own crate set (`fs`, `language`, `worktree`, `project`, `lsp`, `language_tools`, `repl`, `auto_update`, plus the collab remote-save and editor backup tests). A crate outside that set is compiled only by this local check. When the merge touches `zed.proto` or a crate that much of the tree depends on (`proto`, `rpc`, `gpui`, `language`, `project`), also run `cargo check --locked -p zed`.
+`./script/clippy` ends with `cargo shear`, which reports the unused `title_bar` self-dependency that already exists on `master`.
 
 When a conflict was in test code, run those tests by name:
 
@@ -164,6 +171,8 @@ Closes #<N>.
 ```
 
 Examples of earlier subjects: `Merge upstream and preserve watcher recovery`, `Merge upstream while preserving fork IDE settings`, `Merge upstream and resolve sync conflicts`.
+
+Files that upstream added arrive in upstream's formatting. When `dprint check` reports them after the merge commit, run `dprint fmt` on those files and commit them separately as `Apply this fork's formatting to the upstream merge`, as the sync automation does.
 
 ## 7. Push and open the PR
 
@@ -205,11 +214,7 @@ Do not watch CI after opening the PR.
 
 ## 8. Report and clean up
 
-Give the user the PR URL, one line per hand-resolved file, and the validation results, including anything that was not run. Then remove the worktree. The branch stays on origin.
-
-```sh
-git worktree remove "$MAIN/../zed-editor-sync-upstream"
-```
+Give the user the PR URL, one line per hand-resolved file, and the validation results, including anything that was not run.
 
 ## While the PR is open
 
