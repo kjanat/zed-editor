@@ -18972,7 +18972,6 @@ dependencies = [
  "telemetry",
  "theme",
  "theme_settings",
- "title_bar",
  "ui",
  "util",
  "workspace",
