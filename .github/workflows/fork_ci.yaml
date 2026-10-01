@@ -1,9 +1,10 @@
 # CI gate for kjanat/zed-editor.
 #
 # Distilled from upstream's run_tests.yml, which runs on Zed's namespace-*
-# and self-hosted runners that do not exist on this fork. This variant fits
-# GitHub-hosted runners by testing only the crates this fork actually
-# changes; the full workspace is covered by the release pipeline's builds.
+# and self-hosted runners that do not exist on this fork. The plan job selects
+# the workspace packages a change can affect: the packages whose files changed
+# and every package that depends on them. Clippy and the affected test suite
+# build only those packages.
 #
 # Guards every push and PR on master, including the PRs the upstream-sync
 # workflow opens.
@@ -22,6 +23,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  plan:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    cancel-timeout-minutes: 1
+    outputs:
+      scope: ${{ steps.plan.outputs.scope }}
+      packages: ${{ steps.plan.outputs.packages }}
+      package_args: ${{ steps.plan.outputs.package_args }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, fetch-depth: 2 }
+      - name: Test the planner
+        run: python3 -m unittest discover -s script/fork-ci -p 'test_*.py'
+      - name: Select the affected packages
+        id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          case "${EVENT}" in
+            pull_request) base="$(git rev-parse HEAD^1)" ;;
+            push)
+              base=""
+              if [[ "${BEFORE}" == *[!0]* ]] && git fetch --no-tags --depth=1 origin "${BEFORE}"; then
+                base="${BEFORE}"
+              fi
+              ;;
+            *) base="" ;;
+          esac
+          python3 script/fork-ci/affected_packages.py --base "${base}" --head HEAD | tee -a "${GITHUB_OUTPUT}"
+
   sync_security:
     if: github.repository == 'kjanat/zed-editor'
     runs-on: ubuntu-latest
@@ -47,77 +82,114 @@ jobs:
 
   clippy:
     if: github.repository == 'kjanat/zed-editor'
+    needs: plan
     strategy:
       fail-fast: false
       matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     cancel-timeout-minutes: 1
+    env:
+      SCOPE: ${{ needs.plan.outputs.scope }}
+      PACKAGE_ARGS: ${{ needs.plan.outputs.package_args }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.SCOPE != 'none'
         with: { persist-credentials: false }
       - parallel:
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+            if: env.SCOPE != 'none'
             with: { shared-key: fork-ci-clippy, cache-on-failure: false }
           - name: Install build dependencies
-            if: runner.os == 'Linux'
+            if: env.SCOPE != 'none' && runner.os == 'Linux'
             shell: bash
             run: |
               # Chrome's unused package repository can block apt updates with inconsistent metadata.
               sudo rm -f /etc/apt/sources.list.d/google-chrome.{list,sources}
               ./script/linux
       - name: Clippy
-        if: runner.os != 'Windows'
+        if: env.SCOPE != 'none' && runner.os != 'Windows'
         shell: bash
-        run: ./script/clippy --no-deps -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update
+        run: |
+          read -ra package_args <<< "${PACKAGE_ARGS}"
+          ./script/clippy --no-deps "${package_args[@]}"
       - name: Clippy
-        if: runner.os == 'Windows'
+        if: env.SCOPE != 'none' && runner.os == 'Windows'
         shell: pwsh
-        run: ./script/clippy.ps1 --no-deps -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update
+        run: |
+          $packageArgs = @($env:PACKAGE_ARGS -split ' ' | Where-Object { $_ })
+          ./script/clippy.ps1 --no-deps @packageArgs
       - name: Show disk usage
-        if: always() && runner.os != 'Windows'
+        if: always() && env.SCOPE != 'none' && runner.os != 'Windows'
         shell: bash
         run: df -h /
 
   test_suites:
     if: github.repository == 'kjanat/zed-editor'
+    needs: plan
     strategy:
       fail-fast: false
-      matrix: { os: [ubuntu-latest, windows-latest, macos-latest], suite: [remote-save, fork-crates, editor-backup] }
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        suite: [remote-save, affected, editor-backup]
+        include:
+          - { suite: remote-save, package: collab }
+          - { suite: editor-backup, package: editor }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     cancel-timeout-minutes: 1
     steps:
+      - name: Decide whether the suite runs
+        id: suite
+        shell: bash
+        env:
+          SCOPE: ${{ needs.plan.outputs.scope }}
+          PACKAGES: ${{ needs.plan.outputs.packages }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          case "${SCOPE}" in
+            all) run=true ;;
+            packages) [[ -z "${PACKAGE}" || " ${PACKAGES} " == *" ${PACKAGE} "* ]] && run=true || run=false ;;
+            *) run=false ;;
+          esac
+          echo "run=${run}" | tee -a "${GITHUB_OUTPUT}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.suite.outputs.run == 'true'
         with: { persist-credentials: false }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: steps.suite.outputs.run == 'true'
         with: { node-version: "24", check-latest: true, package-manager-cache: false }
       # Concurrent action startup can lock the runner's event.json on Windows.
       - name: Install nextest
+        if: steps.suite.outputs.run == 'true'
         uses: taiki-e/install-action@nextest
       - parallel:
           - name: Install build dependencies
-            if: runner.os == 'Linux'
+            if: steps.suite.outputs.run == 'true' && runner.os == 'Linux'
             run: |
               # Chrome's unused package repository can block apt updates with inconsistent metadata.
               sudo rm -f /etc/apt/sources.list.d/google-chrome.{list,sources}
               ./script/linux
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+            if: steps.suite.outputs.run == 'true'
             with: { shared-key: fork-ci-tests, key: "${{ matrix.suite }}", cache-on-failure: false }
       - name: Test remote save file identity conflicts
-        if: matrix.suite == 'remote-save'
+        if: steps.suite.outputs.run == 'true' && matrix.suite == 'remote-save'
         shell: bash
         run: cargo nextest run --no-fail-fast -p collab --features test-support --test remote_save_tests 2>&1 | tee tests.log
-      - name: Test the crates this fork changes
-        if: matrix.suite == 'fork-crates'
+      - name: Test the affected packages
+        if: steps.suite.outputs.run == 'true' && matrix.suite == 'affected'
         shell: bash
-        run: cargo nextest run --no-fail-fast -p fs -p language -p worktree -p project -p lsp -p language_tools -p repl -p auto_update 2>&1 | tee tests.log
+        env: { PACKAGE_ARGS: "${{ needs.plan.outputs.package_args }}" }
+        run: |
+          read -ra package_args <<< "${PACKAGE_ARGS:---workspace}"
+          cargo nextest run --no-fail-fast --no-tests=warn "${package_args[@]}" 2>&1 | tee tests.log
       - name: Test editor save-backup and rendering regressions
-        if: matrix.suite == 'editor-backup'
+        if: steps.suite.outputs.run == 'true' && matrix.suite == 'editor-backup'
         shell: bash
         run: cargo nextest run --no-fail-fast -p editor -E 'test(test_save_backup_conflict_) | test(element::tests::)' 2>&1 | tee tests.log
       - name: Check native linker diagnostics
-        if: runner.os == 'Windows' || runner.os == 'macOS'
+        if: steps.suite.outputs.run == 'true' && (runner.os == 'Windows' || runner.os == 'macOS')
         shell: bash
         run: |
           # Keep macOS __eh_frame size/performance warnings visible without failing debug tests.
@@ -128,7 +200,7 @@ jobs:
             test "$?" -eq 1
           fi
       - name: Show disk usage
-        if: always() && runner.os != 'Windows'
+        if: always() && steps.suite.outputs.run == 'true' && runner.os != 'Windows'
         run: df -h /
 
   # Preserve the check names required by branch protection after splitting the suites.

@@ -5822,7 +5822,7 @@ async fn test_remote_runtime_waits_for_capable_server(
     let starts = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(AtomicUsize::new(0));
     let (release, wait) = futures::channel::oneshot::channel();
-    let wait = Arc::new(parking_lot::Mutex::new(Some(wait)));
+    let wait = Arc::new(std::sync::Mutex::new(Some(wait)));
     let mut servers = server_cx.update(|cx| {
         headless.read(cx).languages.register_fake_lsp_server(
             LanguageServerName("rust-analyzer".into()),
@@ -5835,7 +5835,11 @@ async fn test_remote_runtime_waits_for_capable_server(
                         let capabilities = capabilities.clone();
                         server.set_request_handler::<lsp::request::Initialize, _, _>(
                             move |_, _| {
-                                let wait = wait.lock().take().unwrap();
+                                let wait = wait
+                                    .lock()
+                                    .expect("initialize wait mutex poisoned")
+                                    .take()
+                                    .unwrap();
                                 let capabilities = capabilities.clone();
                                 async move {
                                     wait.await.unwrap();

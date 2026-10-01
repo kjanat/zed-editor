@@ -7015,7 +7015,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_cancel_retains_runtime_lease_until_tools_finish(cx: &mut TestAppContext) {
-        let (thread, event_stream) = setup_thread_for_test(cx).await;
+        let (thread, event_stream, _) = setup_thread_for_test(cx).await;
         let (finish, wait) = futures::channel::oneshot::channel();
         let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let lease = Subscription::new({
