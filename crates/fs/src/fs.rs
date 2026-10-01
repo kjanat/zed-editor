@@ -183,6 +183,8 @@ pub trait Fs: Send + Sync {
     /// Whether `path` sits on a filesystem where native file watching does not
     /// deliver events (network mounts, some FUSE and WSL mounts), so it must be polled.
     fn requires_poll_watcher(&self, path: &Path) -> bool;
+    /// Whether watching can miss changes, as non-recursive inotify watches do.
+    fn watches_may_miss_events(&self) -> bool;
 
     async fn watch(
         &self,
@@ -1362,6 +1364,10 @@ impl Fs for RealFs {
 
     fn requires_poll_watcher(&self, path: &Path) -> bool {
         fs_watcher::requires_poll_watcher(path)
+    }
+
+    fn watches_may_miss_events(&self) -> bool {
+        true
     }
 
     async fn watch(
@@ -3776,6 +3782,10 @@ impl Fs for FakeFs {
 
     fn requires_poll_watcher(&self, _path: &Path) -> bool {
         false
+    }
+
+    fn watches_may_miss_events(&self) -> bool {
+        !self.state.lock().recursive_watches
     }
 
     fn is_fake(&self) -> bool {

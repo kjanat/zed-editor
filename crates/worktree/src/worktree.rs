@@ -4827,7 +4827,7 @@ impl BackgroundScanner {
         // Continue processing events until the worktree is dropped.
         self.phase = BackgroundScannerPhase::Events;
 
-        let mut reconcile_timer = if scanning_enabled {
+        let mut reconcile_timer = if scanning_enabled && self.fs.watches_may_miss_events() {
             Either::Left(self.executor.timer(RECONCILE_MIN_INTERVAL).fuse())
         } else {
             Either::Right(future::pending::<()>())
