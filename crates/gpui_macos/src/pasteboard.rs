@@ -36,7 +36,19 @@ impl Pasteboard {
 
     #[cfg(test)]
     pub fn unique() -> Self {
-        unsafe { Self::new(NSPasteboard::pasteboardWithUniqueName(nil)) }
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let name = format!(
+            "dev.zed.gpui-macos-test.{}.{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        unsafe {
+            let pasteboard = Self::new(NSPasteboard::pasteboardWithName(nil, ns_string(&name)));
+            pasteboard.inner.clearContents();
+            pasteboard
+        }
     }
 
     unsafe fn new(inner: id) -> Self {
