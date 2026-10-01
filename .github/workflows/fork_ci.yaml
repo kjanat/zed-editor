@@ -87,7 +87,7 @@ jobs:
       fail-fast: false
       matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 240
     cancel-timeout-minutes: 1
     env:
       SCOPE: ${{ needs.plan.outputs.scope }}
@@ -136,7 +136,7 @@ jobs:
           - { suite: remote-save, package: collab }
           - { suite: editor-backup, package: editor }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 240
     cancel-timeout-minutes: 1
     steps:
       - name: Decide whether the suite runs
@@ -170,9 +170,31 @@ jobs:
               # Chrome's unused package repository can block apt updates with inconsistent metadata.
               sudo rm -f /etc/apt/sources.list.d/google-chrome.{list,sources}
               ./script/linux
+              sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
           - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
             if: steps.suite.outputs.run == 'true'
             with: { shared-key: fork-ci-tests, key: "${{ matrix.suite }}", cache-on-failure: false }
+      - name: Start Postgres
+        if: steps.suite.outputs.run == 'true' && matrix.suite == 'affected' && runner.os == 'Linux'
+        timeout-minutes: 5
+        run: |
+          docker run --detach --name postgres --publish 5432:5432 \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            postgres:15@sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e
+          until docker exec postgres pg_isready --host localhost --quiet; do sleep 1; done
+      - name: Download the WASI SDK
+        if: steps.suite.outputs.run == 'true' && matrix.suite == 'affected'
+        shell: bash
+        run: ./script/download-wasi-sdk
+      # The extension store test allows 60 seconds for installing the test extension.
+      - name: Build the test extension
+        if: >-
+          steps.suite.outputs.run == 'true' && matrix.suite == 'affected'
+          && (needs.plan.outputs.scope == 'all' || contains(format(' {0} ', needs.plan.outputs.packages), ' extension_host '))
+        shell: bash
+        working-directory: extensions/test-extension
+        env: { RUSTC_WRAPPER: "" }
+        run: cargo build --target wasm32-wasip2 --target-dir target
       - name: Test remote save file identity conflicts
         if: steps.suite.outputs.run == 'true' && matrix.suite == 'remote-save'
         shell: bash

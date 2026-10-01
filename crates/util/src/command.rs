@@ -357,7 +357,7 @@ mod tests {
                 )?;
             }
         }
-        let env = HashMap::from_iter([
+        let env: HashMap<String, String> = HashMap::from_iter([
             ("PATH".into(), "first".into()),
             ("Path".into(), "second".into()),
             ("PATHEXT".into(), ".CMD".into()),

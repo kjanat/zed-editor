@@ -1,0 +1,11 @@
+[project]
+name            = "zed"
+version         = "0.1.0"
+description     = "Add your description here"
+readme          = "README.md"
+requires-python = ">=3.14"
+authors         = [{ name = "Kaj Kowalski", email = "info@kajkowalski.nl" }]
+dependencies    = []
+
+[tool.uv.workspace]
+members = ["crates/eval_cli/zed_eval", "script/update_top_ranking_issues"]
