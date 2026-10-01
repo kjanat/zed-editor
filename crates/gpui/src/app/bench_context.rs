@@ -1502,6 +1502,7 @@ mod tests {
         });
         run_task_to_completion(&foreground_executor, setup_task);
 
+        let measurement_started = Instant::now();
         let trace_scope = TraceScope::start(journal.collector());
 
         let measured_task = foreground_executor.spawn(async move {
@@ -1510,22 +1511,20 @@ mod tests {
         run_task_to_completion(&foreground_executor, measured_task);
 
         let events = trace_scope.finish();
+        let early_events = events
+            .foreground_events()
+            .filter(|event| event.start_time() < measurement_started)
+            .collect::<Vec<_>>();
+        assert!(
+            early_events.is_empty(),
+            "setup work must not leak into the measurement, got {early_events:?}"
+        );
+
         let report = BenchReport::default();
         report.record_foreground_events(events.foreground_events());
-
-        let summary = report
+        report
             .foreground_work()
             .expect("the measured task's poll should be reported");
-        assert!(
-            summary.max < Duration::from_millis(40),
-            "setup work's 80ms poll must not leak into the measured summary, got {:?}",
-            summary.max
-        );
-        assert!(
-            summary.total < Duration::from_millis(40),
-            "setup work's 80ms poll must not leak into the measured total, got {:?}",
-            summary.total
-        );
     }
 
     #[test]
