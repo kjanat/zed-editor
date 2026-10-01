@@ -204,8 +204,15 @@ impl EditSessionContext {
                 .log_err();
         }
 
+        let recreates_deleted_file = buffer.read_with(cx, |buffer, _| {
+            buffer
+                .file()
+                .is_some_and(|file| file.disk_state().is_deleted())
+        });
         self.project
-            .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+            .update(cx, |project, cx| {
+                project.save_buffer_with_overwrite(buffer.clone(), recreates_deleted_file, cx)
+            })
             .await
             .log_err();
 
