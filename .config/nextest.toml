@@ -45,5 +45,9 @@ slow-timeout = { period = "300s", terminate-after = 1 }
 filter       = "package(editor) and test(test_random_blocks)"
 slow-timeout = { period = "300s", terminate-after = 1 }
 
+[[profile.default.overrides]]
+filter       = "package(editor) and test(test_large_buffer_inlay_requests_split)"
+slow-timeout = { period = "300s", terminate-after = 1 }
+
 [test-groups]
 sequential-db-tests = { max-threads = 1 }
