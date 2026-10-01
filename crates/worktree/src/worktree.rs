@@ -4850,7 +4850,7 @@ impl BackgroundScanner {
         // Continue processing events until the worktree is dropped.
         self.phase = BackgroundScannerPhase::Events;
 
-        let mut reconcile_timer = if scanning_enabled && self.fs.watches_may_miss_events() {
+        let mut reconcile_timer = if scanning_enabled {
             Either::Left(self.executor.timer(RECONCILE_MIN_INTERVAL).fuse())
         } else {
             Either::Right(future::pending::<()>())
@@ -4864,10 +4864,12 @@ impl BackgroundScanner {
                 // A tick is bounded to one batch, and a busy event stream would
                 // otherwise keep the timer from ever being polled.
                 _ = reconcile_timer => {
-                    let tick_duration = self.reconcile_directories_tick().await;
-                    reconcile_timer = Either::Left(
-                        self.executor.timer(reconcile_interval_after(tick_duration)).fuse(),
-                    );
+                    let interval = if self.fs.watches_may_miss_events() {
+                        reconcile_interval_after(self.reconcile_directories_tick().await)
+                    } else {
+                        RECONCILE_MIN_INTERVAL
+                    };
+                    reconcile_timer = Either::Left(self.executor.timer(interval).fuse());
                 }
 
                 // Process any path refresh requests from the worktree. Prioritize
