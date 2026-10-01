@@ -8392,6 +8392,9 @@ mod tests {
         let other_pane = workspace.update_in(cx, |workspace, window, cx| {
             workspace.split_pane(pane.clone(), SplitDirection::Right, window, cx)
         });
+        let third_pane = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(other_pane.clone(), SplitDirection::Down, window, cx)
+        });
 
         let add_destination = |pane: &Entity<Pane>, dirty: bool, cx: &mut VisualTestContext| {
             pane.update_in(cx, |pane, window, cx| {
@@ -8411,7 +8414,7 @@ mod tests {
             })
         };
         let clean_destination = add_destination(&other_pane, false, cx);
-        let dirty_destination = add_destination(&other_pane, true, cx);
+        let dirty_destination = add_destination(&third_pane, true, cx);
         let source = pane.update_in(cx, |pane, window, cx| {
             let source = Box::new(cx.new(|cx| {
                 TestItem::new(cx)
@@ -8442,8 +8445,10 @@ mod tests {
                     .is_none(),
                 "a clean view of the replaced file in another pane is closed"
             );
+        });
+        third_pane.read_with(cx, |third_pane, _| {
             assert!(
-                other_pane
+                third_pane
                     .index_for_item_id(dirty_destination.item_id())
                     .is_some(),
                 "a view with unsaved edits is kept"

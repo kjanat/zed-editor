@@ -1751,11 +1751,11 @@ async fn test_runtime_lease_follows_active_retained_workspace(cx: &mut TestAppCo
         workspace.test_add_workspace(project_b.clone(), window, cx)
     });
     cx.run_until_parked();
-    assert!(!project_a.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project_a.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     drop(background);
     cx.run_until_parked();
-    assert!(project_a.read_with(cx, |project, _| project.runtime_is_suspended()));
-    assert!(!project_b.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project_a.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
+    assert!(!project_b.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert_eq!(
         workspace_a.read_with(cx, |workspace, _| workspace.session_id()),
         session_a
@@ -1764,8 +1764,8 @@ async fn test_runtime_lease_follows_active_retained_workspace(cx: &mut TestAppCo
         workspace.activate(workspace_a.clone(), None, window, cx);
     });
     cx.run_until_parked();
-    assert!(!project_a.read_with(cx, |project, _| project.runtime_is_suspended()));
-    assert!(project_b.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project_a.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
+    assert!(project_b.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     multi_workspace.read_with(cx, |workspace, _| {
         assert_eq!(workspace.workspace(), &workspace_a);
         assert!(

@@ -801,9 +801,9 @@ impl ActionLog {
                 buffer.update(cx, |buffer, cx| {
                     buffer.set_text(tracked_buffer.diff_base.to_string(), cx)
                 });
-                let save = self
-                    .project
-                    .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx));
+                let save = self.project.update(cx, |project, cx| {
+                    project.save_buffer_with_overwrite(buffer.clone(), true, cx)
+                });
 
                 // Clear all tracked edits for this buffer and start over as if we just read it.
                 metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
@@ -1925,7 +1925,9 @@ mod tests {
         buffer2.update(cx, |buffer, cx| buffer.set_text("IPSUM", cx));
         action_log.update(cx, |log, cx| log.buffer_edited(buffer2.clone(), cx));
         project
-            .update(cx, |project, cx| project.save_buffer(buffer2.clone(), cx))
+            .update(cx, |project, cx| {
+                project.save_buffer_with_overwrite(buffer2.clone(), true, cx)
+            })
             .await
             .unwrap();
 

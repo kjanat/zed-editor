@@ -5883,7 +5883,7 @@ async fn test_remote_runtime_waits_for_capable_server(
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let mut definitions = project.update(cx, |project, cx| project.definitions(&buffer, 3, cx));
     let _resumed = servers.next().await.unwrap();
     cx.run_until_parked();
