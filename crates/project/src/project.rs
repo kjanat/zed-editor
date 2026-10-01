@@ -77,7 +77,7 @@ use debugger::{
 pub use environment::ProjectEnvironment;
 
 use futures::{
-    FutureExt as _, StreamExt,
+    StreamExt,
     channel::mpsc::{self, UnboundedReceiver},
     future::try_join_all,
 };
@@ -102,7 +102,10 @@ use lsp::{
 };
 pub use lsp_command::EditPredictionDefinition;
 use lsp_command::*;
-use lsp_store::{CompletionDocumentation, LspFormatTarget, OpenLspBufferHandle};
+use lsp_store::{
+    CompletionDocumentation, LanguageServerRuntime, LspFormatTarget, OpenLspBufferHandle,
+    ReadinessScope,
+};
 pub use manifest_tree::ManifestProvidersStore;
 use node_runtime::NodeRuntime;
 use parking_lot::Mutex;
@@ -241,8 +244,6 @@ pub struct Project {
     lsp_store: Entity<LspStore>,
     runtime_lease_count: usize,
     runtime_managed: bool,
-    runtime_suspended: bool,
-    runtime_transition_task: Option<futures::future::Shared<Task<()>>>,
     _subscriptions: Vec<gpui::Subscription>,
     buffers_needing_diff: HashSet<WeakEntity<Buffer>>,
     git_diff_debouncer: DebouncedDelay<Self>,
@@ -1387,8 +1388,6 @@ impl Project {
                 lsp_store,
                 runtime_lease_count: 0,
                 runtime_managed: false,
-                runtime_suspended: false,
-                runtime_transition_task: None,
                 context_server_store,
                 join_project_response_message_id: 0,
                 client_state: ProjectClientState::Local,
@@ -1618,8 +1617,6 @@ impl Project {
                 lsp_store,
                 runtime_lease_count: 0,
                 runtime_managed: false,
-                runtime_suspended: false,
-                runtime_transition_task: None,
                 context_server_store,
                 bookmark_store,
                 breakpoint_store,
@@ -1927,8 +1924,6 @@ impl Project {
                 lsp_store: lsp_store.clone(),
                 runtime_lease_count: 0,
                 runtime_managed: false,
-                runtime_suspended: false,
-                runtime_transition_task: None,
                 context_server_store,
                 active_entry: None,
                 collaborators: Default::default(),
@@ -2288,26 +2283,16 @@ impl Project {
         operation: impl 'static + FnOnce(&mut Self, &mut Context<Self>) -> Task<Result<T>>,
     ) -> Task<Result<T>> {
         let lease = self.acquire_runtime_activity_lease(cx);
-        let transition = self.runtime_transition_task.clone();
-        cx.spawn(async move |project, cx| {
-            if let Some(transition) = transition {
-                transition.await;
-            }
-            let task = project.update(cx, |project, cx| {
-                anyhow::ensure!(
-                    !project.runtime_suspended,
-                    "Project language servers could not resume"
-                );
-                anyhow::Ok(operation(project, cx))
-            })??;
+        let task = operation(self, cx);
+        cx.spawn(async move |_, _| {
             let result = task.await;
             drop(lease);
             result
         })
     }
 
-    pub fn runtime_is_suspended(&self) -> bool {
-        self.runtime_suspended
+    pub fn runtime_is_suspended(&self, cx: &App) -> bool {
+        self.lsp_store.read(cx).runtime_is_suspended()
     }
 
     fn release_runtime_lease(&mut self, cx: &mut Context<Self>) {
@@ -2327,65 +2312,13 @@ impl Project {
     }
 
     fn update_runtime_state(&mut self, cx: &mut Context<Self>) {
-        if self.runtime_transition_task.is_some()
-            || self.runtime_should_suspend() == self.runtime_suspended
-        {
-            return;
-        }
-
-        // Serialize transitions: a lease may arrive while shutdown is still draining.
-        self.runtime_transition_task = Some(
-            cx.spawn(async move |this, cx| {
-                loop {
-                    let transition = this.update(cx, |project, cx| {
-                        let suspend = project.runtime_should_suspend();
-                        if suspend == project.runtime_suspended {
-                            project.runtime_transition_task = None;
-                            return None;
-                        }
-                        let task = project.lsp_store.update(cx, |store, cx| {
-                            if suspend {
-                                store.suspend_language_servers(cx)
-                            } else {
-                                store.resume_language_servers(cx)
-                            }
-                        });
-                        Some((suspend, task))
-                    });
-                    let Ok(Some((suspend, task))) = transition else {
-                        return;
-                    };
-                    let result = task.await;
-                    let failed = result.is_err();
-                    if this
-                        .update(cx, |project, cx| {
-                            match result {
-                                Ok(()) => project.runtime_suspended = suspend,
-                                Err(error) => {
-                                    project.runtime_transition_task = None;
-                                    let action = if suspend { "suspend" } else { "resume" };
-                                    let message = format!(
-                                        "Failed to {action} project language servers: {error:#}"
-                                    );
-                                    log::error!("{message}");
-                                    cx.emit(Event::Toast {
-                                        notification_id: "project-runtime".into(),
-                                        message,
-                                        link: None,
-                                    });
-                                }
-                            }
-                            cx.notify();
-                        })
-                        .is_err()
-                        || failed
-                    {
-                        return;
-                    }
-                }
-            })
-            .shared(),
-        );
+        let target = if self.runtime_should_suspend() {
+            LanguageServerRuntime::Suspended
+        } else {
+            LanguageServerRuntime::Active
+        };
+        self.lsp_store
+            .update(cx, |store, cx| store.request_runtime(target, cx));
     }
 
     #[inline]
@@ -5066,35 +4999,33 @@ impl Project {
             language_server_id,
         };
         self.run_with_runtime_lease(cx, move |project, cx| {
-            let startup = request.language_server_id.map(|server_id| {
-                project.lsp_store.update(cx, |store, cx| {
-                    store.wait_for_language_server_startup(server_id, cx)
+            let guard = project.retain_remotely_created_models(cx);
+            let is_local = project.is_local();
+            let scope = match request.language_server_id {
+                Some(server_id) => ReadinessScope::AnyStarted(vec![server_id]),
+                None => ReadinessScope::Runtime,
+            };
+            let task = project.lsp_store.update(cx, |store, cx| {
+                store.when_ready(scope, cx, move |store, cx| {
+                    if let Some(server_id) = request.language_server_id
+                        && is_local
+                        && !store.language_server_capable_of_lsp_request(
+                            &buffer, server_id, &request, cx,
+                        )
+                    {
+                        request.language_server_id = None;
+                    }
+                    let server_to_query = request
+                        .language_server_id
+                        .map(LanguageServerToQuery::Other)
+                        .unwrap_or(LanguageServerToQuery::FirstCapable);
+                    store.request_lsp(buffer, server_to_query, request, cx)
                 })
             });
-            cx.spawn(async move |project, cx| {
-                if let Some(startup) = startup {
-                    startup.await;
-                }
-                project
-                    .update(cx, |project, cx| {
-                        if let Some(server_id) = request.language_server_id {
-                            let server_is_capable = !project.is_local()
-                                || project.lsp_store.update(cx, |store, cx| {
-                                    store.language_server_capable_of_lsp_request(
-                                        &buffer, server_id, &request, cx,
-                                    )
-                                });
-                            if !server_is_capable {
-                                request.language_server_id = None;
-                            }
-                        }
-                        let server_to_query = request
-                            .language_server_id
-                            .map(LanguageServerToQuery::Other)
-                            .unwrap_or(LanguageServerToQuery::FirstCapable);
-                        project.request_lsp(buffer, server_to_query, request, cx)
-                    })?
-                    .await
+            cx.background_spawn(async move {
+                let result = task.await;
+                drop(guard);
+                result
             })
         })
     }
@@ -5107,24 +5038,14 @@ impl Project {
         push_to_history: bool,
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<Option<Transaction>>>> {
-        if !self.runtime_suspended && self.runtime_transition_task.is_none() {
-            let lease = self.acquire_runtime_activity_lease(cx);
-            let task = self.lsp_store.update(cx, |store, cx| {
-                store.on_type_format(buffer, position, trigger, push_to_history, cx)
-            })?;
-            return Some(cx.spawn(async move |_, _| {
-                let result = task.await;
-                drop(lease);
-                result
-            }));
-        }
-        let position = position.to_point_utf16(buffer.read(cx));
-        Some(self.run_with_runtime_lease(cx, move |project, cx| {
-            project.lsp_store.update(cx, |store, cx| {
-                store
-                    .on_type_format(buffer, position, trigger, push_to_history, cx)
-                    .unwrap_or_else(|| Task::ready(Ok(None)))
-            })
+        let lease = self.acquire_runtime_activity_lease(cx);
+        let task = self.lsp_store.update(cx, |store, cx| {
+            store.on_type_format(buffer, position, trigger, push_to_history, cx)
+        })?;
+        Some(cx.spawn(async move |_, _| {
+            let result = task.await;
+            drop(lease);
+            result
         }))
     }
 

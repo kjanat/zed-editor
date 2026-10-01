@@ -1104,12 +1104,12 @@ async fn test_runtime_lease_preserves_buffers_and_manual_stop(cx: &mut TestAppCo
         .set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| futures::future::ready(Ok(())));
     drop(foreground);
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!(shutdowns.next().now_or_never().is_none());
     drop(background);
     shutdowns.next().await.unwrap();
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     buffer.update(cx, |buffer, cx| {
         buffer.edit([(0..0, "// retained edit\n")], None, cx)
     });
@@ -1125,7 +1125,7 @@ async fn test_runtime_lease_preserves_buffers_and_manual_stop(cx: &mut TestAppCo
     });
     assert_eq!(opened.text_document.text, expected_text);
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let store = project.read_with(cx, |project, _| project.lsp_store());
     store.update(cx, |store, cx| store.stop_all_language_servers(cx));
     cx.run_until_parked();
@@ -1133,7 +1133,7 @@ async fn test_runtime_lease_preserves_buffers_and_manual_stop(cx: &mut TestAppCo
     cx.run_until_parked();
     let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!(servers.next().now_or_never().is_none());
 }
 
@@ -1169,7 +1169,7 @@ async fn test_runtime_resume_only_registers_buffers_with_live_lsp_handles(cx: &m
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     let mut resumed = servers.next().await.unwrap();
     let opened = resumed
@@ -1194,7 +1194,7 @@ async fn test_runtime_resume_only_registers_buffers_with_live_lsp_handles(cx: &m
     cx.run_until_parked();
     let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!(servers.next().now_or_never().is_none());
     assert_eq!(
         buffer.read_with(cx, |buffer, _| buffer.text()),
@@ -1273,7 +1273,7 @@ async fn test_runtime_resume_tolerates_failed_optional_server(cx: &mut TestAppCo
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 
     let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     let mut resumed = servers.next().await.unwrap();
@@ -1282,7 +1282,7 @@ async fn test_runtime_resume_tolerates_failed_optional_server(cx: &mut TestAppCo
         .await;
     let _failed = optional_servers.next().await.unwrap();
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     project
         .update(cx, |project, cx| {
             project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
@@ -1393,7 +1393,7 @@ async fn test_runtime_resume_does_not_wait_for_optional_server(cx: &mut TestAppC
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 
     let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     let mut resumed = servers.next().await.unwrap();
@@ -1402,7 +1402,7 @@ async fn test_runtime_resume_does_not_wait_for_optional_server(cx: &mut TestAppC
         .await;
     let mut pending = optional_servers.next().await.unwrap();
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     project
         .update(cx, |project, cx| {
             project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
@@ -1529,7 +1529,7 @@ async fn test_runtime_formatting_waits_only_for_selected_servers(cx: &mut TestAp
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 
     let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     let mut resumed = servers.next().await.unwrap();
@@ -1538,7 +1538,7 @@ async fn test_runtime_formatting_waits_only_for_selected_servers(cx: &mut TestAp
         .await;
     let mut pending = optional_servers.next().await.unwrap();
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     use language::language_settings::{Formatter, FormatterList};
     use settings::{LanguageServerFormatterSpecifier, SettingsStore};
     for formatter in [
@@ -1763,7 +1763,7 @@ async fn test_runtime_code_action_waits_for_its_originating_server(cx: &mut Test
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 
     let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     let mut resumed = servers.next().await.unwrap();
@@ -1772,7 +1772,7 @@ async fn test_runtime_code_action_waits_for_its_originating_server(cx: &mut Test
         .await;
     let mut pending = optional_servers.next().await.unwrap();
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let range = buffer.read_with(cx, |buffer, _| {
         buffer.anchor_before(0)..buffer.anchor_after(3)
     });
@@ -1912,7 +1912,7 @@ async fn test_runtime_definitions_wait_for_all_capable_servers(cx: &mut TestAppC
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 
     let _foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     let mut resumed = servers.next().await.unwrap();
@@ -1921,7 +1921,7 @@ async fn test_runtime_definitions_wait_for_all_capable_servers(cx: &mut TestAppC
         .await;
     let mut pending = optional_servers.next().await.unwrap();
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let mut definitions = project.update(cx, |project, cx| project.definitions(&buffer, 3, cx));
     cx.run_until_parked();
     assert!((&mut definitions).now_or_never().is_none());
@@ -1980,10 +1980,10 @@ async fn test_runtime_lease_reacquired_during_shutdown(cx: &mut TestAppContext) 
     shutdowns.next().await.unwrap();
     let _resumed = servers.next().await.unwrap();
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 }
 
 #[gpui::test(iterations = 10)]
@@ -2052,18 +2052,18 @@ async fn test_runtime_lease_keeps_pending_editor_requests_alive(cx: &mut TestApp
     cx.run_until_parked();
     drop(foreground);
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!(shutdowns.next().now_or_never().is_none());
     finish_rename.send(()).unwrap();
     rename.await.unwrap();
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!(shutdowns.next().now_or_never().is_none());
     finish_format.send(()).unwrap();
     format.await.unwrap();
     shutdowns.next().await.unwrap();
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 }
 
 #[gpui::test(iterations = 10)]
@@ -2132,19 +2132,19 @@ async fn test_runtime_lease_waits_for_resumed_server_initialization(cx: &mut Tes
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let rename = project.update(cx, |project, cx| {
         project.perform_rename(buffer.clone(), 3, "renamed".into(), None, cx)
     });
     cx.run_until_parked();
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     assert_eq!(requests.load(Ordering::SeqCst), 0);
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     initialized.send(()).unwrap();
     rename.await.unwrap();
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 }
 
 #[gpui::test(iterations = 10)]
@@ -2235,7 +2235,7 @@ async fn test_signature_help_holds_runtime_lease_through_initialization_and_resp
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
     let resumed = servers.next().await.unwrap();
     let mut shutdowns =
@@ -2246,19 +2246,19 @@ async fn test_signature_help_holds_runtime_lease_through_initialization_and_resp
     cx.run_until_parked();
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     assert_eq!(requests.load(Ordering::SeqCst), 0);
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!((&mut help).now_or_never().is_none());
     initialized.send(()).unwrap();
     cx.run_until_parked();
     assert_eq!(requests.load(Ordering::SeqCst), 1);
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!(shutdowns.next().now_or_never().is_none());
     assert!((&mut help).now_or_never().is_none());
     respond.send(()).unwrap();
     assert_eq!(help.await.unwrap().len(), 1);
     shutdowns.next().await.unwrap();
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 }
 
 #[gpui::test(iterations = 10)]
@@ -2303,12 +2303,12 @@ async fn test_cancelled_signature_help_releases_runtime_lease(cx: &mut TestAppCo
     request_started.await.unwrap();
     drop(foreground);
     cx.run_until_parked();
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!(shutdowns.next().now_or_never().is_none());
     drop(help);
     shutdowns.next().await.unwrap();
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 }
 
 #[gpui::test(iterations = 10)]
@@ -2397,7 +2397,7 @@ async fn test_runtime_requests_wait_for_capable_servers_and_workspace_symbols(
         .await;
     drop(foreground);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     let mut definitions = project.update(cx, |project, cx| project.definitions(&buffer, 3, cx));
     let mut symbols = project.update(cx, |project, cx| project.symbols("main", cx));
     let mut incapable = incapable_servers.next().await.unwrap();
@@ -2407,7 +2407,7 @@ async fn test_runtime_requests_wait_for_capable_servers_and_workspace_symbols(
     cx.run_until_parked();
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     assert_eq!(requests.load(Ordering::SeqCst), 0);
-    assert!(!project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(!project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     assert!((&mut definitions).now_or_never().is_none());
     assert!((&mut symbols).now_or_never().is_none());
     initialized.send(()).unwrap();
@@ -2415,7 +2415,7 @@ async fn test_runtime_requests_wait_for_capable_servers_and_workspace_symbols(
     symbols.await.unwrap();
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
 }
 
 #[gpui::test(iterations = 10)]
@@ -2465,7 +2465,7 @@ async fn test_suspension_discards_late_server_startup(cx: &mut TestAppContext) {
     release.send(()).unwrap();
     definitions.await.unwrap();
     cx.run_until_parked();
-    assert!(project.read_with(cx, |project, _| project.runtime_is_suspended()));
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
     project.read_with(cx, |project, cx| {
         let store = project.lsp_store();
         let store = store.read(cx);
