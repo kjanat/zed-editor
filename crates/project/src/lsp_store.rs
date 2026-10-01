@@ -9405,7 +9405,12 @@ impl LspStore {
                         running_fetch.await.ok();
                     }
                     let new_fetch_task = lsp_store.update(cx, |lsp_store, cx| {
-                        lsp_store.fetch_inlay_hints(servers_to_query, &buffer, range_to_query, cx)
+                        lsp_store.fetch_inlay_hints(
+                            Some(queried_servers.clone()),
+                            &buffer,
+                            range_to_query,
+                            cx,
+                        )
                     })?;
                     match new_fetch_task.await {
                         Ok(new_hints_by_server) => lsp_store
