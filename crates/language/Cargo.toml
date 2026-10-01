@@ -19,12 +19,12 @@ name    = "highlight_map"
 [dependencies]
 anyhow.workspace             = true
 async-trait.workspace        = true
-chardetng.workspace          = true
 clock.workspace              = true
 collections.workspace        = true
 diffy.workspace              = true
 ec4rs.workspace              = true
 encoding_rs.workspace        = true
+file_content.workspace       = true
 fs.workspace                 = true
 futures.workspace            = true
 futures-lite.workspace       = true

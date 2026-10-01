@@ -79,6 +79,7 @@ members         = [
   "crates/feature_flags",
   "crates/feature_flags_macros",
   "crates/feedback",
+  "crates/file_content",
   "crates/file_finder",
   "crates/file_icons",
   "crates/fs",
@@ -350,6 +351,7 @@ extensions_ui             = { path = "crates/extensions_ui" }
 feature_flags             = { path = "crates/feature_flags" }
 feature_flags_macros      = { path = "crates/feature_flags_macros" }
 feedback                  = { path = "crates/feedback" }
+file_content              = { path = "crates/file_content" }
 file_finder               = { path = "crates/file_finder" }
 file_icons                = { path = "crates/file_icons" }
 fs                        = { path = "crates/fs" }
@@ -626,6 +628,7 @@ derive_more                   = { version = "2.1.1", features = [
 dialoguer                     = { version = "0.12", default-features = false }
 diffy                         = "0.4.2"
 dirs                          = "6.0"
+dispatch2                     = "0.3.1"
 documented                    = "0.10"
 dotenvy                       = "0.15.0"
 dunce                         = "1.0"
@@ -760,6 +763,7 @@ objc2-foundation              = { version = "=0.3.2", default-features = false, 
   "objc2-core-foundation",
   "std",
 ] }
+objc2-quartz-core             = { version = "=0.3.2", default-features = false, features = ["CALayer", "CAMetalLayer", "std"] }
 objc2-screen-capture-kit      = { version = "=0.3.2", default-features = false, features = [
   "SCShareableContent",
   "SCStream",
@@ -1128,6 +1132,7 @@ command_palette_hooks       = { codegen-units = 1 }
 cranelift-codegen           = { opt-level = 3 }
 edit_prediction_ui          = { codegen-units = 1 }
 feature_flags               = { codegen-units = 1 }
+file_content                = { codegen-units = 1 }
 file_icons                  = { codegen-units = 1 }
 image_viewer                = { codegen-units = 1 }
 install_cli                 = { codegen-units = 1 }

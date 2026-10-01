@@ -523,7 +523,9 @@ message Envelope {
     ExecuteLspCommand execute_lsp_command = 491;
     ExecuteLspCommandResponse execute_lsp_command_response = 492;
     RefreshDocumentHighlights refresh_document_highlights = 493;
-    WaitForLanguageServers wait_for_language_servers = 494; // current max
+    GetTerminalShell get_terminal_shell = 494;
+    GetTerminalShellResponse get_terminal_shell_response = 495;
+    WaitForLanguageServers wait_for_language_servers = 496; // current max
   }
 
   reserved 87 to 88;
