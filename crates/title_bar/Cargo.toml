@@ -56,7 +56,6 @@ rpc                      = { workspace = true, features = ["test-support"] }
 semver.workspace         = true
 settings                 = { workspace = true, features = ["test-support"] }
 theme_settings.workspace = true
-title_bar                = { workspace = true, features = ["test-support"] }
 util                     = { workspace = true, features = ["test-support"] }
 workspace                = { workspace = true, features = ["test-support"] }
 
