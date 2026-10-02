@@ -79,6 +79,8 @@ let
     in
     builtins.elem firstComp topLevelIncludes;
 
+  miseTools = (builtins.fromTOML (builtins.readFile ../.mise.toml)).tools;
+
   corgiPatches = builtins.path {
     path = ../tooling/corgi/patches;
     name = "corgi-patches";
@@ -111,20 +113,19 @@ let
         perl
         pkg-config
         protobuf
-        # Pin cargo-about to 0.8.2. Newer versions don't work with the current license identifiers
-        # See https://github.com/zed-industries/zed/pull/44012
+        # These hashes belong to the cargo-about version in .mise.toml.
         (cargo-about.overrideAttrs (
           new: old: rec {
-            version = "0.8.2";
+            version = miseTools.cargo-about;
 
             src = fetchFromGitHub {
               owner = "EmbarkStudios";
               repo = "cargo-about";
               tag = version;
-              sha256 = "sha256-cNKZpDlfqEXeOE5lmu79AcKOawkPpk4PQCsBzNtIEbs=";
+              sha256 = "sha256-WtFiY9SsUw063d7+WuPaVdmsOSInd/ElPemY8/oZ1nM=";
             };
 
-            cargoHash = "sha256-NnocSs6UkuF/mCM3lIdFk+r51Iz2bHuYzMT/gEbT/nk=";
+            cargoHash = "sha256-wd7c8daUHqnmp830KwiGoTwMcwAbhyl3ZP6Psi092kg=";
 
             # NOTE: can drop once upstream uses `finalAttrs` here:
             # https://github.com/NixOS/nixpkgs/blob/10214747f5e6e7cb5b9bdf9e018a3c7b3032f5af/pkgs/build-support/rust/build-rust-package/default.nix#L104

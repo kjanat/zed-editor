@@ -23,7 +23,6 @@ on:
       bwrap:   { description: Build static bubblewrap,                  type: boolean, default: true }
       pacman:  { description: Build the pacman packages and repository, type: boolean, default: true }
 permissions: { contents: read }
-env: { CARGO_TERM_COLOR: always, CARGO_INCREMENTAL: 0, RUST_BACKTRACE: 1 }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
 defaults: { run: { shell: "bash -euxo pipefail {0}" } }
 jobs:
@@ -85,7 +84,7 @@ jobs:
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { CC: "clang-18", CXX: "clang++-18", GH_REPO: &REPO "${{ github.repository }}" }
+    env: { GH_REPO: &REPO "${{ github.repository }}" }
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,25 +92,14 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.arch == 'x86_64'
         with: { shared-key: bundle-linux-x86_64, cache-on-failure: true }
-      - name: Build as the stable release channel
-        run: echo stable > crates/zed/RELEASE_CHANNEL
-      - name: Bake the release version from the tag
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        with: { cache: false, bootstrap: true, bootstrap_skip: compose }
+      - &prepare
+        name: Prepare the stable release build
         env: { tag: &TAG "${{ needs.create_draft_release.outputs.tag }}" }
-        run: |
-          if [[ "${tag}" == v[0-9]* ]]; then
-            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
-            rm crates/zed/Cargo.toml.bak
-          fi
-      - name: Install build dependencies
-        run: ./script/linux
-      - name: Install clang 18
-        run: sudo apt-get install -y clang-18 lld-18
-      - name: Put the LLVM 18 tools on PATH
-        run: echo /usr/lib/llvm-18/bin >> "${GITHUB_PATH}"
-      - name: Download WASI SDK
-        run: ./script/download-wasi-sdk
+        run: mise run release-prepare
       - name: Bundle
-        run: ./script/bundle-linux
+        run: mise run bundle-linux
       - name: Attest build provenance
         if: &PushOrUpload github.event_name == 'push' || inputs.upload
         uses: &attest actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -147,20 +135,12 @@ jobs:
     env: { GH_REPO: *REPO }
     steps:
       - *checkout
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with: { node-version: "24", check-latest: true, package-manager-cache: false }
-      - name: Build as the stable release channel
-        run: echo stable > crates/zed/RELEASE_CHANNEL
-      - name: Bake the release version from the tag
-        env: { tag: *TAG }
-        run: |
-          if [[ "${tag}" == v[0-9]* ]]; then
-            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
-            rm crates/zed/Cargo.toml.bak
-          fi
+      - &mise
+        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - *prepare
       - name: Bundle
         env: { target: "${{ matrix.target }}" }
-        run: ./script/bundle-mac "${target}"
+        run: mise run bundle-mac "${target}"
       - name: Attest build provenance
         if: *PushOrUpload
         uses: *attest
@@ -185,41 +165,14 @@ jobs:
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { ZED_WORKSPACE: "${{ github.workspace }}", GH_REPO: *REPO }
+    env: { GH_REPO: *REPO }
     steps:
       - *checkout
-      - name: Point the Community install path at the installed edition
-        shell: pwsh
-        run: |
-          $expected = 'C:\Program Files\Microsoft Visual Studio\2022\Community'
-          if (-not (Test-Path $expected)) {
-            $editions = @('Enterprise', 'Professional', 'BuildTools')
-            $installed = $editions |
-              ForEach-Object { "C:\Program Files\Microsoft Visual Studio\2022\$_" } |
-              Where-Object { Test-Path $_ } |
-              Select-Object -First 1
-            if (-not $installed) { throw 'No Visual Studio 2022 installation found' }
-            New-Item -ItemType Junction -Path $expected -Target $installed | Out-Null
-          }
-      - name: Build as the stable release channel
-        run: echo stable > crates/zed/RELEASE_CHANNEL
-      - name: Bake the release version from the tag
-        env: { tag: *TAG }
-        run: |
-          if [[ "${tag}" == v[0-9]* ]]; then
-            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
-            rm crates/zed/Cargo.toml.bak
-          fi
-      - name: Resolve release version
-        shell: pwsh
-        run: |
-          $toml = Get-Content crates/zed/Cargo.toml -Raw
-          if ($toml -notmatch '(?m)^version[ \t]*=[ \t]*"([^"]+)"') { throw 'no version in crates/zed/Cargo.toml' }
-          "RELEASE_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
+      - *mise
+      - *prepare
       - name: Bundle
-        shell: pwsh
         env: { arch: "${{ matrix.arch }}" }
-        run: script/bundle-windows.ps1 -Architecture $env:arch
+        run: mise run bundle-windows -- -Architecture "${arch}"
       - name: Attest build provenance
         if: *PushOrUpload
         uses: *attest
@@ -252,20 +205,12 @@ jobs:
       - *checkout
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { shared-key: remote-server-freebsd, cache-on-failure: true }
-      - name: Build as the stable release channel
-        run: echo stable > crates/zed/RELEASE_CHANNEL
-      - name: Bake the release version from the tag
-        env: { tag: *TAG }
-        run: |
-          if [[ "${tag}" == v[0-9]* ]]; then
-            sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
-            rm crates/zed/Cargo.toml.bak
-          fi
-      - name: Install build dependencies
-        run: sudo apt-get install -y clang lld llvm protobuf-compiler
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        with: { cache: false }
+      - *prepare
       - name: Cross-compile against the FreeBSD 13.2 sysroot
         run: |
-          ./script/remote-server-freebsd
+          mise run remote-server-freebsd
           mv target/zed-remote-server-freebsd-x86_64.gz .
       # The oldest release the fork supports, so a load failure on any 13.2+
       # host shows up here.
@@ -328,10 +273,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
       - name: Install Arch packaging tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y makepkg pacman-package-manager libarchive-tools fakeroot zstd
+        run: mise bootstrap packages apply --yes
       - name: Download the Linux tarballs
         run: gh release download "${tag}" --pattern 'zed-linux-*.tar.gz'
       - name: Build the packages

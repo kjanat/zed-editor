@@ -69,7 +69,7 @@ lint.rules   = {
 }
 
 [[schemas]]  # https://doc.rust-lang.org/cargo/reference/config.html#configuration-format
-path    = "https://gist.githubusercontent.com/kjanat/1172d9d2d6dbe7c6d9983aaabef2eea5/raw/cargo-config.bundle.json"
+path    = "https://www.schemastore.org/cargo-config.json"
 include = ["**/.cargo/config.toml", "**/.config/nightly.toml"]
 
 # Python
@@ -96,3 +96,21 @@ include = ["**/zed-*/extension.toml", "**/*-zed/extension.toml"]
 [[schemas]]  # Documentation: https://developers.openai.com/codex/
 path    = "https://gist.githubusercontent.com/kjanat/5153798b521fbbc686932463327669c8/raw/codex-config.schema.json"
 include = [".codex/config.toml", "**/.codex/config.toml"]
+
+# Helix
+[[schemas]]
+path    = "https://gist.githubusercontent.com/kjanat/8b6206f3780eedbaa422fbc9b2ec5ceb/raw/6416240a9d34ebfa96db922fb7aebd9628262bea/helix-languages.schema.json"
+include = ["**/helix/languages.toml", "**/.helix/languages.toml"]
+
+[[schemas]]
+path    = "https://gist.githubusercontent.com/kjanat/8b6206f3780eedbaa422fbc9b2ec5ceb/raw/6416240a9d34ebfa96db922fb7aebd9628262bea/helix-config.schema.json"
+include = ["**/helix/config.toml", "**/.helix/config.toml"]
+
+[[schemas]]
+path    = "https://gist.githubusercontent.com/kjanat/8b6206f3780eedbaa422fbc9b2ec5ceb/raw/6416240a9d34ebfa96db922fb7aebd9628262bea/helix-theme.schema.json"
+include = ["**/helix/themes/*.toml", "**/runtime/themes/*.toml"]
+
+# Mise
+[[schemas]]
+path    = "https://mise.jdx.dev/schema/mise.json"
+include = ["mise.toml", ".mise.toml"]

@@ -1,0 +1,1 @@
+env = ["{% if env.CI %}ci{% endif %}", "{% if env.CI and os() == 'linux' %}ci-linux{% endif %}"]

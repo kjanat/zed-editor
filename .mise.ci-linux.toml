@@ -1,0 +1,29 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[bootstrap.hooks]
+pre-packages = [
+  # Chrome's unused package repository can block apt updates with inconsistent metadata.
+  "sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources",
+  "./script/linux",
+]
+
+[bootstrap.packages]
+"apt:mesa-vulkan-drivers"    = "latest"
+"apt:makepkg"                = "latest"
+"apt:pacman-package-manager" = "latest"
+"apt:libarchive-tools"       = "latest"
+"apt:fakeroot"               = "latest"
+"apt:zstd"                   = "latest"
+
+[bootstrap.directories."/tmp/zed-postgres"]
+mode = "0755"
+
+[bootstrap.files."/tmp/zed-postgres/compose.yaml"]
+source = "./script/fork-ci/postgres.yaml"
+mode   = "0644"
+
+[bootstrap.compose.zed-postgres]
+project_dir  = "/tmp/zed-postgres"
+files        = ["compose.yaml"]
+project_name = "zed-postgres"
+state        = "running"

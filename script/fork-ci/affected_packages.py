@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """Select the workspace packages a change can affect."""
 
 import argparse
@@ -10,7 +12,7 @@ from pathlib import PurePosixPath
 from typing import Literal, NotRequired, TypedDict, cast
 
 FULL_RUN = re.compile(
-    r"Cargo\.(toml|lock)|rust-toolchain\.toml|\.cargo/.*|\.config/nextest\.toml"
+    r"Cargo\.(toml|lock)|rust-toolchain\.toml|\.mise(rc|\.[a-z-]+)?\.toml|\.cargo/.*|\.config/nextest\.toml"
     r"|script/clippy(\.ps1)?|script/fork-ci/.*|\.github/workflows/fork_ci\.yaml"
 )
 ASSET_PACKAGES = ("assets", "settings")
@@ -51,11 +53,7 @@ class Plan:
 
     def outputs(self) -> str:
         package_args = " ".join(f"-p {name}" for name in self.packages)
-        return (
-            f"scope={self.scope}\n"
-            f"packages={' '.join(self.packages)}\n"
-            f"package_args={package_args}\n"
-        )
+        return f"scope={self.scope}\npackages={' '.join(self.packages)}\npackage_args={package_args}\n"
 
 
 def parse_packages(metadata: Metadata) -> list[Package]:

@@ -1,0 +1,86 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
+minimum_release_age                 = "0"
+
+[tools]
+actionlint  = { version = "1.17", lazy = true, lazy_bins = ["actionlint"] }
+node        = { version = "24", lazy = true }
+cargo-about = { version = "0.9.2", lazy = true, lazy_bins = ["cargo-about"] }
+uv          = { version = "0.12", lazy = true }
+python      = { version = "3.14", lazy = true }
+tombi       = { version = "1.5.10", lazy = true, lazy_bins = ["tombi"] }
+
+[tools.nextest]
+version        = "0.9.146"
+version_prefix = "cargo-nextest-"
+lazy           = true
+lazy_bins      = ["cargo-nextest"]
+
+[tools.wasi-sdk]
+version        = "34"
+version_prefix = "wasi-sdk-"
+filter_bins    = ["wasm32-wasip2-clang", "wasm32-wasip2-clang++"]
+
+[tool_alias]
+actionlint   = "github:kjanat/actionlint"
+cargo-about  = "github:EmbarkStudios/cargo-about"
+cargo-bundle = "cargo:https://github.com/zed-industries/cargo-bundle"
+llvm         = "github:llvm/llvm-project[version_prefix=llvmorg-,matching=LLVM-]"
+nextest      = "github:nextest-rs/nextest"
+wasi-sdk     = "github:WebAssembly/wasi-sdk"
+tombi        = "github:tombi-toml/tombi"
+
+[env]
+WASI_SDK_PATH = { value = "{% if 'wasi-sdk' in tools %}{{ tools['wasi-sdk'].path }}{% endif %}", tools = true }
+
+[tasks.bundle-linux]
+file       = "script/bundle-linux"
+tools.llvm = "23.1.2"
+env.CC     = "clang"
+env.CXX    = "clang++"
+
+[tasks.affected-packages]
+file = "script/fork-ci/affected_packages.py"
+
+[tasks.bundle-mac]
+file               = "script/bundle-mac"
+tools.cargo-bundle = "rev:2be2669972dff3ddd4daf89a2cb29d2d06cad7c7"
+
+[tasks.bundle-windows]
+run = "pwsh -NoProfile -File script/bundle-windows.ps1"
+
+[tasks.remote-server-freebsd]
+file       = "script/remote-server-freebsd"
+tools.llvm = "23.1.2"
+
+[tasks.clippy]
+run         = "./script/clippy"
+run_windows = "pwsh -NoProfile -File script/clippy.ps1"
+
+[tasks.test-fork-ci]
+run = "python3 -m unittest discover -s script/fork-ci -p 'test_*.py'"
+
+[tasks.test-upstream-sync]
+env.SYNC_TEST_IMAGE = "upstream-sync-test"
+run                 = [
+  "docker build -f script/upstream-sync/Dockerfile -t upstream-sync-test .",
+  "python3 -m unittest discover -s script/upstream-sync -p 'test_*.py'",
+]
+
+[tasks.build-test-extension]
+description = "Build the extension the extension store tests install"
+dir         = "extensions/test-extension"
+run         = "cargo build --target wasm32-wasip2 --target-dir target"
+
+[tasks.release-prepare]
+description = "Build as the stable channel, at the version of the release tag in $tag"
+shell       = "bash -euo pipefail -c"
+run         = '''
+echo stable > crates/zed/RELEASE_CHANNEL
+if [[ "${tag:-}" == v[0-9]* ]]; then
+  sed -i.bak "s/^version[[:space:]]*=.*/version = \"${tag#v}\"/" crates/zed/Cargo.toml
+  rm crates/zed/Cargo.toml.bak
+fi
+'''
