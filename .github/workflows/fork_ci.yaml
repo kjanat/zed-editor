@@ -94,7 +94,7 @@ jobs:
         with: { bootstrap: true, bootstrap_skip: compose }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: env.SCOPE != 'none'
-        with: { shared-key:fork-ci-clippy, cache-on-failure: false }
+        with: { shared-key: fork-ci-clippy, cache-on-failure: false }
       - name: Clippy
         if: env.SCOPE != 'none'
         shell: bash
@@ -144,7 +144,7 @@ jobs:
         with: { bootstrap: true, bootstrap_skip: "${{ matrix.suite != 'affected' && 'compose' || '' }}" }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.suite.outputs.run == 'true'
-        with: { shared-key:fork-ci-tests, key: "${{ matrix.suite }}", cache-on-failure: false }
+        with: { shared-key: fork-ci-tests, key: "${{ matrix.suite }}", cache-on-failure: false }
       # The extension store test allows 60 seconds for installing the test extension.
       - name: Build the test extension
         if: >-
@@ -175,9 +175,7 @@ jobs:
           if grep -E 'LNK4217' tests.log; then
             echo "::error::Native test build emitted linker warnings"
             exit 1
-          else
-            test "$?" -eq 1
-          fi
+          else test "$?" -eq 1; fi
       - name: Show disk usage
         if: always() && steps.suite.outputs.run == 'true' && runner.os != 'Windows'
         run: df -h /
