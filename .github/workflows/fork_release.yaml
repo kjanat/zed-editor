@@ -58,10 +58,12 @@ jobs:
               ({ data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag }));
             } catch (error) {
               if (error.status !== 404) throw error;
-              ({ data: release } = await github.rest.repos.createRelease({
+              release = (await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 }))
+                .find(candidate => candidate.draft && candidate.tag_name === tag);
+              release ??= (await github.rest.repos.createRelease({
                 ...context.repo, tag_name: tag, target_commitish: context.sha,
                 name: tag, draft: true, prerelease: !/^v[0-9]/.test(tag), generate_release_notes: true,
-              }));
+              })).data;
             }
             const assetParams = { ...context.repo, release_id: release.id };
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { ...assetParams, per_page: 100 });
