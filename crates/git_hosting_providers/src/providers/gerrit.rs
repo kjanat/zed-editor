@@ -57,8 +57,9 @@ impl GitHostingProvider for Gerrit {
         let path_segments = remote_path_segments(&self.base_url, &url)?;
         let joined_path = path_segments.join("/");
         let repo = joined_path
-            .trim_start_matches("a/")
-            .trim_end_matches(".git");
+            .strip_prefix("a/")
+            .unwrap_or(joined_path.as_str());
+        let repo = repo.strip_suffix(".git").unwrap_or(repo);
 
         Some(ParsedGitRemote {
             owner: Arc::from(""),
@@ -123,6 +124,21 @@ mod tests {
             ParsedGitRemote {
                 owner: Arc::from(""),
                 repo: "my-project".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_remote_url_strips_one_a_prefix() {
+        let parsed_remote = gerrit_instance()
+            .parse_remote_url("https://gerrit.example.com/a/a/my-project.git")
+            .unwrap();
+
+        assert_eq!(
+            parsed_remote,
+            ParsedGitRemote {
+                owner: Arc::from(""),
+                repo: "a/my-project".into(),
             }
         );
     }
