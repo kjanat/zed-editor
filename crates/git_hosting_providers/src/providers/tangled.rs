@@ -6,6 +6,8 @@ use git::{
 };
 use url::Url;
 
+use crate::{join_base_path, remote_path_segments};
+
 pub struct Tangled {
     name: String,
     base_url: Url,
@@ -21,16 +23,6 @@ impl Tangled {
 
     pub fn public_instance() -> Self {
         Self::new("Tangled", Url::parse("https://tangled.org").unwrap())
-    }
-
-    /// Joins the given path to the base URL.
-    ///
-    /// The path is rooted with a leading `/`, as Tangled owners may be AT
-    /// Protocol DIDs (e.g., `did:plc:abc123`). Passing a path starting with
-    /// `did:` to `Url::join` would otherwise be interpreted as an absolute URL
-    /// with a `did:` scheme.
-    fn join_path(&self, path: &str) -> Url {
-        self.base_url().join(&format!("/{path}")).unwrap()
     }
 }
 
@@ -63,7 +55,7 @@ impl GitHostingProvider for Tangled {
             return None;
         }
 
-        let mut path_segments = url.path_segments()?;
+        let mut path_segments = remote_path_segments(&self.base_url, &url)?.into_iter();
         // The owner is either a handle (e.g., `user.tngl.sh`, sometimes
         // prefixed with `@` in web URLs) or an AT Protocol DID (e.g.,
         // `did:plc:abc123`).
@@ -84,7 +76,7 @@ impl GitHostingProvider for Tangled {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner, repo } = remote;
 
-        self.join_path(&format!("{owner}/{repo}/commit/{sha}"))
+        join_base_path(&self.base_url, &format!("{owner}/{repo}/commit/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -95,7 +87,8 @@ impl GitHostingProvider for Tangled {
             selection,
         } = params;
 
-        let mut permalink = self.join_path(&format!("{owner}/{repo}/blob/{sha}/{path}"));
+        let mut permalink =
+            join_base_path(&self.base_url, &format!("{owner}/{repo}/blob/{sha}/{path}"));
         permalink.set_fragment(
             selection
                 .map(|selection| self.line_fragment(&selection))
@@ -111,6 +104,40 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_urls_keep_base_path() {
+        let tangled = Tangled::new(
+            "Tangled Self-Hosted",
+            Url::parse("https://example.com/tangled").unwrap(),
+        );
+        let remote = tangled
+            .parse_remote_url("https://example.com/tangled/did:plc:abc123/zed")
+            .unwrap();
+        assert_eq!(
+            remote,
+            ParsedGitRemote {
+                owner: "did:plc:abc123".into(),
+                repo: "zed".into(),
+            }
+        );
+
+        assert_eq!(
+            tangled
+                .build_commit_permalink(&remote, BuildCommitPermalinkParams { sha: "abc123" })
+                .to_string(),
+            "https://example.com/tangled/did:plc:abc123/zed/commit/abc123"
+        );
+        assert_eq!(
+            tangled
+                .build_permalink(
+                    remote,
+                    BuildPermalinkParams::new("abc123", &repo_path("src/main.rs"), None),
+                )
+                .to_string(),
+            "https://example.com/tangled/did:plc:abc123/zed/blob/abc123/src/main.rs"
+        );
+    }
 
     #[test]
     fn test_parse_remote_url_given_ssh_url() {

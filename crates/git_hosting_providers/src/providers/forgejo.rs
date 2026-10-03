@@ -14,7 +14,7 @@ use git::{
     RemoteUrl,
 };
 
-use crate::get_host_from_git_remote_url;
+use crate::{get_host_from_git_remote_url, join_base_path, remote_path_segments};
 
 #[derive(Debug, Deserialize)]
 struct CommitDetails {
@@ -115,11 +115,13 @@ impl Forgejo {
         let Some(host) = self.base_url.host_str() else {
             bail!("failed to get host from forgejo base url");
         };
-        let url = format!(
-            "https://{host}/api/v1/repos/{repo_owner}/{repo}/git/commits/{commit}?stat=false&verification=false&files=false"
+        let mut url = join_base_path(
+            &self.base_url,
+            &format!("api/v1/repos/{repo_owner}/{repo}/git/commits/{commit}"),
         );
+        url.set_query(Some("stat=false&verification=false&files=false"));
 
-        let mut request = Request::get(&url)
+        let mut request = Request::get(url.as_str())
             .header("Content-Type", "application/json")
             .follow_redirects(http_client::RedirectPolicy::FollowAll);
 
@@ -134,7 +136,12 @@ impl Forgejo {
         let mut response = client
             .send(request.body(AsyncBody::default())?)
             .await
-            .with_context(|| format!("error fetching Forgejo commit details at {:?}", url))?;
+            .with_context(|| {
+                format!(
+                    "error fetching Forgejo commit details at {:?}",
+                    url.as_str()
+                )
+            })?;
 
         let mut body = Vec::new();
         response.body_mut().read_to_end(&mut body).await?;
@@ -185,7 +192,7 @@ impl GitHostingProvider for Forgejo {
             return None;
         }
 
-        let mut path_segments = url.path_segments()?;
+        let mut path_segments = remote_path_segments(&self.base_url, &url)?.into_iter();
         let owner = path_segments.next()?;
         let repo = path_segments.next()?.trim_end_matches(".git");
 
@@ -203,9 +210,7 @@ impl GitHostingProvider for Forgejo {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner, repo } = remote;
 
-        self.base_url()
-            .join(&format!("{owner}/{repo}/commit/{sha}"))
-            .unwrap()
+        join_base_path(&self.base_url, &format!("{owner}/{repo}/commit/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -216,10 +221,10 @@ impl GitHostingProvider for Forgejo {
             selection,
         } = params;
 
-        let mut permalink = self
-            .base_url()
-            .join(&format!("{owner}/{repo}/src/commit/{sha}/{path}"))
-            .unwrap();
+        let mut permalink = join_base_path(
+            &self.base_url,
+            &format!("{owner}/{repo}/src/commit/{sha}/{path}"),
+        );
         permalink.set_fragment(
             selection
                 .map(|selection| self.line_fragment(&selection))
@@ -270,6 +275,40 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_urls_keep_base_path() {
+        let forgejo = Forgejo::new(
+            "Forgejo Self-Hosted",
+            Url::parse("https://example.com/forgejo").unwrap(),
+        );
+        let remote = forgejo
+            .parse_remote_url("https://example.com/forgejo/zed-industries/zed.git")
+            .unwrap();
+        assert_eq!(
+            remote,
+            ParsedGitRemote {
+                owner: "zed-industries".into(),
+                repo: "zed".into(),
+            }
+        );
+
+        assert_eq!(
+            forgejo
+                .build_commit_permalink(&remote, BuildCommitPermalinkParams { sha: "abc123" })
+                .to_string(),
+            "https://example.com/forgejo/zed-industries/zed/commit/abc123"
+        );
+        assert_eq!(
+            forgejo
+                .build_permalink(
+                    remote,
+                    BuildPermalinkParams::new("abc123", &repo_path("src/main.rs"), None),
+                )
+                .to_string(),
+            "https://example.com/forgejo/zed-industries/zed/src/commit/abc123/src/main.rs"
+        );
+    }
 
     #[test]
     fn test_parse_remote_url_given_ssh_url() {

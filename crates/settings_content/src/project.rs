@@ -1014,7 +1014,7 @@ pub enum DiagnosticSeverityContent {
 pub struct GitHostingProviderConfig {
     /// The type of the provider.
     ///
-    /// Must be one of `github`, `gitlab`, `bitbucket`, `gitea`, `forgejo`, `sourcehut`, or `tangled`.
+    /// Must be one of `github`, `gitlab`, `bitbucket`, `gitea`, `forgejo`, `gerrit`, `sourcehut`, `tangled`, or `gitiles`.
     pub provider: GitHostingProviderKind,
 
     /// The base URL for the provider (e.g., "https://code.corp.big.com").
@@ -1032,8 +1032,11 @@ pub enum GitHostingProviderKind {
     Bitbucket,
     Gitea,
     Forgejo,
+    Gerrit,
+    #[serde(rename = "sourcehut", alias = "source_hut")]
     SourceHut,
     Tangled,
+    Gitiles,
 }
 
 #[cfg(test)]

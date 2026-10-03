@@ -17,7 +17,7 @@ use git::{
 };
 use urlencoding::encode;
 
-use crate::get_host_from_git_remote_url;
+use crate::{get_host_from_git_remote_url, join_base_path, remote_path_segments};
 
 fn pull_request_regex() -> &'static Regex {
     static PULL_REQUEST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -117,9 +117,12 @@ impl Bitbucket {
         };
         let is_self_hosted = self.is_self_hosted();
         let url = if is_self_hosted {
-            format!(
-                "https://{host}/rest/api/latest/projects/{repo_owner}/repos/{repo}/commits/{commit}?avatarSize=128"
-            )
+            let mut url = join_base_path(
+                &self.base_url,
+                &format!("rest/api/latest/projects/{repo_owner}/repos/{repo}/commits/{commit}"),
+            );
+            url.set_query(Some("avatarSize=128"));
+            url.to_string()
         } else {
             format!("https://api.{host}/2.0/repositories/{repo_owner}/{repo}/commit/{commit}")
         };
@@ -193,7 +196,7 @@ impl GitHostingProvider for Bitbucket {
             return None;
         }
 
-        let mut path_segments = url.path_segments()?.collect::<Vec<_>>();
+        let mut path_segments = remote_path_segments(&self.base_url, &url)?;
         let repo = path_segments.pop()?.trim_end_matches(".git");
         let owner = if path_segments.get(0).is_some_and(|v| *v == "scm") && path_segments.len() > 1
         {
@@ -218,14 +221,12 @@ impl GitHostingProvider for Bitbucket {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner, repo } = remote;
         if self.is_self_hosted() {
-            return self
-                .base_url()
-                .join(&format!("projects/{owner}/repos/{repo}/commits/{sha}"))
-                .unwrap();
+            return join_base_path(
+                &self.base_url,
+                &format!("projects/{owner}/repos/{repo}/commits/{sha}"),
+            );
         }
-        self.base_url()
-            .join(&format!("{owner}/{repo}/commits/{sha}"))
-            .unwrap()
+        join_base_path(&self.base_url, &format!("{owner}/{repo}/commits/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -237,15 +238,14 @@ impl GitHostingProvider for Bitbucket {
         } = params;
 
         let mut permalink = if self.is_self_hosted() {
-            self.base_url()
-                .join(&format!(
-                    "projects/{owner}/repos/{repo}/browse/{path}?at={sha}"
-                ))
-                .unwrap()
+            let mut permalink = join_base_path(
+                &self.base_url,
+                &format!("projects/{owner}/repos/{repo}/browse/{path}"),
+            );
+            permalink.set_query(Some(&format!("at={sha}")));
+            permalink
         } else {
-            self.base_url()
-                .join(&format!("{owner}/{repo}/src/{sha}/{path}"))
-                .unwrap()
+            join_base_path(&self.base_url, &format!("{owner}/{repo}/src/{sha}/{path}"))
         };
 
         permalink.set_fragment(
@@ -264,19 +264,17 @@ impl GitHostingProvider for Bitbucket {
         let ParsedGitRemote { owner, repo } = remote;
 
         if self.is_self_hosted() {
-            let mut url = self
-                .base_url()
-                .join(&format!("projects/{owner}/repos/{repo}/compare/commits"))
-                .ok()?;
+            let mut url = join_base_path(
+                &self.base_url,
+                &format!("projects/{owner}/repos/{repo}/compare/commits"),
+            );
             let source_ref = format!("refs/heads/{source_branch}");
             let encoded_ref = encode(&source_ref);
             url.set_query(Some(&format!("sourceBranch={encoded_ref}")));
             Some(url)
         } else {
-            let mut url = self
-                .base_url()
-                .join(&format!("{owner}/{repo}/pull-requests/new"))
-                .ok()?;
+            let mut url =
+                join_base_path(&self.base_url, &format!("{owner}/{repo}/pull-requests/new"));
             let encoded_branch = encode(source_branch);
             url.set_query(Some(&format!("source={encoded_branch}")));
             Some(url)
@@ -292,16 +290,15 @@ impl GitHostingProvider for Bitbucket {
         let number = capture.get(1)?.as_str().parse::<u32>().ok()?;
 
         // Construct the PR URL in Bitbucket format
-        let mut url = self.base_url();
         let path = if self.is_self_hosted() {
             format!(
-                "/projects/{}/repos/{}/pull-requests/{}",
+                "projects/{}/repos/{}/pull-requests/{}",
                 remote.owner, remote.repo, number
             )
         } else {
-            format!("/{}/{}/pull-requests/{}", remote.owner, remote.repo, number)
+            format!("{}/{}/pull-requests/{}", remote.owner, remote.repo, number)
         };
-        url.set_path(&path);
+        let url = join_base_path(&self.base_url, &path);
 
         Some(PullRequest { number, url })
     }
@@ -330,6 +327,55 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_urls_keep_base_path() {
+        let bitbucket = Bitbucket::new(
+            "BitBucket Self-Hosted",
+            Url::parse("https://example.com/bitbucket").unwrap(),
+        );
+        let remote = bitbucket
+            .parse_remote_url("https://example.com/bitbucket/scm/zed-industries/zed.git")
+            .unwrap();
+        assert_eq!(
+            remote,
+            ParsedGitRemote {
+                owner: "zed-industries".into(),
+                repo: "zed".into(),
+            }
+        );
+
+        assert_eq!(
+            bitbucket
+                .build_commit_permalink(&remote, BuildCommitPermalinkParams { sha: "abc123" })
+                .to_string(),
+            "https://example.com/bitbucket/projects/zed-industries/repos/zed/commits/abc123"
+        );
+        assert_eq!(
+            bitbucket
+                .build_create_pull_request_url(&remote, "feature")
+                .unwrap()
+                .to_string(),
+            "https://example.com/bitbucket/projects/zed-industries/repos/zed/compare/commits?sourceBranch=refs%2Fheads%2Ffeature"
+        );
+        assert_eq!(
+            bitbucket
+                .extract_pull_request(&remote, "Merge branch (pull request #123)")
+                .unwrap()
+                .url
+                .to_string(),
+            "https://example.com/bitbucket/projects/zed-industries/repos/zed/pull-requests/123"
+        );
+        assert_eq!(
+            bitbucket
+                .build_permalink(
+                    remote,
+                    BuildPermalinkParams::new("abc123", &repo_path("src/main.rs"), None),
+                )
+                .to_string(),
+            "https://example.com/bitbucket/projects/zed-industries/repos/zed/browse/src/main.rs?at=abc123"
+        );
+    }
 
     #[test]
     fn test_parse_remote_url_given_ssh_url() {

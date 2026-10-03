@@ -8,7 +8,7 @@ use git::{
     RemoteUrl,
 };
 
-use crate::get_host_from_git_remote_url;
+use crate::{get_host_from_git_remote_url, join_base_path, remote_path_segments};
 
 pub struct SourceHut {
     name: String,
@@ -76,7 +76,7 @@ impl GitHostingProvider for SourceHut {
             return None;
         }
 
-        let mut path_segments = url.path_segments()?;
+        let mut path_segments = remote_path_segments(&self.base_url, &url)?.into_iter();
         let owner = path_segments.next()?.trim_start_matches('~');
         // We don't trim the `.git` suffix here like we do elsewhere, as
         // sourcehut treats a repo with `.git` suffix as a separate repo.
@@ -99,9 +99,7 @@ impl GitHostingProvider for SourceHut {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner, repo } = remote;
 
-        self.base_url()
-            .join(&format!("~{owner}/{repo}/commit/{sha}"))
-            .unwrap()
+        join_base_path(&self.base_url, &format!("~{owner}/{repo}/commit/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -112,10 +110,10 @@ impl GitHostingProvider for SourceHut {
             selection,
         } = params;
 
-        let mut permalink = self
-            .base_url()
-            .join(&format!("~{owner}/{repo}/tree/{sha}/item/{path}"))
-            .unwrap();
+        let mut permalink = join_base_path(
+            &self.base_url,
+            &format!("~{owner}/{repo}/tree/{sha}/item/{path}"),
+        );
         permalink.set_fragment(
             selection
                 .map(|selection| self.line_fragment(&selection))
@@ -131,6 +129,40 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_urls_keep_base_path() {
+        let sourcehut = SourceHut::new(
+            "SourceHut Self-Hosted",
+            Url::parse("https://example.com/sourcehut").unwrap(),
+        );
+        let remote = sourcehut
+            .parse_remote_url("https://example.com/sourcehut/~zed-industries/zed")
+            .unwrap();
+        assert_eq!(
+            remote,
+            ParsedGitRemote {
+                owner: "zed-industries".into(),
+                repo: "zed".into(),
+            }
+        );
+
+        assert_eq!(
+            sourcehut
+                .build_commit_permalink(&remote, BuildCommitPermalinkParams { sha: "abc123" })
+                .to_string(),
+            "https://example.com/sourcehut/~zed-industries/zed/commit/abc123"
+        );
+        assert_eq!(
+            sourcehut
+                .build_permalink(
+                    remote,
+                    BuildPermalinkParams::new("abc123", &repo_path("src/main.rs"), None),
+                )
+                .to_string(),
+            "https://example.com/sourcehut/~zed-industries/zed/tree/abc123/item/src/main.rs"
+        );
+    }
 
     #[test]
     fn test_parse_remote_url_given_ssh_url() {
