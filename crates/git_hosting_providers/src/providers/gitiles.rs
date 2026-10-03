@@ -6,6 +6,8 @@ use git::{
 };
 use url::Url;
 
+use crate::join_base_path;
+
 pub struct Gitiles {
     name: String,
     base_url: Url,
@@ -17,17 +19,6 @@ impl Gitiles {
             name: name.to_string(),
             base_url,
         }
-    }
-
-    /// Joins `path` onto the base URL, preserving any existing path prefix.
-    ///
-    /// `Url::join` cannot be used here because it drops the base path prefix
-    /// (e.g. `/plugins/gitiles`) when resolving a relative reference.
-    fn build_url(&self, path: &str) -> Url {
-        let mut url = self.base_url();
-        let base_path = url.path().trim_end_matches('/').to_string();
-        url.set_path(&format!("{base_path}/{path}"));
-        url
     }
 }
 
@@ -78,7 +69,7 @@ impl GitHostingProvider for Gitiles {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner: _, repo } = remote;
 
-        self.build_url(&format!("{repo}/+/{sha}"))
+        join_base_path(&self.base_url, &format!("{repo}/+/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -89,7 +80,7 @@ impl GitHostingProvider for Gitiles {
             selection,
         } = params;
 
-        let mut permalink = self.build_url(&format!("{repo}/+/{sha}/{path}"));
+        let mut permalink = join_base_path(&self.base_url, &format!("{repo}/+/{sha}/{path}"));
         permalink.set_fragment(
             selection
                 .map(|selection| self.line_fragment(&selection))

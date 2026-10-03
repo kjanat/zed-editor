@@ -8,6 +8,8 @@ use git::{
     RemoteUrl,
 };
 
+use crate::{join_base_path, remote_path_segments};
+
 pub struct Gerrit {
     name: String,
     base_url: Url,
@@ -19,13 +21,6 @@ impl Gerrit {
             name: name.into(),
             base_url,
         }
-    }
-
-    fn build_url(&self, path: &str) -> Url {
-        let mut url = self.base_url();
-        let base_path = url.path().trim_end_matches('/').to_string();
-        url.set_path(&format!("{base_path}/{path}"));
-        url
     }
 }
 
@@ -59,18 +54,11 @@ impl GitHostingProvider for Gerrit {
             return None;
         }
 
-        let path_segments = url.path_segments()?.collect::<Vec<_>>();
+        let path_segments = remote_path_segments(&self.base_url, &url)?;
         let joined_path = path_segments.join("/");
-        let base_path = self.base_url.path().trim_matches('/');
-        let repo_path = if base_path.is_empty() {
-            joined_path.as_str()
-        } else {
-            joined_path
-                .strip_prefix(base_path)
-                .and_then(|path| path.strip_prefix('/'))
-                .unwrap_or(joined_path.as_str())
-        };
-        let repo = repo_path.trim_start_matches("a/").trim_end_matches(".git");
+        let repo = joined_path
+            .trim_start_matches("a/")
+            .trim_end_matches(".git");
 
         Some(ParsedGitRemote {
             owner: Arc::from(""),
@@ -86,7 +74,7 @@ impl GitHostingProvider for Gerrit {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner: _, repo } = remote;
 
-        self.build_url(&format!("{repo}/+/{sha}"))
+        join_base_path(&self.base_url, &format!("{repo}/+/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -97,7 +85,7 @@ impl GitHostingProvider for Gerrit {
             selection,
         } = params;
 
-        let mut permalink = self.build_url(&format!("{repo}/+/{sha}/{path}"));
+        let mut permalink = join_base_path(&self.base_url, &format!("{repo}/+/{sha}/{path}"));
         permalink.set_fragment(
             selection
                 .map(|selection| self.line_fragment(&selection))

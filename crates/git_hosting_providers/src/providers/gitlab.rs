@@ -26,7 +26,7 @@ fn merge_request_number_regex() -> &'static Regex {
     &MERGE_REQUEST_NUMBER_REGEX
 }
 
-use crate::get_host_from_git_remote_url;
+use crate::{get_host_from_git_remote_url, join_base_path, remote_path_segments};
 
 #[derive(Debug, Deserialize)]
 struct CommitDetails {
@@ -82,23 +82,23 @@ impl Gitlab {
         commit: &str,
         client: &Arc<dyn HttpClient>,
     ) -> Result<Option<AvatarInfo>> {
-        let Some(host) = self.base_url.host_str() else {
-            bail!("failed to get host from gitlab base url");
-        };
         let project_path = format!("{}/{}", repo_owner, repo);
         let project_path_encoded = urlencoding::encode(&project_path);
-        let url = format!(
-            "https://{host}/api/v4/projects/{project_path_encoded}/repository/commits/{commit}"
+        let url = join_base_path(
+            &self.base_url,
+            &format!("api/v4/projects/{project_path_encoded}/repository/commits/{commit}"),
         );
 
-        let request = Request::get(&url)
+        let request = Request::get(url.as_str())
             .header("Content-Type", "application/json")
             .follow_redirects(http_client::RedirectPolicy::FollowAll);
 
         let mut response = client
             .send(request.body(AsyncBody::default())?)
             .await
-            .with_context(|| format!("error fetching GitLab commit details at {:?}", url))?;
+            .with_context(|| {
+                format!("error fetching GitLab commit details at {:?}", url.as_str())
+            })?;
 
         let mut body = Vec::new();
         response.body_mut().read_to_end(&mut body).await?;
@@ -117,16 +117,22 @@ impl Gitlab {
             .map(|commit| commit.author_email)
             .context("failed to deserialize GitLab commit details")?;
 
-        let avatar_info_url = format!("https://{host}/api/v4/avatar?email={author_email}");
+        let mut avatar_info_url = join_base_path(&self.base_url, "api/v4/avatar");
+        avatar_info_url.set_query(Some(&format!("email={author_email}")));
 
-        let request = Request::get(&avatar_info_url)
+        let request = Request::get(avatar_info_url.as_str())
             .header("Content-Type", "application/json")
             .follow_redirects(http_client::RedirectPolicy::FollowAll);
 
         let mut response = client
             .send(request.body(AsyncBody::default())?)
             .await
-            .with_context(|| format!("error fetching GitLab avatar info at {:?}", url))?;
+            .with_context(|| {
+                format!(
+                    "error fetching GitLab avatar info at {:?}",
+                    avatar_info_url.as_str()
+                )
+            })?;
 
         let mut body = Vec::new();
         response.body_mut().read_to_end(&mut body).await?;
@@ -176,7 +182,7 @@ impl GitHostingProvider for Gitlab {
             return None;
         }
 
-        let mut path_segments = url.path_segments()?.collect::<Vec<_>>();
+        let mut path_segments = remote_path_segments(&self.base_url, &url)?;
         let repo = path_segments.pop()?.trim_end_matches(".git");
         let owner = path_segments.join("/");
 
@@ -194,9 +200,7 @@ impl GitHostingProvider for Gitlab {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner, repo } = remote;
 
-        self.base_url()
-            .join(&format!("{owner}/{repo}/-/commit/{sha}"))
-            .unwrap()
+        join_base_path(&self.base_url, &format!("{owner}/{repo}/-/commit/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -207,10 +211,10 @@ impl GitHostingProvider for Gitlab {
             selection,
         } = params;
 
-        let mut permalink = self
-            .base_url()
-            .join(&format!("{owner}/{repo}/-/blob/{sha}/{path}"))
-            .unwrap();
+        let mut permalink = join_base_path(
+            &self.base_url,
+            &format!("{owner}/{repo}/-/blob/{sha}/{path}"),
+        );
         if path.ends_with(".md") {
             permalink.set_query(Some("plain=1"));
         }
@@ -227,13 +231,10 @@ impl GitHostingProvider for Gitlab {
         remote: &ParsedGitRemote,
         source_branch: &str,
     ) -> Option<Url> {
-        let mut url = self
-            .base_url()
-            .join(&format!(
-                "{}/{}/-/merge_requests/new",
-                remote.owner, remote.repo
-            ))
-            .ok()?;
+        let mut url = join_base_path(
+            &self.base_url,
+            &format!("{}/{}/-/merge_requests/new", remote.owner, remote.repo),
+        );
 
         let query = format!("merge_request%5Bsource_branch%5D={}", encode(source_branch));
 
@@ -252,12 +253,13 @@ impl GitHostingProvider for Gitlab {
             .parse::<u32>()
             .ok()?;
 
-        let mut url = self.base_url();
-        let path = format!(
-            "{}/{}/-/merge_requests/{}",
-            remote.owner, remote.repo, number
+        let url = join_base_path(
+            &self.base_url,
+            &format!(
+                "{}/{}/-/merge_requests/{}",
+                remote.owner, remote.repo, number
+            ),
         );
-        url.set_path(&path);
 
         Some(PullRequest { number, url })
     }
@@ -303,6 +305,55 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_urls_keep_base_path() {
+        let gitlab = Gitlab::new(
+            "GitLab Self-Hosted",
+            Url::parse("https://example.com/gitlab").unwrap(),
+        );
+        let remote = gitlab
+            .parse_remote_url("https://example.com/gitlab/zed-industries/sub/zed.git")
+            .unwrap();
+        assert_eq!(
+            remote,
+            ParsedGitRemote {
+                owner: "zed-industries/sub".into(),
+                repo: "zed".into(),
+            }
+        );
+
+        assert_eq!(
+            gitlab
+                .build_commit_permalink(&remote, BuildCommitPermalinkParams { sha: "abc123" })
+                .to_string(),
+            "https://example.com/gitlab/zed-industries/sub/zed/-/commit/abc123"
+        );
+        assert_eq!(
+            gitlab
+                .build_create_pull_request_url(&remote, "feature")
+                .unwrap()
+                .to_string(),
+            "https://example.com/gitlab/zed-industries/sub/zed/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature"
+        );
+        assert_eq!(
+            gitlab
+                .extract_pull_request(&remote, "Fix a bug (!123)")
+                .unwrap()
+                .url
+                .to_string(),
+            "https://example.com/gitlab/zed-industries/sub/zed/-/merge_requests/123"
+        );
+        assert_eq!(
+            gitlab
+                .build_permalink(
+                    remote,
+                    BuildPermalinkParams::new("abc123", &repo_path("src/main.rs"), None),
+                )
+                .to_string(),
+            "https://example.com/gitlab/zed-industries/sub/zed/-/blob/abc123/src/main.rs"
+        );
+    }
 
     #[test]
     fn test_invalid_self_hosted_remote_url() {

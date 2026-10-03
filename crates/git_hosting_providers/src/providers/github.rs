@@ -16,7 +16,7 @@ use git::{
     PullRequest, RemoteUrl,
 };
 
-use crate::get_host_from_git_remote_url;
+use crate::{get_host_from_git_remote_url, join_base_path, remote_path_segments};
 
 fn pull_request_number_regex() -> &'static Regex {
     static PULL_REQUEST_NUMBER_REGEX: LazyLock<Regex> =
@@ -197,7 +197,7 @@ impl GitHostingProvider for Github {
             return None;
         }
 
-        let mut path_segments = url.path_segments()?;
+        let mut path_segments = remote_path_segments(&self.base_url, &url)?.into_iter();
         let mut owner = path_segments.next()?;
         if owner.is_empty() {
             owner = path_segments.next()?;
@@ -219,9 +219,7 @@ impl GitHostingProvider for Github {
         let BuildCommitPermalinkParams { sha } = params;
         let ParsedGitRemote { owner, repo } = remote;
 
-        self.base_url()
-            .join(&format!("{owner}/{repo}/commit/{sha}"))
-            .unwrap()
+        join_base_path(&self.base_url, &format!("{owner}/{repo}/commit/{sha}"))
     }
 
     fn build_permalink(&self, remote: ParsedGitRemote, params: BuildPermalinkParams) -> Url {
@@ -232,10 +230,8 @@ impl GitHostingProvider for Github {
             selection,
         } = params;
 
-        let mut permalink = self
-            .base_url()
-            .join(&format!("{owner}/{repo}/blob/{sha}/{path}"))
-            .unwrap();
+        let mut permalink =
+            join_base_path(&self.base_url, &format!("{owner}/{repo}/blob/{sha}/{path}"));
         if path.ends_with(".md") {
             permalink.set_query(Some("plain=1"));
         }
@@ -255,9 +251,10 @@ impl GitHostingProvider for Github {
         let ParsedGitRemote { owner, repo } = remote;
         let encoded_source = encode(source_branch);
 
-        self.base_url()
-            .join(&format!("{owner}/{repo}/pull/new/{encoded_source}"))
-            .ok()
+        Some(join_base_path(
+            &self.base_url,
+            &format!("{owner}/{repo}/pull/new/{encoded_source}"),
+        ))
     }
 
     fn extract_pull_request(&self, remote: &ParsedGitRemote, message: &str) -> Option<PullRequest> {
@@ -265,9 +262,10 @@ impl GitHostingProvider for Github {
         let capture = pull_request_number_regex().captures(line)?;
         let number = capture.get(1)?.as_str().parse::<u32>().ok()?;
 
-        let mut url = self.base_url();
-        let path = format!("/{}/{}/pull/{}", remote.owner, remote.repo, number);
-        url.set_path(&path);
+        let url = join_base_path(
+            &self.base_url,
+            &format!("{}/{}/pull/{}", remote.owner, remote.repo, number),
+        );
 
         Some(PullRequest { number, url })
     }
@@ -307,6 +305,55 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_urls_keep_base_path() {
+        let github = Github::new(
+            "GitHub Self-Hosted",
+            Url::parse("https://example.com/github").unwrap(),
+        );
+        let remote = github
+            .parse_remote_url("https://example.com/github/zed-industries/zed.git")
+            .unwrap();
+        assert_eq!(
+            remote,
+            ParsedGitRemote {
+                owner: "zed-industries".into(),
+                repo: "zed".into(),
+            }
+        );
+
+        assert_eq!(
+            github
+                .build_commit_permalink(&remote, BuildCommitPermalinkParams { sha: "abc123" })
+                .to_string(),
+            "https://example.com/github/zed-industries/zed/commit/abc123"
+        );
+        assert_eq!(
+            github
+                .build_create_pull_request_url(&remote, "feature")
+                .unwrap()
+                .to_string(),
+            "https://example.com/github/zed-industries/zed/pull/new/feature"
+        );
+        assert_eq!(
+            github
+                .extract_pull_request(&remote, "Fix a bug (#123)")
+                .unwrap()
+                .url
+                .to_string(),
+            "https://example.com/github/zed-industries/zed/pull/123"
+        );
+        assert_eq!(
+            github
+                .build_permalink(
+                    remote,
+                    BuildPermalinkParams::new("abc123", &repo_path("src/main.rs"), None),
+                )
+                .to_string(),
+            "https://example.com/github/zed-industries/zed/blob/abc123/src/main.rs"
+        );
+    }
 
     #[test]
     fn test_remote_url_with_root_slash() {

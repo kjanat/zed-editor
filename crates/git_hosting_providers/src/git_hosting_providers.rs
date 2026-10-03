@@ -74,10 +74,86 @@ pub fn get_host_from_git_remote_url(remote_url: &str) -> Result<String> {
     .context("URL has no host")
 }
 
+pub(crate) fn join_base_path(base_url: &Url, path: &str) -> Url {
+    let mut url = base_url.clone();
+    let base_path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&format!("{base_path}/{path}"));
+    url
+}
+
+pub(crate) fn remote_path_segments<'a>(
+    base_url: &Url,
+    remote_url: &'a Url,
+) -> Option<Vec<&'a str>> {
+    let mut path_segments = remote_url.path_segments()?.collect::<Vec<_>>();
+    if !matches!(remote_url.scheme(), "http" | "https") {
+        return Some(path_segments);
+    }
+
+    let base_path_segments = base_url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let is_under_base_path = path_segments.len() >= base_path_segments.len()
+        && path_segments
+            .iter()
+            .zip(&base_path_segments)
+            .all(|(segment, base_segment)| segment == base_segment);
+    if is_under_base_path {
+        path_segments.drain(..base_path_segments.len());
+    }
+    Some(path_segments)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::get_host_from_git_remote_url;
+    use super::{get_host_from_git_remote_url, join_base_path, remote_path_segments};
     use pretty_assertions::assert_eq;
+    use url::Url;
+
+    #[test]
+    fn test_join_base_path() {
+        let tests = [
+            ("https://example.com", "owner/repo"),
+            ("https://example.com/", "owner/repo"),
+            ("https://example.com/git", "git/owner/repo"),
+            ("https://example.com/git/", "git/owner/repo"),
+        ];
+
+        for (base_url, expected_path) in tests {
+            let url = join_base_path(&Url::parse(base_url).unwrap(), "owner/repo");
+            assert_eq!(url.path(), format!("/{expected_path}"));
+        }
+    }
+
+    #[test]
+    fn test_remote_path_segments() {
+        let base_url = Url::parse("https://example.com/git").unwrap();
+        let tests = [
+            (
+                "https://example.com/git/owner/repo.git",
+                vec!["owner", "repo.git"],
+            ),
+            (
+                "https://example.com/owner/repo.git",
+                vec!["owner", "repo.git"],
+            ),
+            (
+                "ssh://git@example.com/git/repo.git",
+                vec!["git", "repo.git"],
+            ),
+        ];
+
+        for (remote_url, expected_segments) in tests {
+            let remote_url = Url::parse(remote_url).unwrap();
+            assert_eq!(
+                remote_path_segments(&base_url, &remote_url),
+                Some(expected_segments)
+            );
+        }
+    }
 
     #[test]
     fn test_get_host_from_git_remote_url() {
