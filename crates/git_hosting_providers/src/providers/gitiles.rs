@@ -6,7 +6,7 @@ use git::{
 };
 use url::Url;
 
-use crate::join_base_path;
+use crate::{join_base_path, remote_path_segments};
 
 pub struct Gitiles {
     name: String,
@@ -51,7 +51,7 @@ impl GitHostingProvider for Gitiles {
             return None;
         }
 
-        let path_segments = url.path_segments()?.collect::<Vec<_>>();
+        let path_segments = remote_path_segments(&self.base_url, &url)?;
         let joined_path = path_segments.join("/");
         let repo = joined_path.trim_end_matches(".git");
 
@@ -116,6 +116,21 @@ mod tests {
             "Gitiles",
             Url::parse("https://git.example.com/plugins/gitiles").unwrap(),
         )
+    }
+
+    #[test]
+    fn test_parse_remote_url_strips_path_prefix() {
+        let parsed = with_path_prefix()
+            .parse_remote_url("https://git.example.com/plugins/gitiles/project/my-repo.git")
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            ParsedGitRemote {
+                owner: "".into(),
+                repo: "project/my-repo".into(),
+            }
+        );
     }
 
     #[test]
