@@ -690,9 +690,9 @@ class TrustedConfigurationTests(unittest.TestCase):
 
     def test_claude_gets_the_static_prompt(self):
         resolve = self.job("resolve")
-        self.assertIn(
-            "anthropics/claude-code-action/base-action@97c53473391bff1901034d4b454b5bac7ab7a029",
+        self.assertRegex(
             resolve,
+            r"uses: anthropics/claude-code-action/base-action@[0-9a-f]{40} # v\S+\n",
         )
         self.assertIn(
             "prompt_file: ${{ github.workspace }}/script/upstream-sync/resolve-prompt.md",
@@ -786,7 +786,7 @@ class TrustedConfigurationTests(unittest.TestCase):
     def test_mise_provisions_the_resolver(self):
         resolve = self.job("resolve")
         mise = resolve.split("- &mise\n", 1)[1].split("\n      - ", 1)[0]
-        self.assertIn("jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492", mise)
+        self.assertRegex(mise, r"uses: jdx/mise-action@[0-9a-f]{40} # v\S+\n")
         self.assertIn("bootstrap: true, bootstrap_skip: compose", mise)
         self.assertIn("- *mise", self.job("verify"))
         for name in ("resolve", "verify"):
