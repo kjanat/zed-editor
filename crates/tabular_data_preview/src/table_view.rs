@@ -238,21 +238,12 @@ impl TableView {
         }));
     }
 
-    #[inline]
-    pub(crate) fn is_selection_enabled(&self) -> bool {
-        cfg!(any(test, debug_assertions))
-    }
-
     pub(crate) fn move_focused_cell(
         &mut self,
         action: &MoveFocusedCell,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.is_selection_enabled() {
-            return;
-        }
-
         let row_count = self.engine.d2d_mapping().visible_row_count();
         let column_count = self.engine.contents.number_of_cols;
 
