@@ -1,11 +1,11 @@
 ---
 name: upstream-sync-conflict
-description: Resolves an "Upstream sync conflict" issue in kjanat/zed-editor by merging zed-industries/zed main into the fork by hand, keeping the fork's behavior, validating the result, and opening the sync PR that closes the issue. Use this whenever an issue has the `upstream-sync-conflict` label, the user mentions the upstream sync, `sync/upstream`, the `fork_upstream_sync` workflow, merging upstream Zed into the fork, or pastes `gh issue list --label upstream-sync-conflict` output, even when they only say "tackle the sync issue".
+description: Resolves an "Upstream sync conflict" issue in kjanat/zed-editor by merging zed-industries/zed main into the fork by hand, keeping the fork's behavior, validating the result, and opening the sync PR that closes the issue. Use this whenever an issue is labeled `upstream-sync-conflict`, the user mentions the upstream sync, `sync/upstream`, the `fork_upstream_sync` workflow, merging upstream Zed into the fork, or pastes `gh issue list --label upstream-sync-conflict` output, even when they only say "tackle the sync issue".
 ---
 
 # Upstream sync conflict
 
-The `fork_upstream_sync` workflow runs `script/upstream-sync/prepare.sh` twice a day to merge upstream `main` into `master`. It resolves conflicts that come from formatting and conflicts that merge cleanly once both sides are formatted the same way. When a file still conflicts, it aborts, and `publish.py` opens an issue titled `Upstream sync conflict` with the `upstream-sync-conflict` label, or comments on the one already open. This skill does that merge by hand and ships it as a pull request.
+The `fork_upstream_sync` workflow runs `script/upstream-sync/prepare.sh` twice a day to merge upstream `main` into `master`. It resolves conflicts that come from formatting and conflicts that merge cleanly once both sides are formatted the same way. When a file still conflicts, it aborts, and `open-sync-pr.py` opens an issue titled `Upstream sync conflict` and labeled `upstream-sync-conflict`, or comments on the one already open. This skill does that merge by hand and ships it as a pull request.
 
 The result is one merge commit whose second parent is upstream `main`, and the PR is merged into `master` with a merge commit. Squashing or rebasing drops upstream ancestry, and the next sync then conflicts on the same files again.
 
@@ -24,11 +24,11 @@ Read the body and every comment. Each scheduled run comments on the open issue, 
 
 Upstream has usually moved on since the report was written, and you merge the current `upstream/main`. Use the issue to understand intent. Take the conflict list from your own merge.
 
-Every open issue with the label gets closed by the PR.
+The PR closes every open issue labeled `upstream-sync-conflict`.
 
 ## 2. Set up
 
-The automation owns `sync/upstream` while it has an open PR. GitHub deletes the branch after each merge, so it normally does not exist. Check both before creating it:
+The `fork_upstream_sync` workflow owns `sync/upstream` while it has an open PR. GitHub deletes the branch after each merge, so it normally does not exist. Check both before creating it:
 
 ```sh
 git ls-remote origin refs/heads/sync/upstream
@@ -59,7 +59,7 @@ git switch -C sync/upstream origin/master
 
 Run the second command only when the first exits 0, or when the branch does not exist. Otherwise stop and ask.
 
-Use `origin/master` as the fork side everywhere. The local `master` can be behind. The issue's commands say `master` because the automation's clone has only that one branch.
+Use `origin/master` as the fork side everywhere. The local `master` can be behind. The issue's commands say `master` because the `prepare` job's clone has only that one branch.
 
 ## 3. Merge and apply the automatic resolutions
 
@@ -68,16 +68,16 @@ git merge --no-ff --no-commit upstream/main
 bash .agents/skills/upstream-sync-conflict/scripts/auto_resolve.sh
 ```
 
-`scripts/auto_resolve.sh` applies the automation's resolutions to the merge in progress:
+`scripts/auto_resolve.sh` applies `prepare.sh`'s resolutions to the merge in progress:
 
 - `.github` is restored from `origin/master`, and upstream's `.github` changes are listed as dropped
 - `.rules` conflicts keep the fork's version, including a deletion on the fork side
 - a file the fork only reformatted takes upstream's version, reformatted
 - other files are merged three-way after formatting all three versions the same way
-- `Cargo.lock` gets the fork's version and is reconciled by `cargo metadata` once nothing else conflicts
+- `Cargo.lock` gets the fork's version, and `cargo metadata` reconciles it once nothing else conflicts
 - the files that still conflict are printed under **Needs a human**
 
-Use the script instead of the `### Resolve` block in the issue. That block runs `git checkout` on files, which is not allowed here, and it resolves against the local `master`.
+Use `scripts/auto_resolve.sh` instead of the `### Resolve` block in the issue. That block runs `git checkout` on files, which is not allowed here, and it resolves against the local `master`.
 
 Check every automatic resolution with `git diff --cached origin/master -- <file>`. Compare it with `git diff "$(git merge-base origin/master upstream/main)" upstream/main -- <file>`. The two diffs should contain the same changes. The issue labels these files "verify, do not resolve" because a formatting merge can drop a line without any conflict.
 
@@ -110,7 +110,7 @@ These patterns came up in earlier syncs:
 
 Anything beyond adapting to upstream, such as a fork bug the merge exposes, goes in a separate commit after the merge commit.
 
-After the hand resolutions are staged, run the script again. It leaves the hand-resolved files alone and reconciles `Cargo.lock` now that nothing else conflicts:
+After you stage the hand resolutions, run `scripts/auto_resolve.sh` again. It leaves the hand-resolved files alone and reconciles `Cargo.lock` now that nothing else conflicts:
 
 ```sh
 bash .agents/skills/upstream-sync-conflict/scripts/auto_resolve.sh
@@ -197,7 +197,7 @@ Upstream automation dropped (port by hand if wanted):
 
 - `<path>`
 
-Validation: <each check and its result. Name the checks that were not run.>
+Validation: <each check and its result. List the skipped checks too.>
 
 Merge with a merge commit to keep upstream ancestry.
 
@@ -214,10 +214,10 @@ Do not watch CI after opening the PR.
 
 ## 8. Report and clean up
 
-Give the user the PR URL, one line per hand-resolved file, and the validation results, including anything that was not run.
+Give the user the PR URL, one line per hand-resolved file, and the validation results, including every skipped check.
 
 ## While the PR is open
 
-- The scheduled sync runs against `master`, hits the same conflicts, and comments on the issue again. Read new comments for files your merge does not cover.
+- The next scheduled `fork_upstream_sync` run merges against `master`, hits the same conflicts, and comments on the issue again. Read new comments for files your merge does not cover.
 - If upstream moves on and you need its new commits, merge `upstream/main` into `sync/upstream` again. Do not rebase.
-- `publish.py` opens an `Upstream sync needs attention` issue when the open sync PR is blocked or its checks fail.
+- `open-sync-pr.py` opens an `Upstream sync needs attention` issue when the open sync PR is blocked or its checks fail.

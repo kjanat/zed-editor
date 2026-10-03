@@ -125,7 +125,7 @@ attempt_merge() {
 	if ! git merge --no-ff --no-commit upstream/main && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
 		return 1
 	fi
-	# The fork keeps its own automation and the publisher rejects any change to
+	# The fork keeps its own automation and open-sync-pr.py rejects any change to
 	# .github, so upstream changes there are dropped instead of stalling the sync.
 	git diff --name-only "${BASE}" upstream/main -- .github >/tmp/dropped-github.txt
 	git rm -r -q -f --ignore-unmatch -- .github

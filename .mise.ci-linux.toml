@@ -14,9 +14,6 @@ pre-packages = [
 "apt:libarchive-tools"       = "latest"
 "apt:fakeroot"               = "latest"
 "apt:zstd"                   = "latest"
-"apt:bubblewrap"             = "latest"
-"apt:socat"                  = "latest"
-"apt:ripgrep"                = "latest"
 
 [bootstrap.directories."/tmp/zed-postgres"]
 mode = "0755"

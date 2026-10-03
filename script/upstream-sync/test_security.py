@@ -12,7 +12,7 @@ from typing import Protocol, cast
 from unittest.mock import patch
 
 
-class Publisher(Protocol):
+class SyncPr(Protocol):
     REPOSITORY: str
 
     def run(self, *arguments: str, cwd: Path | None = None) -> str: ...
@@ -26,7 +26,7 @@ class Publisher(Protocol):
         self, resolutions: str = "", *, auto_merge: bool = False
     ) -> str: ...
     def enable_auto_merge(self, pull_request: str, head: str) -> None: ...
-    def publish(self, directory: Path) -> None: ...
+    def open_sync_pr(self, directory: Path) -> None: ...
 
 
 class Exporter:
@@ -68,7 +68,7 @@ def load(name: str) -> object:
 
 
 exporter = Exporter()
-publisher = cast(Publisher, load("publish"))
+sync_pr = cast(SyncPr, load("open-sync-pr"))
 
 
 class ExportTests(unittest.TestCase):
@@ -158,7 +158,7 @@ class CandidateFixture:
         _ = (self.source / "code").write_text("original\n")
         self.commit()
         self.base: str = self.git("rev-parse", "HEAD")
-        self.destination: Path = self.root / "publisher"
+        self.destination: Path = self.root / "sync-pr"
         _ = subprocess.run(
             ["git", "clone", "-q", str(self.source), str(self.destination)], check=True
         )
@@ -178,13 +178,13 @@ class CandidateFixture:
         _ = self.git(
             "bundle", "create", str(bundle), "refs/heads/sync/upstream", "^master"
         )
-        original_run = publisher.run
+        original_run = sync_pr.run
 
         def run_in_destination(*arguments: str) -> str:
             return original_run(*arguments, cwd=self.destination)
 
-        with patch.object(publisher, "run", side_effect=run_in_destination):
-            return publisher.validate(bundle, self.base)
+        with patch.object(sync_pr, "run", side_effect=run_in_destination):
+            return sync_pr.validate(bundle, self.base)
 
 
 class CandidateTests(unittest.TestCase):
@@ -258,7 +258,7 @@ class ReportingTests(unittest.TestCase):
                 with (
                     self.subTest(title=title, assignees=assignees),
                     patch.object(
-                        publisher,
+                        sync_pr,
                         "gh",
                         side_effect=[
                             json.dumps([
@@ -271,7 +271,7 @@ class ReportingTests(unittest.TestCase):
                         else ["[]", ""],
                     ) as gh,
                 ):
-                    publisher.report(title, "details")
+                    sync_pr.report(title, "details")
                     if assignees and title != "Upstream sync conflict":
                         self.assertEqual(gh.call_count, 2)
                         self.assertEqual(gh.call_args.args[:2], ("issue", "comment"))
@@ -300,8 +300,8 @@ class ReportingTests(unittest.TestCase):
             {"number": 78, "title": "Upstream sync requires security review"},
             {"number": 90, "title": "Upstream sync conflict investigation"},
         ]
-        with patch.object(publisher, "gh", return_value=json.dumps(issues)):
-            body = publisher.sync_pr_body()
+        with patch.object(sync_pr, "gh", return_value=json.dumps(issues)):
+            body = sync_pr.sync_pr_body()
         self.assertIn("Closes #12.", body)
         self.assertIn("Closes #34.", body)
         for number in (56, 78, 90):
@@ -314,7 +314,7 @@ class ReportingTests(unittest.TestCase):
             with (
                 self.subTest(title=title),
                 patch.object(
-                    publisher,
+                    sync_pr,
                     "gh",
                     side_effect=[
                         json.dumps([
@@ -329,7 +329,7 @@ class ReportingTests(unittest.TestCase):
                     ],
                 ) as gh,
             ):
-                publisher.report("Upstream sync conflict", "details")
+                sync_pr.report("Upstream sync conflict", "details")
                 self.assertEqual(gh.call_args.args[:3], ("issue", "comment", "42"))
                 self.assertEqual(
                     gh.call_args_list[-2].args,
@@ -348,7 +348,7 @@ class ReportingTests(unittest.TestCase):
         import json
 
         with patch.object(
-            publisher,
+            sync_pr,
             "gh",
             side_effect=[
                 json.dumps([
@@ -357,18 +357,18 @@ class ReportingTests(unittest.TestCase):
                 "",
             ],
         ) as gh:
-            publisher.report("Upstream sync conflict", "details")
+            sync_pr.report("Upstream sync conflict", "details")
             self.assertEqual(gh.call_args.args[:2], ("issue", "create"))
 
     def test_claude_resolution_is_escaped_into_the_pr_body(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            self.assertEqual(publisher.claude_resolution(directory), "")
+            self.assertEqual(sync_pr.claude_resolution(directory), "")
             _ = (directory / "resolution.md").write_text(
                 "Kept the fork's <script>hook</script> & adopted upstream.\n"
             )
-            details = publisher.claude_resolution(directory)
-        self.assertIn("## Resolved by Claude", details)
+            details = sync_pr.claude_resolution(directory)
+        self.assertIn("## Claude's resolution", details)
         self.assertIn("&lt;script&gt;hook&lt;/script&gt; &amp; adopted", details)
         self.assertNotIn("<script>", details)
 
@@ -382,11 +382,11 @@ class ReportingTests(unittest.TestCase):
                 ".github/workflows/new.yml\n.github/<x>.yml\n"
             )
             exporter.export(source, root / "export")
-            details = publisher.dropped_automation(root / "export")
+            details = sync_pr.dropped_automation(root / "export")
             self.assertIn("<code>.github/workflows/new.yml</code>", details)
             self.assertIn("<code>.github/&lt;x&gt;.yml</code>", details)
             _ = (root / "export" / "dropped-github.txt").write_text("")
-            self.assertEqual(publisher.dropped_automation(root / "export"), "")
+            self.assertEqual(sync_pr.dropped_automation(root / "export"), "")
 
     def test_resolution_lists_survive_export_and_appear_in_body(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -403,10 +403,10 @@ class ReportingTests(unittest.TestCase):
             ):
                 _ = (source / name).write_text(path + "\n")
             exporter.export(source, root / "export")
-            details = publisher.resolution_details(root / "export")
-            with patch.object(publisher, "gh", return_value="[]"):
-                body = publisher.sync_pr_body(details)
-                clean_body = publisher.sync_pr_body()
+            details = sync_pr.resolution_details(root / "export")
+            with patch.object(sync_pr, "gh", return_value="[]"):
+                body = sync_pr.sync_pr_body(details)
+                clean_body = sync_pr.sync_pr_body()
             for text in (
                 "Formatting-only",
                 "Formatted three-way",
@@ -453,10 +453,10 @@ class ReportingTests(unittest.TestCase):
             ],
         }
         with (
-            patch.object(publisher, "gh", side_effect=["42", json.dumps(details)]),
-            patch.object(publisher, "report") as report,
+            patch.object(sync_pr, "gh", side_effect=["42", json.dumps(details)]),
+            patch.object(sync_pr, "report") as report,
         ):
-            self.assertEqual(publisher.inspect_sync_pr(), "42")
+            self.assertEqual(sync_pr.inspect_sync_pr(), "42")
         self.assertEqual(report.call_args.args[0], "Upstream sync needs attention")
         self.assertIn("Failing checks: tests", cast(str, report.call_args.args[1]))
 
@@ -467,7 +467,7 @@ class ReportingTests(unittest.TestCase):
             with (
                 self.subTest(state=state),
                 patch.object(
-                    publisher,
+                    sync_pr,
                     "gh",
                     side_effect=[
                         "42",
@@ -477,9 +477,9 @@ class ReportingTests(unittest.TestCase):
                         }),
                     ],
                 ),
-                patch.object(publisher, "report") as report,
+                patch.object(sync_pr, "report") as report,
             ):
-                _ = publisher.inspect_sync_pr()
+                _ = sync_pr.inspect_sync_pr()
                 report.assert_called_once()
                 self.assertIn(state, cast(str, report.call_args.args[1]))
 
@@ -488,7 +488,7 @@ class ReportingTests(unittest.TestCase):
 
         with (
             patch.object(
-                publisher,
+                sync_pr,
                 "gh",
                 side_effect=[
                     "42",
@@ -500,28 +500,28 @@ class ReportingTests(unittest.TestCase):
                 ],
             ),
             patch.object(time, "sleep") as sleep,
-            patch.object(publisher, "report") as report,
+            patch.object(sync_pr, "report") as report,
         ):
-            _ = publisher.inspect_sync_pr()
+            _ = sync_pr.inspect_sync_pr()
             sleep.assert_called_once_with(10)
             report.assert_not_called()
 
     def test_successful_body_closes_all_reported_conflicts_on_merge(self):
         with patch.object(
-            publisher,
+            sync_pr,
             "gh",
             return_value='[ {"number":12,"title":"Upstream sync conflict"}, {"number":34,"title":"Upstream sync conflict (2026-09-09)"} ]',
         ) as gh:
-            body = publisher.sync_pr_body()
+            body = sync_pr.sync_pr_body()
         self.assertIn("Closes #12.\nCloses #34.\n", body)
         self.assertTrue(body.endswith("Release Notes:\n\n- N/A\n"))
         self.assertEqual(gh.call_count, 1)
         self.assertEqual(gh.call_args.args[:2], ("issue", "list"))
 
     def test_no_conflicts_needs_no_closing_references(self):
-        with patch.object(publisher, "gh", return_value="[]"):
-            body = publisher.sync_pr_body(auto_merge=True)
-            manual_body = publisher.sync_pr_body()
+        with patch.object(sync_pr, "gh", return_value="[]"):
+            body = sync_pr.sync_pr_body(auto_merge=True)
+            manual_body = sync_pr.sync_pr_body()
         self.assertNotIn("Closes #", body)
         self.assertIn("Auto-merge is enabled with a merge commit", body)
         self.assertNotIn("Auto-merge is enabled", manual_body)
@@ -550,9 +550,9 @@ class AutoMergeTests(unittest.TestCase):
             enabled = True
             return ""
 
-        with patch.object(publisher, "gh", side_effect=fake_gh):
-            publisher.enable_auto_merge("42", head)
-            publisher.enable_auto_merge("42", head)
+        with patch.object(sync_pr, "gh", side_effect=fake_gh):
+            sync_pr.enable_auto_merge("42", head)
+            sync_pr.enable_auto_merge("42", head)
 
         self.assertEqual(
             [arguments[:2] for arguments in commands],
@@ -573,7 +573,7 @@ class AutoMergeTests(unittest.TestCase):
             with (
                 self.subTest(head=current_head, state=state, method=method),
                 patch.object(
-                    publisher,
+                    sync_pr,
                     "gh",
                     return_value=json.dumps({
                         "headRefOid": current_head,
@@ -584,15 +584,15 @@ class AutoMergeTests(unittest.TestCase):
             ):
                 if error:
                     with self.assertRaisesRegex(ValueError, error):
-                        publisher.enable_auto_merge("42", head)
+                        sync_pr.enable_auto_merge("42", head)
                 else:
-                    publisher.enable_auto_merge("42", head)
+                    sync_pr.enable_auto_merge("42", head)
                 self.assertEqual(gh.call_count, 1)
                 self.assertEqual(gh.call_args.args[:2], ("pr", "view"))
 
 
-class PublishFlowTests(unittest.TestCase):
-    def test_fallback_token_publishes_without_requesting_auto_merge(self):
+class SyncPrFlowTests(unittest.TestCase):
+    def test_fallback_token_opens_the_pr_without_requesting_auto_merge(self):
         base, head = "a" * 40, "b" * 40
         for flag in (None, "false"):
             for existing, assignees in (
@@ -608,16 +608,17 @@ class PublishFlowTests(unittest.TestCase):
                     patch.dict(
                         os.environ,
                         {
-                            "GITHUB_REPOSITORY": publisher.REPOSITORY,
+                            "GITHUB_REPOSITORY": sync_pr.REPOSITORY,
                             "GITHUB_SHA": base,
                             "GH_TOKEN": "synthetic-github-token",
                         },
                         clear=True,
                     ),
-                    patch.object(publisher, "inspect_sync_pr", return_value=existing),
-                    patch.object(publisher, "validate", return_value=head),
+                    patch.object(sync_pr, "inspect_sync_pr", return_value=existing),
+                    patch.object(sync_pr, "open_pr_from", return_value=existing),
+                    patch.object(sync_pr, "validate", return_value=head),
                     patch.object(
-                        publisher,
+                        sync_pr,
                         "git",
                         side_effect=[
                             "",
@@ -628,18 +629,16 @@ class PublishFlowTests(unittest.TestCase):
                         ],
                     ) as git,
                     patch.object(
-                        publisher, "sync_pr_body", return_value="manual"
+                        sync_pr, "sync_pr_body", return_value="manual"
                     ) as body,
-                    patch.object(
-                        publisher, "gh", return_value=str(len(assignees))
-                    ) as gh,
-                    patch.object(publisher, "enable_auto_merge") as auto_merge,
+                    patch.object(sync_pr, "gh", return_value=str(len(assignees))) as gh,
+                    patch.object(sync_pr, "enable_auto_merge") as auto_merge,
                 ):
                     if flag is not None:
                         os.environ["SYNC_AUTO_MERGE"] = flag
                     directory = Path(temporary)
                     _ = (directory / "result").write_text("clean")
-                    publisher.publish(directory)
+                    sync_pr.open_sync_pr(directory)
                     self.assertEqual(
                         sum("push" in call.args for call in git.call_args_list), 1
                     )
@@ -658,17 +657,53 @@ class PublishFlowTests(unittest.TestCase):
                     body.assert_called_once_with("", auto_merge=False)
                     auto_merge.assert_not_called()
 
+    def test_moved_master_still_gets_the_pr(self):
+        base, head, master = "a" * 40, "b" * 40, "c" * 40
+        calls: list[tuple[str, ...]] = []
+
+        def fake_git(*arguments: str) -> str:
+            calls.append(arguments)
+            if arguments == ("rev-parse", "FETCH_HEAD"):
+                return master
+            if arguments[0] == "ls-remote" and any("push" in call for call in calls):
+                return f"{head} refs/heads/sync/upstream"
+            return ""
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(
+                os.environ,
+                {"GITHUB_REPOSITORY": sync_pr.REPOSITORY, "GITHUB_SHA": base},
+                clear=True,
+            ),
+            patch.object(sync_pr, "inspect_sync_pr", return_value=""),
+            patch.object(sync_pr, "validate", return_value=head),
+            patch.object(sync_pr, "git", side_effect=fake_git),
+            patch.object(sync_pr, "sync_pr_body", return_value="body"),
+            patch.object(sync_pr, "gh", return_value=""),
+        ):
+            directory = Path(temporary)
+            _ = (directory / "result").write_text("clean")
+            sync_pr.open_sync_pr(directory)
+        self.assertIn(("merge-base", "--is-ancestor", base, master), calls)
+        self.assertEqual(sum("push" in call for call in calls), 1)
+
     def test_incidents_remain_separate_through_successful_publication(self):
         import json
 
-        published_results = ("clean", "resolved", "claude", "auto_merge_failure")
+        pushed_results = (
+            "clean",
+            "resolved",
+            "claude",
+            "auto_merge_failure",
+            "foreign",
+        )
         for result in (
-            *published_results,
+            *pushed_results,
             "conflict",
             "partial",
             "unchanged",
             "security",
-            "foreign",
             "mismatched_head",
         ):
             for existing in ("", "42"):
@@ -774,55 +809,77 @@ class PublishFlowTests(unittest.TestCase):
                         patch.dict(
                             os.environ,
                             {
-                                "GITHUB_REPOSITORY": publisher.REPOSITORY,
+                                "GITHUB_REPOSITORY": sync_pr.REPOSITORY,
                                 "GITHUB_SHA": base,
                                 "GH_TOKEN": "synthetic-sync-token",
                                 "SYNC_AUTO_MERGE": "true",
                             },
                         ),
+                        patch.object(sync_pr, "inspect_sync_pr", return_value=existing),
                         patch.object(
-                            publisher, "inspect_sync_pr", return_value=existing
+                            sync_pr,
+                            "open_pr_from",
+                            return_value="" if result == "foreign" else existing,
                         ),
                         patch.object(
-                            publisher,
+                            sync_pr,
                             "validate",
                             side_effect=ValueError("automation changed")
                             if result == "security"
                             else None,
                             return_value=head,
                         ),
-                        patch.object(publisher, "git", side_effect=fake_git) as git,
-                        patch.object(publisher, "gh", side_effect=fake_gh),
-                        patch.object(publisher, "report") as report,
+                        patch.object(sync_pr, "git", side_effect=fake_git) as git,
+                        patch.object(sync_pr, "gh", side_effect=fake_gh),
+                        patch.object(sync_pr, "report") as report,
+                        patch("time.sleep"),
                     ):
                         if result in ("security", "mismatched_head", "partial"):
                             with self.assertRaises(ValueError):
-                                publisher.publish(directory)
+                                sync_pr.open_sync_pr(directory)
                         elif result == "auto_merge_failure":
                             with self.assertRaises(subprocess.CalledProcessError):
-                                publisher.publish(directory)
+                                sync_pr.open_sync_pr(directory)
                         else:
-                            publisher.publish(directory)
+                            sync_pr.open_sync_pr(directory)
                         pushes = [
                             call for call in git.call_args_list if "push" in call.args
                         ]
                         self.assertEqual(
                             len(pushes),
-                            int(result in (*published_results, "mismatched_head")),
+                            int(result in (*pushed_results, "mismatched_head")),
                         )
                         merge_calls = [
                             call for call in calls if call[:2] == ("pr", "merge")
                         ]
-                        published = [
+                        branch = (
+                            f"sync/upstream-{head[:12]}"
+                            if result == "foreign"
+                            else "sync/upstream"
+                        )
+                        target = "" if result == "foreign" else existing
+                        pr_calls = [
                             call
                             for call in calls
-                            if call[:2] == ("pr", "edit" if existing else "create")
+                            if call[:2] == ("pr", "edit" if target else "create")
                         ]
-                        if result in published_results:
+                        if result in pushed_results:
                             report.assert_not_called()
-                            self.assertEqual(len(published), 1)
-                            arguments = published[0]
-                            flag = "--add-assignee" if existing else "--assignee"
+                            self.assertEqual(len(pr_calls), 1)
+                            arguments = pr_calls[0]
+                            if not target:
+                                self.assertEqual(
+                                    arguments[arguments.index("--head") + 1], branch
+                                )
+                            self.assertEqual(
+                                pushes[0].args[-1], f"{head}:refs/heads/{branch}"
+                            )
+                            self.assertEqual(
+                                "has commits that `github-actions[bot]` did not make"
+                                in bodies[0],
+                                result == "foreign",
+                            )
+                            flag = "--add-assignee" if target else "--assignee"
                             self.assertEqual(
                                 arguments[arguments.index(flag) + 1], "kjanat"
                             )
@@ -832,7 +889,7 @@ class PublishFlowTests(unittest.TestCase):
                             self.assertNotIn("Closes #2.", bodies[0])
                             self.assertNotIn("Closes #3.", bodies[0])
                             self.assertEqual(
-                                "Resolved by Claude" in bodies[0], result == "claude"
+                                "Claude's resolution" in bodies[0], result == "claude"
                             )
                             self.assertEqual(
                                 merge_calls,
@@ -840,13 +897,14 @@ class PublishFlowTests(unittest.TestCase):
                                     (
                                         "pr",
                                         "merge",
-                                        existing or "sync/upstream",
+                                        target or branch,
                                         "--auto",
                                         "--merge",
                                         "--match-head-commit",
                                         head,
                                     )
-                                ],
+                                ]
+                                * (3 if result == "auto_merge_failure" else 1),
                             )
                             self.assertEqual(calls[-1], merge_calls[0])
                             self.assertEqual(
@@ -863,7 +921,6 @@ class PublishFlowTests(unittest.TestCase):
                             expected = {
                                 "conflict": "Upstream sync conflict",
                                 "security": "Upstream sync requires security review",
-                                "foreign": "Upstream sync needs attention",
                             }[result]
                             self.assertEqual(report.call_args.args[0], expected)
                             if result == "conflict":
@@ -871,7 +928,7 @@ class PublishFlowTests(unittest.TestCase):
                                     report.call_args.args[1], "Conflict details"
                                 )
                             self.assertFalse(bodies)
-                        if result not in published_results:
+                        if result not in pushed_results:
                             self.assertFalse(merge_calls)
 
 

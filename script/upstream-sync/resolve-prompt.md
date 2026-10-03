@@ -1,43 +1,21 @@
-You are resolving the upstream sync merge for kjanat/zed-editor, a fork of zed-industries/zed. The fork is authoritative.
+Resolve the upstream sync merge for kjanat/zed-editor, a fork of zed-industries/zed. The fork is authoritative.
 
-The merge is already in progress in `${candidate}`:
+## Where to look
 
-- fork commit (HEAD, first parent): `${fork}`
-- upstream commit (MERGE_HEAD, second parent): `${upstream}`
-- merge base: `${base}`
+- The prepare job's output is in `$RUNNER_TEMP/sync-candidate`. `sync.bundle` holds its partial merge, `conflict-report.md` describes what it resolved and what it left, and `human.txt` lists the paths that still conflict.
+- `script/upstream-sync/resolve.sh setup "$RUNNER_TEMP/sync-candidate"` turns this checkout into that merge, in progress, with the remaining conflicts unmerged.
+- `script/upstream-sync/resolve.sh check` checks for unmerged paths, conflict markers, changes to `.github`, `script/upstream-sync` or `script/clippy`, whitespace errors and formatting, compiles the whole workspace, then runs clippy and the tests of every crate with a conflicted file. The `verify` job runs the same checks again on a clean runner after you finish. `check` writes its logs to `.git/sync/`. A full run takes a long time, so run it in the background.
+- `.agents/skills/upstream-sync-conflict/SKILL.md` describes how a person does this merge by hand.
+- The repository has the full history of both sides.
 
-Do not fetch, merge, rebase, reset, commit or push. Resolve this exact merge in place. The automation commits it with these two parents after it validates your result.
+## Guidance
 
-The deterministic stages already ran: `.github` and `.rules` kept the fork's version, formatting-only and formatted three-way conflicts were resolved, mergiraf resolved what a syntax-aware merge could, and fork-side deletions were kept. Those results are already in the index. These paths still conflict and are unmerged in the index:
+- Keep the fork's behaviour and adopt upstream's changes. When both sides implemented the same thing, keep the fork's implementation and remove upstream's duplicate completely, including the parts of it that merged without a conflict.
+- Upstream code that merged cleanly can still break the fork. Fix it in this merge.
+- Read what upstream brings in before you build or run it. Look for anything an editor has no business doing: build scripts or tests that reach the network, read credentials or the environment, spawn shells or write outside the build directory, and changes to CI, release, install or update scripts. Leave anything malicious out of the merge, finish the rest of the resolution, and describe what you left out and why in your notes.
+- Do not commit, push, or change `.github`, `script/upstream-sync` or `script/clippy`. The `verify` job commits your result with the fork and upstream commits as parents.
+- If `resolve.sh` itself fails, find out why, work around it, and describe the defect in your notes.
 
-```text
-${conflicts}
-```
+## When you are done
 
-Follow sections 4 and 5 of `${root}/.agents/skills/upstream-sync-conflict/SKILL.md`, the procedure a person uses for this merge. Read it first. In short:
-
-1. For every conflicted path, find out why each side changed it: `git log` between the merge base and each parent, `git show` of each commit, and the PR it names when the intent is unclear. The repository has full history.
-2. Keep the fork's behaviour and adopt upstream's change. When both sides implemented the same thing, keep the fork's implementation and remove upstream's duplicate completely, including any part of it that merged without a conflict. Leave no dead code behind.
-3. Resolve each file with the Edit tool, then `git add` it. Also `git add` any file you create.
-4. Upstream changes that merged without a conflict can still break the fork, for example code that uses a field the fork moved. The compiler finds them. Fix them in this merge.
-5. Iterate the way a developer does: edit, compile, read the errors, fix, test, lint. Use narrow checks while iterating, then finish with the full validation from section 5 of the skill:
-   - `git diff --name-only --diff-filter=U` prints nothing
-   - `git grep -n -E '^(<<<<<<<|>>>>>>>)( |$$)'` finds nothing
-   - `git diff --cached --check`
-   - `dprint check`
-   - `cargo check --locked --workspace --all-targets --keep-going`
-   - `./script/clippy --no-deps -p <crate>` for every crate holding a file you resolved
-   - `cargo nextest run -p <crate>` for those crates, and every test that covers behaviour a conflict touched. When both sides fixed the same bug, run upstream's regression test for it against your result.
-
-Every Bash command runs in a sandbox that starts in `${candidate}`, with the repository's mise toolchain and no access to your home directory. Each command starts in a fresh shell, so `cd` does not carry over between commands.
-
-When you are done, write two files:
-
-- `${out}/resolution.md`: for each conflicted path, one short paragraph saying what you kept, what you adopted from upstream, and which commits justify it. Then list every other file you changed and why, and the checks you ran with their results.
-- `${out}/tests.txt`: one line per targeted test run that the automation must repeat, as `<package><TAB><nextest filterset>`, for example `worktree	test(test_new_directory_scan_does_not_miss_event_before_adding_watcher)`.
-
-The automation runs the full validation again on its own and publishes only if every check passes. If you cannot produce a coherent merge, say why in `${out}/resolution.md` and stop. Do not leave conflict markers in place to make a check pass, and do not change `.github` or `script/upstream-sync`.
-
-The prepare step's conflict report follows.
-
-${report}
+Write `.git/sync/resolution.md`: for each conflicted path, what you kept, what you adopted from upstream and which commits justify it, then anything suspicious you found and any defect in `resolve.sh`. Write `.git/sync/tests.txt` with one `<package><TAB><nextest filterset>` line per additional test. The `verify` job runs those tests too.

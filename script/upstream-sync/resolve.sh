@@ -2,10 +2,14 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-root="$(git -C "${here}" rev-parse --show-toplevel)"
+root="$(git rev-parse --show-toplevel)"
+git_dir="$(git -C "${root}" rev-parse --absolute-git-dir)"
+state="${git_dir}/sync"
 marker_pattern='^(<<<<<<<|>>>>>>>)( |$)'
 bot_name='github-actions[bot]'
 bot_email='41898282+github-actions[bot]@users.noreply.github.com'
+export GIT_AUTHOR_NAME="${bot_name}" GIT_AUTHOR_EMAIL="${bot_email}"
+export GIT_COMMITTER_NAME="${bot_name}" GIT_COMMITTER_EMAIL="${bot_email}"
 
 die() {
 	echo "resolve.sh: $*" >&2
@@ -14,243 +18,95 @@ die() {
 
 usage() {
 	cat >&2 <<'EOF'
-usage: resolve.sh setup <prepare-output> <work>
-       resolve.sh validate <work>
-       resolve.sh package <work> <output> <prepare-output>
+usage: resolve.sh setup <prepare-output>
+       resolve.sh check
+       resolve.sh export <prepare-output> <output>
+       resolve.sh verify <prepare-output> <resolver-output> <output>
 EOF
 	exit 2
 }
 
-in_sandbox() {
-	SYNC_WORK="${work}" "${here}/sandbox-exec" "$1"
+repository() {
+	git -C "${root}" -c core.hooksPath=/dev/null "$@"
 }
 
-shas() {
-	local key value
-	while IFS='=' read -r key value; do
-		case "${key}" in
-			fork) fork="${value}" ;;
-			upstream) upstream="${value}" ;;
-			base) base="${value}" ;;
-		esac
-	done <"${work}/in/shas"
+merge_shas() {
+	local artifact="$1" merge
+	repository fetch -q "${artifact}/sync.bundle" "+refs/heads/sync/upstream:refs/sync/prepared"
+	prepared="$(repository rev-parse refs/sync/prepared)"
+	merge="$(repository rev-list --min-parents=2 --max-count=1 "${prepared}")"
+	[[ -n "${merge}" ]] || die "the prepared candidate holds no merge commit"
+	fork="$(repository rev-parse "${merge}^1")"
+	upstream="$(repository rev-parse "${merge}^2")"
+	base="$(repository merge-base "${fork}" "${upstream}")"
 }
 
-write_sandbox_config() {
-	local srt mise_data rustup_home
-	srt="$(mise which -C "${root}" srt)"
-	mise_data="${MISE_DATA_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/mise}"
-	rustup_home="${RUSTUP_HOME:-${HOME}/.rustup}"
-	printf '%s\n' "${srt}" >"${work}/sandbox/srt-path"
-
-	mise env -C "${root}" --json >"${work}/sandbox/mise-env.json"
-	python3 - "${work}" "${mise_data}" "${rustup_home}" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-work, mise_data, rustup_home = sys.argv[1:]
-home = os.path.realpath(os.path.expanduser("~"))
-tool_env = json.loads(Path(work, "sandbox", "mise-env.json").read_text())
-path = tool_env.get("PATH", os.environ["PATH"])
-
-environment = {
-    key: value
-    for key, value in tool_env.items()
-    if key == "PATH" or key.startswith(("CARGO_", "RUST", "WASI_"))
-}
-environment.update({
-    "PATH": path,
-    "HOME": f"{work}/home",
-    "TMPDIR": f"{work}/tmp",
-    "CARGO_HOME": f"{work}/cargo",
-    "RUSTUP_HOME": rustup_home,
-    "DPRINT_CACHE_DIR": f"{work}/dprint-cache",
-    "MISE_DATA_DIR": mise_data,
-    "MISE_CACHE_DIR": f"{work}/mise-cache",
-    "MISE_STATE_DIR": f"{work}/mise-state",
-    "MISE_TRUSTED_CONFIG_PATHS": f"{work}/candidate",
-    "MISE_YES": "1",
-    "CI": "true",
-    "GITHUB_ACTIONS": "true",
-    "TERM": "dumb",
-    "LANG": "C.UTF-8",
-})
-Path(work, "sandbox", "env").write_text(
-    "".join(f"{key}={value}\n" for key, value in sorted(environment.items()))
-)
-
-readable = {os.path.realpath(mise_data), os.path.realpath(rustup_home)}
-for entry in path.split(os.pathsep):
-    resolved = os.path.realpath(entry)
-    if entry and (resolved == home or resolved.startswith(home + os.sep)):
-        readable.add(resolved)
-writable = [
-    f"{work}/{name}"
-    for name in (
-        "candidate",
-        "home",
-        "tmp",
-        "cargo",
-        "dprint-cache",
-        "mise-cache",
-        "mise-state",
-        "out",
-    )
-]
-settings = {
-    "network": {
-        "allowedDomains": [
-            "crates.io",
-            "index.crates.io",
-            "static.crates.io",
-            "github.com",
-            "codeload.github.com",
-            "objects.githubusercontent.com",
-            "release-assets.githubusercontent.com",
-            "plugins.dprint.dev",
-            "cdn.jsdelivr.net",
-            "registry.npmjs.org",
-        ],
-        "deniedDomains": [],
-    },
-    "filesystem": {
-        "denyRead": [home, "/root", "/var/run/docker.sock", "/run/docker.sock"],
-        "allowRead": sorted(readable),
-        "allowWrite": writable,
-        "denyWrite": [],
-    },
-}
-Path(work, "sandbox", "srt.json").write_text(json.dumps(settings, indent=2) + "\n")
-PY
-}
-
-write_claude_settings() {
-	python3 - "${work}" "${root}" "${here}" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-work, root, here = sys.argv[1:]
-home = os.path.realpath(os.path.expanduser("~"))
-protected = [root, f"{home}/.claude", f"{work}/sandbox", f"{work}/in"]
-deny = ["Monitor", "PowerShell"]
-for path in protected:
-    for tool in ("Edit", "Write", "NotebookEdit"):
-        deny.append(f"{tool}(/{path}/**)")
-settings = {
-    "permissions": {"deny": deny},
-    "disableAllHooks": False,
-    "enableAllProjectMcpServers": False,
-    "hooks": {
-        "PreToolUse": [
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {"type": "command", "command": f"{here}/sandbox-hook {work}"}
-                ],
-            }
-        ]
-    },
-}
-Path(work, "sandbox", "claude-settings.json").write_text(
-    json.dumps(settings, indent=2) + "\n"
-)
-PY
-}
-
-write_prompt() {
-	shas
-	python3 - "${work}" "${root}" "${fork}" "${upstream}" "${base}" <<'PY'
-import sys
-from pathlib import Path
-from string import Template
-
-work, root, fork, upstream, base = sys.argv[1:]
-template = Template(Path(root, "script/upstream-sync/resolve-prompt.md").read_text())
-inputs = Path(work, "in")
-prompt = template.substitute(
-    fork=fork,
-    upstream=upstream,
-    base=base,
-    work=work,
-    candidate=f"{work}/candidate",
-    out=f"{work}/out",
-    root=root,
-    conflicts=inputs.joinpath("human.txt").read_text().strip() or "(none)",
-    report=inputs.joinpath("conflict-report.md").read_text(),
-)
-Path(work, "prompt.md").write_text(prompt)
-PY
+require_fork_checkout() {
+	local trusted
+	trusted="$(repository rev-parse HEAD)"
+	[[ "${fork}" == "${trusted}" ]] || die "the candidate merges ${fork}, not the trusted fork commit ${trusted}"
 }
 
 setup() {
-	local artifact="$1" head merge fork upstream base trusted file stage revision entry mode object
-	work="$2"
-	artifact="$(cd "${artifact}" && pwd -P)"
+	local artifact file stage revision entry mode object
+	artifact="$(cd "$1" && pwd -P)"
 	[[ "$(<"${artifact}/result")" == partial ]] || die "prepare did not report a partial merge"
-	mkdir -p "${work}"
-	work="$(cd "${work}" && pwd -P)"
-	[[ ! -e "${work}/candidate" ]] || die "${work}/candidate already exists"
-	mkdir -p "${work}"/{sandbox,home,tmp,cargo,dprint-cache,mise-cache,mise-state,in/lists,out}
-	cp "${artifact}/conflict-report.md" "${artifact}/human.txt" "${work}/in/"
-	cp "${artifact}"/{formatting-only,formatted-three-way,structured,lockfiles,fork-deleted,dropped-github}.txt "${work}/in/lists/"
+	[[ ! -e "${git_dir}/MERGE_HEAD" ]] || die "a merge is already in progress"
+	merge_shas "${artifact}"
+	require_fork_checkout
+	mkdir -p "${state}"
+	cp "${artifact}/human.txt" "${state}/human.txt"
 
-	git clone -q --no-local --no-checkout "${root}" "${work}/candidate"
-	git -C "${work}/candidate" config core.hooksPath /dev/null
-	git -C "${work}/candidate" fetch -q "${artifact}/sync.bundle" "+refs/heads/sync/upstream:refs/sync/candidate"
-	head="$(git -C "${work}/candidate" rev-parse refs/sync/candidate)"
-	merge="$(git -C "${work}/candidate" rev-list --min-parents=2 --max-count=1 "${head}")"
-	[[ -n "${merge}" ]] || die "the candidate holds no merge commit"
-	fork="$(git -C "${work}/candidate" rev-parse "${merge}^1")"
-	upstream="$(git -C "${work}/candidate" rev-parse "${merge}^2")"
-	trusted="$(git -C "${root}" rev-parse HEAD)"
-	[[ "${fork}" == "${trusted}" ]] || die "the candidate merges ${fork}, not the trusted fork commit ${trusted}"
-	base="$(git -C "${work}/candidate" merge-base "${fork}" "${upstream}")"
-	printf 'fork=%s\nupstream=%s\nbase=%s\n' "${fork}" "${upstream}" "${base}" >"${work}/in/shas"
-
-	git -C "${work}/candidate" checkout -q --detach "${fork}"
-	git -C "${work}/candidate" read-tree -u --reset "${head}"
-	git -C "${work}/candidate" update-ref MERGE_HEAD "${upstream}"
-	printf 'Merge upstream main\n' >"${work}/candidate/.git/MERGE_MSG"
+	repository read-tree -u --reset "${prepared}"
+	printf '%s\n' "${upstream}" >"${git_dir}/MERGE_HEAD"
+	printf 'Merge upstream main\n' >"${git_dir}/MERGE_MSG"
 	while IFS= read -r file; do
 		[[ -n "${file}" ]] || continue
-		git -C "${work}/candidate" update-index --force-remove -- "${file}"
+		repository update-index --force-remove -- "${file}"
 		for stage in 1 2 3; do
 			case "${stage}" in
 				1) revision="${base}" ;;
 				2) revision="${fork}" ;;
 				3) revision="${upstream}" ;;
 			esac
-			entry="$(git -C "${work}/candidate" ls-tree "${revision}" -- "${file}")"
+			entry="$(repository ls-tree "${revision}" -- "${file}")"
 			if [[ -n "${entry}" ]]; then
 				read -r mode _ object <<<"${entry%%$'\t'*}"
 				printf '%s %s %s\t%s\n' "${mode}" "${object}" "${stage}" "${file}"
 			fi
-		done | git -C "${work}/candidate" update-index --index-info
-	done <"${work}/in/human.txt"
+		done | repository update-index --index-info
+	done <"${state}/human.txt"
 
-	cp "${root}/script/clippy" "${work}/sandbox/clippy"
 	mise install -C "${root}" --include-lazy
-	write_sandbox_config
-	write_claude_settings
-	in_sandbox 'cargo fetch'
-	in_sandbox 'dprint output-resolved-config >/dev/null'
-	write_prompt
+	printf 'fork %s\nupstream %s\nbase %s\n' "${fork}" "${upstream}" "${base}"
+	repository diff --name-only --diff-filter=U
+}
+
+in_root() {
+	(cd "${root}" && bash -o pipefail -c "$1")
+}
+
+run_check() {
+	local name="$1" command="$2" status=0
+	printf '\n$ %s\n' "${command}" | tee -a "${state}/validation.log"
+	in_root "${command}" 2>&1 | tee "${state}/check.log" || status=$?
+	cat "${state}/check.log" >>"${state}/validation.log"
+	if ((status != 0)); then
+		printf '%s\n' "${name}" >"${state}/failed-check"
+		return 1
+	fi
 }
 
 packages_of() {
-	in_sandbox "cargo metadata --no-deps --format-version 1 >${work}/out/metadata.json"
-	python3 - "${work}" <<'PY'
+	in_root "cargo metadata --no-deps --format-version 1 >$(printf '%q' "${state}/metadata.json")"
+	python3 - "${root}" "${state}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-work = Path(sys.argv[1])
-candidate = (work / "candidate").resolve()
-metadata = json.loads((work / "out/metadata.json").read_text())
+root = Path(sys.argv[1]).resolve()
+state = Path(sys.argv[2])
+metadata = json.loads((state / "metadata.json").read_text())
 roots = sorted(
     (
         Path(package["manifest_path"]).resolve().parent,
@@ -260,9 +116,9 @@ roots = sorted(
     if package["id"] in metadata["workspace_members"]
 )
 found = set()
-for line in (work / "in/human.txt").read_text().splitlines():
-    path = (candidate / line).resolve()
-    owners = [(len(root.parts), name) for root, name in roots if path.is_relative_to(root)]
+for line in (state / "human.txt").read_text().splitlines():
+    path = (root / line).resolve()
+    owners = [(len(owner.parts), name) for owner, name in roots if path.is_relative_to(owner)]
     if owners:
         found.add(max(owners)[1])
 print(" ".join(sorted(found)))
@@ -270,31 +126,19 @@ PY
 }
 
 check() {
-	local name="$1" command="$2"
-	printf '\n$ %s\n' "${command}" >>"${work}/out/validation.log"
-	if ! in_sandbox "${command}" >"${work}/out/check.log" 2>&1; then
-		cat "${work}/out/check.log" >>"${work}/out/validation.log"
-		printf '%s\n' "${name}" >"${work}/out/failed-check"
-		cp "${work}/out/check.log" "${work}/out/failed-check.log"
-		return 1
-	fi
-	cat "${work}/out/check.log" >>"${work}/out/validation.log"
-}
+	local fork packages package_args package tree test_package expression
+	fork="$(repository rev-parse HEAD)"
+	mkdir -p "${state}"
+	rm -f "${state}/validated-tree" "${state}/failed-check" "${state}/check.log"
+	: >"${state}/validation.log"
 
-validate() {
-	local packages package_args tree test_package expression
-	work="$(cd "$1" && pwd -P)"
-	shas
-	rm -f "${work}/out/validated-tree" "${work}/out/failed-check" "${work}/out/failed-check.log"
-	: >"${work}/out/validation.log"
-
-	check "unmerged paths" "[[ -z \"\$(git diff --name-only --diff-filter=U)\" ]] || { git diff --name-only --diff-filter=U; exit 1; }" || return 1
-	check "staging" 'git add -u' || return 1
-	check "conflict markers" "! git grep -n -E '${marker_pattern}'" || return 1
-	check "automation unchanged" "git diff --cached --quiet ${fork} -- .github script/upstream-sync || { git diff --cached --stat ${fork} -- .github script/upstream-sync; exit 1; }" || return 1
-	check "whitespace" 'git diff --cached --check' || return 1
-	check "formatting" 'dprint check' || return 1
-	check "workspace compile" 'cargo check --locked --workspace --all-targets --keep-going' || return 1
+	run_check "unmerged paths" "[[ -z \"\$(git diff --name-only --diff-filter=U)\" ]] || { git diff --name-only --diff-filter=U; exit 1; }" || return 1
+	run_check "staging" 'git add -u' || return 1
+	run_check "conflict markers" "! git grep -n -E '${marker_pattern}'" || return 1
+	run_check "automation unchanged" "git diff --cached --quiet ${fork} -- .github script/upstream-sync script/clippy || { git diff --cached --stat ${fork} -- .github script/upstream-sync script/clippy; exit 1; }" || return 1
+	run_check "whitespace" 'git diff --cached --check' || return 1
+	run_check "formatting" 'dprint check' || return 1
+	run_check "workspace compile" 'cargo check --locked --workspace --all-targets --keep-going' || return 1
 
 	packages="$(packages_of)"
 	if [[ -n "${packages}" ]]; then
@@ -302,83 +146,165 @@ validate() {
 		for package in ${packages}; do
 			package_args+=" -p ${package}"
 		done
-		check "lint" "bash ${work}/sandbox/clippy --no-deps${package_args}" || return 1
-		check "tests" "cargo nextest run --locked --no-fail-fast${package_args}" || return 1
+		run_check "lint" "bash $(printf '%q' "${here}/../clippy") --no-deps${package_args}" || return 1
+		run_check "tests" "cargo nextest run --locked --no-fail-fast${package_args}" || return 1
 	fi
-	if [[ -s "${work}/out/tests.txt" ]]; then
+	if [[ -s "${state}/tests.txt" ]]; then
 		while IFS=$'\t' read -r test_package expression; do
 			[[ -n "${test_package}" && -n "${expression}" ]] || continue
-			check "targeted tests" "cargo nextest run --locked --no-fail-fast -p $(printf '%q' "${test_package}") -E $(printf '%q' "${expression}")" || return 1
-		done <"${work}/out/tests.txt"
+			run_check "targeted tests" "cargo nextest run --locked --no-fail-fast -p $(printf '%q' "${test_package}") -E $(printf '%q' "${expression}")" || return 1
+		done <"${state}/tests.txt"
 	fi
 
-	tree="$(git -C "${work}/candidate" write-tree)"
-	printf '%s\n' "${tree}" >"${work}/out/validated-tree"
+	tree="$(repository write-tree)"
+	printf '%s\n' "${tree}" >"${state}/validated-tree"
+	printf '\nEvery check passed for tree %s.\n' "${tree}"
+}
+
+export_unfinished() {
+	local output="$1" index="${state}/unfinished.index" tree commit
+	mkdir -p "${state}"
+	rm -f "${index}"
+	GIT_INDEX_FILE="${index}" repository read-tree HEAD
+	GIT_INDEX_FILE="${index}" repository add -A
+	tree="$(GIT_INDEX_FILE="${index}" repository write-tree)"
+	commit="$(repository commit-tree "${tree}" -p HEAD -m "Unfinished upstream merge of ${upstream}")"
+	repository update-ref refs/sync/unfinished "${commit}"
+	repository bundle create "${output}/unfinished.bundle" refs/sync/unfinished "^${fork}"
+	echo "resolve.sh: saved the working tree as ${commit} in unfinished.bundle" >&2
+}
+
+export_resolution() {
+	local artifact output="$2" name tree commit
+	artifact="$(cd "$1" && pwd -P)"
+	mkdir -p "${output}"
+	for name in resolution.md tests.txt; do
+		if [[ -f "${state}/${name}" ]]; then
+			cp "${state}/${name}" "${output}/${name}"
+		fi
+	done
+	merge_shas "${artifact}"
+	if [[ "$(cat "${git_dir}/MERGE_HEAD" 2>/dev/null)" != "${upstream}" ]] \
+		&& ! { repository merge-base --is-ancestor "${fork}" HEAD && repository merge-base --is-ancestor "${upstream}" HEAD; }; then
+		echo "resolve.sh: HEAD neither merges nor contains ${upstream}, so there is no resolution to export" >&2
+		export_unfinished "${output}"
+		return 0
+	fi
+	if ! tree="$(repository write-tree)"; then
+		echo "resolve.sh: the index still has unmerged paths, so there is no resolution to export" >&2
+		export_unfinished "${output}"
+		return 0
+	fi
+	commit="$(repository commit-tree "${tree}" -p "${fork}" -p "${upstream}" -m 'Resolve the upstream merge')"
+	repository update-ref refs/sync/resolved "${commit}"
+	repository bundle create "${output}/resolution.bundle" refs/sync/resolved "^${fork}"
 }
 
 bounded() {
 	LC_ALL=C awk -v limit="$1" '{ size += length($0) + 1; if (size > limit) exit; print }'
 }
 
-package() {
-	local output="$2" artifact="$3" tree="" validated="" commit fence
-	work="$1"
-	mkdir -p "${output}" "${work}/out"
-	work="$(cd "${work}" && pwd -P)"
-	if [[ ! -s "${work}/in/conflict-report.md" ]]; then
-		mkdir -p "${work}/in"
-		cp "${artifact}/conflict-report.md" "${work}/in/conflict-report.md"
+fenced() {
+	local fence
+	fence="$(bash "${here}/prepare.sh" --markdown-fence <"$1")"
+	printf '%s\n' "${fence}"
+	cat "$1"
+	printf '%s\n' "${fence}"
+}
+
+verify() {
+	local artifact resolver output="$3" resolved="" tree="" commit file
+	artifact="$(cd "$1" && pwd -P)"
+	resolver="$2"
+	mkdir -p "${output}" "${state}"
+	rm -f "${state}/failed-check" "${state}/failure-reason" "${state}/check.log" "${state}/tests.txt" "${state}/validated-tree"
+	merge_shas "${artifact}"
+	require_fork_checkout
+	cp "${artifact}/human.txt" "${state}/human.txt"
+	if [[ -f "${resolver}/tests.txt" ]]; then
+		bounded 8000 <"${resolver}/tests.txt" >"${state}/tests.txt"
 	fi
-	if [[ -s "${work}/in/shas" && -s "${work}/out/validated-tree" ]]; then
-		shas
-		tree="$(git -C "${work}/candidate" write-tree)"
-		validated="$(<"${work}/out/validated-tree")"
+
+	if [[ -s "${resolver}/resolution.bundle" ]] \
+		&& repository fetch -q "${resolver}/resolution.bundle" "+refs/sync/resolved:refs/sync/resolved"; then
+		resolved="$(repository rev-parse refs/sync/resolved)"
+		if [[ "$(repository rev-list --parents -n 1 "${resolved}")" != "${resolved} ${fork} ${upstream}" ]]; then
+			printf "Claude's merge commit does not have %s and %s as its parents.\n" "${fork}" "${upstream}" >"${state}/failure-reason"
+		elif ! repository diff --quiet "${fork}" "${resolved}" -- .github script/upstream-sync script/clippy; then
+			{
+				printf "Claude's merge changes workflow or sync script files:\n\n"
+				repository diff --name-only "${fork}" "${resolved}" -- .github script/upstream-sync script/clippy \
+					| while IFS= read -r file; do printf -- "- \`%s\`\n" "${file}"; done
+			} >"${state}/failure-reason"
+		else
+			repository read-tree -u --reset "${resolved}"
+			if (cd "${root}" && bash "${here}/resolve.sh" check); then
+				tree="$(<"${state}/validated-tree")"
+			fi
+		fi
 	fi
-	if [[ -n "${validated}" && "${tree}" == "${validated}" ]]; then
+
+	if [[ -n "${tree}" ]]; then
 		commit="$(
 			{
 				printf 'Merge upstream and resolve sync conflicts\n\n'
 				printf 'Merge upstream %s into %s. Claude resolved the conflicts that\n' "${upstream}" "${fork}"
 				printf 'formatting, mergiraf and the lockfile rules could not.\n'
-			} | GIT_AUTHOR_NAME="${bot_name}" GIT_AUTHOR_EMAIL="${bot_email}" \
-				GIT_COMMITTER_NAME="${bot_name}" GIT_COMMITTER_EMAIL="${bot_email}" \
-				git -C "${work}/candidate" commit-tree "${tree}" -p "${fork}" -p "${upstream}"
+			} | repository commit-tree "${tree}" -p "${fork}" -p "${upstream}"
 		)"
-		git -C "${work}/candidate" update-ref refs/heads/sync/upstream "${commit}"
-		git -C "${work}/candidate" bundle create "${output}/sync.bundle" refs/heads/sync/upstream "^${fork}"
-		if [[ -s "${work}/out/resolution.md" ]]; then
-			bounded 15000 <"${work}/out/resolution.md" >"${output}/resolution.md"
+		repository update-ref refs/heads/sync/upstream "${commit}"
+		repository bundle create "${output}/sync.bundle" refs/heads/sync/upstream "^${fork}"
+		if [[ -s "${resolver}/resolution.md" ]]; then
+			bounded 13000 <"${resolver}/resolution.md" >"${output}/resolution.md"
 		else
 			printf 'Claude left no summary of its resolution.\n' >"${output}/resolution.md"
 		fi
-		cp "${work}/in/lists/"*.txt "${output}/"
+		repository diff --name-only "${prepared}" "${resolved}" | grep -vxF -f "${state}/human.txt" >"${state}/beyond.txt" || true
+		if [[ -s "${state}/beyond.txt" ]]; then
+			{
+				printf '\n### Files changed beyond the conflicts\n\n'
+				while IFS= read -r file; do
+					printf -- "- \`%s\`\n" "${file}"
+				done <"${state}/beyond.txt"
+			} | bounded 2500 >>"${output}/resolution.md"
+		fi
+		cp "${artifact}"/{formatting-only,formatted-three-way,structured,lockfiles,fork-deleted,dropped-github}.txt "${output}/"
 		printf 'resolved\n' >"${output}/result"
 		return 0
 	fi
 
 	{
 		printf '## Automatic resolution failed\n\n'
-		if [[ -s "${work}/out/failed-check" ]]; then
-			printf 'Validation failed at **%s**.\n\n' "$(<"${work}/out/failed-check")"
-			if [[ -s "${work}/out/failed-check.log" ]]; then
-				tail -n 80 "${work}/out/failed-check.log" | cut -c1-400 >"${work}/out/failed-tail.log"
-				fence="$(bash "${here}/prepare.sh" --markdown-fence <"${work}/out/failed-tail.log")"
-				printf '<details><summary>Last 80 lines</summary>\n\n%s\n' "${fence}"
-				cat "${work}/out/failed-tail.log"
-				printf '%s\n</details>\n\n' "${fence}"
-			fi
-		elif [[ -n "${validated}" ]]; then
-			printf 'The candidate changed after validation.\n\n'
-		elif [[ -s "${work}/in/shas" ]]; then
-			printf 'Validation did not run.\n\n'
+		if [[ -s "${state}/failed-check" ]]; then
+			printf 'Validation failed at **%s**.\n\n' "$(<"${state}/failed-check")"
+			tail -n 80 "${state}/check.log" | cut -c1-400 >"${state}/failed-tail.log"
+			printf '<details><summary>Last 80 lines</summary>\n\n'
+			fenced "${state}/failed-tail.log"
+			printf '</details>\n\n'
+		elif [[ -s "${state}/failure-reason" ]]; then
+			cat "${state}/failure-reason"
+			printf '\n'
 		else
-			printf 'The resolver could not rebuild the merge.\n\n'
+			printf 'Claude produced no merge.\n\n'
 		fi
-	} >"${work}/out/failure.md"
+		if [[ -s "${resolver}/resolution.md" ]]; then
+			bounded 15000 <"${resolver}/resolution.md" >"${state}/notes.md"
+			printf "<details><summary>Claude's notes</summary>\n\n"
+			fenced "${state}/notes.md"
+			printf '</details>\n\n'
+		fi
+		for file in resolution.bundle unfinished.bundle; do
+			if [[ -s "${resolver}/${file}" && -n "${GITHUB_RUN_ID:-}" ]]; then
+				printf "Claude's work stays in \`%s\` in the \`upstream-sync-resolution\` artifact of %s/%s/actions/runs/%s for 30 days.\n\n" \
+					"${file}" "${GITHUB_SERVER_URL:-https://github.com}" "${GITHUB_REPOSITORY:-kjanat/zed-editor}" "${GITHUB_RUN_ID}"
+			fi
+		done
+		printf '<!-- claude-attempt fork=%s upstream=%s -->\n' "${fork}" "${upstream}"
+	} >"${state}/failure.md"
 	{
-		bounded $((59000 - $(wc -c <"${work}/out/failure.md"))) <"${work}/in/conflict-report.md"
+		bounded $((59000 - $(wc -c <"${state}/failure.md"))) <"${artifact}/conflict-report.md"
 		printf '\n'
-		cat "${work}/out/failure.md"
+		cat "${state}/failure.md"
 	} >"${output}/issue-body.md"
 	printf 'conflict\n' >"${output}/result"
 }
@@ -388,16 +314,20 @@ command="$1"
 shift
 case "${command}" in
 	setup)
-		[[ $# -eq 2 ]] || usage
+		[[ $# -eq 1 ]] || usage
 		setup "$@"
 		;;
-	validate)
-		[[ $# -eq 1 ]] || usage
-		validate "$@"
+	check)
+		[[ $# -eq 0 ]] || usage
+		check
 		;;
-	package)
+	export)
+		[[ $# -eq 2 ]] || usage
+		export_resolution "$@"
+		;;
+	verify)
 		[[ $# -eq 3 ]] || usage
-		package "$@"
+		verify "$@"
 		;;
 	*) usage ;;
 esac

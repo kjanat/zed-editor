@@ -1,4 +1,4 @@
-"""Publish a candidate as Git objects."""
+"""Open or update the upstream sync PR, or the conflict issue, from a validated candidate."""
 
 import html
 import json
@@ -42,7 +42,25 @@ class PullRequestMerge(TypedDict):
     autoMergeRequest: dict[str, str] | None
 
 
+def is_repeatable(arguments: tuple[str, ...]) -> bool:
+    if arguments[0] == "gh":
+        return arguments[1:3] in (
+            ("issue", "list"),
+            ("pr", "list"),
+            ("pr", "view"),
+            ("pr", "edit"),
+        )
+    return arguments[0] == "git" and ("fetch" in arguments or "ls-remote" in arguments)
+
+
 def run(*arguments: str, cwd: Path | None = None) -> str:
+    for attempt in range(1, 3 if is_repeatable(arguments) else 1):
+        try:
+            return subprocess.check_output(
+                arguments, cwd=cwd, text=True, stderr=subprocess.PIPE
+            ).strip()
+        except subprocess.CalledProcessError:
+            time.sleep(10 * attempt)
     return subprocess.check_output(
         arguments, cwd=cwd, text=True, stderr=subprocess.PIPE
     ).strip()
@@ -138,6 +156,38 @@ def report(title: str, body: str):
             )
 
 
+def open_pr_from(branch: str) -> str:
+    return gh(
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--base",
+        "master",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number // empty",
+    )
+
+
+def any_open_sync_pr() -> str:
+    return gh(
+        "pr",
+        "list",
+        "--base",
+        "master",
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName",
+        "--jq",
+        '[.[] | select(.headRefName | startswith("sync/upstream"))][0].number // empty',
+    )
+
+
 def inspect_sync_pr():
     number = gh(
         "pr",
@@ -203,7 +253,7 @@ def resolution_details(directory: Path):
             "Structured merge",
             "fork and upstream changes retained",
         ),
-        ("lockfiles.txt", "Lockfile", "fork side kept and reconciled by cargo"),
+        ("lockfiles.txt", "Lockfile", "fork side kept, then cargo reconciled it"),
         ("fork-deleted.txt", "Deleted in the fork", "upstream changes dropped"),
     ):
         paths = (directory / name).read_text().splitlines()
@@ -223,8 +273,8 @@ def claude_resolution(directory: Path):
     if not summary.exists():
         return ""
     return (
-        "## Resolved by Claude\n\n"
-        + "The merge passed the full validation before publishing.\n\n"
+        "## Claude's resolution\n\n"
+        + "The merge passed the full validation before this PR was opened.\n\n"
         + html.escape(summary.read_text(), quote=False).strip()
         + "\n\n"
     )
@@ -268,7 +318,7 @@ def sync_pr_body(resolutions: str = "", *, auto_merge: bool = False) -> str:
     return (
         "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
         + "Merge preparation runs in an isolated container. "
-        + "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
+        + "`open-sync-pr.py` validates this merge without checking it out and rejects any change to `.github`. "
         + (
             "Auto-merge is enabled with a merge commit once the required checks pass.\n\n"
             if auto_merge
@@ -282,42 +332,49 @@ def sync_pr_body(resolutions: str = "", *, auto_merge: bool = False) -> str:
 
 
 def enable_auto_merge(pull_request: str, head: str):
-    details = cast(
-        PullRequestMerge,
-        json.loads(
-            gh(
+    for attempt in range(1, 4):
+        details = cast(
+            PullRequestMerge,
+            json.loads(
+                gh(
+                    "pr",
+                    "view",
+                    pull_request,
+                    "--json",
+                    "headRefOid,state,autoMergeRequest",
+                )
+            ),
+        )
+        if details["headRefOid"] != head:
+            raise ValueError("Sync PR head does not match the validated candidate")
+        if details["state"] == "MERGED":
+            print("Sync PR is already merged")
+            return
+        if details["state"] != "OPEN":
+            raise ValueError("Sync PR is not open")
+        if (request := details["autoMergeRequest"]) is not None:
+            if request["mergeMethod"] != "MERGE":
+                raise ValueError("Existing sync auto-merge must use a merge commit")
+            print("Sync PR already has auto-merge enabled")
+            return
+        try:
+            _ = gh(
                 "pr",
-                "view",
+                "merge",
                 pull_request,
-                "--json",
-                "headRefOid,state,autoMergeRequest",
+                "--auto",
+                "--merge",
+                "--match-head-commit",
+                head,
             )
-        ),
-    )
-    if details["headRefOid"] != head:
-        raise ValueError("Sync PR head does not match the validated candidate")
-    if details["state"] == "MERGED":
-        print("Sync PR is already merged")
-        return
-    if details["state"] != "OPEN":
-        raise ValueError("Sync PR is not open")
-    if (request := details["autoMergeRequest"]) is not None:
-        if request["mergeMethod"] != "MERGE":
-            raise ValueError("Existing sync auto-merge must use a merge commit")
-        print("Sync PR already has auto-merge enabled")
-        return
-    _ = gh(
-        "pr",
-        "merge",
-        pull_request,
-        "--auto",
-        "--merge",
-        "--match-head-commit",
-        head,
-    )
+            return
+        except subprocess.CalledProcessError:
+            if attempt == 3:
+                raise
+            time.sleep(10 * attempt)
 
 
-def publish(directory: Path):
+def open_sync_pr(directory: Path):
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("Unexpected repository")
     auto_merge = os.environ.get("SYNC_AUTO_MERGE") == "true"
@@ -328,7 +385,35 @@ def publish(directory: Path):
     if result == "unchanged":
         print("No upstream changes")
         return
-    number = inspect_sync_pr()
+    _ = inspect_sync_pr()
+    verify = os.environ.get("SYNC_VERIFY")
+    if result == "partial" and verify == "skipped":
+        if pull_request := any_open_sync_pr():
+            print(
+                f"Sync PR #{pull_request} is open; Claude resolves again after it merges"
+            )
+            return
+        report(
+            "Upstream sync conflict",
+            (directory / "conflict-report.md").read_text()
+            + f"\nClaude already tried `master` at {base} and failed. "
+            + "Close this issue to let the next run try again.\n",
+        )
+        return
+    if result == "partial" and verify not in (None, "success"):
+        run_url = "{}/{}/actions/runs/{}".format(
+            os.environ.get("GITHUB_SERVER_URL", "https://github.com"),
+            REPOSITORY,
+            os.environ.get("GITHUB_RUN_ID", ""),
+        )
+        report(
+            "Upstream sync conflict",
+            (directory / "conflict-report.md").read_text()
+            + "\n## Automatic resolution failed\n\n"
+            + f"The `verify` job ended with `{verify}`. See {run_url}.\n\n"
+            + f"<!-- claude-attempt fork={base} -->\n",
+        )
+        return
     if result == "conflict":
         report("Upstream sync conflict", (directory / "issue-body.md").read_text())
         return
@@ -340,16 +425,21 @@ def publish(directory: Path):
     resolutions += dropped_automation(directory)
 
     _ = git("fetch", "origin", "master", "--no-tags")
-    if git("rev-parse", "FETCH_HEAD") != base:
-        raise ValueError(
-            "master moved during preparation; run sync again on the current master"
-        )
+    master = git("rev-parse", "FETCH_HEAD")
+    if master != base:
+        try:
+            _ = git("merge-base", "--is-ancestor", base, master)
+        except subprocess.CalledProcessError:
+            raise ValueError(
+                f"master was rewritten during the run and no longer contains {base}"
+            ) from None
     try:
         head = validate(directory / "sync.bundle", base)
     except ValueError as error:
         report("Upstream sync requires security review", str(error))
         raise
 
+    branch = BRANCH
     previous = git("ls-remote", "origin", f"refs/heads/{BRANCH}").split()
     previous_head = previous[0] if previous else ""
     if previous_head:
@@ -367,11 +457,14 @@ def publish(directory: Path):
             "log", "--format=%an", previous_head, "--not", base, upstream
         ).splitlines()
         if any(author != "github-actions[bot]" for author in authors):
-            report(
-                "Upstream sync needs attention",
-                "The sync branch contains local commits; it was not overwritten.",
+            branch = f"{BRANCH}-{head[:12]}"
+            resolutions = (
+                f"`{BRANCH}` has commits that `github-actions[bot]` did not make, "
+                + f"so this PR comes from `{branch}`.\n\n"
+                + resolutions
             )
-            return
+            previous = git("ls-remote", "origin", f"refs/heads/{branch}").split()
+            previous_head = previous[0] if previous else ""
 
     _ = git(
         "-c",
@@ -379,12 +472,13 @@ def publish(directory: Path):
         "-c",
         "credential.helper=!gh auth git-credential",
         "push",
-        f"--force-with-lease=refs/heads/{BRANCH}:{previous_head}",
+        f"--force-with-lease=refs/heads/{branch}:{previous_head}",
         "origin",
-        f"{head}:refs/heads/{BRANCH}",
+        f"{head}:refs/heads/{branch}",
     )
-    if git("ls-remote", "origin", f"refs/heads/{BRANCH}").split()[0] != head:
-        raise ValueError("Published branch does not match the validated candidate")
+    if git("ls-remote", "origin", f"refs/heads/{branch}").split()[0] != head:
+        raise ValueError("Pushed branch does not match the validated candidate")
+    number = open_pr_from(branch)
     body = sync_pr_body(resolutions, auto_merge=auto_merge)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
         _ = message.write(body)
@@ -412,7 +506,7 @@ def publish(directory: Path):
                 "pr",
                 "create",
                 "--head",
-                BRANCH,
+                branch,
                 "--base",
                 "master",
                 "--title",
@@ -425,10 +519,10 @@ def publish(directory: Path):
                 ASSIGNEE,
             )
     if auto_merge:
-        enable_auto_merge(number or BRANCH, head)
+        enable_auto_merge(number or branch, head)
     else:
         print("Auto-merge skipped: SYNC_TOKEN is not configured")
 
 
 if __name__ == "__main__":
-    publish(Path(sys.argv[1]).resolve())
+    open_sync_pr(Path(sys.argv[1]).resolve())
