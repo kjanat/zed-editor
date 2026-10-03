@@ -6630,6 +6630,8 @@ support within Zed.
 - `tree_view`: Whether to show entries in tree or flat view in the panel
 - `scrollbar`: When to show the scrollbar in the git panel
 - `starts_open`: Whether the git panel should open on startup
+- `commit_editor`: Whether the commit message editor is shown in the git panel
+  by default. Can be `expanded` or `collapsed`
 - `show_count_badge`: Whether to show a badge on the git panel icon with the
   count of uncommitted changes
 - `diff_stats`: Whether to show the addition/deletion change count next to each

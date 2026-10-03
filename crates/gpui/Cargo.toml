@@ -117,11 +117,15 @@ path = "examples/a11y.rs"
 name = "view_example"
 path = "examples/view_example/view_example_main.rs"
 
+[[example]]
+name = "toggle_headless"
+path = "examples/toggle_headless.rs"
+
 [dependencies]
 accesskit.workspace  = true
 anyhow.workspace     = true
 async-task.workspace = true
-backtrace            = { workspace = true, optional = true }
+backtrace.workspace  = true
 bitflags.workspace   = true
 
 bench_metrics                 = { workspace = true, optional = true }
@@ -235,7 +239,13 @@ objc2-metal                     = { version = "0.3", optional = true }
 bindgen = "0.72"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_WindowsProgramming"] }
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_System_Power",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+  "Win32_System_WindowsProgramming",
+] }
 
 [features]
 default          = ["font-kit", "wayland", "windows-manifest", "x11"]
@@ -243,7 +253,9 @@ default          = ["font-kit", "wayland", "windows-manifest", "x11"]
 bench            = ["bench-support"]
 bench-support    = ["dep:bench_metrics", "dep:criterion", "profiler"]
 inspector        = ["gpui_macros/inspector"]
-leak-detection   = ["backtrace"]
+# Tracks every entity handle so tests can assert nothing leaked. Also enabled
+# by setting `GPUI_LEAK_DETECTION` when building; see `build.rs`.
+leak-detection   = []
 profiler         = ["dep:hdrhistogram"]
 screen-capture   = [
   "scap",
@@ -252,7 +264,6 @@ stacker          = ["dep:stacksafe"]
 test-support     = [
   "collections/test-support",
   "http_client/test-support",
-  "leak-detection",
   "proptest",
   "wayland",
   "x11",
