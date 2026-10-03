@@ -507,11 +507,13 @@ permalinks resolve to your domain:
 
 The `provider` field specifies which type of hosting service you're using.
 Supported `provider` values are `github`, `gitlab`, `bitbucket`, `gitea`,
-`forgejo`, `sourcehut`, `tangled`, and `gitiles`. The `name` is optional and
-used as a display name for your instance, and `base_url` is the root URL of your
-self-hosted server. For the `gitiles` provider, set `base_url` to the Gitiles
-browse root (e.g. `https://android.googlesource.com` or
-`https://git.example.com/plugins/gitiles`).
+`forgejo`, `gerrit`, `sourcehut`, `tangled`, and `gitiles`. The `name` is
+optional and used as a display name for your instance, and `base_url` is the
+root URL of your self-hosted server, including any path it is served under (e.g.
+`https://git.example.com/gitlab`). For the `gerrit` provider, set `base_url` to
+the Gerrit web root (e.g. `https://git.example.com/gerrit`). For the `gitiles`
+provider, set `base_url` to the Gitiles browse root (e.g.
+`https://android.googlesource.com` or `https://git.example.com/plugins/gitiles`).
 
 You can configure multiple custom providers if you work with several self-hosted
 instances.

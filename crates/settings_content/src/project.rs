@@ -1033,6 +1033,7 @@ pub enum GitHostingProviderKind {
     Gitea,
     Forgejo,
     Gerrit,
+    #[serde(rename = "sourcehut", alias = "source_hut")]
     SourceHut,
     Tangled,
     Gitiles,

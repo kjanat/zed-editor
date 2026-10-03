@@ -6683,9 +6683,11 @@ Trailing slashes are ignored.
 
 Each entry accepts:
 
-- `provider`: One of `github`, `gitlab`, or `bitbucket`
+- `provider`: One of `github`, `gitlab`, `bitbucket`, `gitea`, `forgejo`,
+  `gerrit`, `sourcehut`, `tangled`, or `gitiles`
 - `name`: Display name for the instance
-- `base_url`: Base URL, e.g. `https://git.example.corp`
+- `base_url`: Base URL, including any path the instance is served under, e.g.
+  `https://git.example.corp` or `https://git.example.corp/gitlab`
 
 You can define these in user or project settings; project settings are merged on
 top of user settings.
