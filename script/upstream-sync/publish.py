@@ -198,7 +198,13 @@ def resolution_details(directory: Path):
             "Formatted three-way",
             "fork and upstream changes retained",
         ),
+        (
+            "structured.txt",
+            "Structured merge",
+            "fork and upstream changes retained",
+        ),
         ("lockfiles.txt", "Lockfile", "fork side kept and reconciled by cargo"),
+        ("fork-deleted.txt", "Deleted in the fork", "upstream changes dropped"),
     ):
         paths = (directory / name).read_text().splitlines()
         if paths:
@@ -210,6 +216,18 @@ def resolution_details(directory: Path):
                 )
             )
     return "\n\n".join(sections) + "\n\n"
+
+
+def claude_resolution(directory: Path):
+    summary = directory / "resolution.md"
+    if not summary.exists():
+        return ""
+    return (
+        "## Resolved by Claude\n\n"
+        + "The merge passed the full validation before publishing.\n\n"
+        + html.escape(summary.read_text(), quote=False).strip()
+        + "\n\n"
+    )
 
 
 def dropped_automation(directory: Path):
@@ -249,7 +267,7 @@ def sync_pr_body(resolutions: str = "", *, auto_merge: bool = False) -> str:
     )
     return (
         "Automated upstream sync: merges zed-industries/zed main into master.\n\n"
-        + "Merge preparation runs in an isolated container without runner credentials. "
+        + "Merge preparation runs in an isolated container. "
         + "The publisher validates the candidate without checking it out and rejects changes to `.github`. "
         + (
             "Auto-merge is enabled with a merge commit once the required checks pass.\n\n"
@@ -318,6 +336,7 @@ def publish(directory: Path):
         raise ValueError("Invalid preparation result")
 
     resolutions = resolution_details(directory) if result == "resolved" else ""
+    resolutions += claude_resolution(directory)
     resolutions += dropped_automation(directory)
 
     _ = git("fetch", "origin", "master", "--no-tags")

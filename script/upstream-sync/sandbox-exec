@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+	echo "usage: sandbox-exec <shell command>" >&2
+	exit 2
+fi
+work="${SYNC_WORK:?SYNC_WORK must name the resolver work directory}"
+mapfile -t environment <"${work}/sandbox/env"
+srt="$(<"${work}/sandbox/srt-path")"
+
+exec env -i "${environment[@]}" "${srt}" --settings "${work}/sandbox/srt.json" -- \
+	bash -c "cd \"\$1\" && eval \"\$2\"" sandbox-exec "${work}/candidate" "$1"

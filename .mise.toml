@@ -11,6 +11,8 @@ cargo-about = { version = "0.9.2", lazy = true, lazy_bins = ["cargo-about"] }
 uv          = { version = "0.12", lazy = true }
 python      = { version = "3.14", lazy = true }
 tombi       = { version = "1.5.10", lazy = true, lazy_bins = ["tombi"] }
+dprint      = { version = "0.58.0", lazy = true, lazy_bins = ["dprint"] }
+srt         = { version = "0.0.78", lazy = true, lazy_bins = ["srt"] }
 
 [tools.nextest]
 version        = "0.9.146"
@@ -29,6 +31,7 @@ cargo-about  = "github:EmbarkStudios/cargo-about"
 cargo-bundle = "cargo:https://github.com/zed-industries/cargo-bundle"
 llvm         = "github:llvm/llvm-project[version_prefix=llvmorg-,matching=LLVM-]"
 nextest      = "github:nextest-rs/nextest"
+srt          = "npm:@anthropic-ai/sandbox-runtime"
 wasi-sdk     = "github:WebAssembly/wasi-sdk"
 tombi        = "github:tombi-toml/tombi"
 

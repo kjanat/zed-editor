@@ -21,6 +21,7 @@ class Publisher(Protocol):
     def inspect_sync_pr(self) -> str: ...
     def resolution_details(self, directory: Path) -> str: ...
     def dropped_automation(self, directory: Path) -> str: ...
+    def claude_resolution(self, directory: Path) -> str: ...
     def sync_pr_body(
         self, resolutions: str = "", *, auto_merge: bool = False
     ) -> str: ...
@@ -35,7 +36,7 @@ class Exporter:
             Path(__file__).resolve().parents[2]
             / ".github/workflows/fork_upstream_sync.yaml"
         ).read_text()
-        step = workflow.split("      - name: Export container output\n", 1)[1]
+        step = workflow.split("        name: Export bounded output\n", 1)[1]
         block = step.split("        run: |\n", 1)[1]
         return textwrap.dedent(
             "".join(
@@ -87,14 +88,50 @@ class ExportTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            _ = (source / "result").write_text("conflict\n")
-            _ = (source / "issue-body.md").write_text("Conflict details")
+            _ = (source / "result").write_text("partial\n")
+            for name in (
+                "conflict-report.md",
+                "issue-body.md",
+                "resolution.md",
+                "human.txt",
+                "fork-deleted.txt",
+                "structured.txt",
+            ):
+                _ = (source / name).write_text("details\n")
             _ = (source / "ignored").write_text("not an artifact")
+            _ = (source / "prompt.md").write_text("never exported")
             exporter.export(source, root / "export")
             self.assertEqual(
                 sorted(path.name for path in (root / "export").iterdir()),
-                ["issue-body.md", "result"],
+                [
+                    "conflict-report.md",
+                    "fork-deleted.txt",
+                    "human.txt",
+                    "issue-body.md",
+                    "resolution.md",
+                    "result",
+                    "structured.txt",
+                ],
             )
+
+    def test_rejects_oversized_or_symlinked_resolver_output(self):
+        for name, limit in (("resolution.md", 16000), ("issue-body.md", 60000)):
+            for symlink in (False, True):
+                with (
+                    self.subTest(name=name, symlink=symlink),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    source = root / "source"
+                    source.mkdir()
+                    _ = (source / "result").write_text("resolved\n")
+                    if symlink:
+                        _ = (root / "private").write_text("synthetic canary")
+                        (source / name).symlink_to(root / "private")
+                    else:
+                        _ = (source / name).write_text("a" * (limit + 1))
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        exporter.export(source, root / "export")
 
     def test_rejects_fifo_without_blocking(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -323,6 +360,18 @@ class ReportingTests(unittest.TestCase):
             publisher.report("Upstream sync conflict", "details")
             self.assertEqual(gh.call_args.args[:2], ("issue", "create"))
 
+    def test_claude_resolution_is_escaped_into_the_pr_body(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.assertEqual(publisher.claude_resolution(directory), "")
+            _ = (directory / "resolution.md").write_text(
+                "Kept the fork's <script>hook</script> & adopted upstream.\n"
+            )
+            details = publisher.claude_resolution(directory)
+        self.assertIn("## Resolved by Claude", details)
+        self.assertIn("&lt;script&gt;hook&lt;/script&gt; &amp; adopted", details)
+        self.assertNotIn("<script>", details)
+
     def test_dropped_automation_survives_export_and_is_escaped(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -348,7 +397,9 @@ class ReportingTests(unittest.TestCase):
             for name, path in (
                 ("formatting-only.txt", "src/a.rs"),
                 ("formatted-three-way.txt", "src/<b>.rs"),
+                ("structured.txt", "src/c.rs"),
                 ("lockfiles.txt", "Cargo.lock"),
+                ("fork-deleted.txt", "script/uv.lock"),
             ):
                 _ = (source / name).write_text(path + "\n")
             exporter.export(source, root / "export")
@@ -360,9 +411,13 @@ class ReportingTests(unittest.TestCase):
                 "Formatting-only",
                 "Formatted three-way",
                 "Lockfile",
+                "Deleted in the fork",
+                "Structured merge",
+                "src/c.rs",
                 "src/a.rs",
                 "src/&lt;b&gt;.rs",
                 "Cargo.lock",
+                "script/uv.lock",
             ):
                 self.assertIn(text, body)
             self.assertNotIn("Resolved automatically", clean_body)
@@ -606,15 +661,15 @@ class PublishFlowTests(unittest.TestCase):
     def test_incidents_remain_separate_through_successful_publication(self):
         import json
 
+        published_results = ("clean", "resolved", "claude", "auto_merge_failure")
         for result in (
-            "clean",
-            "resolved",
+            *published_results,
             "conflict",
+            "partial",
             "unchanged",
             "security",
             "foreign",
             "mismatched_head",
-            "auto_merge_failure",
         ):
             for existing in ("", "42"):
                 with (
@@ -623,21 +678,25 @@ class PublishFlowTests(unittest.TestCase):
                 ):
                     directory = Path(temporary)
                     _ = (directory / "result").write_text(
-                        "clean"
-                        if result
-                        in (
-                            "security",
-                            "foreign",
-                            "mismatched_head",
-                            "auto_merge_failure",
-                        )
-                        else result
+                        {
+                            "security": "clean",
+                            "foreign": "clean",
+                            "mismatched_head": "clean",
+                            "auto_merge_failure": "clean",
+                            "claude": "resolved",
+                        }.get(result, result)
                     )
                     _ = (directory / "issue-body.md").write_text("Conflict details")
+                    if result == "claude":
+                        _ = (directory / "resolution.md").write_text(
+                            "Kept the fork's watcher.\n"
+                        )
                     for name in (
                         "formatting-only.txt",
                         "formatted-three-way.txt",
+                        "structured.txt",
                         "lockfiles.txt",
+                        "fork-deleted.txt",
                     ):
                         _ = (directory / name).write_text("file.rs\n")
                     bodies: list[str] = []
@@ -736,7 +795,7 @@ class PublishFlowTests(unittest.TestCase):
                         patch.object(publisher, "gh", side_effect=fake_gh),
                         patch.object(publisher, "report") as report,
                     ):
-                        if result in ("security", "mismatched_head"):
+                        if result in ("security", "mismatched_head", "partial"):
                             with self.assertRaises(ValueError):
                                 publisher.publish(directory)
                         elif result == "auto_merge_failure":
@@ -749,28 +808,31 @@ class PublishFlowTests(unittest.TestCase):
                         ]
                         self.assertEqual(
                             len(pushes),
-                            int(
-                                result
-                                in (
-                                    "clean",
-                                    "resolved",
-                                    "mismatched_head",
-                                    "auto_merge_failure",
-                                )
-                            ),
+                            int(result in (*published_results, "mismatched_head")),
                         )
                         merge_calls = [
                             call for call in calls if call[:2] == ("pr", "merge")
                         ]
-                        if result in ("clean", "resolved", "auto_merge_failure"):
+                        published = [
+                            call
+                            for call in calls
+                            if call[:2] == ("pr", "edit" if existing else "create")
+                        ]
+                        if result in published_results:
                             report.assert_not_called()
-                            self.assertEqual(
-                                calls[-3][:2], ("pr", "edit" if existing else "create")
-                            )
-                            arguments = calls[-3]
+                            self.assertEqual(len(published), 1)
+                            arguments = published[0]
                             flag = "--add-assignee" if existing else "--assignee"
                             self.assertEqual(
                                 arguments[arguments.index(flag) + 1], "kjanat"
+                            )
+                            self.assertNotIn("--draft", arguments)
+                            self.assertEqual(len(bodies), 1)
+                            self.assertIn("Closes #1.", bodies[0])
+                            self.assertNotIn("Closes #2.", bodies[0])
+                            self.assertNotIn("Closes #3.", bodies[0])
+                            self.assertEqual(
+                                "Resolved by Claude" in bodies[0], result == "claude"
                             )
                             self.assertEqual(
                                 merge_calls,
@@ -787,18 +849,14 @@ class PublishFlowTests(unittest.TestCase):
                                 ],
                             )
                             self.assertEqual(calls[-1], merge_calls[0])
-                            self.assertEqual(len(bodies), 1)
-                            self.assertIn("Closes #1.", bodies[0])
-                            self.assertNotIn("Closes #2.", bodies[0])
-                            self.assertNotIn("Closes #3.", bodies[0])
                             self.assertEqual(
                                 "Resolved automatically" in bodies[0],
-                                result == "resolved",
+                                result in ("resolved", "claude"),
                             )
                         elif result == "unchanged":
                             report.assert_not_called()
                             git.assert_not_called()
-                        elif result == "mismatched_head":
+                        elif result in ("mismatched_head", "partial"):
                             report.assert_not_called()
                             self.assertFalse(bodies)
                         else:
@@ -808,8 +866,12 @@ class PublishFlowTests(unittest.TestCase):
                                 "foreign": "Upstream sync needs attention",
                             }[result]
                             self.assertEqual(report.call_args.args[0], expected)
+                            if result == "conflict":
+                                self.assertEqual(
+                                    report.call_args.args[1], "Conflict details"
+                                )
                             self.assertFalse(bodies)
-                        if result not in ("clean", "resolved", "auto_merge_failure"):
+                        if result not in published_results:
                             self.assertFalse(merge_calls)
 
 
