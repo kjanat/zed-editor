@@ -94,6 +94,23 @@ jobs:
         with: { shared-key: bundle-linux-x86_64, cache-on-failure: true }
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with: { cache: false, bootstrap: true, bootstrap_skip: compose }
+      - &icu70
+        name: Install ICU 70 for the LLVM release binaries
+        run: |
+          case "$(dpkg --print-architecture)" in
+            amd64)
+              url=https://archive.ubuntu.com/ubuntu/pool/main/i/icu/libicu70_70.1-2_amd64.deb
+              sha512=a6315482d93606e375c272718d2458870b95e4ed4b672ea8640cf7bc2d2c2f41aea13b798b1e417e1ffc472a90c6aad150d3d293aa9bddec48e39106e4042807
+              ;;
+            arm64)
+              url=https://ports.ubuntu.com/ubuntu-ports/pool/main/i/icu/libicu70_70.1-2_arm64.deb
+              sha512=14ebf6ca091cdbda96aa15821eb02a72dc2156d5bcfa820e7cb9dad5e528f31452d9bdbd806c0cbd49b4d3a4d8dedc28ae52053727810e0ad74fd31bcf9b623c
+              ;;
+          esac
+          deb="${RUNNER_TEMP}/libicu70.deb"
+          curl --fail --location --retry 3 --output "${deb}" "${url}"
+          echo "${sha512}  ${deb}" | sha512sum --check
+          sudo apt-get install --yes "${deb}"
       - &prepare
         name: Prepare the stable release build
         env: { tag: &TAG "${{ needs.create_draft_release.outputs.tag }}" }
@@ -209,6 +226,7 @@ jobs:
         with: { shared-key: remote-server-freebsd, cache-on-failure: true }
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with: { cache: false }
+      - *icu70
       - *prepare
       - name: Cross-compile against the FreeBSD 13.2 sysroot
         run: |
