@@ -45,7 +45,7 @@ remote_server_triple=${REMOTE_SERVER_TARGET:-"${target_triple}"}
 #     rustup_installed=true
 # fi
 # Generate the licenses first, so they can be baked into the binaries
-# script/generate-licenses
+# script/generate-licenses.bash
 # if "$rustup_installed"; then
 #     rustup target add "$remote_server_triple"
 # fi

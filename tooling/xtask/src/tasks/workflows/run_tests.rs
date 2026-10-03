@@ -852,7 +852,7 @@ fn check_licenses() -> NamedJob {
             .add_step(steps::checkout_repo())
             .add_step(steps::cache_rust_dependencies_namespace())
             .add_step(steps::script("./script/check-licenses"))
-            .add_step(steps::script("./script/generate-licenses")),
+            .add_step(steps::script("./script/generate-licenses.bash")),
     )
 }
 

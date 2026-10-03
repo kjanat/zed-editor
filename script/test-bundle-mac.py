@@ -77,7 +77,7 @@ class BundleMacTests(unittest.TestCase):
         (root / "script" / "lib").mkdir(parents=True)
         (root / "crates" / "zed").mkdir(parents=True)
         (root / "script" / "lib" / "blob-store.sh").touch()
-        licenses = root / "script" / "generate-licenses"
+        licenses = root / "script" / "generate-licenses.bash"
         licenses.write_text("#!/bin/sh\nexit 0\n")
         licenses.chmod(0o755)
         (root / "crates" / "zed" / "RELEASE_CHANNEL").write_text("stable\n")

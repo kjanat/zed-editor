@@ -343,7 +343,7 @@ craneLib.buildPackage (
     # https://github.com/zed-industries/zed/issues/19971#issuecomment-2688455390
     # TODO: put this in a separate derivation that depends on src to avoid running it on every build
     preBuild = ''
-      ALLOW_MISSING_LICENSES=yes bash script/generate-licenses
+      ALLOW_MISSING_LICENSES=yes bash script/generate-licenses.bash
       echo nightly > crates/zed/RELEASE_CHANNEL
     '';
 

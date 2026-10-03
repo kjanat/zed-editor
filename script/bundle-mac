@@ -86,7 +86,7 @@ else
 fi
 
 # Generate the licenses first, so they can be baked into the binaries
-script/generate-licenses
+script/generate-licenses.bash
 
 rustup target add $target_triple
 
