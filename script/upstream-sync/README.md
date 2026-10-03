@@ -57,7 +57,11 @@ becomes the sync PR.
 
 ## Claude resolver
 
-A `partial` result runs two more jobs, both with `contents: read`.
+A `partial` result runs two more jobs, both with `contents: read`. The `prepare`
+job skips both while a PR from a `sync/upstream*` branch is open, and while the
+open `upstream-sync-conflict` issue records a Claude attempt on the same
+`master` commit. Every failure report carries that record. Closing the issue
+lets the next run try again.
 
 The `resolve` job gives Claude the fork checkout, the prepare output in
 `$RUNNER_TEMP/sync-candidate`, and the toolchain from `jdx/mise-action`. Its
@@ -81,8 +85,9 @@ Both jobs run their own `resolve.sh` from `.sync-scripts`, a second, sparse
 checkout of the workflow SHA with only `script/upstream-sync` and
 `script/clippy`. After Claude, `resolve.sh export` commits the index with the
 fork and upstream commits as parents and uploads the bundle with Claude's
-`resolution.md` and `tests.txt`. Without a merge of the recorded upstream in
-progress it exports nothing.
+`resolution.md` and `tests.txt`. If Claude committed its merge, `export` uses
+that commit's tree. When no finished merge exists, `export` saves the whole
+working tree, conflict markers and new files included, as `unfinished.bundle`.
 
 The `verify` job checks the export on a clean runner. `resolve.sh verify`
 requires the exported merge's parents to be exactly the prepared fork and
@@ -93,15 +98,20 @@ and writes result `resolved` with Claude's notes. The notes end with a list of
 Claude's changes outside the conflicted paths. Otherwise it writes result `conflict` with a
 bounded `issue-body.md`: the conflict report, the failed check with the last 80
 lines of its output, and Claude's notes. `open-sync-pr.py` then opens or updates
-the `Upstream sync conflict` issue and links the run, which keeps Claude's merge
-as the `upstream-sync-resolution` artifact for 7 days. When the `verify` job
-itself fails or times out, `open-sync-pr.py` still opens or updates that issue,
-with the conflict report and a link to the run. Only the bundle and these
-bounded files reach it, through the same exporter as the prepare step.
+the `Upstream sync conflict` issue. The issue links the run and names the bundle
+in its `upstream-sync-resolution` artifact. When the `verify` job itself fails
+or times out, `open-sync-pr.py` still opens or updates that issue, with the
+conflict report and a link to the run. Only the bundle and these bounded files
+reach it, through the same exporter as the prepare step.
 
 The Claude step stops after 280 of the job's 300 minutes, so the export and
-upload always run. If Claude committed its merge, `resolve.sh export` uses that
-commit's tree.
+upload always run. GitHub keeps the candidate, resolution and verified
+artifacts for 30 days. A failed `open-sync-pr` job therefore loses nothing: a
+re-run of that job pushes the same verified merge and opens the PR.
+
+`open-sync-pr.py` checks for an open PR from the branch right after the push,
+then edits that PR or creates one. The workflow's concurrency group runs one
+sync at a time, so no second PR can appear in between.
 
 New or unassigned sync PRs and issues are assigned to `kjanat`. Existing
 assignees are preserved.
@@ -112,7 +122,7 @@ pushed head commit. GitHub waits for the existing required checks and branch
 rules before merging. `open-sync-pr.py` keeps an existing auto-merge request
 for a merge commit and does not enable it again. It tries to enable auto-merge
 three times. If all three fail, the run fails, and you merge the PR by hand.
-Read-only `gh` and `git` calls get three attempts too.
+Read-only `gh` and `git` calls and `gh pr edit` get three attempts too.
 
 The container assumes the GitHub-hosted runner, Docker/kernel, pinned tool image,
 and trusted workflow revision are not compromised. Do not mount host caches
