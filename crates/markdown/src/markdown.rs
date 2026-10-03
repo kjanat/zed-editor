@@ -7705,6 +7705,7 @@ mod tests {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
                     settings
+                        .project
                         .markdown_preview
                         .get_or_insert_default()
                         .heading_font_weight = Some(400.0.into());

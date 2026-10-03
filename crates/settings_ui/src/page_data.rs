@@ -1332,6 +1332,7 @@ fn appearance_page() -> SettingsPage {
                     json_path: Some("markdown_preview.heading_font_weight"),
                     pick: |settings_content| {
                         settings_content
+                            .project
                             .markdown_preview
                             .as_ref()?
                             .heading_font_weight
@@ -1339,13 +1340,14 @@ fn appearance_page() -> SettingsPage {
                     },
                     write: |settings_content, value, _| {
                         settings_content
+                            .project
                             .markdown_preview
                             .get_or_insert_default()
                             .heading_font_weight = value;
                     },
                 }),
                 metadata: None,
-                files: USER,
+                files: USER | PROJECT,
             }),
         ]
     }
