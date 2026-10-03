@@ -34,6 +34,7 @@
 /plugins/bin
 /script/node_modules
 /snap
+/.sync/
 /.sync-scripts/
 /zed.xcworkspace
 DerivedData/

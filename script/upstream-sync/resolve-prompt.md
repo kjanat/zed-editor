@@ -4,7 +4,7 @@ Resolve the upstream sync merge for kjanat/zed-editor, a fork of zed-industries/
 
 - The prepare job's output is in `$RUNNER_TEMP/sync-candidate`. `sync.bundle` holds its partial merge, `conflict-report.md` describes what it resolved and what it left, and `human.txt` lists the paths that still conflict.
 - `script/upstream-sync/resolve.sh setup "$RUNNER_TEMP/sync-candidate"` turns this checkout into that merge, in progress, with the remaining conflicts unmerged.
-- `script/upstream-sync/resolve.sh check` checks for unmerged paths, conflict markers, changes to `.github`, `script/upstream-sync` or `script/clippy`, whitespace errors and formatting, compiles the whole workspace, then runs clippy and the tests of every crate with a conflicted file. The `verify` job runs the same checks again on a clean runner after you finish. `check` writes its logs to `.git/sync/`. A full run takes a long time, so run it in the background.
+- `script/upstream-sync/resolve.sh check` checks for unmerged paths, conflict markers, changes to `.github`, `script/upstream-sync` or `script/clippy`, whitespace errors and formatting, compiles the whole workspace, then runs clippy and the tests of every crate with a conflicted file. The `verify` job runs the same checks again on a clean runner after you finish. `check` writes its logs to `.sync/`. A full run takes a long time, so run it in the background.
 - `.agents/skills/upstream-sync-conflict/SKILL.md` describes how a person does this merge by hand.
 - The repository has the full history of both sides.
 
@@ -18,4 +18,4 @@ Resolve the upstream sync merge for kjanat/zed-editor, a fork of zed-industries/
 
 ## When you are done
 
-Write `.git/sync/resolution.md`: for each conflicted path, what you kept, what you adopted from upstream and which commits justify it, then anything suspicious you found and any defect in `resolve.sh`. Write `.git/sync/tests.txt` with one `<package><TAB><nextest filterset>` line per additional test. The `verify` job runs those tests too.
+Write `.sync/resolution.md` as you go: for each conflicted path, what you kept, what you adopted from upstream and which commits justify it, then anything suspicious you found and any defect in `resolve.sh`. Write `.sync/tests.txt` with one `<package><TAB><nextest filterset>` line per additional test. The `verify` job runs those tests too.

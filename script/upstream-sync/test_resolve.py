@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from collections.abc import Callable
+from itertools import takewhile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -105,7 +106,7 @@ class Fixture:
             "data.json": '{ "name": "fixture" }\n',
             ".github/workflows/ci.yml": "trusted workflow\n",
             ".mise.toml": MISE_CONFIG,
-            ".gitignore": "/target\n",
+            ".gitignore": "/target\n/.sync/\n/.sync-scripts/\n",
             "script/clippy": (REPOSITORY / "script/clippy").read_text(),
         })
         for name in SCRIPTS:
@@ -225,7 +226,7 @@ class Fixture:
 
     @property
     def state(self) -> Path:
-        return self.repository / ".git/sync"
+        return self.repository / ".sync"
 
     def agent(self, files: dict[str, str], tests: str | None = None) -> None:
         for name, contents in files.items():
@@ -433,6 +434,61 @@ class ResolverTests(unittest.TestCase):
     def test_agent_that_does_nothing_produces_no_candidate(self):
         _ = self.assert_failed(self.fixture(), "Claude produced no merge")
 
+    def test_save_step_keeps_everything_when_the_export_fails(self):
+        workflow = (
+            REPOSITORY / ".github/workflows/fork_upstream_sync.yaml"
+        ).read_text()
+        lines = workflow.split(
+            "name: Save Claude's checkout, notes, logs and session\n", 1
+        )[1].splitlines()
+        start = lines.index("        run: |") + 1
+        script = "\n".join(
+            line.removeprefix("          ")
+            for line in takewhile(
+                lambda line: line.startswith("          "), lines[start:]
+            )
+        )
+        fixture = self.fixture()
+        fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        _ = (fixture.repository / "notes-draft.txt").write_text("half done\n")
+        runner = fixture.root / "runner"
+        session = runner / "home/.claude/projects/-work/session.jsonl"
+        session.parent.mkdir(parents=True)
+        _ = session.write_text('{"token":"secret-oauth-canary"}\n')
+        _ = (runner / "claude-execution-output.json").write_text(
+            '["secret-oauth-canary printed"]\n'
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=fixture.repository,
+            env={
+                "PATH": os.environ["PATH"],
+                "HOME": str(runner / "home"),
+                "RUNNER_TEMP": str(runner),
+                "GIT_INDEX_FILE": str(runner / "claude.index"),
+                "TOKEN": "secret-oauth-canary",
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        saved = runner / "sync-resolution"
+        patch_text = (saved / "checkout.patch").read_text()
+        self.assertIn("notes-draft.txt", patch_text)
+        self.assertNotIn(".sync/", patch_text)
+        self.assertIn(
+            "Kept the fork's value", (saved / "state/resolution.md").read_text()
+        )
+        self.assertIn("***", (saved / "claude-execution-output.json").read_text())
+        copied = (saved / "claude-projects/-work/session.jsonl").read_text()
+        self.assertEqual(copied, '{"token":"***"}\n')
+        for path in saved.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(
+                    "secret-oauth-canary", path.read_text(errors="replace")
+                )
+
     def test_unfinished_work_survives_unmerged_paths(self):
         fixture = self.fixture()
         _ = (fixture.repository / "alpha/src/lib.rs").write_text(RESOLVED_ALPHA)
@@ -624,7 +680,10 @@ class TrustedConfigurationTests(unittest.TestCase):
         self.assertNotIn("github.token", resolve)
         self.assertNotIn("id-token", self.workflow)
         self.assertNotIn("persist-credentials: true", self.workflow)
-        self.assertEqual(resolve.count("secrets."), 1)
+        self.assertEqual(
+            resolve.count("secrets."),
+            resolve.count("secrets.CLAUDE_CODE_OAUTH_TOKEN }}"),
+        )
         self.assertIn(
             "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", resolve
         )

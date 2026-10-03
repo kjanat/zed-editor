@@ -78,8 +78,8 @@ names no conflicts. Claude runs the steps itself:
   `script/clippy` unchanged, `git diff --cached --check`, `dprint check`,
   `cargo check --locked --workspace --all-targets --keep-going`, then
   `script/clippy --no-deps` and `cargo nextest run` for the crates of the
-  conflicted files, and every test in Claude's `.git/sync/tests.txt`. `check`
-  writes its logs to `.git/sync/`.
+  conflicted files, and every test in Claude's `.sync/tests.txt`. `check`
+  writes its logs to `.sync/`, a gitignored directory at the repository root.
 
 Both jobs run their own `resolve.sh` from `.sync-scripts`, a second, sparse
 checkout of the workflow SHA with only `script/upstream-sync` and
@@ -88,6 +88,15 @@ fork and upstream commits as parents and uploads the bundle with Claude's
 `resolution.md` and `tests.txt`. If Claude committed its merge, `export` uses
 that commit's tree. When no finished merge exists, `export` saves the whole
 working tree, conflict markers and new files included, as `unfinished.bundle`.
+
+Before Claude starts, the `resolve` job runs the export command once, so a
+broken command fails the job before Claude's run. Right after Claude, a step
+that does not use `resolve.sh` writes the whole checkout as `checkout.patch`
+and copies `.sync/` as `state/`, Claude's transcript as
+`claude-execution-output.json` and its session files as `claude-projects/`.
+That step replaces the token with `***` in every file before the upload, and
+the Claude step writes its full transcript into the job log. The `verify` job
+uploads its own `.sync/` as `upstream-sync-verify-logs`.
 
 The `verify` job checks the export on a clean runner. `resolve.sh verify`
 requires the exported merge's parents to be exactly the prepared fork and

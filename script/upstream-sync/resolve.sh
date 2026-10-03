@@ -4,7 +4,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git rev-parse --show-toplevel)"
 git_dir="$(git -C "${root}" rev-parse --absolute-git-dir)"
-state="${git_dir}/sync"
+state="${root}/.sync"
 marker_pattern='^(<<<<<<<|>>>>>>>)( |$)'
 bot_name='github-actions[bot]'
 bot_email='41898282+github-actions[bot]@users.noreply.github.com'
@@ -213,7 +213,7 @@ fenced() {
 }
 
 verify() {
-	local artifact resolver output="$3" resolved="" tree="" commit file
+	local artifact resolver output="$3" resolved="" tree="" commit file kept
 	artifact="$(cd "$1" && pwd -P)"
 	resolver="$2"
 	mkdir -p "${output}" "${state}"
@@ -221,6 +221,11 @@ verify() {
 	merge_shas "${artifact}"
 	require_fork_checkout
 	cp "${artifact}/human.txt" "${state}/human.txt"
+	for file in resolution.md tests.txt; do
+		if [[ ! -f "${resolver}/${file}" && -f "${resolver}/state/${file}" ]]; then
+			cp "${resolver}/state/${file}" "${resolver}/${file}"
+		fi
+	done
 	if [[ -f "${resolver}/tests.txt" ]]; then
 		bounded 8000 <"${resolver}/tests.txt" >"${state}/tests.txt"
 	fi
@@ -293,12 +298,16 @@ verify() {
 			fenced "${state}/notes.md"
 			printf '</details>\n\n'
 		fi
-		for file in resolution.bundle unfinished.bundle; do
-			if [[ -s "${resolver}/${file}" && -n "${GITHUB_RUN_ID:-}" ]]; then
-				printf "Claude's work stays in \`%s\` in the \`upstream-sync-resolution\` artifact of %s/%s/actions/runs/%s for 30 days.\n\n" \
-					"${file}" "${GITHUB_SERVER_URL:-https://github.com}" "${GITHUB_REPOSITORY:-kjanat/zed-editor}" "${GITHUB_RUN_ID}"
+		kept=()
+		for file in resolution.bundle unfinished.bundle checkout.patch state claude-execution-output.json claude-projects; do
+			if [[ -e "${resolver}/${file}" ]]; then
+				kept+=("\`${file}\`")
 			fi
 		done
+		if ((${#kept[@]} > 0)) && [[ -n "${GITHUB_RUN_ID:-}" ]]; then
+			printf "The \`upstream-sync-resolution\` artifact of %s/%s/actions/runs/%s keeps %s for 30 days.\n\n" \
+				"${GITHUB_SERVER_URL:-https://github.com}" "${GITHUB_REPOSITORY:-kjanat/zed-editor}" "${GITHUB_RUN_ID}" "${kept[*]}"
+		fi
 		printf '<!-- claude-attempt fork=%s upstream=%s -->\n' "${fork}" "${upstream}"
 	} >"${state}/failure.md"
 	{
