@@ -215,7 +215,7 @@ jobs:
       # The oldest release the fork supports, so a load failure on any 13.2+
       # host shows up here.
       - name: Smoke-test the binary in a FreeBSD VM
-        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           release: "13.2"
           run: |
