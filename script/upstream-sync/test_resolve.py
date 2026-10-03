@@ -420,6 +420,16 @@ class ResolverTests(unittest.TestCase):
         )
         self.assertNotIn("- `alpha/src/lib.rs`", resolution)
 
+    def test_trial_export_before_claude_leaves_the_real_export_intact(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        fixture = conflict_fixture(root)
+        fixture.export()
+        shutil.rmtree(fixture.resolution)
+        shutil.rmtree(fixture.state)
+        _ = fixture.setup()
+        fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        self.assertEqual(fixture.finish(), "resolved")
+
     def test_agent_that_does_nothing_produces_no_candidate(self):
         _ = self.assert_failed(self.fixture(), "Claude produced no merge")
 
@@ -631,6 +641,66 @@ class TrustedConfigurationTests(unittest.TestCase):
         )
         self.assertIn("--model claude-opus-5-5", resolve)
         self.assertIn("--permission-mode auto", resolve)
+
+    def run_line(self, subcommand: str) -> str:
+        lines = self.workflow.splitlines()
+        script = f"bash .sync-scripts/script/upstream-sync/resolve.sh {subcommand}"
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith("run: ") and script in line
+        )
+        indent = len(lines[start]) - len(lines[start].lstrip())
+        command = [script + lines[start].split(script, 1)[1]]
+        for line in lines[start + 1 :]:
+            if len(line) - len(line.lstrip()) <= indent:
+                break
+            command.append(line.strip())
+        return " ".join(command)
+
+    def test_the_export_command_runs_before_claude(self):
+        resolve = self.job("resolve")
+        trial = resolve.index("run: &export-resolution ")
+        self.assertLess(trial, resolve.index("name: Resolve the conflicts with Claude"))
+        self.assertGreater(resolve.index("run: *export-resolution"), trial)
+
+    def test_workflow_passes_every_argument_to_resolve_sh(self):
+        for subcommand, expected in (
+            ("export", ["export", "{temp}/sync-candidate", "{temp}/sync-resolution"]),
+            (
+                "verify",
+                [
+                    "verify",
+                    "{temp}/sync-candidate",
+                    "{temp}/sync-resolution",
+                    "{temp}/sync-output",
+                ],
+            ),
+        ):
+            with (
+                self.subTest(subcommand=subcommand),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                workspace = Path(temporary)
+                stub = workspace / ".sync-scripts/script/upstream-sync/resolve.sh"
+                stub.parent.mkdir(parents=True)
+                _ = stub.write_text('printf "%s\\n" "$@"\n')
+                result = subprocess.run(
+                    ["bash", "-e", "-c", self.run_line(subcommand)],
+                    cwd=workspace,
+                    env={
+                        "PATH": os.environ["PATH"],
+                        "RUNNER_TEMP": temporary,
+                        "sync_output": f"{temporary}/sync-output",
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [argument.format(temp=temporary) for argument in expected],
+                )
 
     def test_verification_runs_trusted_scripts_on_a_clean_runner(self):
         verify = self.job("verify")

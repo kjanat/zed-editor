@@ -127,6 +127,11 @@ jobs:
       - &rust-cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { shared-key: upstream-sync, cache-on-failure: true }
+      - name: Run the export once before Claude starts
+        run: &export-resolution bash .sync-scripts/script/upstream-sync/resolve.sh export
+          "${RUNNER_TEMP}"/sync-{candidate,resolution}
+      - name: Clear the trial export
+        run: rm -r "${RUNNER_TEMP}/sync-resolution" "$(git rev-parse --absolute-git-dir)/sync"
       - name: Resolve the conflicts with Claude
         continue-on-error: true
         timeout-minutes: 280
@@ -135,11 +140,11 @@ jobs:
         with:
           prompt_file: ${{ github.workspace }}/script/upstream-sync/resolve-prompt.md
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
           claude_args: --model claude-opus-5-5 --permission-mode auto --add-dir ${{ runner.temp }}/sync-candidate
       - name: Export the resolution
         if: always()
-        run: bash .sync-scripts/script/upstream-sync/resolve.sh export
-          "${RUNNER_TEMP}/sync-{candidate,resolution}"
+        run: *export-resolution
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -170,7 +175,7 @@ jobs:
       - *rust-cache
       - name: Verify the resolution on a clean runner
         run: bash .sync-scripts/script/upstream-sync/resolve.sh verify
-          "${RUNNER_TEMP}/sync-{candidate,resolution}" "${sync_output}"
+          "${RUNNER_TEMP}"/sync-{candidate,resolution} "${sync_output}"
       - uses: kjanat/actions-shells@v0
       - *export
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
