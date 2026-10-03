@@ -8,7 +8,7 @@ permissions: { contents: read }
 jobs:
   prepare:
     if: github.repository == 'kjanat/zed-editor' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     cancel-timeout-minutes: 1
     permissions: { contents: read, issues: read, pull-requests: read }
@@ -96,7 +96,7 @@ jobs:
   resolve:
     needs: prepare
     if: needs.prepare.outputs.result == 'partial' && needs.prepare.outputs.claude == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 300
     cancel-timeout-minutes: 1
     permissions: { contents: read }
@@ -168,7 +168,7 @@ jobs:
   verify:
     needs: [prepare, resolve]
     if: always() && needs.prepare.outputs.result == 'partial' && needs.prepare.outputs.claude == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 240
     cancel-timeout-minutes: 1
     permissions: { contents: read }
@@ -208,7 +208,7 @@ jobs:
   open-sync-pr:
     needs: [prepare, verify]
     if: always() && needs.prepare.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     cancel-timeout-minutes: 1
     permissions: { contents: write, pull-requests: write, issues: write }

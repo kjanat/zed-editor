@@ -20,7 +20,7 @@ concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-prog
 jobs:
   plan:
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     cancel-timeout-minutes: 1
     outputs:
@@ -54,7 +54,7 @@ jobs:
 
   sync_security:
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     cancel-timeout-minutes: 1
     steps:
@@ -65,7 +65,7 @@ jobs:
         run: mise run test-upstream-sync
   style:
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     cancel-timeout-minutes: 1
     steps:
@@ -78,7 +78,7 @@ jobs:
     needs: plan
     strategy:
       fail-fast: false
-      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
+      matrix: { os: [ubuntu-26.04, windows-2025-vs2026, macos-latest] }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     cancel-timeout-minutes: 1
@@ -112,7 +112,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-26.04, windows-2025-vs2026, macos-latest]
         suite: [remote-save, affected, editor-backup]
         include:
           - { suite: remote-save, package: collab }
@@ -185,8 +185,8 @@ jobs:
     if: always() && github.repository == 'kjanat/zed-editor'
     needs: test_suites
     strategy:
-      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
-    runs-on: ubuntu-latest
+      matrix: { os: [ubuntu-26.04, windows-2025-vs2026, macos-latest] }
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     cancel-timeout-minutes: 1
     steps:

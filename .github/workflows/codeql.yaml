@@ -9,7 +9,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: read, security-events: write }
