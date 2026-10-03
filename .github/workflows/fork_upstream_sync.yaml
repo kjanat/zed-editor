@@ -5,9 +5,7 @@
 name: fork_upstream_sync
 on:
   schedule: [{ cron: "37 7 * * *", timezone: &Adam Europe/Amsterdam }, { cron: "37 11 * * *", timezone: *Adam }]
-  workflow_dispatch:
-    inputs:
-      publish: { description: Publish the result, type: boolean, default: true }
+  workflow_dispatch: null
 concurrency: { group: "${{ github.workflow }}", cancel-in-progress: false }
 permissions: { contents: read }
 jobs:
@@ -150,7 +148,6 @@ jobs:
     if: >-
       always() && needs.prepare.result == 'success'
       && (needs.resolve.result == 'success' || needs.resolve.result == 'skipped')
-      && github.event.inputs.publish != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     cancel-timeout-minutes: 1
