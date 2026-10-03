@@ -3360,7 +3360,7 @@ mod tests {
                     ..Default::default()
                 },
                 "us.anthropic.claude-sonnet-4-5".to_string(),
-                1.0,
+                Some(1.0),
                 16_000,
                 BedrockModelMode::Thinking {
                     budget_tokens: Some(10_000),
