@@ -119,6 +119,12 @@ jobs:
         run: mise run release-prepare
       - name: Bundle
         run: mise run bundle-linux
+      - name: Collect the debug symbols
+        env: { arch: "${{ matrix.arch }}" }
+        run: |
+          tar -czf "target/zed-linux-${arch}.dbg.tar.gz" \
+            -C "${PWD}/target/${arch}-unknown-linux-gnu/release" zed.dbg \
+            -C "${PWD}/target/${arch}-unknown-linux-musl/release" remote_server.dbg
       - name: Attest build provenance
         if: &PushOrUpload github.event_name == 'push' || inputs.upload
         uses: &attest actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -126,6 +132,7 @@ jobs:
           subject-path: |
             target/release/zed-linux-${{ matrix.arch }}.tar.gz
             target/zed-remote-server-linux-${{ matrix.arch }}.gz
+            target/zed-linux-${{ matrix.arch }}.dbg.tar.gz
       - &DiskUsage
         name: Show disk usage
         if: always()
@@ -139,7 +146,8 @@ jobs:
         run: |
           gh release upload "${tag}" --clobber \
             "target/release/zed-linux-${arch}.tar.gz#Zed for Linux (${arch}, tar.gz)" \
-            "target/zed-remote-server-linux-${arch}.gz#Zed remote server for Linux (${arch})"
+            "target/zed-remote-server-linux-${arch}.gz#Zed remote server for Linux (${arch})" \
+            "target/zed-linux-${arch}.dbg.tar.gz#Debug symbols for Linux (${arch}, DWARF)"
 
   bundle_mac:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.mac)
@@ -160,6 +168,9 @@ jobs:
       - name: Bundle
         env: { target: "${{ matrix.target }}" }
         run: mise run bundle-mac "${target}"
+      - name: Collect the debug symbols
+        env: { target: "${{ matrix.target }}", arch: "${{ matrix.arch }}" }
+        run: tar -czf "target/zed-macos-${arch}.dwarf.tar.gz" -C "target/${target}/release" zed.dwarf remote_server.dwarf
       - name: Attest build provenance
         if: *PushOrUpload
         uses: *attest
@@ -167,6 +178,7 @@ jobs:
           subject-path: |
             target/${{ matrix.target }}/release/Zed-${{ matrix.arch }}.dmg
             target/zed-remote-server-macos-${{ matrix.arch }}.gz
+            target/zed-macos-${{ matrix.arch }}.dwarf.tar.gz
       - *DiskUsage
       - name: Upload to the draft release
         if: *PushOrUpload
@@ -174,7 +186,8 @@ jobs:
         run: |
           gh release upload "${tag}" --clobber \
             "target/${target}/release/Zed-${arch}.dmg#Zed for macOS (${arch}, DMG)" \
-            "target/zed-remote-server-macos-${arch}.gz#Zed remote server for macOS (${arch})"
+            "target/zed-remote-server-macos-${arch}.gz#Zed remote server for macOS (${arch})" \
+            "target/zed-macos-${arch}.dwarf.tar.gz#Debug symbols for macOS (${arch}, DWARF)"
 
   bundle_windows:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.windows)
@@ -307,7 +320,7 @@ jobs:
       - name: Install Arch packaging tools
         run: mise bootstrap packages apply --yes
       - name: Download the Linux tarballs
-        run: gh release download "${tag}" --pattern 'zed-linux-*.tar.gz'
+        run: gh release download "${tag}" --pattern zed-linux-x86_64.tar.gz --pattern zed-linux-aarch64.tar.gz
       - name: Build the packages
         run: |
           version="${tag#v}"
