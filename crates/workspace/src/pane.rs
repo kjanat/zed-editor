@@ -7245,6 +7245,13 @@ mod tests {
                 Some(item_b.item_id())
             );
         });
+        item_b.read_with(cx, |item, _| {
+            assert_eq!(
+                item.tab_extra_actions_requests.get(),
+                1,
+                "the double-click should look up the tab's extra actions exactly once"
+            );
+        });
     }
 
     #[gpui::test]

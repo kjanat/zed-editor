@@ -1484,6 +1484,7 @@ pub mod test {
         focus_handle: gpui::FocusHandle,
         pub child_focus_handles: Vec<gpui::FocusHandle>,
         pane_read_by_tab_extra_actions: Option<WeakEntity<Pane>>,
+        pub tab_extra_actions_requests: Cell<usize>,
     }
 
     impl project::ProjectItem for TestProjectItem {
@@ -1580,6 +1581,7 @@ pub mod test {
                 serialize: None,
                 child_focus_handles: Vec::new(),
                 pane_read_by_tab_extra_actions: None,
+                tab_extra_actions_requests: Cell::new(0),
             }
         }
 
@@ -1706,6 +1708,8 @@ pub mod test {
             _window: &mut Window,
             cx: &mut Context<Self>,
         ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
+            self.tab_extra_actions_requests
+                .set(self.tab_extra_actions_requests.get() + 1);
             if let Some(pane) = self
                 .pane_read_by_tab_extra_actions
                 .as_ref()
@@ -1822,6 +1826,7 @@ pub mod test {
                         .map(|_| cx.focus_handle())
                         .collect(),
                     pane_read_by_tab_extra_actions: self.pane_read_by_tab_extra_actions.clone(),
+                    tab_extra_actions_requests: Cell::new(0),
                 }
             })))
         }
