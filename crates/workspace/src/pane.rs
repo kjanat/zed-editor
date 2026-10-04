@@ -2971,18 +2971,32 @@ impl Pane {
                 move |pane: &mut Self, event: &ClickEvent, window, cx| {
                     if event.click_count() > 1 {
                         pane.unpreview_item_if_preview(item_id);
-                        let extra_actions = item_handle.tab_extra_context_menu_actions(window, cx);
-                        if let Some((_, action)) = extra_actions
-                            .into_iter()
-                            .find(|(label, _)| label.as_ref() == "Rename")
-                        {
-                            // Dispatch action directly through the focus handle to avoid
-                            // relay_action's intermediate focus step which can interfere
-                            // with inline editors.
-                            let focus_handle = item_handle.item_focus_handle(cx);
-                            focus_handle.dispatch_action(&*action, window, cx);
-                            return;
-                        }
+                        // Items may read this pane while computing their extra actions,
+                        // which panics while the pane is still being updated here.
+                        let item_handle = item_handle.boxed_clone();
+                        let pane = cx.entity().downgrade();
+                        window.defer(cx, move |window, cx| {
+                            let extra_actions =
+                                item_handle.tab_extra_context_menu_actions(window, cx);
+                            if let Some((_, action)) = extra_actions
+                                .into_iter()
+                                .find(|(label, _)| label.as_ref() == "Rename")
+                            {
+                                // Dispatch action directly through the focus handle to avoid
+                                // relay_action's intermediate focus step which can interfere
+                                // with inline editors.
+                                let focus_handle = item_handle.item_focus_handle(cx);
+                                focus_handle.dispatch_action(&*action, window, cx);
+                                return;
+                            }
+                            pane.update(cx, |pane, cx| {
+                                if let Some(ix) = pane.index_for_item_id(item_id) {
+                                    pane.activate_item(ix, true, true, window, cx)
+                                }
+                            })
+                            .log_err();
+                        });
+                        return;
                     }
                     pane.activate_item(ix, true, true, window, cx)
                 }
@@ -7176,6 +7190,61 @@ mod tests {
         cx.run_until_parked();
 
         assert_item_labels(&pane, ["A*!"], cx);
+    }
+
+    #[gpui::test]
+    async fn test_double_click_tab_when_item_reads_pane_for_extra_actions(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        add_labeled_item(&pane, "A", false, cx);
+        let item_b = pane.update_in(cx, |pane, window, cx| {
+            let pane_handle = cx.entity().downgrade();
+            let item = Box::new(cx.new(|cx| {
+                TestItem::new(cx)
+                    .with_label("B")
+                    .with_pane_read_by_tab_extra_actions(pane_handle)
+            }));
+            pane.add_item(item.clone(), false, false, None, window, cx);
+            item
+        });
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(0, false, false, window, cx);
+        });
+        assert_item_labels(&pane, ["A*", "B"], cx);
+        cx.run_until_parked();
+
+        let tab_bounds = cx
+            .debug_bounds("TAB-1")
+            .expect("tab B should have debug bounds");
+        for click_count in [1, 2] {
+            cx.simulate_event(MouseDownEvent {
+                position: tab_bounds.center(),
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                position: tab_bounds.center(),
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+        }
+        cx.run_until_parked();
+
+        pane.read_with(cx, |pane, _| {
+            assert_eq!(
+                pane.active_item().map(|item| item.item_id()),
+                Some(item_b.item_id())
+            );
+        });
     }
 
     #[gpui::test]

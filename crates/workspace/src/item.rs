@@ -1434,7 +1434,7 @@ impl<T: FollowableItem> WeakFollowableItemHandle for WeakEntity<T> {
 pub mod test {
     use super::{Item, ItemEvent, SerializableItem, TabContentParams};
     use crate::{
-        ItemId, ItemNavHistory, Workspace, WorkspaceId,
+        ItemId, ItemNavHistory, Pane, Workspace, WorkspaceId,
         item::{ItemBufferKind, SaveOptions},
     };
     use gpui::{
@@ -1483,6 +1483,7 @@ pub mod test {
         serialize: Option<Box<dyn Fn() -> Option<Task<anyhow::Result<()>>>>>,
         focus_handle: gpui::FocusHandle,
         pub child_focus_handles: Vec<gpui::FocusHandle>,
+        pane_read_by_tab_extra_actions: Option<WeakEntity<Pane>>,
     }
 
     impl project::ProjectItem for TestProjectItem {
@@ -1578,6 +1579,7 @@ pub mod test {
                 focus_handle: cx.focus_handle(),
                 serialize: None,
                 child_focus_handles: Vec::new(),
+                pane_read_by_tab_extra_actions: None,
             }
         }
 
@@ -1603,6 +1605,13 @@ pub mod test {
 
         pub fn with_dirty(mut self, dirty: bool) -> Self {
             self.is_dirty = dirty;
+            self
+        }
+
+        /// Mirrors items like `Editor` that inspect their pane while computing
+        /// tab extra actions.
+        pub fn with_pane_read_by_tab_extra_actions(mut self, pane: WeakEntity<Pane>) -> Self {
+            self.pane_read_by_tab_extra_actions = Some(pane);
             self
         }
 
@@ -1690,6 +1699,21 @@ pub mod test {
 
         fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(ItemEvent)) {
             f(*event)
+        }
+
+        fn tab_extra_context_menu_actions(
+            &self,
+            _window: &mut Window,
+            cx: &mut Context<Self>,
+        ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
+            if let Some(pane) = self
+                .pane_read_by_tab_extra_actions
+                .as_ref()
+                .and_then(|pane| pane.upgrade())
+            {
+                pane.read(cx).active_item();
+            }
+            Vec::new()
         }
 
         fn tab_content_text(&self, detail: usize, _cx: &App) -> SharedString {
@@ -1797,6 +1821,7 @@ pub mod test {
                         .iter()
                         .map(|_| cx.focus_handle())
                         .collect(),
+                    pane_read_by_tab_extra_actions: self.pane_read_by_tab_extra_actions.clone(),
                 }
             })))
         }
