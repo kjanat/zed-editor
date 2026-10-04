@@ -676,18 +676,18 @@ impl LanguageServer {
         let input_task = cx.background_spawn({
             let stdout_failure = stdout_failure.clone();
             async move {
-                // Record the stdout failure as soon as it happens: stderr may stay open
-                // longer than callers are willing to wait for it.
+                // Record and log the stdout failure as soon as it happens: stderr may stay
+                // open longer than callers are willing to wait for it.
                 let stdout_input_task = async move {
                     let stdout = stdout_input_task.await;
                     if let Err(error) = &stdout {
                         *stdout_failure.lock() = Some(format!("{error:#}"));
                     }
-                    stdout
+                    stdout.log_err()
                 };
                 let (stdout, stderr) = futures::join!(stdout_input_task, stderr_input_task);
                 drop(input_done_tx);
-                stdout.log_err().or(stderr)
+                stdout.or(stderr)
             }
         });
         let output_task = cx.background_spawn({
