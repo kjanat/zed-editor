@@ -16,15 +16,13 @@ fi
 
 CONTAINER_ID="$(${ENGINE} run -d --rm -it -v ~/.mitmproxy:/home/mitmproxy/.mitmproxy -p 9876:8080 mitmproxy/mitmproxy mitmdump)"
 
-trap "${ENGINE} stop \"$CONTAINER_ID\" 1> /dev/null || true; exit 1" SIGINT
+trap '"${ENGINE}" stop "${CONTAINER_ID}" >/dev/null 2>&1 || true' EXIT
+trap 'exit 130' INT
 
 echo "Add the root certificate created in ~/.mitmproxy to your certificate chain for HTTP"
 echo "on macOS:"
 echo "sudo security add-trusted-cert -d -p ssl -p basic -k /Library/Keychains/System.keychain ~/.mitmproxy/mitmproxy-ca-cert.pem"
 echo "Press enter to continue"
-read
+read -r
 
 http_proxy=http://localhost:9876 cargo run
-
-# Clean up detached proxy after running
-${ENGINE} stop "${CONTAINER_ID}" 2>/dev/null || true

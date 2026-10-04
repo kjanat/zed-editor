@@ -7,13 +7,12 @@ check_remaining_installations() {
 	platform="$(uname -s)"
 	if [ "$platform" = "Darwin" ]; then
 		# Check for any Zed variants in /Applications
-		remaining=$(ls -d /Applications/Zed*.app 2>/dev/null | wc -l)
-		[ "$remaining" -eq 0 ]
+		set -- /Applications/Zed*.app
 	else
 		# Check for any Zed variants in ~/.local
-		remaining=$(ls -d "$HOME/.local/zed"*.app 2>/dev/null | wc -l)
-		[ "$remaining" -eq 0 ]
+		set -- "$HOME/.local/zed"*.app
 	fi
+	[ ! -e "$1" ]
 }
 
 prompt_remove_preferences() {
@@ -101,7 +100,7 @@ linux() {
 		prompt_remove_preferences
 	fi
 
-	rm -rf $HOME/.zed_server
+	rm -rf "$HOME/.zed_server"
 }
 
 macos() {
@@ -152,7 +151,7 @@ macos() {
 		prompt_remove_preferences
 	fi
 
-	rm -rf $HOME/.zed_server
+	rm -rf "$HOME/.zed_server"
 }
 
 main "$@"
