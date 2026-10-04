@@ -676,10 +676,16 @@ impl LanguageServer {
         let input_task = cx.background_spawn({
             let stdout_failure = stdout_failure.clone();
             async move {
+                // Record the stdout failure as soon as it happens: stderr may stay open
+                // longer than callers are willing to wait for it.
+                let stdout_input_task = async move {
+                    let stdout = stdout_input_task.await;
+                    if let Err(error) = &stdout {
+                        *stdout_failure.lock() = Some(format!("{error:#}"));
+                    }
+                    stdout
+                };
                 let (stdout, stderr) = futures::join!(stdout_input_task, stderr_input_task);
-                if let Err(error) = &stdout {
-                    *stdout_failure.lock() = Some(format!("{error:#}"));
-                }
                 drop(input_done_tx);
                 stdout.log_err().or(stderr)
             }
@@ -1198,8 +1204,16 @@ impl LanguageServer {
         cx: &App,
     ) -> Task<Result<Arc<Self>>> {
         cx.background_spawn(async move {
-            let response = match self.request::<request::Initialize>(params, timeout).await {
+            let result = self.request::<request::Initialize>(params, timeout).await;
+            // The server may have closed stdout before the request was even sent,
+            // which surfaces as a plain error rather than a connection reset.
+            let disconnected = self.response_handlers.lock().is_none();
+            let response = match result {
                 ConnectionResult::ConnectionReset => Err(self.connection_reset_error().await),
+                ConnectionResult::Result(Err(error)) if disconnected => Err(self
+                    .connection_reset_error()
+                    .await
+                    .context(error.to_string())),
                 result => result.into_response(),
             }
             .with_context(|| {
@@ -2362,42 +2376,48 @@ mod tests {
         cx.update(|cx| {
             release_channel::init(semver::Version::new(0, 0, 0), cx);
         });
-        let (server, mut stdout, output) = shutdown_test_server(None, cx);
-        let initialize = cx.update(|cx| {
-            let params = server.default_initialize_params(false, false, cx);
-            let configuration = DidChangeConfigurationParams {
-                settings: Default::default(),
-            };
-            server.initialize(
-                params,
-                configuration.into(),
-                DEFAULT_LSP_REQUEST_TIMEOUT,
-                cx,
-            )
-        });
+        for stdout_closes_before_initialize in [false, true] {
+            let (server, stdout, output) = shutdown_test_server(None, cx);
+            let mut stdout = Some(stdout);
+            if stdout_closes_before_initialize && let Some(stdout) = stdout.take() {
+                write_non_lsp_output_and_close(stdout).await;
+                cx.run_until_parked();
+            }
+            let initialize = cx.update(|cx| {
+                let params = server.default_initialize_params(false, false, cx);
+                let configuration = DidChangeConfigurationParams {
+                    settings: Default::default(),
+                };
+                server.initialize(
+                    params,
+                    configuration.into(),
+                    DEFAULT_LSP_REQUEST_TIMEOUT,
+                    cx,
+                )
+            });
+            cx.run_until_parked();
+            if let Some(stdout) = stdout.take() {
+                write_non_lsp_output_and_close(stdout).await;
+            }
+            cx.run_until_parked();
 
-        stdout
-            .write_all(b"Task: roslyn\nDescription:\n")
-            .await
-            .expect("test output must reach stdout");
-        drop(stdout);
-        cx.run_until_parked();
+            let error = initialize
+                .await
+                .expect_err("initialize must fail when stdout is not LSP");
+            let error = format!("{error:#}");
+            assert!(
+                error.contains("Task: roslyn\\nDescription:"),
+                "initialize error should include the server's output \
+                (stdout closes before initialize: {stdout_closes_before_initialize}), got: {error}"
+            );
 
-        let error = initialize
-            .await
-            .expect_err("initialize must fail when stdout is not LSP");
-        let error = format!("{error:#}");
-        assert!(
-            error.contains("Task: roslyn\\nDescription:"),
-            "initialize error should include the server's output, got: {error}"
-        );
-
-        cx.run_until_parked();
-        let written = String::from_utf8_lossy(&output.lock().bytes).into_owned();
-        assert!(
-            !written.contains(r#""method":"shutdown""#),
-            "no shutdown request should be sent to a disconnected server, got: {written}"
-        );
+            cx.run_until_parked();
+            let written = String::from_utf8_lossy(&output.lock().bytes).into_owned();
+            assert!(
+                !written.contains(r#""method":"shutdown""#),
+                "no shutdown request should be sent to a disconnected server, got: {written}"
+            );
+        }
     }
 
     #[gpui::test]
@@ -2753,6 +2773,13 @@ mod tests {
             |_| false,
         );
         (server, stdout_writer, output)
+    }
+
+    async fn write_non_lsp_output_and_close(mut stdout: async_pipe::PipeWriter) {
+        stdout
+            .write_all(b"Task: roslyn\nDescription:\n")
+            .await
+            .expect("test output must reach stdout");
     }
 
     fn framed_test_message(payload: &str) -> Vec<u8> {
