@@ -57,9 +57,9 @@ pub const DEFAULT_LSP_REQUEST_TIMEOUT: Duration =
 /// The shutdown timeout for LSP servers (including Prettier/Copilot).
 const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long to wait for a server that dropped the connection to finish writing
-/// its stdout and stderr, so the failure can be reported with its actual cause.
-const CONNECTION_RESET_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long to wait for a server whose startup failed to finish writing its stdout
+/// and stderr, so the failure can be reported with its actual cause.
+const STARTUP_FAILURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn workspace_folder_for_uri(uri: Uri) -> WorkspaceFolder {
     let name = uri
@@ -1208,12 +1208,14 @@ impl LanguageServer {
             // The server may have closed stdout before the request was even sent,
             // which surfaces as a plain error rather than a connection reset.
             let disconnected = self.response_handlers.lock().is_none();
+            if !matches!(result, ConnectionResult::Result(Ok(_))) {
+                self.stop_and_drain_output().await;
+            }
             let response = match result {
-                ConnectionResult::ConnectionReset => Err(self.connection_reset_error().await),
-                ConnectionResult::Result(Err(error)) if disconnected => Err(self
-                    .connection_reset_error()
-                    .await
-                    .context(error.to_string())),
+                ConnectionResult::ConnectionReset => Err(self.connection_reset_error()),
+                ConnectionResult::Result(Err(error)) if disconnected => {
+                    Err(self.connection_reset_error().context(error.to_string()))
+                }
                 result => result.into_response(),
             }
             .with_context(|| {
@@ -1235,14 +1237,26 @@ impl LanguageServer {
         })
     }
 
-    /// Builds the error for a request whose connection was reset, after giving the
-    /// server's output a moment to drain so that the reason it stopped is known.
-    async fn connection_reset_error(&self) -> anyhow::Error {
+    /// Kills a server whose startup failed and waits for its stdout and stderr to be
+    /// read to the end, so the failure is reported with everything the server wrote.
+    async fn stop_and_drain_output(&self) {
+        if let Some(server) = self.server.lock().as_mut()
+            && let Err(error) = server.kill()
+        {
+            log::warn!(
+                "failed to kill language server {} (id {}): {error}",
+                self.name,
+                self.server_id
+            );
+        }
         let mut input_done = self.input_done_rx.clone();
         select! {
             _ = input_done.recv().fuse() => {},
-            _ = self.executor.timer(CONNECTION_RESET_DRAIN_TIMEOUT).fuse() => {},
+            _ = self.executor.timer(STARTUP_FAILURE_DRAIN_TIMEOUT).fuse() => {},
         }
+    }
+
+    fn connection_reset_error(&self) -> anyhow::Error {
         match self.stdout_failure.lock().clone() {
             Some(failure) => anyhow!("Server reset the connection: {failure}"),
             None => anyhow!("Server reset the connection"),
@@ -2418,6 +2432,69 @@ mod tests {
                 "no shutdown request should be sent to a disconnected server, got: {written}"
             );
         }
+    }
+
+    #[gpui::test]
+    async fn test_initialize_failure_reports_unread_stderr(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+        });
+        let (stdout_writer, stdout_reader) = async_pipe::pipe();
+        let (mut stderr_writer, stderr_reader) = async_pipe::pipe();
+        let stderr_capture = Arc::new(Mutex::new(Some(String::new())));
+        let server = LanguageServer::new_internal(
+            LanguageServerId(0),
+            LanguageServerName::from("stderr-test"),
+            ShutdownTestWriter(Arc::new(Mutex::new(ShutdownTestOutput {
+                bytes: Vec::new(),
+                remaining_flushes: None,
+                blocked: false,
+            }))),
+            stdout_reader,
+            Some(stderr_reader),
+            stderr_capture.clone(),
+            None,
+            None,
+            LanguageServerBinary {
+                path: PathBuf::from("stderr-test"),
+                arguments: Vec::new(),
+                env: None,
+            },
+            FakeLanguageServer::root_path(),
+            None,
+            &mut cx.to_async(),
+            |_| false,
+        );
+        stderr_writer
+            .write_all(b"error: no project file found")
+            .await
+            .expect("test output must reach stderr");
+
+        let request_timeout = Duration::from_secs(1);
+        let initialize = cx.update(|cx| {
+            let params = server.default_initialize_params(false, false, cx);
+            let configuration = DidChangeConfigurationParams {
+                settings: Default::default(),
+            };
+            server.initialize(params, configuration.into(), request_timeout, cx)
+        });
+        let startup = cx.executor().spawn({
+            let stderr_capture = stderr_capture.clone();
+            async move {
+                let result = initialize.await;
+                (result, stderr_capture.lock().take())
+            }
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(request_timeout);
+        cx.run_until_parked();
+        drop(stdout_writer);
+        drop(stderr_writer);
+        cx.run_until_parked();
+
+        let (result, stderr) = startup.await;
+        result.expect_err("initialize must fail when the server never answers");
+        assert_eq!(stderr.as_deref(), Some("error: no project file found"));
     }
 
     #[gpui::test]
