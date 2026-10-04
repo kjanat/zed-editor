@@ -44,8 +44,26 @@ where
         }
 
         if reader.read_until(b'\n', buffer).await? == 0 {
-            anyhow::bail!("cannot read LSP message headers");
+            if buffer.is_empty() {
+                anyhow::bail!("cannot read LSP message headers: stdout closed");
+            }
+            // A misconfigured wrapper (e.g. a task runner printing help) often writes plain
+            // text and exits; surface that text so the cause is visible to the user.
+            anyhow::bail!(
+                "cannot read LSP message headers: stdout closed after non-LSP output {:?}",
+                non_lsp_output_preview(buffer)
+            );
         }
+    }
+}
+
+fn non_lsp_output_preview(output: &[u8]) -> String {
+    const MAX_PREVIEW_CHARS: usize = 512;
+    let text = String::from_utf8_lossy(output);
+    let text = text.trim_end();
+    match text.char_indices().nth(MAX_PREVIEW_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
     }
 }
 
@@ -208,6 +226,29 @@ mod tests {
         assert_eq!(
             buf,
             b"Content-Length: 1235\r\nContent-Type: application/vscode-jsonrpc\r\n\r\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_read_headers_reports_non_lsp_output() {
+        let mut buf = Vec::new();
+        let mut reader = BufReader::new(b"Task: roslyn\nDescription:\n" as &[u8]);
+        let error = read_headers(&mut reader, &mut buf)
+            .await
+            .expect_err("non-LSP output must fail");
+        assert!(
+            error.to_string().contains("Task: roslyn\\nDescription:"),
+            "error should include the received output, got: {error}"
+        );
+
+        let mut buf = Vec::new();
+        let mut reader = BufReader::new(b"" as &[u8]);
+        let error = read_headers(&mut reader, &mut buf)
+            .await
+            .expect_err("closed stdout must fail");
+        assert!(
+            !error.to_string().contains("non-LSP output"),
+            "empty stdout should not claim non-LSP output, got: {error}"
         );
     }
 }

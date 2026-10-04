@@ -57,6 +57,10 @@ pub const DEFAULT_LSP_REQUEST_TIMEOUT: Duration =
 /// The shutdown timeout for LSP servers (including Prettier/Copilot).
 const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long to wait for a server that dropped the connection to finish writing
+/// its stdout and stderr, so the failure can be reported with its actual cause.
+const CONNECTION_RESET_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
 pub fn workspace_folder_for_uri(uri: Uri) -> WorkspaceFolder {
     let name = uri
         .to_file_path()
@@ -137,6 +141,10 @@ pub struct LanguageServer {
     #[allow(clippy::type_complexity)]
     io_tasks: Mutex<Option<(Task<Option<()>>, Task<Option<()>>)>>,
     output_done_rx: Mutex<Option<barrier::Receiver>>,
+    /// Released once the server's stdout and stderr have both been read to the end.
+    input_done_rx: barrier::Receiver,
+    /// Why reading the server's stdout stopped, when it stopped with an error.
+    stdout_failure: Arc<Mutex<Option<String>>>,
     server: Arc<Mutex<Option<Child>>>,
     workspace_folders: Option<Arc<Mutex<BTreeSet<Uri>>>>,
     root_uri: Uri,
@@ -649,7 +657,6 @@ impl LanguageServer {
                     io_handlers,
                     cx,
                 )
-                .log_err()
                 .await
             }
         });
@@ -664,9 +671,24 @@ impl LanguageServer {
                 })
             })
             .unwrap_or_else(|| Task::ready(None));
-        let input_task = cx.background_spawn(async move {
-            let (stdout, stderr) = futures::join!(stdout_input_task, stderr_input_task);
-            stdout.or(stderr)
+        let (input_done_tx, input_done_rx) = barrier::channel();
+        let stdout_failure = Arc::new(Mutex::new(None));
+        let input_task = cx.background_spawn({
+            let stdout_failure = stdout_failure.clone();
+            async move {
+                // Record and log the stdout failure as soon as it happens: stderr may stay
+                // open longer than callers are willing to wait for it.
+                let stdout_input_task = async move {
+                    let stdout = stdout_input_task.await;
+                    if let Err(error) = &stdout {
+                        *stdout_failure.lock() = Some(format!("{error:#}"));
+                    }
+                    stdout.log_err()
+                };
+                let (stdout, stderr) = futures::join!(stdout_input_task, stderr_input_task);
+                drop(input_done_tx);
+                stdout.or(stderr)
+            }
         });
         let output_task = cx.background_spawn({
             Self::handle_outgoing_messages(
@@ -722,6 +744,8 @@ impl LanguageServer {
             executor: cx.background_executor().clone(),
             io_tasks: Mutex::new(Some((input_task, output_task))),
             output_done_rx: Mutex::new(Some(output_done_rx)),
+            input_done_rx,
+            stdout_failure,
             server: Arc::new(Mutex::new(server)),
             workspace_folders,
             root_uri,
@@ -1180,17 +1204,25 @@ impl LanguageServer {
         cx: &App,
     ) -> Task<Result<Arc<Self>>> {
         cx.background_spawn(async move {
-            let response = self
-                .request::<request::Initialize>(params, timeout)
-                .await
-                .into_response()
-                .with_context(|| {
-                    format!(
-                        "initializing server {}, id {}",
-                        self.name(),
-                        self.server_id()
-                    )
-                })?;
+            let result = self.request::<request::Initialize>(params, timeout).await;
+            // The server may have closed stdout before the request was even sent,
+            // which surfaces as a plain error rather than a connection reset.
+            let disconnected = self.response_handlers.lock().is_none();
+            let response = match result {
+                ConnectionResult::ConnectionReset => Err(self.connection_reset_error().await),
+                ConnectionResult::Result(Err(error)) if disconnected => Err(self
+                    .connection_reset_error()
+                    .await
+                    .context(error.to_string())),
+                result => result.into_response(),
+            }
+            .with_context(|| {
+                format!(
+                    "initializing server {}, id {}",
+                    self.name(),
+                    self.server_id()
+                )
+            })?;
             if let Some(info) = response.server_info {
                 self.version = info.version.map(SharedString::from);
                 self.process_name = info.name.into();
@@ -1203,6 +1235,20 @@ impl LanguageServer {
         })
     }
 
+    /// Builds the error for a request whose connection was reset, after giving the
+    /// server's output a moment to drain so that the reason it stopped is known.
+    async fn connection_reset_error(&self) -> anyhow::Error {
+        let mut input_done = self.input_done_rx.clone();
+        select! {
+            _ = input_done.recv().fuse() => {},
+            _ = self.executor.timer(CONNECTION_RESET_DRAIN_TIMEOUT).fuse() => {},
+        }
+        match self.stdout_failure.lock().clone() {
+            Some(failure) => anyhow!("Server reset the connection: {failure}"),
+            None => anyhow!("Server reset the connection"),
+        }
+    }
+
     /// Sends a shutdown request to the language server process and prepares the [`LanguageServer`] to be dropped.
     pub fn shutdown(&self) -> Option<impl 'static + Send + Future<Output = Option<()>> + use<>> {
         let tasks = self.io_tasks.lock().take()?;
@@ -1213,15 +1259,20 @@ impl LanguageServer {
         let executor = self.executor.clone();
         let notification_serializers = self.notification_tx.clone();
         let mut output_done = self.output_done_rx.lock().take().unwrap();
-        let shutdown_request = Self::request_internal::<request::Shutdown>(
-            &next_id,
-            &response_handlers,
-            &outbound_tx,
-            &notification_serializers,
-            &executor,
-            SERVER_SHUTDOWN_TIMEOUT,
-            (),
-        );
+        // Response handlers are dropped once the server's stdout closes. Such a server
+        // can't answer a shutdown request, so only send one while it's still connected.
+        let still_connected = response_handlers.lock().is_some();
+        let shutdown_request = still_connected.then(|| {
+            Self::request_internal::<request::Shutdown>(
+                &next_id,
+                &response_handlers,
+                &outbound_tx,
+                &notification_serializers,
+                &executor,
+                SERVER_SHUTDOWN_TIMEOUT,
+                (),
+            )
+        });
 
         let server = self.server.clone();
         let name = self.name.clone();
@@ -1230,26 +1281,34 @@ impl LanguageServer {
         Some(async move {
             log::debug!("language server shutdown started");
 
-            let shutdown_timed_out = select! {
-                request_result = shutdown_request.fuse() => {
-                    match request_result {
-                        ConnectionResult::Timeout => {
-                            log::warn!("timeout waiting for language server {name} (id {server_id}) to shutdown");
-                        },
-                        ConnectionResult::ConnectionReset => {
-                            log::warn!("language server {name} (id {server_id}) closed the shutdown request connection");
-                        },
-                        ConnectionResult::Result(Err(e)) => {
-                            log::error!("Shutdown request failure, server {name} (id {server_id}): {e:#}");
-                        },
-                        ConnectionResult::Result(Ok(())) => {}
-                    }
+            let shutdown_timed_out = match shutdown_request {
+                None => {
+                    log::debug!(
+                        "language server {name} (id {server_id}) already disconnected, skipping shutdown request"
+                    );
                     false
                 }
+                Some(shutdown_request) => select! {
+                    request_result = shutdown_request.fuse() => {
+                        match request_result {
+                            ConnectionResult::Timeout => {
+                                log::warn!("timeout waiting for language server {name} (id {server_id}) to shutdown");
+                            },
+                            ConnectionResult::ConnectionReset => {
+                                log::warn!("language server {name} (id {server_id}) closed the shutdown request connection");
+                            },
+                            ConnectionResult::Result(Err(e)) => {
+                                log::error!("Shutdown request failure, server {name} (id {server_id}): {e:#}");
+                            },
+                            ConnectionResult::Result(Ok(())) => {}
+                        }
+                        false
+                    }
 
-                _ = timer => {
-                    log::info!("timeout waiting for language server {name} (id {server_id}) to shutdown");
-                    true
+                    _ = timer => {
+                        log::info!("timeout waiting for language server {name} (id {server_id}) to shutdown");
+                        true
+                    },
                 },
             };
 
@@ -2313,6 +2372,55 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_initialize_reports_non_lsp_stdout(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+        });
+        for stdout_closes_before_initialize in [false, true] {
+            let (server, stdout, output) = shutdown_test_server(None, cx);
+            let mut stdout = Some(stdout);
+            if stdout_closes_before_initialize && let Some(stdout) = stdout.take() {
+                write_non_lsp_output_and_close(stdout).await;
+                cx.run_until_parked();
+            }
+            let initialize = cx.update(|cx| {
+                let params = server.default_initialize_params(false, false, cx);
+                let configuration = DidChangeConfigurationParams {
+                    settings: Default::default(),
+                };
+                server.initialize(
+                    params,
+                    configuration.into(),
+                    DEFAULT_LSP_REQUEST_TIMEOUT,
+                    cx,
+                )
+            });
+            cx.run_until_parked();
+            if let Some(stdout) = stdout.take() {
+                write_non_lsp_output_and_close(stdout).await;
+            }
+            cx.run_until_parked();
+
+            let error = initialize
+                .await
+                .expect_err("initialize must fail when stdout is not LSP");
+            let error = format!("{error:#}");
+            assert!(
+                error.contains("Task: roslyn\\nDescription:"),
+                "initialize error should include the server's output \
+                (stdout closes before initialize: {stdout_closes_before_initialize}), got: {error}"
+            );
+
+            cx.run_until_parked();
+            let written = String::from_utf8_lossy(&output.lock().bytes).into_owned();
+            assert!(
+                !written.contains(r#""method":"shutdown""#),
+                "no shutdown request should be sent to a disconnected server, got: {written}"
+            );
+        }
+    }
+
+    #[gpui::test]
     async fn test_subscription_leaks_handlers_after_server_drop(cx: &mut TestAppContext) {
         cx.update(|cx| {
             release_channel::init(semver::Version::new(0, 0, 0), cx);
@@ -2665,6 +2773,13 @@ mod tests {
             |_| false,
         );
         (server, stdout_writer, output)
+    }
+
+    async fn write_non_lsp_output_and_close(mut stdout: async_pipe::PipeWriter) {
+        stdout
+            .write_all(b"Task: roslyn\nDescription:\n")
+            .await
+            .expect("test output must reach stdout");
     }
 
     fn framed_test_message(payload: &str) -> Vec<u8> {

@@ -635,13 +635,27 @@ impl FocusHandle {
 
     /// Dispatch an action on the element that rendered this focus handle
     pub fn dispatch_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) {
-        if let Some(node_id) = window
+        self.try_dispatch_action(action, window, cx);
+    }
+
+    /// Dispatch an action on the element that rendered this focus handle, returning
+    /// `false` without dispatching when that element isn't in the most recently
+    /// rendered frame (e.g. it was only just made visible).
+    pub fn try_dispatch_action(
+        &self,
+        action: &dyn Action,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(node_id) = window
             .rendered_frame
             .dispatch_tree
             .focusable_node_id(self.id)
-        {
-            window.dispatch_action_on_node(node_id, action, cx)
-        }
+        else {
+            return false;
+        };
+        window.dispatch_action_on_node(node_id, action, cx);
+        true
     }
 }
 
