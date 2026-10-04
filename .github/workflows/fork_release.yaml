@@ -194,6 +194,12 @@ jobs:
       - name: Bundle
         env: { arch: "${{ matrix.arch }}" }
         run: mise run bundle-windows -- -Architecture "${arch}"
+      - name: Collect the debug symbols
+        env: { arch: "${{ matrix.arch }}" }
+        run: |
+          archives=(target/"${arch}"-pc-windows-msvc/release/zed-*.dbg.zip)
+          [[ ${#archives[@]} -eq 1 && -f "${archives[0]}" ]]
+          mv "${archives[0]}" "target/zed-windows-${arch}.dbg.zip"
       - name: Attest build provenance
         if: *PushOrUpload
         uses: *attest
@@ -201,6 +207,7 @@ jobs:
           subject-path: |
             target/Zed-${{ matrix.arch }}.exe
             target/zed-remote-server-windows-${{ matrix.arch }}.zip
+            target/zed-windows-${{ matrix.arch }}.dbg.zip
       - name: Show disk usage
         if: always()
         shell: pwsh
@@ -211,7 +218,8 @@ jobs:
         run: |
           gh release upload "${tag}" --clobber \
             "target/Zed-${arch}.exe#Zed for Windows (${arch}, installer)" \
-            "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})"
+            "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})" \
+            "target/zed-windows-${arch}.dbg.zip#Debug symbols for Windows (${arch}, PDB)"
 
   remote_server_freebsd:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.freebsd)
