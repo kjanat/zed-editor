@@ -3477,7 +3477,7 @@ mod test {
     use std::os::unix::ffi::OsStringExt;
 
     use crate::{
-        AppContext, Context, Empty, FallbackFontClass, IntoElement, MissingGlyph, Render,
+        AppContext, Context, Empty, Entity, FallbackFontClass, IntoElement, MissingGlyph, Render,
         TestAppContext, Window,
     };
 
@@ -3636,6 +3636,31 @@ mod test {
             });
             assert!(!cx.has_active_entity_updates());
         });
+    }
+
+    struct Counter(usize);
+
+    impl Render for Counter {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Empty
+        }
+    }
+
+    #[gpui::test]
+    fn test_entity_listener_runs_outside_its_entity_update(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Counter(0));
+        let counter = window.root(cx).unwrap();
+        let listener = counter.update(cx, |_, cx| {
+            cx.entity_listener(|counter: Entity<Counter>, increment: &usize, _, cx| {
+                assert!(!cx.has_active_entity_updates());
+                counter.update(cx, |counter, _| counter.0 += increment);
+            })
+        });
+
+        cx.update_window(window.into(), |_, window, cx| listener(&2, window, cx))
+            .unwrap();
+
+        assert_eq!(counter.read_with(cx, |counter, _| counter.0), 2);
     }
 
     #[test]
