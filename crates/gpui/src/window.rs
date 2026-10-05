@@ -633,16 +633,81 @@ impl FocusHandle {
         self.id.contains(other.id, window)
     }
 
-    /// Dispatch an action on the element that rendered this focus handle
+    /// Dispatch an action on the element that rendered this focus handle.
+    ///
+    /// The action runs immediately when no entity is being updated and the most recently
+    /// rendered frame contains the element. Otherwise it runs once the current entity updates
+    /// have ended and the element has been rendered, waiting up to two rendered frames. The
+    /// action is dropped with a warning when the element never renders, and dropped silently
+    /// when this focus handle is released first.
     pub fn dispatch_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) {
-        if let Some(node_id) = window
+        if !cx.has_active_entity_updates()
+            && self.try_dispatch_action_now(action, window, cx) == ActionDispatch::Dispatched
+        {
+            return;
+        }
+        let target = self.downgrade();
+        let action = action.boxed_clone();
+        window.defer(cx, move |window, cx| {
+            dispatch_action_when_rendered(target, action, DISPATCH_RENDER_ATTEMPTS, window, cx)
+        });
+    }
+
+    /// Dispatch an action on the element that rendered this focus handle in the most recently
+    /// rendered frame, synchronously, even while entities are being updated.
+    pub fn try_dispatch_action_now(
+        &self,
+        action: &dyn Action,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> ActionDispatch {
+        let Some(node_id) = window
             .rendered_frame
             .dispatch_tree
             .focusable_node_id(self.id)
-        {
-            window.dispatch_action_on_node(node_id, action, cx)
-        }
+        else {
+            return ActionDispatch::TargetNotRendered;
+        };
+        window.dispatch_action_on_node(node_id, action, cx);
+        ActionDispatch::Dispatched
     }
+}
+
+/// The outcome of [`FocusHandle::try_dispatch_action_now`].
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionDispatch {
+    /// The element that rendered the focus handle received the action.
+    Dispatched,
+    /// The most recently rendered frame has no element for the focus handle.
+    TargetNotRendered,
+}
+
+const DISPATCH_RENDER_ATTEMPTS: usize = 2;
+
+fn dispatch_action_when_rendered(
+    target: WeakFocusHandle,
+    action: Box<dyn Action>,
+    renders_left: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(focus_handle) = target.upgrade() else {
+        return;
+    };
+    if focus_handle.try_dispatch_action_now(&*action, window, cx) == ActionDispatch::Dispatched {
+        return;
+    }
+    let Some(renders_left) = renders_left.checked_sub(1) else {
+        log::warn!(
+            "dropped {} because its target was never rendered",
+            action.name()
+        );
+        return;
+    };
+    window.on_next_render(move |window, cx| {
+        dispatch_action_when_rendered(target, action, renders_left, window, cx)
+    });
 }
 
 impl Clone for FocusHandle {
@@ -7757,14 +7822,14 @@ mod tests {
     };
 
     use crate::{
-        AnyWindowHandle, AppContext as _, Bounds, ContentMask, Context, DispatchPhase,
+        AnyWindowHandle, App, AppContext as _, Bounds, ContentMask, Context, DispatchPhase,
         DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
         FocusHandle, InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent,
         Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
         Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
         StatefulInteractiveElement as _, Styled, TestAppContext, TouchDragEvent, TouchEvent,
-        TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance, WindowOptions,
-        canvas, div, hsla, point, px, size,
+        TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance, WindowHandle,
+        WindowOptions, canvas, div, hsla, point, px, size,
     };
 
     #[cfg(feature = "profiler")]
@@ -8233,20 +8298,50 @@ mod tests {
         );
     }
 
+    actions!(window_test, [CountDispatch]);
+
     struct FocusTarget {
         focus_handle: FocusHandle,
         rendered: bool,
+        dispatched: usize,
+    }
+
+    impl FocusTarget {
+        fn new(rendered: bool, cx: &mut App) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+                rendered,
+                dispatched: 0,
+            }
+        }
     }
 
     impl Render for FocusTarget {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let root = div();
             if self.rendered {
-                root.child(div().track_focus(&self.focus_handle))
+                root.child(div().track_focus(&self.focus_handle).on_action(
+                    cx.listener(|target: &mut Self, _: &CountDispatch, _, _| {
+                        target.dispatched += 1
+                    }),
+                ))
             } else {
                 root
             }
         }
+    }
+
+    fn count_global_dispatches(cx: &mut TestAppContext) -> Rc<Cell<usize>> {
+        let dispatched = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let dispatched = dispatched.clone();
+            cx.on_action(move |_: &CountDispatch, _| dispatched.set(dispatched.get() + 1));
+        });
+        dispatched
+    }
+
+    fn dispatched(window: WindowHandle<FocusTarget>, cx: &mut TestAppContext) -> usize {
+        window.read_with(cx, |target, _| target.dispatched).unwrap()
     }
 
     fn is_rendered(focus_handle: &FocusHandle, window: &Window) -> bool {
@@ -8259,10 +8354,7 @@ mod tests {
 
     #[gpui::test]
     fn test_next_render_callback_sees_the_frame_it_waited_for(cx: &mut TestAppContext) {
-        let window = cx.add_window(|_, cx| FocusTarget {
-            focus_handle: cx.focus_handle(),
-            rendered: false,
-        });
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
         cx.run_until_parked();
 
         let rendered_when_called = Rc::new(Cell::new(None));
@@ -8285,10 +8377,7 @@ mod tests {
 
     #[gpui::test]
     fn test_next_render_callback_requests_the_frame_it_waits_for(cx: &mut TestAppContext) {
-        let window = cx.add_window(|_, cx| FocusTarget {
-            focus_handle: cx.focus_handle(),
-            rendered: true,
-        });
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
         cx.run_until_parked();
 
         let calls = Rc::new(Cell::new(0));
@@ -8301,6 +8390,119 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(calls.get(), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_outside_updates_runs_synchronously(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        let target = window.root(cx).unwrap();
+        let focus_handle = target.read_with(cx, |target, _| target.focus_handle.clone());
+
+        cx.update_window(window.into(), |_, window, cx| {
+            focus_handle.dispatch_action(&CountDispatch, window, cx);
+            assert_eq!(
+                target.read(cx).dispatched,
+                1,
+                "with no entity being updated, the action should run before dispatch_action returns"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_during_its_handlers_update_runs_after_it(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+
+        window
+            .update(cx, |target, window, cx| {
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+                assert_eq!(
+                    target.dispatched, 0,
+                    "the handler updates this entity, so it must wait for this update to end"
+                );
+            })
+            .unwrap();
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_waits_for_its_target_to_render(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_is_dropped_when_its_target_is_released(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        let global_dispatches = count_global_dispatches(cx);
+
+        window
+            .update(cx, |target, window, cx| {
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+                target.focus_handle = cx.focus_handle();
+                target.rendered = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "the element now rendering in the released target's place must not receive its action"
+        );
+        assert_eq!(global_dispatches.get(), 0);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_is_dropped_when_its_target_never_renders(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        let global_dispatches = count_global_dispatches(cx);
+        let focus_handle = window
+            .read_with(cx, |target, _| target.focus_handle.clone())
+            .unwrap();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            focus_handle.dispatch_action(&CountDispatch, window, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |target, _, cx| {
+                target.rendered = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "an action that gave up waiting must not run when its target renders later"
+        );
+        assert_eq!(global_dispatches.get(), 0);
     }
 
     #[gpui::test]
