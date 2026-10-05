@@ -2978,7 +2978,7 @@ impl Pane {
                         {
                             return;
                         }
-                        if let Some(action) = item_handle.tab_double_click_action(window, cx) {
+                        if let Some(action) = item_handle.tab_double_click_action(cx) {
                             // Dispatch action directly through the focus handle to avoid
                             // relay_action's intermediate focus step which can interfere
                             // with inline editors.

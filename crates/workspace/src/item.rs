@@ -410,11 +410,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
 
     /// Returns the action that double-clicking the tab dispatches to this item.
     /// Implementations may read the containing pane.
-    fn tab_double_click_action(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Box<dyn Action>> {
+    fn tab_double_click_action(&self, _item_id: EntityId, _cx: &App) -> Option<Box<dyn Action>> {
         None
     }
 }
@@ -597,8 +593,7 @@ pub trait ItemHandle: 'static + Send {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<(SharedString, Box<dyn Action>)>;
-    fn tab_double_click_action(&self, window: &mut Window, cx: &mut App)
-    -> Option<Box<dyn Action>>;
+    fn tab_double_click_action(&self, cx: &App) -> Option<Box<dyn Action>>;
     fn can_autosave(&self, cx: &App) -> bool {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
@@ -1200,12 +1195,8 @@ impl<T: Item> ItemHandle for Entity<T> {
         })
     }
 
-    fn tab_double_click_action(
-        &self,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Box<dyn Action>> {
-        self.update(cx, |this, cx| this.tab_double_click_action(window, cx))
+    fn tab_double_click_action(&self, cx: &App) -> Option<Box<dyn Action>> {
+        self.read(cx).tab_double_click_action(self.item_id(), cx)
     }
 }
 
@@ -1731,11 +1722,7 @@ pub mod test {
             f(*event)
         }
 
-        fn tab_double_click_action(
-            &self,
-            _window: &mut Window,
-            cx: &mut Context<Self>,
-        ) -> Option<Box<dyn Action>> {
+        fn tab_double_click_action(&self, item_id: EntityId, cx: &App) -> Option<Box<dyn Action>> {
             self.tab_double_click_requests
                 .set(self.tab_double_click_requests.get() + 1);
             if let Some(workspace) = self
@@ -1745,7 +1732,7 @@ pub mod test {
             {
                 let pane = workspace
                     .read(cx)
-                    .pane_for_item_id(cx.entity_id())
+                    .pane_for_item_id(item_id)
                     .expect("the double-clicked item must be in a pane");
                 pane.read(cx).active_item();
             }

@@ -9,7 +9,7 @@ use editor::{
     ui_scrollbar_settings_from_raw,
 };
 use gpui::{
-    Action, AnyElement, App, ClipboardEntry, Corners, DismissEvent, Entity, EventEmitter,
+    Action, AnyElement, App, ClipboardEntry, Corners, DismissEvent, Entity, EntityId, EventEmitter,
     ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke, MouseButton,
     MouseDownEvent, Pixels, Point as GpuiPoint, Rems, Render, ScrollWheelEvent, Styled,
     Subscription, Task, TaskExt, WeakEntity, actions, anchored, deferred, div,
@@ -1848,8 +1848,8 @@ impl Item for TerminalView {
 
     fn tab_double_click_action(
         &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
+        _item_id: EntityId,
+        cx: &App,
     ) -> Option<Box<dyn gpui::Action>> {
         if self.terminal.read(cx).task().is_none() {
             Some(Box::new(RenameTerminal))
