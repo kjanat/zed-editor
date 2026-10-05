@@ -13,7 +13,7 @@ path    = "src/client.rs"
 anyhow.workspace                   = true
 async-channel.workspace            = true
 async-tungstenite                  = { workspace = true, features = ["tokio", "tokio-rustls-manual-roots"] }
-chrono                             = { workspace = true, features = ["serde"] }
+chrono.workspace                   = true
 clock.workspace                    = true
 cloud_api_client.workspace         = true
 cloud_api_types.workspace          = true
@@ -76,8 +76,8 @@ tokio-rustls     = { workspace = true, features = ["ring", "tls12"] }
 objc2-foundation.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
-semver.workspace  = true
-windows.workspace = true
+semver.workspace = true
+windows          = { workspace = true, features = ["Wdk_System_SystemServices", "Win32_System_SystemInformation"] }
 
 [features]
 test-support = ["clock/test-support", "collections/test-support", "gpui/test-support", "rpc/test-support"]

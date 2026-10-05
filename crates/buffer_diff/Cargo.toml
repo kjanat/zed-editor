@@ -13,24 +13,25 @@ doctest = false
 path    = "src/buffer_diff.rs"
 
 [dependencies]
-clock.workspace             = true
-gpui.workspace              = true
-imara-diff.workspace        = true
-language.workspace          = true
-log.workspace               = true
-pretty_assertions.workspace = true
-rope.workspace              = true
-settings                    = { workspace = true, optional = true }
-sum_tree.workspace          = true
-text.workspace              = true
-tracing.workspace           = true
-util.workspace              = true
-ztracing.workspace          = true
+clock.workspace      = true
+gpui.workspace       = true
+imara-diff.workspace = true
+language.workspace   = true
+log.workspace        = true
+pretty_assertions    = { workspace = true, optional = true }
+rope.workspace       = true
+settings             = { workspace = true, optional = true }
+sum_tree.workspace   = true
+text.workspace       = true
+tracing.workspace    = true
+util.workspace       = true
+ztracing.workspace   = true
 
 [dev-dependencies]
-ctor.workspace = true
-gpui           = { workspace = true, features = ["test-support"] }
-rand.workspace = true
+ctor.workspace              = true
+gpui                        = { workspace = true, features = ["test-support"] }
+pretty_assertions.workspace = true
+rand.workspace              = true
 
 settings.workspace = true
 text               = { workspace = true, features = ["test-support"] }
@@ -38,7 +39,7 @@ unindent.workspace = true
 zlog.workspace     = true
 
 [features]
-test-support = ["settings"]
+test-support = ["dep:pretty_assertions", "settings"]
 
 [lints]
 workspace = true

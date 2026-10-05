@@ -12,26 +12,21 @@ path    = "src/util.rs"
 
 [dependencies]
 anyhow.workspace             = true
-async_zip.workspace          = true
 collections.workspace        = true
 dunce.workspace              = true
-futures.workspace            = true
-futures-lite.workspace       = true
 globset.workspace            = true
 gpui_util.workspace          = true
 itertools.workspace          = true
-log.workspace                = true
 path                         = { workspace = true, features = ["serde"] }
 percent-encoding.workspace   = true
 rand                         = { workspace = true, optional = true }
-regex.workspace              = true
+regex                        = { workspace = true, features = ["unicode-bool", "unicode-gencat"] }
 rust-embed.workspace         = true
-schemars.workspace           = true
-serde.workspace              = true
+schemars                     = { workspace = true, features = ["derive"] }
+serde                        = { workspace = true, features = ["derive"] }
 serde_json.workspace         = true
 serde_json_lenient.workspace = true
-shlex.workspace              = true
-tempfile.workspace           = true
+tempfile                     = { workspace = true, optional = true }
 unicase.workspace            = true
 url.workspace                = true
 util_macros                  = { workspace = true, optional = true }
@@ -39,31 +34,39 @@ util_macros                  = { workspace = true, optional = true }
 [dev-dependencies]
 path                  = { workspace = true, features = ["test-support"] }
 rand.workspace        = true
+tempfile.workspace    = true
 util_macros.workspace = true
 
+[target.'cfg(any(unix, not(target_family = "wasm")))'.dependencies]
+log.workspace = true
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-async-fs.workspace = true
-dirs.workspace     = true
-smol.workspace     = true
-walkdir.workspace  = true
-which.workspace    = true
+async-fs.workspace     = true
+async_zip.workspace    = true
+dirs.workspace         = true
+futures.workspace      = true
+futures-lite.workspace = true
+shlex.workspace        = true
+smol.workspace         = true
+walkdir.workspace      = true
+which.workspace        = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2.workspace = true
 
 [target."cfg(unix)".dependencies]
-command-fds    = "0.3.1"
-libc.workspace = true
-nix            = { workspace = true, features = ["resource", "user"] }
+command-fds        = "0.3.1"
+libc.workspace     = true
+nix                = { workspace = true, features = ["resource", "user"] }
+tempfile.workspace = true
 
 [target."cfg(windows)".dependencies]
-tendril           = "0.5"
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_System_JobObjects"] }
 
 [features]
 # Embed `fs_embed!` assets at compile time even in debug builds.
 debug-embed  = ["rust-embed/debug-embed"]
-test-support = ["path/test-support", "rand", "util_macros"]
+test-support = ["dep:tempfile", "path/test-support", "rand", "util_macros"]
 
 [lints]
 workspace = true

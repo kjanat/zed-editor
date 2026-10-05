@@ -100,7 +100,7 @@ dev_container.workspace           = true
 diagnostics.workspace             = true
 editor.workspace                  = true
 encoding_selector.workspace       = true
-env_logger.workspace              = true
+env_logger                        = { workspace = true, optional = true }
 extension.workspace               = true
 extension_host.workspace          = true
 extensions_ui.workspace           = true
@@ -177,7 +177,7 @@ recent_projects.workspace           = true
 release_channel.workspace           = true
 remote.workspace                    = true
 repl.workspace                      = true
-reqwest.workspace                   = true
+reqwest                             = { workspace = true, features = ["multipart"] }
 reqwest_client.workspace            = true
 rope.workspace                      = true
 sandbox.workspace                   = true
@@ -234,6 +234,7 @@ activity_indicator          = { workspace = true, features = ["test-support"] }
 agent_ui                    = { workspace = true, features = ["test-support"] }
 call                        = { workspace = true, features = ["test-support"] }
 editor                      = { workspace = true, features = ["test-support"] }
+env_logger.workspace        = true
 fs                          = { workspace = true, features = ["test-support"] }
 gpui                        = { workspace = true, features = ["profiler", "test-support"] }
 image.workspace             = true
@@ -251,11 +252,8 @@ terminal_view               = { workspace = true, features = ["test-support"] }
 title_bar                   = { workspace = true, features = ["test-support"] }
 workspace                   = { workspace = true, features = ["test-support"] }
 
-[build-dependencies]
-windows_resources = { path = "../windows_resources" }
-
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-ashpd.workspace = true
+ashpd           = { workspace = true, features = ["notification"] }
 gpui            = { workspace = true, features = ["profiler", "wayland", "x11"] }
 image.workspace = true
 
@@ -268,7 +266,10 @@ pkg-config = "0.3.22"
 [target.'cfg(target_os = "windows")'.dependencies]
 etw_tracing.workspace = true
 gpui                  = { workspace = true, features = ["profiler", "windows-manifest"] }
-windows.workspace     = true
+windows               = { workspace = true, features = ["Win32_System_Console", "Win32_System_Pipes"] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+windows_resources.workspace = true
 
 [features]
 test-support       = [
@@ -296,6 +297,7 @@ visual-tests       = [
   "db/test-support",
   "dep:action_log",
   "dep:agent_servers",
+  "dep:env_logger",
   "dep:image",
   "dep:tempfile",
   "editor/test-support",

@@ -10,7 +10,7 @@ doctest = false
 path    = "src/icons.rs"
 
 [dependencies]
-serde.workspace = true
+serde           = { workspace = true, features = ["derive"] }
 strum.workspace = true
 
 [lints]

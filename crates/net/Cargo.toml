@@ -16,8 +16,8 @@ smol.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
-async-io          = "2.4"
-windows.workspace = true
+async-io.workspace = true
+windows            = { workspace = true, features = ["Win32_Networking_WinSock"] }
 
 [lints]
 workspace = true

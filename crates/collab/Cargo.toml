@@ -31,14 +31,9 @@ required-features = ["test-support"]
 anyhow.workspace           = true
 async-trait.workspace      = true
 async-tungstenite          = { workspace = true, features = ["tokio", "tokio-rustls-manual-roots"] }
-aws-config                 = { version = "1.1.5" }
-aws-sdk-kinesis            = { version = "1.51.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-s3                 = { version = "1.15.0", default-features = false, features = [
-  "default-https-client",
-  "http-1x",
-  "rt-tokio",
-  "sigv4a"
-] }
+aws-config                 = "1.1.5"
+aws-sdk-kinesis            = { workspace = true, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3                 = { workspace = true, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"] }
 axum                       = { version = "0.6", features = ["headers", "json", "ws"] }
 chrono.workspace           = true
 clock.workspace            = true
@@ -58,13 +53,21 @@ prost.workspace            = true
 reqwest                    = { version = "0.11", features = ["json"] }
 rpc.workspace              = true
 # sea-orm and sea-orm-macros versions must match exactly.
-sea-orm                    = { version = "=1.1.10", features = ["postgres-array", "runtime-tokio-rustls", "sqlx-postgres", "with-uuid"] }
+sea-orm                    = { workspace = true, features = [
+  "macros",
+  "runtime-tokio-rustls",
+  "sqlx-postgres",
+  "with-chrono",
+  "with-json",
+  "with-time",
+  "with-uuid"
+] }
 sea-orm-macros             = "=1.1.10"
 semver.workspace           = true
 serde.workspace            = true
 serde_json.workspace       = true
 sha2.workspace             = true
-sqlx                       = { version = "0.8", features = ["any", "json", "postgres", "runtime-tokio-rustls", "time", "uuid"] }
+sqlx                       = { workspace = true, features = ["any", "migrate"] }
 strum.workspace            = true
 telemetry_events.workspace = true
 text.workspace             = true
@@ -74,7 +77,7 @@ toml.workspace             = true
 tower                      = "0.4"
 tower-http                 = { workspace = true, features = ["trace"] }
 tracing.workspace          = true
-tracing-subscriber         = { version = "0.3.18", features = ["env-filter", "json", "registry", "tracing-log"] }                          # workaround for https://github.com/tokio-rs/tracing/issues/2927
+tracing-subscriber         = { workspace = true, features = ["env-filter", "json"] }                                     # workaround for https://github.com/tokio-rs/tracing/issues/2927
 util.workspace             = true
 uuid.workspace             = true
 
@@ -124,11 +127,11 @@ release_channel.workspace   = true
 remote                      = { workspace = true, features = ["test-support"] }
 remote_server.workspace     = true
 rpc                         = { workspace = true, features = ["test-support"] }
-sea-orm                     = { version = "=1.1.10", features = ["sqlx-sqlite"] }
+sea-orm.workspace           = true
 serde_json.workspace        = true
 session                     = { workspace = true, features = ["test-support"] }
 settings                    = { workspace = true, features = ["test-support"] }
-sqlx                        = { version = "0.8", features = ["sqlite"] }
+sqlx.workspace              = true
 task.workspace              = true
 theme.workspace             = true
 theme_settings              = { workspace = true, features = ["test-support"] }

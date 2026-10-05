@@ -46,7 +46,7 @@ open_ai.workspace                 = true
 
 edit_prediction                   = { workspace = true, features = ["cli-support"] }
 edit_prediction_context.workspace = true
-edit_prediction_metrics           = { workspace = true, features = ["tree-sitter"] }
+edit_prediction_metrics.workspace = true
 flate2                            = "1.1.8"
 gaoya                             = "0.2.0"
 paths.workspace                   = true
@@ -59,7 +59,7 @@ serde.workspace                   = true
 serde_json.workspace              = true
 settings.workspace                = true
 shellexpand.workspace             = true
-similar                           = "2.7.0"
+similar.workspace                 = true
 smol.workspace                    = true
 sqlez.workspace                   = true
 sqlez_macros.workspace            = true
