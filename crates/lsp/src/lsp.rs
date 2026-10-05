@@ -1209,7 +1209,7 @@ impl LanguageServer {
             // which surfaces as a plain error rather than a connection reset.
             let disconnected = self.response_handlers.lock().is_none();
             if !matches!(result, ConnectionResult::Result(Ok(_))) {
-                self.stop_and_drain_output().await;
+                self.stop_and_drain_output(disconnected).await;
             }
             let response = match result {
                 ConnectionResult::ConnectionReset => Err(self.connection_reset_error()),
@@ -1239,15 +1239,21 @@ impl LanguageServer {
 
     /// Kills a server whose startup failed and waits for its stdout and stderr to be
     /// read to the end, so the failure is reported with everything the server wrote.
-    async fn stop_and_drain_output(&self) {
-        if let Some(server) = self.server.lock().as_mut()
-            && let Err(error) = server.kill()
-        {
-            log::warn!(
-                "failed to kill language server {} (id {}): {error}",
-                self.name,
-                self.server_id
-            );
+    async fn stop_and_drain_output(&self, disconnected: bool) {
+        let killed = match self.server.lock().as_mut().map(|server| server.kill()) {
+            Some(Ok(())) => true,
+            Some(Err(error)) => {
+                log::warn!(
+                    "failed to kill language server {} (id {}): {error}",
+                    self.name,
+                    self.server_id
+                );
+                false
+            }
+            None => false,
+        };
+        if !killed && !disconnected {
+            return;
         }
         let mut input_done = self.input_done_rx.clone();
         select! {
@@ -2434,41 +2440,43 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[gpui::test]
     async fn test_initialize_failure_reports_unread_stderr(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         cx.update(|cx| {
             release_channel::init(semver::Version::new(0, 0, 0), cx);
         });
-        let (stdout_writer, stdout_reader) = async_pipe::pipe();
-        let (mut stderr_writer, stderr_reader) = async_pipe::pipe();
+        let ready_file =
+            std::env::temp_dir().join(format!("zed-lsp-unread-stderr-test-{}", std::process::id()));
+        std::fs::remove_file(&ready_file).ok();
         let stderr_capture = Arc::new(Mutex::new(Some(String::new())));
-        let server = LanguageServer::new_internal(
+        let server = LanguageServer::new(
+            stderr_capture.clone(),
             LanguageServerId(0),
             LanguageServerName::from("stderr-test"),
-            ShutdownTestWriter(Arc::new(Mutex::new(ShutdownTestOutput {
-                bytes: Vec::new(),
-                remaining_flushes: None,
-                blocked: false,
-            }))),
-            stdout_reader,
-            Some(stderr_reader),
-            stderr_capture.clone(),
-            None,
-            None,
             LanguageServerBinary {
-                path: PathBuf::from("stderr-test"),
-                arguments: Vec::new(),
+                path: PathBuf::from("/bin/sh"),
+                arguments: vec![
+                    "-c".into(),
+                    "printf 'error: no project file found' >&2; : > \"$0\"; exec sleep 60".into(),
+                    ready_file.clone().into_os_string(),
+                ],
                 env: None,
             },
-            FakeLanguageServer::root_path(),
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            None,
             None,
             &mut cx.to_async(),
-            |_| false,
-        );
-        stderr_writer
-            .write_all(b"error: no project file found")
-            .await
-            .expect("test output must reach stderr");
+        )
+        .expect("the test server must start");
+        for _ in 0..500 {
+            if ready_file.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready_file.exists(), "the test server never wrote to stderr");
 
         let request_timeout = Duration::from_secs(1);
         let initialize = cx.update(|cx| {
@@ -2487,12 +2495,9 @@ mod tests {
         });
         cx.run_until_parked();
         cx.executor().advance_clock(request_timeout);
-        cx.run_until_parked();
-        drop(stdout_writer);
-        drop(stderr_writer);
-        cx.run_until_parked();
 
         let (result, stderr) = startup.await;
+        std::fs::remove_file(&ready_file).ok();
         result.expect_err("initialize must fail when the server never answers");
         assert_eq!(stderr.as_deref(), Some("error: no project file found"));
     }
