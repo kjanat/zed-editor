@@ -4,6 +4,7 @@ use collections::FxHashSet;
 use derive_more::{Deref, DerefMut};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use slotmap::{KeyData, SecondaryMap, SlotMap};
+use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId, type_name},
     cell::RefCell,
@@ -58,7 +59,7 @@ pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, Box<dyn Any>>,
     pub accessed_entities: RefCell<FxHashSet<EntityId>>,
     ref_counts: Arc<RwLock<EntityRefCounts>>,
-    active_leases: Vec<ActiveLease>,
+    active_leases: SmallVec<[ActiveLease; 8]>,
 }
 
 struct ActiveLease {
@@ -93,7 +94,7 @@ impl EntityMap {
                     entity_handles: HashMap::default(),
                 },
             })),
-            active_leases: Vec::new(),
+            active_leases: SmallVec::new(),
         }
     }
 
@@ -196,13 +197,17 @@ impl EntityMap {
     }
 
     pub(super) fn end_lease_erased(&mut self, entity_id: EntityId, mut lease: LeaseInner) {
-        if let Some(index) = self
-            .active_leases
-            .iter()
-            .rposition(|lease| lease.entity_id == entity_id)
-        {
-            self.active_leases.remove(index);
-        }
+        let innermost = self.active_leases.pop();
+        assert!(
+            innermost
+                .as_ref()
+                .is_some_and(|innermost| innermost.entity_id == entity_id),
+            "ended the update of {entity_id} while the innermost update was {}",
+            innermost.map_or_else(
+                || "none".to_string(),
+                |innermost| format!("{} at {}", innermost.entity_type, innermost.location)
+            ),
+        );
         self.end_lease_inner(entity_id, lease.entity.take().unwrap());
     }
 
@@ -574,6 +579,7 @@ impl<T: 'static> Entity<T> {
 
     /// Updates the entity referenced by this handle with the given function.
     #[inline]
+    #[track_caller]
     pub fn as_mut<'a, C: AppContext>(&self, cx: &'a mut C) -> GpuiBorrow<'a, T> {
         cx.as_mut(self)
     }

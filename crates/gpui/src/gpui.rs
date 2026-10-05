@@ -257,6 +257,7 @@ pub trait AppContext {
         T: 'static;
 
     /// Update a entity in the app context.
+    #[track_caller]
     fn as_mut<'a, T>(&'a mut self, handle: &Entity<T>) -> GpuiBorrow<'a, T>
     where
         T: 'static;

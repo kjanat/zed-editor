@@ -6,7 +6,7 @@ use std::{
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
-    panic::Location,
+    panic::{self, AssertUnwindSafe, Location},
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering::SeqCst},
@@ -3084,8 +3084,13 @@ impl App {
     ) {
         self.update(|cx| {
             let mut lease = cx.entities.lease_erased(handle, entity_type, location);
-            update(lease.entity.as_deref_mut().unwrap(), cx);
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                update(lease.entity.as_deref_mut().unwrap(), cx)
+            }));
             cx.entities.end_lease_erased(handle.entity_id, lease);
+            if let Err(payload) = result {
+                panic::resume_unwind(payload);
+            }
         });
     }
 
@@ -3415,6 +3420,7 @@ pub struct GpuiBorrow<'a, T> {
 }
 
 impl<'a, T: 'static> GpuiBorrow<'a, T> {
+    #[track_caller]
     fn new(inner: Entity<T>, app: &'a mut App) -> Self {
         app.start_update();
         let lease = app.entities.lease(&inner);
@@ -3688,6 +3694,58 @@ mod test {
             message.contains(&format!("existing update at: {}:{update_line}:", file!())),
             "{message}"
         );
+        cx.update(|cx| {
+            assert!(
+                !cx.has_active_entity_updates(),
+                "an update that panicked should have ended"
+            );
+            entity.read(cx);
+        });
+    }
+
+    struct Outer;
+    struct Inner;
+
+    #[test]
+    fn test_reentrant_entity_access_panic_lists_active_updates_in_order() {
+        let cx = TestAppContext::single();
+        let (outer, inner) = cx.update(|cx| (cx.new(|_| Outer), cx.new(|_| Inner)));
+        let mut outer_line = 0;
+        let mut inner_line = 0;
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cx.update(|cx| {
+                outer_line = line!() + 1;
+                outer.update(cx, |_, cx| {
+                    inner_line = line!() + 1;
+                    inner.update(cx, |_, cx| {
+                        outer.read(cx);
+                    })
+                })
+            })
+        }))
+        .expect_err("reading an entity during its own update must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("the panic message should be formatted");
+
+        let outer_entry = format!(
+            "\n  {} at {}:{outer_line}:",
+            std::any::type_name::<Outer>(),
+            file!()
+        );
+        let inner_entry = format!(
+            "\n  {} at {}:{inner_line}:",
+            std::any::type_name::<Inner>(),
+            file!()
+        );
+        let outer_position = message.find(&outer_entry);
+        let inner_position = message.find(&inner_entry);
+        assert!(
+            outer_position.is_some() && inner_position.is_some(),
+            "{message}"
+        );
+        assert!(outer_position < inner_position, "{message}");
     }
 
     #[gpui::test]
