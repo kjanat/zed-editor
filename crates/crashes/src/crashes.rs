@@ -11,7 +11,8 @@ use std::{
     collections::BTreeMap,
     env,
     fs::{self, File},
-    io, panic,
+    io::{self, Read as _, Seek as _, SeekFrom},
+    panic,
     path::{Path, PathBuf},
     process::{self},
     sync::{
@@ -26,6 +27,7 @@ pub use minidumper::Client;
 
 const CRASH_HANDLER_PING_TIMEOUT: Duration = Duration::from_secs(60);
 const CRASH_HANDLER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const LOG_TAIL_BYTES: u64 = 512 * 1024;
 
 /// Force a backtrace to be printed on panic.
 pub fn force_backtrace() {
@@ -186,6 +188,7 @@ pub struct CrashServer {
     shutdown: Arc<AtomicBool>,
     has_connection: Arc<AtomicBool>,
     logs_dir: PathBuf,
+    log_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -493,7 +496,13 @@ impl minidumper::ServerHandler for CrashServer {
             .join(&crash_info.init.session_id)
             .with_extension("json");
 
-        fs::write(crash_data_path, serde_json::to_vec(&crash_info).unwrap()).ok();
+        fs::write(&crash_data_path, serde_json::to_vec(&crash_info).unwrap()).ok();
+
+        if let Some(log_file) = &self.log_file
+            && let Err(error) = write_log_tail(log_file, &crash_data_path.with_extension("log"))
+        {
+            log::warn!("Failed to save the log tail of the crashed session: {error}");
+        }
 
         LoopAction::Exit
     }
@@ -541,6 +550,22 @@ impl minidumper::ServerHandler for CrashServer {
         self.has_connection.store(true, Ordering::SeqCst);
         LoopAction::Continue
     }
+}
+
+fn write_log_tail(log_file: &Path, destination: &Path) -> io::Result<()> {
+    let mut file = File::open(log_file)?;
+    let start = file.metadata()?.len().saturating_sub(LOG_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail)?;
+    if start > 0 {
+        let first_line_end = tail
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(tail.len(), |newline| newline + 1);
+        tail.drain(..first_line_end);
+    }
+    fs::write(destination, tail)
 }
 
 /// Rust's string-slicing panics embed the user's string content in the message,
@@ -701,7 +726,7 @@ fn spawn_crash_handler(exe: &Path, socket_name: &Path) {
     }
 }
 
-pub fn crash_server(socket: &Path, logs_dir: PathBuf) {
+pub fn crash_server(socket: &Path, logs_dir: PathBuf, log_file: Option<PathBuf>) {
     let Ok(mut server) = Server::with_name(SocketName::Path(socket)) else {
         log::info!("Couldn't create socket, there may already be a running crash server");
         return;
@@ -735,6 +760,7 @@ pub fn crash_server(socket: &Path, logs_dir: PathBuf) {
                 has_connection,
                 active_gpu: Mutex::default(),
                 logs_dir,
+                log_file,
             }),
             &shutdown,
             Some(CRASH_HANDLER_PING_TIMEOUT),
@@ -926,6 +952,55 @@ mod tests {
             shutdown: Arc::default(),
             has_connection: Arc::default(),
             logs_dir: PathBuf::new(),
+            log_file: None,
         }
+    }
+
+    fn log_tail_test_dir(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("zed-crashes-{name}-{}", process::id()));
+        fs::create_dir_all(&dir).expect("the test directory must be creatable");
+        dir
+    }
+
+    #[test]
+    fn write_log_tail_copies_a_short_log_whole() {
+        let dir = log_tail_test_dir("short-log");
+        let log_file = dir.join("Zed.log");
+        let destination = dir.join("session.log");
+        fs::write(&log_file, "first\nsecond\n").expect("the log must be writable");
+
+        write_log_tail(&log_file, &destination).expect("the tail must be written");
+
+        assert_eq!(
+            fs::read_to_string(&destination).expect("the tail must be readable"),
+            "first\nsecond\n"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_log_tail_keeps_only_whole_lines_from_the_end() {
+        let dir = log_tail_test_dir("long-log");
+        let log_file = dir.join("Zed.log");
+        let destination = dir.join("session.log");
+        let line = "x".repeat(99) + "\n";
+        let line_count = (LOG_TAIL_BYTES / line.len() as u64) as usize + 10;
+        let mut log = "a partial line that must not survive".to_string();
+        for index in 0..line_count {
+            log.push_str(&format!("{index:08}{}", &line[8..]));
+        }
+        fs::write(&log_file, &log).expect("the log must be writable");
+
+        write_log_tail(&log_file, &destination).expect("the tail must be written");
+
+        let tail = fs::read_to_string(&destination).expect("the tail must be readable");
+        assert!(tail.len() as u64 <= LOG_TAIL_BYTES);
+        assert!(log.ends_with(&tail));
+        assert!(
+            log[..log.len() - tail.len()].ends_with('\n'),
+            "the tail must start at a line boundary"
+        );
+        assert!(tail.ends_with(&format!("{:08}{}", line_count - 1, &line[8..])));
+        fs::remove_dir_all(&dir).ok();
     }
 }
