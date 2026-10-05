@@ -636,77 +636,70 @@ impl FocusHandle {
     /// Dispatch an action on the element that rendered this focus handle.
     ///
     /// The action runs immediately when no entity is being updated and the most recently
-    /// rendered frame contains the element. Otherwise it runs once the current entity updates
-    /// have ended and the element has been rendered, waiting up to two rendered frames. The
-    /// action is dropped with a warning when the element never renders, and dropped silently
-    /// when this focus handle is released first.
+    /// rendered frame contains the element. Otherwise it runs after the next frame has been
+    /// drawn, once that frame contains the element, waiting up to two drawn frames. The action
+    /// is dropped with a warning when the element is never drawn, and dropped silently when
+    /// this focus handle is released first.
     pub fn dispatch_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) {
         if !cx.has_active_entity_updates()
-            && self.try_dispatch_action_now(action, window, cx) == ActionDispatch::Dispatched
+            && self.dispatch_action_in_rendered_frame(action, window, cx)
         {
             return;
         }
-        let target = self.downgrade();
-        let action = action.boxed_clone();
-        window.defer(cx, move |window, cx| {
-            dispatch_action_when_rendered(target, action, DISPATCH_RENDER_ATTEMPTS, window, cx)
-        });
+        dispatch_action_after_next_render(
+            self.downgrade(),
+            action.boxed_clone(),
+            DISPATCH_RENDER_ATTEMPTS,
+            window,
+        );
     }
 
-    /// Dispatch an action on the element that rendered this focus handle in the most recently
-    /// rendered frame, synchronously, even while entities are being updated.
-    pub fn try_dispatch_action_now(
+    fn dispatch_action_in_rendered_frame(
         &self,
         action: &dyn Action,
         window: &mut Window,
         cx: &mut App,
-    ) -> ActionDispatch {
+    ) -> bool {
+        debug_assert!(
+            !cx.has_active_entity_updates(),
+            "actions must not be dispatched while an entity is being updated"
+        );
         let Some(node_id) = window
             .rendered_frame
             .dispatch_tree
             .focusable_node_id(self.id)
         else {
-            return ActionDispatch::TargetNotRendered;
+            return false;
         };
         window.dispatch_action_on_node(node_id, action, cx);
-        ActionDispatch::Dispatched
+        true
     }
-}
-
-/// The outcome of [`FocusHandle::try_dispatch_action_now`].
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActionDispatch {
-    /// The element that rendered the focus handle received the action.
-    Dispatched,
-    /// The most recently rendered frame has no element for the focus handle.
-    TargetNotRendered,
 }
 
 const DISPATCH_RENDER_ATTEMPTS: usize = 2;
 
-fn dispatch_action_when_rendered(
+fn dispatch_action_after_next_render(
     target: WeakFocusHandle,
     action: Box<dyn Action>,
     renders_left: usize,
     window: &mut Window,
-    cx: &mut App,
 ) {
-    let Some(focus_handle) = target.upgrade() else {
-        return;
-    };
-    if focus_handle.try_dispatch_action_now(&*action, window, cx) == ActionDispatch::Dispatched {
-        return;
-    }
-    let Some(renders_left) = renders_left.checked_sub(1) else {
-        log::warn!(
-            "dropped {} because its target was never rendered",
-            action.name()
-        );
-        return;
-    };
     window.on_next_render(move |window, cx| {
-        dispatch_action_when_rendered(target, action, renders_left, window, cx)
+        let Some(focus_handle) = target.upgrade() else {
+            return;
+        };
+        if focus_handle.dispatch_action_in_rendered_frame(&*action, window, cx) {
+            return;
+        }
+        match renders_left.checked_sub(1) {
+            Some(renders_left) if renders_left > 0 => {
+                dispatch_action_after_next_render(target, action, renders_left, window)
+            }
+            _ => log::warn!(
+                "dropped {} because its target was never rendered",
+                action.name()
+            ),
+        }
     });
 }
 
@@ -8495,6 +8488,33 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_during_an_update_that_hides_its_target_is_dropped(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        let global_dispatches = count_global_dispatches(cx);
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = false;
+                cx.notify();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "the frame drawn before the update must not route an action dispatched during it"
+        );
+        assert_eq!(global_dispatches.get(), 0);
     }
 
     #[gpui::test]
