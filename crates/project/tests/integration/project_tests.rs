@@ -3872,7 +3872,7 @@ async fn test_registry_reload_detaches_buffers_from_language_servers(
     language_registry.register_test_language(LanguageConfig {
         name: "Rust".into(),
         matcher: Arc::new(LanguageMatcher {
-            path_suffixes: vec!["rs".to_string()],
+            path_suffixes: vec!["rs".into()],
             ..LanguageMatcher::default()
         }),
         ..LanguageConfig::default()
@@ -21533,7 +21533,7 @@ fn json_lang() -> Arc<Language> {
         LanguageConfig {
             name: "JSON".into(),
             matcher: (LanguageMatcher {
-                path_suffixes: vec!["json".to_string()],
+                path_suffixes: vec!["json".into()],
                 ..Default::default()
             })
             .into(),
@@ -21548,7 +21548,7 @@ fn js_lang() -> Arc<Language> {
         LanguageConfig {
             name: "JavaScript".into(),
             matcher: (LanguageMatcher {
-                path_suffixes: vec!["js".to_string()],
+                path_suffixes: vec!["js".into()],
                 ..Default::default()
             })
             .into(),
@@ -21617,7 +21617,7 @@ fn python_lang(fs: Arc<FakeFs>) -> Arc<Language> {
             LanguageConfig {
                 name: "Python".into(),
                 matcher: (LanguageMatcher {
-                    path_suffixes: vec!["py".to_string()],
+                    path_suffixes: vec!["py".into()],
                     ..Default::default()
                 })
                 .into(),
@@ -21637,7 +21637,7 @@ fn typescript_lang() -> Arc<Language> {
         LanguageConfig {
             name: "TypeScript".into(),
             matcher: (LanguageMatcher {
-                path_suffixes: vec!["ts".to_string()],
+                path_suffixes: vec!["ts".into()],
                 ..Default::default()
             })
             .into(),
@@ -21652,7 +21652,7 @@ fn tsx_lang() -> Arc<Language> {
         LanguageConfig {
             name: "tsx".into(),
             matcher: (LanguageMatcher {
-                path_suffixes: vec!["tsx".to_string()],
+                path_suffixes: vec!["tsx".into()],
                 ..Default::default()
             })
             .into(),

@@ -60,6 +60,8 @@ distribution, but you may be able to install Zed using one of these packages:
   [`zed`](https://github.com/terrapkg/packages/tree/frawhide/anda/devs/zed/stable),
   [`zed-preview`](https://github.com/terrapkg/packages/tree/frawhide/anda/devs/zed/preview),
   [`zed-nightly`](https://github.com/terrapkg/packages/tree/frawhide/anda/devs/zed/nightly)
+- Homebrew: [`zed`](https://formulae.brew.sh/cask/zed),
+  [`zed@preview`](https://formulae.brew.sh/cask/zed@preview)
 - Manjaro: [`zed`](https://manjaristas.org/branch_compare?q=zed)
 - Conda: [`zed`](https://anaconda.org/conda-forge/zed)
 - Nix: `zed-editor`
@@ -76,8 +78,9 @@ list of Zed packages in various repositories.
 
 ### Arch / Manjaro
 
-To install the `kjanat/zed-editor` fork, add this repository to `/etc/pacman.conf`.
-Use `[zed-kjanat-aarch64]` instead of `[zed-kjanat]` on aarch64:
+To install the `kjanat/zed-editor` fork, add this repository to
+`/etc/pacman.conf`. Use `[zed-kjanat-aarch64]` instead of `[zed-kjanat]` on
+aarch64:
 
 ```ini
 [zed-kjanat]

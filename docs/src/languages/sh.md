@@ -68,4 +68,5 @@ shfmt --version
 ## See also:
 
 - [Zed Docs: Language Support: Bash](./bash.md)
+- [Zed Docs: Language Support: Env](./env.md)
 - [Zed Docs: Language Support: Fish](./fish.md)

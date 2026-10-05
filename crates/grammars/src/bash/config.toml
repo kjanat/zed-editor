@@ -21,7 +21,6 @@ path_suffixes         = [
   "zsh_histfile",
   "zlogin",
   "zprofile",
-  ".env",
   "PKGBUILD",
   "APKBUILD",
   "ebuild"

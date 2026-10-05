@@ -2726,7 +2726,7 @@ projects with many or deeply nested symlinks.
       "**/Zed/**/*.json",
       "**/.vscode/**/*.json"
     ],
-    "Shell Script": [".env.*"]
+    "Env": [".env.*"]
   }
 }
 ```
