@@ -7400,29 +7400,32 @@ mod tests {
 
     #[test]
     fn test_tab_actions_double_click_entry_is_a_menu_entry() {
-        let actions = TabActions::default()
-            .entry("First", Box::new(DoubleClickTestItem))
-            .double_click_entry("Second", Box::new(DoubleClickTestItem))
-            .double_click_entry("Third", Box::new(DoubleClickTestItem));
+        let actions = TabActions::with_double_click("First", Box::new(DoubleClickTestItem))
+            .entry("Second", Box::new(DoubleClickTestItem));
 
         assert_eq!(
             actions
                 .entries()
                 .map(|(label, _)| label.as_ref())
                 .collect::<Vec<_>>(),
-            ["First", "Second", "Third"]
+            ["First", "Second"]
         );
-        let (_, third) = actions
+        let (_, first) = actions
             .entries()
-            .last()
-            .expect("the last double-click entry should be in the menu");
+            .next()
+            .expect("the double-click entry should be in the menu");
         assert!(
             actions
                 .double_click_action()
-                .is_some_and(|action| std::ptr::addr_eq(action, third)),
-            "the last double-click entry should replace the earlier one"
+                .is_some_and(|action| std::ptr::addr_eq(action, first)),
+            "double-clicking should dispatch the entry the list started with"
         );
-        assert!(TabActions::default().double_click_action().is_none());
+        assert!(
+            TabActions::default()
+                .entry("Only", Box::new(DoubleClickTestItem))
+                .double_click_action()
+                .is_none()
+        );
     }
 
     #[gpui::test]

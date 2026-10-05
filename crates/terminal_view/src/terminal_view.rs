@@ -1836,7 +1836,7 @@ impl Item for TerminalView {
 
     fn tab_actions(&self, _item_id: EntityId, cx: &App) -> TabActions {
         if self.terminal.read(cx).task().is_none() {
-            TabActions::default().double_click_entry("Rename", Box::new(RenameTerminal))
+            TabActions::with_double_click("Rename", Box::new(RenameTerminal))
         } else {
             TabActions::default()
         }

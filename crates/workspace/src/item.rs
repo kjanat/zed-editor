@@ -405,30 +405,28 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     }
 }
 
-/// The actions an item offers on its tab. Each one is an entry in the tab's context menu,
-/// and double-clicking the tab dispatches at most one of them.
+/// The actions an item offers on its tab. Each one is an entry in the tab's context menu.
+/// Double-clicking the tab dispatches the first entry when the list was created with
+/// [`TabActions::with_double_click`], and nothing otherwise.
 #[derive(Default)]
 pub struct TabActions {
     entries: Vec<(SharedString, Box<dyn Action>)>,
-    double_click: Option<usize>,
+    first_entry_on_double_click: bool,
 }
 
 impl TabActions {
+    /// Starts the list with an entry that double-clicking the tab also dispatches.
+    pub fn with_double_click(label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
+        Self {
+            entries: vec![(label.into(), action)],
+            first_entry_on_double_click: true,
+        }
+    }
+
     /// Adds an entry to the tab's context menu.
     pub fn entry(mut self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
         self.entries.push((label.into(), action));
         self
-    }
-
-    /// Adds an entry to the tab's context menu and makes it the action that double-clicking
-    /// the tab dispatches, in place of any earlier one.
-    pub fn double_click_entry(
-        mut self,
-        label: impl Into<SharedString>,
-        action: Box<dyn Action>,
-    ) -> Self {
-        self.double_click = Some(self.entries.len());
-        self.entry(label, action)
     }
 
     /// The tab's context menu entries, in the order they were added.
@@ -440,7 +438,10 @@ impl TabActions {
 
     /// The action that double-clicking the tab dispatches.
     pub fn double_click_action(&self) -> Option<&dyn Action> {
-        let (_, action) = self.entries.get(self.double_click?)?;
+        if !self.first_entry_on_double_click {
+            return None;
+        }
+        let (_, action) = self.entries.first()?;
         Some(action.as_ref())
     }
 }
@@ -1752,9 +1753,7 @@ pub mod test {
                 pane.read(cx).active_item();
             }
             match &self.tab_double_click_action {
-                Some(action) => {
-                    TabActions::default().double_click_entry("Double-Click", action.boxed_clone())
-                }
+                Some(action) => TabActions::with_double_click("Double-Click", action.boxed_clone()),
                 None => TabActions::default(),
             }
         }
