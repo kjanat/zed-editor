@@ -13,20 +13,18 @@ doctest = false
 name    = "auto_update_helper"
 path    = "src/auto_update_helper.rs"
 
-[dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
 anyhow.workspace    = true
 log.workspace       = true
+scopeguard          = "1.2"
 simplelog.workspace = true
-
-[build-dependencies]
-windows_resources = { path = "../windows_resources" }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-scopeguard        = "1.2"
-windows.workspace = true
+windows             = { workspace = true, features = ["Win32_System_RestartManager", "Win32_UI_Controls"] }
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+windows_resources.workspace = true
 
 [lints]
 workspace = true

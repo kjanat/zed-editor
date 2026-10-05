@@ -12,8 +12,8 @@ test    = false
 
 [dependencies]
 anyhow.workspace = true
-schemars         = { workspace = true, optional = true }
-serde.workspace  = true
+schemars         = { workspace = true, features = ["derive"], optional = true }
+serde            = { workspace = true, features = ["derive"] }
 strum.workspace  = true
 
 [features]

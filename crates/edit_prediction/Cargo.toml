@@ -32,7 +32,7 @@ copilot_ui.workspace               = true
 credentials_provider.workspace     = true
 db.workspace                       = true
 edit_prediction_context.workspace  = true
-edit_prediction_metrics            = { workspace = true, features = ["tree-sitter"] }
+edit_prediction_metrics.workspace  = true
 edit_prediction_types.workspace    = true
 feature_flags.workspace            = true
 fs.workspace                       = true
@@ -50,7 +50,6 @@ menu.workspace                     = true
 ollama.workspace                   = true
 open_ai.workspace                  = true
 postage.workspace                  = true
-pretty_assertions.workspace        = true
 project.workspace                  = true
 pulldown-cmark.workspace           = true
 rand.workspace                     = true
@@ -65,7 +64,7 @@ telemetry.workspace                = true
 telemetry_events.workspace         = true
 text.workspace                     = true
 thiserror.workspace                = true
-toml.workspace                     = true
+toml                               = { workspace = true, features = ["display"] }
 ui.workspace                       = true
 util.workspace                     = true
 uuid.workspace                     = true
@@ -77,22 +76,23 @@ zeta_prompt.workspace              = true
 zstd.workspace                     = true
 
 [dev-dependencies]
-clock                  = { workspace = true, features = ["test-support"] }
-cloud_llm_client       = { workspace = true, features = ["test-support"] }
-criterion.workspace    = true
-ctor.workspace         = true
-fs                     = { workspace = true, features = ["test-support"] }
-gpui                   = { workspace = true, features = ["test-support"] }
-indoc.workspace        = true
-language               = { workspace = true, features = ["test-support"] }
-language_model         = { workspace = true, features = ["test-support"] }
-languages              = { workspace = true, features = ["load-grammars"] }
-lsp.workspace          = true
-node_runtime.workspace = true
-parking_lot.workspace  = true
-project                = { workspace = true, features = ["test-support"] }
-settings               = { workspace = true, features = ["test-support"] }
-workspace              = { workspace = true, features = ["test-support"] }
+clock                       = { workspace = true, features = ["test-support"] }
+cloud_llm_client            = { workspace = true, features = ["test-support"] }
+criterion.workspace         = true
+ctor.workspace              = true
+fs                          = { workspace = true, features = ["test-support"] }
+gpui                        = { workspace = true, features = ["test-support"] }
+indoc.workspace             = true
+language                    = { workspace = true, features = ["test-support"] }
+language_model              = { workspace = true, features = ["test-support"] }
+languages                   = { workspace = true, features = ["load-grammars"] }
+lsp.workspace               = true
+node_runtime.workspace      = true
+parking_lot.workspace       = true
+pretty_assertions.workspace = true
+project                     = { workspace = true, features = ["test-support"] }
+settings                    = { workspace = true, features = ["test-support"] }
+workspace                   = { workspace = true, features = ["test-support"] }
 
 zlog.workspace = true
 

@@ -12,7 +12,7 @@ path    = "src/zeta_prompt.rs"
 [dependencies]
 anyhow.workspace     = true
 imara-diff.workspace = true
-serde.workspace      = true
+serde                = { workspace = true, features = ["derive"] }
 strum.workspace      = true
 
 [dev-dependencies]

@@ -12,11 +12,14 @@ path    = "src/path.rs"
 [dependencies]
 anyhow.workspace = true
 dunce.workspace  = true
-serde            = { workspace = true, optional = true }
+serde            = { workspace = true, features = ["derive"], optional = true }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
 tempfile.workspace          = true
+
+[target."cfg(windows)".dependencies]
+tendril.workspace = true
 
 [features]
 test-support = []

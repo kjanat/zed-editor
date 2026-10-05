@@ -17,13 +17,13 @@ harness = false
 name    = "rope_benchmark"
 
 [dependencies]
+gpui_util.workspace            = true
 heapless.workspace             = true
 log.workspace                  = true
 rayon.workspace                = true
 sum_tree.workspace             = true
 tracing.workspace              = true
 unicode-segmentation.workspace = true
-util.workspace                 = true
 ztracing.workspace             = true
 
 [dev-dependencies]

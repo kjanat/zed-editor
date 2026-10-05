@@ -10,25 +10,33 @@ doctest = false
 
 [dependencies]
 tracing.workspace = true
-zlog.workspace    = true
+zlog              = { workspace = true, optional = true }
 
-tracing-subscriber = "0.3.22"
+tracing-subscriber = { workspace = true, optional = true }
 
 ztracing_macro.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tracing-tracy = { version = "0.11.4", features = ["enable", "ondemand"], optional = true }
-tracy-client  = { version = "0.18.2", features = ["enable", "ondemand"], optional = true }
+tracing-tracy = { version = "0.11", features = ["ondemand"], optional = true }
+tracy-client  = { version = "0.18", features = ["ondemand"], optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-async-channel = { workspace = true, optional = true }
+async-channel = { workspace = true, features = ["std"], optional = true }
 js-sys        = { workspace = true, optional = true }
 wasm-bindgen  = { workspace = true, optional = true }
-web-sys       = { version = "0.3", features = ["Performance", "console"], optional = true }
+web-sys       = { workspace = true, features = ["Performance", "console"], optional = true }
 
 [features]
-tracy = ["tracing-tracy", "tracy-client"]
-web   = ["dep:async-channel", "dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
+tracing-tracy = ["dep:tracing-subscriber", "dep:tracing-tracy", "dep:zlog"]
+tracy         = ["tracing-tracy", "tracy-client"]
+web           = [
+  "dep:async-channel",
+  "dep:js-sys",
+  "dep:tracing-subscriber",
+  "dep:wasm-bindgen",
+  "dep:web-sys",
+  "dep:zlog",
+]
 
 [lints]
 workspace = true

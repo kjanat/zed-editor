@@ -11,9 +11,9 @@ path    = "src/zlog.rs"
 
 [dependencies]
 anyhow.workspace      = true
-chrono.workspace      = true
+chrono                = { workspace = true, default-features = true }
 collections.workspace = true
-log.workspace         = true
+log                   = { workspace = true, features = ["kv_unstable_std"] }
 
 [dev-dependencies]
 tempfile.workspace = true

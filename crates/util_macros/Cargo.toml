@@ -14,7 +14,7 @@ test       = false
 [dependencies]
 perf.workspace  = true
 quote.workspace = true
-syn.workspace   = true
+syn             = { workspace = true, features = ["clone-impls", "extra-traits", "full", "parsing", "printing"] }
 
 [features]
 perf-enabled = []

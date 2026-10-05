@@ -23,11 +23,10 @@ env_logger                         = { workspace = true, optional = true }
 feature_flags.workspace            = true
 fs.workspace                       = true
 futures.workspace                  = true
-google_ai.workspace                = true
 gpui.workspace                     = true
 gpui_tokio                         = { workspace = true, optional = true }
 http_client.workspace              = true
-indoc.workspace                    = true
+indoc                              = { workspace = true, optional = true }
 language_model.workspace           = true
 log.workspace                      = true
 project.workspace                  = true
@@ -38,7 +37,7 @@ serde.workspace                    = true
 serde_json.workspace               = true
 settings.workspace                 = true
 task.workspace                     = true
-tempfile.workspace                 = true
+tempfile                           = { workspace = true, optional = true }
 terminal.workspace                 = true
 thiserror.workspace                = true
 ui.workspace                       = true
@@ -59,6 +58,7 @@ indoc.workspace      = true
 project              = { workspace = true, features = ["test-support"] }
 reqwest_client       = { workspace = true, features = ["test-support"] }
 settings             = { workspace = true, features = ["test-support"] }
+tempfile.workspace   = true
 
 [features]
 e2e          = []
@@ -67,6 +67,8 @@ test-support = [
   "client/test-support",
   "dep:env_logger",
   "dep:gpui_tokio",
+  "dep:indoc",
+  "dep:tempfile",
   "gpui/test-support",
   "project/test-support",
   "reqwest_client/test-support",

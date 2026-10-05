@@ -10,13 +10,13 @@ doctest = false
 path    = "src/ollama.rs"
 
 [dependencies]
-anyhow.workspace      = true
-futures.workspace     = true
-http_client.workspace = true
-schemars              = { workspace = true, optional = true }
-serde.workspace       = true
-serde_json.workspace  = true
-settings.workspace    = true
+anyhow.workspace           = true
+futures.workspace          = true
+http_client.workspace      = true
+schemars                   = { workspace = true, optional = true }
+serde.workspace            = true
+serde_json.workspace       = true
+settings_content.workspace = true
 
 [features]
 default  = []

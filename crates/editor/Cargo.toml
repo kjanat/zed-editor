@@ -12,7 +12,7 @@ path    = "src/editor.rs"
 [dependencies]
 aho-corasick.workspace          = true
 anyhow.workspace                = true
-assets.workspace                = true
+assets                          = { workspace = true, optional = true }
 base64.workspace                = true
 breadcrumbs.workspace           = true
 buffer_diff.workspace           = true
@@ -32,7 +32,7 @@ futures-lite.workspace          = true
 fuzzy.workspace                 = true
 git.workspace                   = true
 gpui.workspace                  = true
-indoc.workspace                 = true
+indoc                           = { workspace = true, optional = true }
 itertools.workspace             = true
 language.workspace              = true
 language_detection.workspace    = true
@@ -45,7 +45,7 @@ mos-text-layout.workspace       = true
 multi_buffer.workspace          = true
 ordered-float.workspace         = true
 parking_lot.workspace           = true
-pretty_assertions.workspace     = true
+pretty_assertions               = { workspace = true, optional = true }
 project.workspace               = true
 proptest                        = { workspace = true, optional = true }
 proptest-derive                 = { workspace = true, optional = true }
@@ -82,24 +82,26 @@ uuid.workspace                  = true
 vim_mode_setting.workspace      = true
 workspace.workspace             = true
 zed_actions.workspace           = true
-zlog.workspace                  = true
 ztracing.workspace              = true
 
 [dev-dependencies]
-ctor.workspace            = true
-gpui                      = { workspace = true, features = ["test-support"] }
-language                  = { workspace = true, features = ["test-support"] }
-languages                 = { workspace = true, features = ["test-support"] }
-lsp                       = { workspace = true, features = ["test-support"] }
-markdown                  = { workspace = true, features = ["test-support"] }
-multi_buffer              = { workspace = true, features = ["test-support"] }
-project                   = { workspace = true, features = ["test-support"] }
-proptest.workspace        = true
-proptest-derive.workspace = true
-rand.workspace            = true
-release_channel.workspace = true
-semver.workspace          = true
-settings                  = { workspace = true, features = ["test-support"] }
+assets.workspace            = true
+ctor.workspace              = true
+gpui                        = { workspace = true, features = ["test-support"] }
+indoc.workspace             = true
+language                    = { workspace = true, features = ["test-support"] }
+languages                   = { workspace = true, features = ["test-support"] }
+lsp                         = { workspace = true, features = ["test-support"] }
+markdown                    = { workspace = true, features = ["test-support"] }
+multi_buffer                = { workspace = true, features = ["test-support"] }
+pretty_assertions.workspace = true
+project                     = { workspace = true, features = ["test-support"] }
+proptest.workspace          = true
+proptest-derive.workspace   = true
+rand.workspace              = true
+release_channel.workspace   = true
+semver.workspace            = true
+settings                    = { workspace = true, features = ["test-support"] }
 
 text                             = { workspace = true, features = ["test-support"] }
 theme                            = { workspace = true, features = ["test-support"] }
@@ -120,6 +122,9 @@ zlog.workspace = true
 
 [features]
 test-support = [
+  "dep:assets",
+  "dep:indoc",
+  "dep:pretty_assertions",
   "gpui/test-support",
   "language/test-support",
   "multi_buffer/test-support",

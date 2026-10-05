@@ -10,10 +10,19 @@ publish           = false
 doctest = false
 test    = false
 
+[[bin]]
+name              = "perf"
+path              = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
 collections.workspace = true
-serde.workspace       = true
-serde_json.workspace  = true
+serde                 = { workspace = true, features = ["derive"] }
+serde_json            = { workspace = true, optional = true }
+
+[features]
+default = ["cli"]
+cli     = ["dep:serde_json"]
 
 [lints.clippy]
 all                             = "warn"

@@ -13,7 +13,7 @@ path    = "src/proto.rs"
 [dependencies]
 anyhow.workspace = true
 prost.workspace  = true
-serde.workspace  = true
+serde            = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 
