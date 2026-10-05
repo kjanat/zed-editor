@@ -407,6 +407,16 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     ) -> Vec<(SharedString, Box<dyn Action>)> {
         Vec::new()
     }
+
+    /// Returns the action that double-clicking the tab dispatches to this item.
+    /// Implementations may read the containing pane.
+    fn tab_double_click_action(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Box<dyn Action>> {
+        None
+    }
 }
 
 pub trait SerializableItem: Item {
@@ -587,6 +597,8 @@ pub trait ItemHandle: 'static + Send {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<(SharedString, Box<dyn Action>)>;
+    fn tab_double_click_action(&self, window: &mut Window, cx: &mut App)
+    -> Option<Box<dyn Action>>;
     fn can_autosave(&self, cx: &App) -> bool {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
@@ -1187,6 +1199,14 @@ impl<T: Item> ItemHandle for Entity<T> {
             this.tab_extra_context_menu_actions(window, cx)
         })
     }
+
+    fn tab_double_click_action(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Box<dyn Action>> {
+        self.update(cx, |this, cx| this.tab_double_click_action(window, cx))
+    }
 }
 
 impl From<Box<dyn ItemHandle>> for AnyView {
@@ -1434,13 +1454,13 @@ impl<T: FollowableItem> WeakFollowableItemHandle for WeakEntity<T> {
 pub mod test {
     use super::{Item, ItemEvent, SerializableItem, TabContentParams};
     use crate::{
-        ItemId, ItemNavHistory, Pane, Workspace, WorkspaceId,
+        ItemId, ItemNavHistory, Workspace, WorkspaceId,
         item::{ItemBufferKind, SaveOptions},
     };
     use gpui::{
-        AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, Focusable,
-        InteractiveElement, IntoElement, ParentElement, Render, SharedString, Task, WeakEntity,
-        Window,
+        Action, AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter,
+        Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Task,
+        WeakEntity, Window,
     };
     use language::Capability;
     use project::{Project, ProjectEntryId, ProjectPath, WorktreeId};
@@ -1483,8 +1503,9 @@ pub mod test {
         serialize: Option<Box<dyn Fn() -> Option<Task<anyhow::Result<()>>>>>,
         focus_handle: gpui::FocusHandle,
         pub child_focus_handles: Vec<gpui::FocusHandle>,
-        pane_read_by_tab_extra_actions: Option<WeakEntity<Pane>>,
-        pub tab_extra_actions_requests: Cell<usize>,
+        tab_double_click_action: Option<Box<dyn Action>>,
+        workspace_read_by_tab_double_click: Option<WeakEntity<Workspace>>,
+        pub tab_double_click_requests: Cell<usize>,
     }
 
     impl project::ProjectItem for TestProjectItem {
@@ -1580,8 +1601,9 @@ pub mod test {
                 focus_handle: cx.focus_handle(),
                 serialize: None,
                 child_focus_handles: Vec::new(),
-                pane_read_by_tab_extra_actions: None,
-                tab_extra_actions_requests: Cell::new(0),
+                tab_double_click_action: None,
+                workspace_read_by_tab_double_click: None,
+                tab_double_click_requests: Cell::new(0),
             }
         }
 
@@ -1610,10 +1632,16 @@ pub mod test {
             self
         }
 
-        /// Mirrors items like `Editor` that inspect their pane while computing
-        /// tab extra actions.
-        pub fn with_pane_read_by_tab_extra_actions(mut self, pane: WeakEntity<Pane>) -> Self {
-            self.pane_read_by_tab_extra_actions = Some(pane);
+        pub fn with_tab_double_click_action(mut self, action: Box<dyn Action>) -> Self {
+            self.tab_double_click_action = Some(action);
+            self
+        }
+
+        pub fn with_workspace_read_by_tab_double_click(
+            mut self,
+            workspace: WeakEntity<Workspace>,
+        ) -> Self {
+            self.workspace_read_by_tab_double_click = Some(workspace);
             self
         }
 
@@ -1703,21 +1731,27 @@ pub mod test {
             f(*event)
         }
 
-        fn tab_extra_context_menu_actions(
+        fn tab_double_click_action(
             &self,
             _window: &mut Window,
             cx: &mut Context<Self>,
-        ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
-            self.tab_extra_actions_requests
-                .set(self.tab_extra_actions_requests.get() + 1);
-            if let Some(pane) = self
-                .pane_read_by_tab_extra_actions
+        ) -> Option<Box<dyn Action>> {
+            self.tab_double_click_requests
+                .set(self.tab_double_click_requests.get() + 1);
+            if let Some(workspace) = self
+                .workspace_read_by_tab_double_click
                 .as_ref()
-                .and_then(|pane| pane.upgrade())
+                .and_then(|workspace| workspace.upgrade())
             {
+                let pane = workspace
+                    .read(cx)
+                    .pane_for_item_id(cx.entity_id())
+                    .expect("the double-clicked item must be in a pane");
                 pane.read(cx).active_item();
             }
-            Vec::new()
+            self.tab_double_click_action
+                .as_ref()
+                .map(|action| action.boxed_clone())
         }
 
         fn tab_content_text(&self, detail: usize, _cx: &App) -> SharedString {
@@ -1825,8 +1859,14 @@ pub mod test {
                         .iter()
                         .map(|_| cx.focus_handle())
                         .collect(),
-                    pane_read_by_tab_extra_actions: self.pane_read_by_tab_extra_actions.clone(),
-                    tab_extra_actions_requests: Cell::new(0),
+                    tab_double_click_action: self
+                        .tab_double_click_action
+                        .as_ref()
+                        .map(|action| action.boxed_clone()),
+                    workspace_read_by_tab_double_click: self
+                        .workspace_read_by_tab_double_click
+                        .clone(),
+                    tab_double_click_requests: Cell::new(0),
                 }
             })))
         }

@@ -322,10 +322,6 @@ actions!(
 
 const MAX_NAVIGATION_HISTORY_LEN: usize = 1024;
 
-/// Next-frame callbacks run before that frame is drawn, so an item activated just
-/// now may need two frames before it shows up in the rendered dispatch tree.
-const DISPATCH_ONCE_RENDERED_MAX_FRAMES: usize = 3;
-
 pub enum Event {
     AddItem {
         item: Box<dyn ItemHandle>,
@@ -2970,47 +2966,36 @@ impl Pane {
                 ClosePosition::Right => ui::TabCloseSide::End,
             })
             .toggle_state(is_active)
-            .on_click(cx.listener({
+            .on_click({
+                let pane = cx.entity().downgrade();
                 let item_handle = item.boxed_clone();
-                move |pane: &mut Self, event: &ClickEvent, window, cx| {
+                move |event: &ClickEvent, window, cx| {
                     if event.click_count() > 1 {
-                        pane.unpreview_item_if_preview(item_id);
-                        // Items may read this pane while computing their extra actions,
-                        // which panics while the pane is still being updated here.
-                        let item_handle = item_handle.boxed_clone();
-                        let pane = cx.entity().downgrade();
-                        window.defer(cx, move |window, cx| {
-                            let extra_actions =
-                                item_handle.tab_extra_context_menu_actions(window, cx);
-                            if let Some((_, action)) = extra_actions
-                                .into_iter()
-                                .find(|(label, _)| label.as_ref() == "Rename")
-                            {
-                                // Dispatch action directly through the focus handle to avoid
-                                // relay_action's intermediate focus step which can interfere
-                                // with inline editors.
-                                let focus_handle = item_handle.item_focus_handle(cx);
-                                dispatch_action_once_rendered(
-                                    focus_handle,
-                                    action,
-                                    DISPATCH_ONCE_RENDERED_MAX_FRAMES,
-                                    window,
-                                    cx,
-                                );
-                                return;
-                            }
-                            pane.update(cx, |pane, cx| {
-                                if let Some(ix) = pane.index_for_item_id(item_id) {
-                                    pane.activate_item(ix, true, true, window, cx)
-                                }
-                            })
-                            .log_err();
-                        });
-                        return;
+                        if pane
+                            .update(cx, |pane, _| pane.unpreview_item_if_preview(item_id))
+                            .log_err()
+                            .is_none()
+                        {
+                            return;
+                        }
+                        if let Some(action) = item_handle.tab_double_click_action(window, cx) {
+                            // Dispatch action directly through the focus handle to avoid
+                            // relay_action's intermediate focus step which can interfere
+                            // with inline editors.
+                            item_handle
+                                .item_focus_handle(cx)
+                                .dispatch_action(&*action, window, cx);
+                            return;
+                        }
                     }
-                    pane.activate_item(ix, true, true, window, cx)
+                    pane.update(cx, |pane, cx| {
+                        if let Some(ix) = pane.index_for_item_id(item_id) {
+                            pane.activate_item(ix, true, true, window, cx)
+                        }
+                    })
+                    .log_err();
                 }
-            }))
+            })
             .on_aux_click(
                 cx.listener(move |pane: &mut Self, event: &ClickEvent, window, cx| {
                     if !event.is_middle_click() || is_pinned {
@@ -5087,30 +5072,6 @@ impl NavHistoryState {
             });
         }
     }
-}
-
-/// Dispatches `action` on the element rendering `focus_handle`, retrying on later frames
-/// when that element hasn't been drawn yet (e.g. its item was activated moments ago).
-fn dispatch_action_once_rendered(
-    focus_handle: FocusHandle,
-    action: Box<dyn Action>,
-    frames_left: usize,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    if focus_handle.try_dispatch_action(&*action, window, cx) {
-        return;
-    }
-    let Some(frames_left) = frames_left.checked_sub(1) else {
-        log::warn!(
-            "dropped {} because its target was never rendered",
-            action.name()
-        );
-        return;
-    };
-    window.on_next_frame(move |window, cx| {
-        dispatch_action_once_rendered(focus_handle, action, frames_left, window, cx)
-    });
 }
 
 fn dirty_message_for(buffer_path: Option<ProjectPath>, path_style: PathStyle) -> String {
@@ -7226,36 +7187,45 @@ mod tests {
         assert_item_labels(&pane, ["A*!"], cx);
     }
 
-    #[gpui::test]
-    async fn test_double_click_tab_when_item_reads_pane_for_extra_actions(cx: &mut TestAppContext) {
-        init_test(cx);
-        let fs = FakeFs::new(cx.executor());
+    actions!(pane_test, [DoubleClickTestItem]);
 
-        let project = Project::test(fs, None, cx).await;
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
-        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
-
-        add_labeled_item(&pane, "A", false, cx);
-        let item_b = pane.update_in(cx, |pane, window, cx| {
-            let pane_handle = cx.entity().downgrade();
+    fn add_item_reading_its_pane_on_tab_double_click(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<Pane>,
+        label: &str,
+        action: Option<Box<dyn Action>>,
+        cx: &mut VisualTestContext,
+    ) -> Box<Entity<TestItem>> {
+        let workspace_handle = workspace.downgrade();
+        let item = pane.update_in(cx, |pane, window, cx| {
             let item = Box::new(cx.new(|cx| {
-                TestItem::new(cx)
-                    .with_label("B")
-                    .with_pane_read_by_tab_extra_actions(pane_handle)
+                let item = TestItem::new(cx)
+                    .with_label(label)
+                    .with_workspace_read_by_tab_double_click(workspace_handle);
+                match action {
+                    Some(action) => item.with_tab_double_click_action(action),
+                    None => item,
+                }
             }));
             pane.add_item(item.clone(), false, false, None, window, cx);
             item
         });
-        pane.update_in(cx, |pane, window, cx| {
-            pane.activate_item(0, false, false, window, cx);
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(
+                workspace
+                    .pane_for_item_id(item.item_id())
+                    .map(|item_pane| item_pane.entity_id()),
+                Some(pane.entity_id()),
+                "the item must be able to find its pane through the workspace"
+            );
         });
-        assert_item_labels(&pane, ["A*", "B"], cx);
-        cx.run_until_parked();
+        item
+    }
 
+    fn double_click_tab(tab: &'static str, cx: &mut VisualTestContext) {
         let tab_bounds = cx
-            .debug_bounds("TAB-1")
-            .expect("tab B should have debug bounds");
+            .debug_bounds(tab)
+            .unwrap_or_else(|| panic!("{tab} should have debug bounds"));
         for click_count in [1, 2] {
             cx.simulate_event(MouseDownEvent {
                 position: tab_bounds.center(),
@@ -7272,26 +7242,12 @@ mod tests {
             });
         }
         cx.run_until_parked();
-
-        pane.read_with(cx, |pane, _| {
-            assert_eq!(
-                pane.active_item().map(|item| item.item_id()),
-                Some(item_b.item_id())
-            );
-        });
-        item_b.read_with(cx, |item, _| {
-            assert_eq!(
-                item.tab_extra_actions_requests.get(),
-                1,
-                "the double-click should look up the tab's extra actions exactly once"
-            );
-        });
     }
 
-    actions!(pane_test, [RenameTestItem]);
-
     #[gpui::test]
-    async fn test_dispatch_action_once_rendered_waits_for_activated_item(cx: &mut TestAppContext) {
+    async fn test_double_click_tab_dispatches_action_of_item_reading_its_pane(
+        cx: &mut TestAppContext,
+    ) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
 
@@ -7301,48 +7257,72 @@ mod tests {
         let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
 
         add_labeled_item(&pane, "A", false, cx);
-        let item_b = add_labeled_item(&pane, "B", false, cx);
+        let item_b = add_item_reading_its_pane_on_tab_double_click(
+            &workspace,
+            &pane,
+            "B",
+            Some(Box::new(DoubleClickTestItem)),
+            cx,
+        );
+        assert_item_labels(&pane, ["A", "B*"], cx);
+        cx.run_until_parked();
+
+        let dispatched = Rc::new(Cell::new(0));
+        cx.update(|_, cx| {
+            let dispatched = dispatched.clone();
+            cx.on_action(move |_: &DoubleClickTestItem, _cx| {
+                dispatched.set(dispatched.get() + 1);
+            });
+        });
+
+        double_click_tab("TAB-1", cx);
+
+        assert_item_labels(&pane, ["A", "B*"], cx);
+        item_b.read_with(cx, |item, _| {
+            assert_eq!(
+                item.tab_double_click_requests.get(),
+                1,
+                "the second click should ask the item for its double-click action once"
+            );
+        });
+        assert_eq!(
+            dispatched.get(),
+            1,
+            "the double-click should dispatch the item's action once"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_double_click_tab_activates_item_reading_its_pane_without_action(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        add_labeled_item(&pane, "A", false, cx);
+        let item_b =
+            add_item_reading_its_pane_on_tab_double_click(&workspace, &pane, "B", None, cx);
         pane.update_in(cx, |pane, window, cx| {
             pane.activate_item(0, false, false, window, cx);
         });
         assert_item_labels(&pane, ["A*", "B"], cx);
         cx.run_until_parked();
 
-        let dispatched = Rc::new(Cell::new(0));
-        cx.update(|_, cx| {
-            let dispatched = dispatched.clone();
-            cx.on_action(move |_: &RenameTestItem, _cx| {
-                dispatched.set(dispatched.get() + 1);
-            });
-        });
+        double_click_tab("TAB-1", cx);
 
-        // Activating and dispatching in one update mirrors a double-click whose second
-        // click lands before the newly activated item has been drawn.
-        pane.update_in(cx, |pane, window, cx| {
-            let ix = pane
-                .index_for_item_id(item_b.item_id())
-                .expect("item B should exist");
-            pane.activate_item(ix, true, true, window, cx);
-            dispatch_action_once_rendered(
-                item_b.item_focus_handle(cx),
-                Box::new(RenameTestItem),
-                DISPATCH_ONCE_RENDERED_MAX_FRAMES,
-                window,
-                cx,
+        assert_item_labels(&pane, ["A", "B*"], cx);
+        item_b.read_with(cx, |item, _| {
+            assert_eq!(
+                item.tab_double_click_requests.get(),
+                1,
+                "the second click should ask the item for its double-click action once"
             );
         });
-        assert_eq!(
-            dispatched.get(),
-            0,
-            "the action must not be dropped or dispatched before item B is rendered"
-        );
-
-        cx.update(|window, cx| window.simulate_next_frame(cx));
-        assert_eq!(
-            dispatched.get(),
-            1,
-            "the action should be dispatched once item B has been rendered"
-        );
     }
 
     #[gpui::test]
