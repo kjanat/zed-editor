@@ -13,10 +13,7 @@ test       = false
 
 [dependencies]
 quote.workspace = true
-syn.workspace   = true
-
-[dev-dependencies]
-settings.workspace = true
+syn             = { workspace = true, features = ["derive", "full", "parsing", "printing"] }
 
 [features]
 default = []

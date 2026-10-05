@@ -17,7 +17,6 @@ path    = "src/server.rs"
 name = "remote_server"
 
 [dependencies]
-acp_thread.workspace              = true
 anyhow.workspace                  = true
 askpass.workspace                 = true
 async-channel.workspace           = true
@@ -71,6 +70,7 @@ watch.workspace                   = true
 worktree.workspace                = true
 
 [dev-dependencies]
+acp_thread.workspace            = true
 action_log.workspace            = true
 agent                           = { workspace = true, features = ["test-support"] }
 agent-client-protocol.workspace = true
@@ -96,8 +96,7 @@ workspace                       = { workspace = true, features = ["test-support"
 zlog.workspace                  = true
 
 [build-dependencies]
-cargo_toml.workspace = true
-toml.workspace       = true
+toml_edit.workspace = true
 
 [target.'cfg(not(target_os = "freebsd"))'.dependencies]
 crashes.workspace = true

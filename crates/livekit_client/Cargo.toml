@@ -29,9 +29,9 @@ http_client_tls.workspace  = true
 image.workspace            = true
 livekit_api                = { workspace = true, optional = true }
 log.workspace              = true
-nanoid.workspace           = true
+nanoid                     = { workspace = true, optional = true }
 parking_lot.workspace      = true
-postage.workspace          = true
+postage                    = { workspace = true, features = ["blocking", "futures-traits", "logging"], optional = true }
 rodio.workspace            = true
 serde.workspace            = true
 serde_urlencoded.workspace = true
@@ -45,14 +45,18 @@ collections             = { workspace = true, features = ["test-support"] }
 gpui                    = { workspace = true, features = ["test-support"] }
 gpui_platform.workspace = true
 livekit_api             = { workspace = true, features = ["test-support"] }
+nanoid.workspace        = true
+postage                 = { workspace = true, features = ["futures-traits", "logging"] }
 simplelog.workspace     = true
 
 [build-dependencies]
-serde.workspace      = true
+serde                = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [target.'cfg(any(all(target_os = "windows", target_env = "gnu"), target_os = "freebsd"))'.dependencies]
 livekit_api.workspace = true
+nanoid.workspace      = true
+postage               = { workspace = true, features = ["blocking", "futures-traits", "logging"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies]
 scap.workspace = true
@@ -68,11 +72,11 @@ webrtc-sys.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation.workspace       = true
 core-video.workspace            = true
-coreaudio-rs                    = "0.12.1"
+coreaudio-rs                    = { workspace = true, features = ["core_audio"] }
 objc2-core-foundation.workspace = true
 
 [features]
-test-support = ["collections/test-support", "gpui/test-support", "livekit_api/test-support"]
+test-support = ["collections/test-support", "dep:nanoid", "dep:postage", "gpui/test-support", "livekit_api/test-support"]
 
 [lints]
 workspace = true

@@ -15,7 +15,7 @@ test       = false
 [dependencies]
 proc-macro2.workspace = true
 quote.workspace       = true
-syn.workspace         = true
+syn                   = { workspace = true, default-features = true }
 
 [lints]
 workspace = true

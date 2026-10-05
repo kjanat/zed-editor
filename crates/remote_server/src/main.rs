@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(not(target_os = "freebsd"))]
     if let Some(socket) = &cli.crash_handler {
-        crashes::crash_server(socket.as_path(), paths::logs_dir().clone());
+        crashes::crash_server(socket.as_path(), paths::logs_dir().clone(), None);
         return Ok(());
     }
 

@@ -12,10 +12,12 @@ path    = "src/bench_metrics.rs"
 [dependencies]
 anyhow.workspace    = true
 criterion.workspace = true
-libc.workspace      = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 perf-event.workspace = true
+
+[target."cfg(unix)".dependencies]
+libc.workspace = true
 
 [features]
 test-support = []

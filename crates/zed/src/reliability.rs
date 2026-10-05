@@ -91,9 +91,15 @@ pub fn init(client: Arc<Client>, workspace_store: Entity<WorkspaceStore>, cx: &m
                 } in crashes
                 {
                     if let Some(metadata) = serde_json::from_str(&metadata).log_err() {
-                        upload_minidump(client.clone(), endpoint, minidump_contents, &metadata)
-                            .await
-                            .log_err();
+                        upload_minidump(
+                            client.clone(),
+                            endpoint,
+                            minidump_contents,
+                            None,
+                            &metadata,
+                        )
+                        .await
+                        .log_err();
                     }
                 }
 
@@ -287,12 +293,15 @@ pub async fn upload_previous_minidumps(client: Arc<Client>) -> anyhow::Result<()
         else {
             continue;
         };
+        let log_tail_path = child_path.with_extension("log");
+        let log_tail = smol::fs::read(&log_tail_path).await.ok();
         if upload_minidump(
             client.clone(),
             minidump_endpoint,
             smol::fs::read(&child_path)
                 .await
                 .context("Failed to read minidump")?,
+            log_tail,
             &metadata,
         )
         .await
@@ -301,6 +310,7 @@ pub async fn upload_previous_minidumps(client: Arc<Client>) -> anyhow::Result<()
         {
             fs::remove_file(child_path).ok();
             fs::remove_file(json_path).ok();
+            fs::remove_file(log_tail_path).ok();
         }
     }
     Ok(())
@@ -310,19 +320,28 @@ async fn upload_minidump(
     client: Arc<Client>,
     endpoint: &str,
     minidump: Vec<u8>,
+    log_tail: Option<Vec<u8>>,
     metadata: &crashes::CrashInfo,
 ) -> Result<()> {
     if metadata.init.commit_sha == "no sha" {
         log::warn!("No commit sha set, skipping minidump upload");
         return Ok(());
     }
-    let mut form = Form::new()
-        .part(
-            "upload_file_minidump",
-            Part::bytes(minidump)
-                .file_name("minidump.dmp")
-                .mime_str("application/octet-stream")?,
-        )
+    let mut form = Form::new().part(
+        "upload_file_minidump",
+        Part::bytes(minidump)
+            .file_name("minidump.dmp")
+            .mime_str("application/octet-stream")?,
+    );
+    if let Some(log_tail) = log_tail {
+        form = form.part(
+            "zed_log",
+            Part::bytes(log_tail)
+                .file_name("Zed.log")
+                .mime_str("text/plain")?,
+        );
+    }
+    form = form
         .text(
             "sentry[tags][channel]",
             metadata.init.release_channel.clone(),
