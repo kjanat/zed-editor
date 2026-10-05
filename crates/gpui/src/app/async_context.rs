@@ -8,7 +8,7 @@ use anyhow::{Context as _, bail};
 use derive_more::{Deref, DerefMut};
 use futures::channel::oneshot;
 use futures::future::FutureExt;
-use std::{future::Future, rc::Weak};
+use std::{future::Future, panic::Location, rc::Weak};
 
 use super::{Context, WeakEntity};
 
@@ -526,10 +526,11 @@ impl VisualContext for AsyncWindowContext {
         view: &Entity<T>,
         update: impl FnOnce(&mut T, &mut Window, &mut Context<T>) -> R,
     ) -> Result<R> {
+        let location = Location::caller();
         let view = view.clone();
         self.app
             .with_window(view.entity_id(), |window, app| {
-                view.update(app, |entity, cx| update(entity, window, cx))
+                app.update_entity_at(&view, location, |entity, cx| update(entity, window, cx))
             })
             .context("entity has no current window")
     }

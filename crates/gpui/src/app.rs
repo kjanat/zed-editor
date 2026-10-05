@@ -6,6 +6,7 @@ use std::{
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
+    panic::Location,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering::SeqCst},
@@ -3081,14 +3082,40 @@ impl App {
     fn update_entity_erased(
         &mut self,
         handle: &AnyEntity,
-        entity_type: &str,
+        entity_type: &'static str,
+        location: &'static Location<'static>,
         update: &mut dyn FnMut(&mut dyn Any, &mut App),
     ) {
         self.update(|cx| {
-            let mut lease = cx.entities.lease_erased(handle, entity_type);
+            let mut lease = cx.entities.lease_erased(handle, entity_type, location);
             update(lease.entity.as_deref_mut().unwrap(), cx);
             cx.entities.end_lease_erased(handle.entity_id, lease);
         });
+    }
+
+    /// Updates the entity like [`AppContext::update_entity`], attributing the
+    /// update to `location`.
+    pub(crate) fn update_entity_at<T: 'static, R>(
+        &mut self,
+        handle: &Entity<T>,
+        location: &'static Location<'static>,
+        update: impl FnOnce(&mut T, &mut Context<T>) -> R,
+    ) -> R {
+        let mut update = Some(update);
+        let mut result = None;
+        self.update_entity_erased(handle, type_name::<T>(), location, &mut |entity, cx| {
+            let value = update.take().unwrap()(
+                entity.downcast_mut::<T>().unwrap(),
+                &mut Context::new_context(cx, handle.downgrade()),
+            );
+            result = Some(value);
+        });
+        result.unwrap()
+    }
+
+    /// Whether any entity is currently being updated.
+    pub fn has_active_entity_updates(&self) -> bool {
+        self.entities.has_active_leases()
     }
 
     #[inline(never)]
@@ -3146,16 +3173,7 @@ impl AppContext for App {
         handle: &Entity<T>,
         update: impl FnOnce(&mut T, &mut Context<T>) -> R,
     ) -> R {
-        let mut update = Some(update);
-        let mut result = None;
-        self.update_entity_erased(handle, type_name::<T>(), &mut |entity, cx| {
-            let value = update.take().unwrap()(
-                entity.downcast_mut::<T>().unwrap(),
-                &mut Context::new_context(cx, handle.downgrade()),
-            );
-            result = Some(value);
-        });
-        result.unwrap()
+        self.update_entity_at(handle, Location::caller(), update)
     }
 
     fn as_mut<'a, T>(&'a mut self, handle: &Entity<T>) -> GpuiBorrow<'a, T>
@@ -3603,6 +3621,52 @@ mod test {
         });
 
         assert_eq!(*observation_count.borrow(), 2);
+    }
+
+    #[test]
+    fn test_active_entity_updates_follow_nested_updates() {
+        let cx = TestAppContext::single();
+        let (outer, inner) = cx.update(|cx| (cx.new(|_| ()), cx.new(|_| ())));
+
+        cx.update(|cx| {
+            assert!(!cx.has_active_entity_updates());
+            outer.update(cx, |_, cx| {
+                inner.update(cx, |_, cx| assert!(cx.has_active_entity_updates()));
+                assert!(cx.has_active_entity_updates());
+            });
+            assert!(!cx.has_active_entity_updates());
+        });
+    }
+
+    #[test]
+    fn test_reentrant_entity_access_panic_locates_both_accesses() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let mut update_line = 0;
+        let mut read_line = 0;
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cx.update(|cx| {
+                update_line = line!() + 1;
+                entity.update(cx, |_, cx| {
+                    read_line = line!() + 1;
+                    entity.read(cx);
+                })
+            })
+        }))
+        .expect_err("reading an entity during its own update must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("the panic message should be formatted");
+
+        assert!(
+            message.contains(&format!("read at: {}:{read_line}:", file!())),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("existing update at: {}:{update_line}:", file!())),
+            "{message}"
+        );
     }
 
     #[gpui::test]

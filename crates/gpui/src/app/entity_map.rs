@@ -12,6 +12,7 @@ use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
     num::NonZeroU64,
+    panic::Location,
     sync::{
         Arc, Weak,
         atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
@@ -57,6 +58,13 @@ pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, Box<dyn Any>>,
     pub accessed_entities: RefCell<FxHashSet<EntityId>>,
     ref_counts: Arc<RwLock<EntityRefCounts>>,
+    active_leases: Vec<ActiveLease>,
+}
+
+struct ActiveLease {
+    entity_id: EntityId,
+    entity_type: &'static str,
+    location: &'static Location<'static>,
 }
 
 #[doc(hidden)]
@@ -85,6 +93,7 @@ impl EntityMap {
                     entity_handles: HashMap::default(),
                 },
             })),
+            active_leases: Vec::new(),
         }
     }
 
@@ -137,7 +146,7 @@ impl EntityMap {
     #[track_caller]
     pub fn lease<T>(&mut self, pointer: &Entity<T>) -> Lease<T> {
         Lease {
-            inner: self.lease_erased(pointer, type_name::<T>()),
+            inner: self.lease_erased(pointer, type_name::<T>(), Location::caller()),
             id: pointer.entity_id,
             entity_type: PhantomData,
         }
@@ -149,25 +158,88 @@ impl EntityMap {
     }
 
     #[inline(always)]
+    #[track_caller]
     pub fn read<T: 'static>(&self, entity: &Entity<T>) -> &T {
         self.assert_valid_context(entity);
-        self.read_inner(entity.entity_id)
+        match self
+            .read_inner(entity.entity_id)
             .and_then(|entity| entity.downcast_ref())
-            .unwrap_or_else(|| double_lease_panic("read", type_name::<T>()))
+        {
+            Some(entity) => entity,
+            None => self.double_lease_panic(
+                "read",
+                entity.entity_id,
+                type_name::<T>(),
+                Location::caller(),
+            ),
+        }
     }
 
-    #[track_caller]
-    pub(super) fn lease_erased(&mut self, pointer: &AnyEntity, entity_type: &str) -> LeaseInner {
+    pub(super) fn lease_erased(
+        &mut self,
+        pointer: &AnyEntity,
+        entity_type: &'static str,
+        location: &'static Location<'static>,
+    ) -> LeaseInner {
         self.assert_valid_context(pointer);
-        let entity = Some(
-            self.lease_inner(pointer.entity_id)
-                .unwrap_or_else(|| double_lease_panic("update", entity_type)),
-        );
-        LeaseInner { entity }
+        let Some(entity) = self.lease_inner(pointer.entity_id) else {
+            self.double_lease_panic("update", pointer.entity_id, entity_type, location)
+        };
+        self.active_leases.push(ActiveLease {
+            entity_id: pointer.entity_id,
+            entity_type,
+            location,
+        });
+        LeaseInner {
+            entity: Some(entity),
+        }
     }
 
     pub(super) fn end_lease_erased(&mut self, entity_id: EntityId, mut lease: LeaseInner) {
+        if let Some(index) = self
+            .active_leases
+            .iter()
+            .rposition(|lease| lease.entity_id == entity_id)
+        {
+            self.active_leases.remove(index);
+        }
         self.end_lease_inner(entity_id, lease.entity.take().unwrap());
+    }
+
+    /// Whether any entity is currently being updated.
+    pub fn has_active_leases(&self) -> bool {
+        !self.active_leases.is_empty()
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[track_caller]
+    fn double_lease_panic(
+        &self,
+        operation: &str,
+        entity_id: EntityId,
+        entity_type: &str,
+        location: &'static Location<'static>,
+    ) -> ! {
+        let existing_lease = self
+            .active_leases
+            .iter()
+            .rfind(|lease| lease.entity_id == entity_id)
+            .map_or_else(
+                || "none recorded".to_string(),
+                |lease| lease.location.to_string(),
+            );
+        let active_leases = self
+            .active_leases
+            .iter()
+            .map(|lease| format!("\n  {} at {}", lease.entity_type, lease.location))
+            .collect::<String>();
+        panic!(
+            "cannot {operation} {entity_type} while it is already being updated\n\
+             {operation} at: {location}\n\
+             existing update at: {existing_lease}\n\
+             active updates, outermost first:{active_leases}"
+        )
     }
 
     fn assert_valid_context(&self, entity: &AnyEntity) {
@@ -225,11 +297,6 @@ impl EntityMap {
     fn end_lease_inner(&mut self, entity_id: EntityId, entity: Box<dyn Any>) {
         self.entities.insert(entity_id, entity);
     }
-}
-
-#[track_caller]
-fn double_lease_panic(operation: &str, entity_type: &str) -> ! {
-    panic!("cannot {operation} {entity_type} while it is already being updated")
 }
 
 pub(crate) struct Lease<T> {
@@ -482,18 +549,21 @@ impl<T: 'static> Entity<T> {
 
     /// Grab a reference to this entity from the context.
     #[inline]
+    #[track_caller]
     pub fn read<'a>(&self, cx: &'a App) -> &'a T {
         cx.entities.read(self)
     }
 
     /// Read the entity referenced by this handle with the given function.
     #[inline]
+    #[track_caller]
     pub fn read_with<R, C: AppContext>(&self, cx: &C, f: impl FnOnce(&T, &App) -> R) -> R {
         cx.read_entity(self, f)
     }
 
     /// Updates the entity referenced by this handle with the given function.
     #[inline]
+    #[track_caller]
     pub fn update<R, C: AppContext>(
         &self,
         cx: &mut C,
@@ -509,6 +579,7 @@ impl<T: 'static> Entity<T> {
     }
 
     /// Updates the entity referenced by this handle with the given function.
+    #[track_caller]
     pub fn write<C: AppContext>(&self, cx: &mut C, value: T) {
         self.update(cx, |entity, cx| {
             *entity = value;
@@ -520,6 +591,7 @@ impl<T: 'static> Entity<T> {
     /// the referenced entity still exists, within a visual context that has a window.
     /// Returns an error if the window has been closed.
     #[inline]
+    #[track_caller]
     pub fn update_in<R, C: VisualContext>(
         &self,
         cx: &mut C,
@@ -800,6 +872,7 @@ impl<T: 'static> WeakEntity<T> {
     /// the referenced entity still exists. Returns an error if the entity has
     /// been released.
     #[inline(always)]
+    #[track_caller]
     pub fn update<C, R>(
         &self,
         cx: &mut C,
@@ -816,6 +889,7 @@ impl<T: 'static> WeakEntity<T> {
     /// the referenced entity still exists, within a visual context that has a window.
     /// Returns an error if the entity has been released.
     #[inline(always)]
+    #[track_caller]
     pub fn update_in<C, R>(
         &self,
         cx: &mut C,
@@ -824,9 +898,10 @@ impl<T: 'static> WeakEntity<T> {
     where
         C: AppContext,
     {
+        let location = Location::caller();
         let entity = self.upgrade().context("entity released")?;
         cx.with_window(entity.entity_id(), |window, app| {
-            entity.update(app, |entity, cx| update(entity, window, cx))
+            app.update_entity_at(&entity, location, |entity, cx| update(entity, window, cx))
         })
         .context("entity has no current window")
     }
@@ -835,6 +910,7 @@ impl<T: 'static> WeakEntity<T> {
     /// the referenced entity still exists. Returns an error if the entity has
     /// been released.
     #[inline(always)]
+    #[track_caller]
     pub fn read_with<C, R>(&self, cx: &C, read: impl FnOnce(&T, &App) -> R) -> Result<R>
     where
         C: AppContext,

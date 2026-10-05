@@ -1,6 +1,7 @@
 use std::{
     cell::{OnceCell, RefCell},
     future::Future,
+    panic::Location,
     rc::Rc,
     sync::{
         Arc,
@@ -1307,12 +1308,13 @@ impl VisualContext for BenchWindowContext<'_, '_> {
         entity: &Entity<T>,
         update: impl FnOnce(&mut T, &mut Window, &mut Context<T>) -> R,
     ) -> Result<R> {
+        let location = Location::caller();
         let entity = entity.clone();
         self.cx
             .app
             .borrow_mut()
             .with_window(entity.entity_id(), |window, app| {
-                entity.update(app, |entity, cx| update(entity, window, cx))
+                app.update_entity_at(&entity, location, |entity, cx| update(entity, window, cx))
             })
             .ok_or_else(|| {
                 anyhow!("entity has no current window; use `update` instead of `update_in`")
