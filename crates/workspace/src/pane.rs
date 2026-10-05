@@ -2967,24 +2967,18 @@ impl Pane {
             })
             .toggle_state(is_active)
             .on_click({
-                let pane = cx.entity().downgrade();
                 let item_handle = item.boxed_clone();
-                move |event: &ClickEvent, window, cx| {
+                cx.entity_listener(move |pane: Entity<Self>, event: &ClickEvent, window, cx| {
                     if event.click_count() > 1 {
-                        if pane
-                            .update(cx, |pane, _| pane.unpreview_item_if_preview(item_id))
-                            .log_err()
-                            .is_none()
-                        {
-                            return;
-                        }
-                        if let Some(action) = item_handle.tab_double_click_action(cx) {
+                        pane.update(cx, |pane, _| pane.unpreview_item_if_preview(item_id));
+                        let tab_actions = item_handle.tab_actions(cx);
+                        if let Some(action) = tab_actions.double_click_action() {
                             // Dispatch action directly through the focus handle to avoid
                             // relay_action's intermediate focus step which can interfere
                             // with inline editors.
                             item_handle
                                 .item_focus_handle(cx)
-                                .dispatch_action(&*action, window, cx);
+                                .dispatch_action(action, window, cx);
                             return;
                         }
                     }
@@ -2992,9 +2986,8 @@ impl Pane {
                         if let Some(ix) = pane.index_for_item_id(item_id) {
                             pane.activate_item(ix, true, true, window, cx)
                         }
-                    })
-                    .log_err();
-                }
+                    });
+                })
             })
             .on_aux_click(
                 cx.listener(move |pane: &mut Self, event: &ClickEvent, window, cx| {
@@ -3163,7 +3156,7 @@ impl Pane {
             .menu(move |window, cx| {
                 let pane = pane.clone();
                 let menu_context = menu_context.clone();
-                let extra_actions = item_handle.tab_extra_context_menu_actions(window, cx);
+                let tab_actions = item_handle.tab_actions(cx);
                 ContextMenu::build(window, cx, move |mut menu, window, cx| {
                     let close_active_item_action = CloseActiveItem {
                         save_intent: None,
@@ -3509,10 +3502,11 @@ impl Pane {
                     };
 
                     // Add custom item-specific actions
-                    if !extra_actions.is_empty() {
+                    let mut tab_actions = tab_actions.entries().peekable();
+                    if tab_actions.peek().is_some() {
                         menu = menu.separator();
-                        for (label, action) in extra_actions {
-                            menu = menu.action(label, action);
+                        for (label, action) in tab_actions {
+                            menu = menu.action(label.clone(), action.boxed_clone());
                         }
                     }
 
@@ -5144,12 +5138,15 @@ mod tests {
     use super::*;
     use crate::{
         Member,
-        item::test::{TestItem, TestProjectItem},
+        item::{
+            TabActions,
+            test::{TestItem, TestProjectItem},
+        },
     };
     use fs::Fs as _;
     use gpui::{
         AppContext, Axis, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-        TestAppContext, VisualTestContext, size,
+        PlatformInput, TestAppContext, VisualTestContext, size,
     };
     use project::FakeFs;
     use settings::SettingsStore;
@@ -7201,7 +7198,7 @@ mod tests {
             let item = Box::new(cx.new(|cx| {
                 let item = TestItem::new(cx)
                     .with_label(label)
-                    .with_workspace_read_by_tab_double_click(workspace_handle);
+                    .with_workspace_read_by_tab_actions(workspace_handle);
                 match action {
                     Some(action) => item.with_tab_double_click_action(action),
                     None => item,
@@ -7280,7 +7277,7 @@ mod tests {
         assert_item_labels(&pane, ["A", "B*"], cx);
         item_b.read_with(cx, |item, _| {
             assert_eq!(
-                item.tab_double_click_requests.get(),
+                item.tab_actions_requests.get(),
                 1,
                 "the second click should ask the item for its double-click action once"
             );
@@ -7318,11 +7315,114 @@ mod tests {
         assert_item_labels(&pane, ["A", "B*"], cx);
         item_b.read_with(cx, |item, _| {
             assert_eq!(
-                item.tab_double_click_requests.get(),
+                item.tab_actions_requests.get(),
                 1,
                 "the second click should ask the item for its double-click action once"
             );
         });
+    }
+
+    #[gpui::test]
+    async fn test_double_click_inactive_tab_dispatches_action_once_item_renders(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        add_labeled_item(&pane, "A", false, cx);
+        add_item_reading_its_pane_on_tab_double_click(
+            &workspace,
+            &pane,
+            "B",
+            Some(Box::new(DoubleClickTestItem)),
+            cx,
+        );
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(0, false, false, window, cx);
+        });
+        assert_item_labels(&pane, ["A*", "B"], cx);
+        cx.run_until_parked();
+
+        let dispatched = Rc::new(Cell::new(0));
+        cx.update(|_, cx| {
+            let dispatched = dispatched.clone();
+            cx.on_action(move |_: &DoubleClickTestItem, _cx| {
+                dispatched.set(dispatched.get() + 1);
+            });
+        });
+
+        let tab_center = cx
+            .debug_bounds("TAB-1")
+            .expect("tab B should have debug bounds")
+            .center();
+        cx.update(|window, cx| {
+            for click_count in [1, 2] {
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        position: tab_center,
+                        button: MouseButton::Left,
+                        modifiers: Modifiers::default(),
+                        click_count,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        position: tab_center,
+                        button: MouseButton::Left,
+                        modifiers: Modifiers::default(),
+                        click_count,
+                    }),
+                    cx,
+                );
+            }
+            assert_eq!(
+                dispatched.get(),
+                0,
+                "item B has not been drawn since the first click activated it"
+            );
+        });
+        cx.run_until_parked();
+
+        assert_item_labels(&pane, ["A", "B*"], cx);
+        assert_eq!(
+            dispatched.get(),
+            1,
+            "the action should run once item B has been drawn"
+        );
+    }
+
+    #[test]
+    fn test_tab_actions_double_click_entry_is_a_menu_entry() {
+        let actions = TabActions::default()
+            .entry("First", Box::new(DoubleClickTestItem))
+            .double_click_entry("Second", Box::new(DoubleClickTestItem))
+            .double_click_entry("Third", Box::new(DoubleClickTestItem));
+
+        assert_eq!(
+            actions
+                .entries()
+                .map(|(label, _)| label.as_ref())
+                .collect::<Vec<_>>(),
+            ["First", "Second", "Third"]
+        );
+        let (_, third) = actions
+            .entries()
+            .last()
+            .expect("the last double-click entry should be in the menu");
+        assert!(
+            actions
+                .double_click_action()
+                .is_some_and(|action| std::ptr::addr_eq(action, third)),
+            "the last double-click entry should replace the earlier one"
+        );
+        assert!(TabActions::default().double_click_action().is_none());
     }
 
     #[gpui::test]

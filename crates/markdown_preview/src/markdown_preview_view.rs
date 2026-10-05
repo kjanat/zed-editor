@@ -14,7 +14,7 @@ use editor::{
     Editor, EditorEvent, EditorSettingsScrollbarProxy, MultiBufferOffset, SelectionEffects,
 };
 use gpui::{
-    Action, AnyElement, App, ClipboardItem, Context, Entity, EntityId, EventEmitter, FocusHandle,
+    AnyElement, App, ClipboardItem, Context, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, Global, ImageSource, InteractiveElement, IntoElement, IsZero, Pixels, Render,
     Resource, RetainAllImageCache, ScrollHandle, SharedString, SharedUri, Subscription, Task,
     WeakEntity, Window, point, px,
@@ -40,7 +40,7 @@ use util::{
     rel_path::RelPath,
 };
 use workspace::item::{
-    Item, ItemBufferKind, ItemHandle, SaveOptions, SerializableItem, TabContentParams,
+    Item, ItemBufferKind, ItemHandle, SaveOptions, SerializableItem, TabActions, TabContentParams,
 };
 use workspace::notifications::{NotifyResultExt, NotifyTaskExt};
 use workspace::path_link::{PathMatching, resolve_open_target};
@@ -1821,12 +1821,8 @@ impl Item for MarkdownPreviewView {
         Some("Markdown Preview Opened")
     }
 
-    fn tab_extra_context_menu_actions(
-        &self,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Vec<(SharedString, Box<dyn Action>)> {
-        vec![("Show Source".into(), Box::new(CloseAndReturnToEditor))]
+    fn tab_actions(&self, _: EntityId, _: &App) -> TabActions {
+        TabActions::default().entry("Show Source", Box::new(CloseAndReturnToEditor))
     }
 
     fn added_to_workspace(

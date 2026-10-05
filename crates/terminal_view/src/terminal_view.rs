@@ -53,7 +53,8 @@ use workspace::{
     CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, Pane,
     ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
     item::{
-        HighlightedText, Item, ItemEvent, SerializableItem, TabContentParams, TabTooltipContent,
+        HighlightedText, Item, ItemEvent, SerializableItem, TabActions, TabContentParams,
+        TabTooltipContent,
     },
     register_serializable_item,
     searchable::{
@@ -1833,28 +1834,11 @@ impl Item for TerminalView {
         false
     }
 
-    fn tab_extra_context_menu_actions(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
-        let terminal = self.terminal.read(cx);
-        if terminal.task().is_none() {
-            vec![("Rename".into(), Box::new(RenameTerminal))]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn tab_double_click_action(
-        &self,
-        _item_id: EntityId,
-        cx: &App,
-    ) -> Option<Box<dyn gpui::Action>> {
+    fn tab_actions(&self, _item_id: EntityId, cx: &App) -> TabActions {
         if self.terminal.read(cx).task().is_none() {
-            Some(Box::new(RenameTerminal))
+            TabActions::default().double_click_entry("Rename", Box::new(RenameTerminal))
         } else {
-            None
+            TabActions::default()
         }
     }
 
@@ -3312,6 +3296,72 @@ mod tests {
         terminal_view.update(cx, |view, _cx| {
             assert!(view.custom_title().is_none());
         });
+    }
+
+    #[gpui::test]
+    async fn test_rename_is_the_tab_double_click_action_of_shell_terminals_only(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+
+        let (project, workspace) = init_test(cx).await;
+
+        let shell = project
+            .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+            .await
+            .unwrap();
+        let (command, args) = if cfg!(windows) {
+            ("cmd.exe", vec!["/C".to_owned(), "echo".to_owned()])
+        } else {
+            ("echo", Vec::new())
+        };
+        let task_terminal = project
+            .update(cx, |project, cx| {
+                project.create_terminal_task(
+                    task::SpawnInTerminal {
+                        command: Some(command.to_owned()),
+                        args,
+                        ..task::SpawnInTerminal::default()
+                    },
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+
+        for (terminal, offers_rename) in [(shell, true), (task_terminal, false)] {
+            let terminal_view = cx
+                .add_window(|window, cx| {
+                    TerminalView::new(
+                        terminal,
+                        workspace.downgrade(),
+                        None,
+                        project.downgrade(),
+                        window,
+                        cx,
+                    )
+                })
+                .root(cx)
+                .unwrap();
+
+            terminal_view.read_with(cx, |view, cx| {
+                let actions = view.tab_actions(terminal_view.entity_id(), cx);
+                let labels = actions
+                    .entries()
+                    .map(|(label, _)| label.as_ref())
+                    .collect::<Vec<_>>();
+                let double_click_renames = actions
+                    .double_click_action()
+                    .is_some_and(|action| action.partial_eq(&RenameTerminal));
+                if offers_rename {
+                    assert_eq!(labels, ["Rename"]);
+                    assert!(double_click_renames);
+                } else {
+                    assert!(labels.is_empty());
+                    assert!(actions.double_click_action().is_none());
+                }
+            });
+        }
     }
 
     #[gpui::test]
