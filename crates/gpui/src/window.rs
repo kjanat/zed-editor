@@ -1202,6 +1202,7 @@ pub struct Window {
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+    after_render_callbacks: Vec<FrameCallback>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
@@ -2090,6 +2091,7 @@ impl Window {
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
+            after_render_callbacks: Vec::new(),
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
@@ -2646,13 +2648,24 @@ impl Window {
         AsyncWindowContext::new_context(cx.to_async(), self.handle)
     }
 
-    /// Schedule the given closure to be run directly after the current frame is rendered.
+    /// Schedule the given closure to run at the start of the next frame, before that frame is
+    /// drawn. Use [`Window::on_next_render`] to run after the next frame is drawn.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
         self.platform_window.schedule_frame();
         // Next-frame callbacks create frame demand without dirtying the
         // window, so the platform's frame source must be woken explicitly.
         self.invalidator.wake_platform();
+    }
+
+    /// Schedule the given closure to run once the next frame has been drawn, when the
+    /// elements and focus handles it rendered can receive actions. Requests that frame.
+    pub fn on_next_render(&mut self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+        self.after_render_callbacks.push(Box::new(callback));
+        if self.invalidator.not_drawing() {
+            self.invalidator.set_dirty(true);
+            self.platform_window.schedule_frame();
+        }
     }
 
     /// Schedule a frame to be drawn on the next animation frame.
@@ -3444,6 +3457,9 @@ impl Window {
             self.refresh();
         }
         self.needs_present.set(true);
+        for callback in mem::take(&mut self.after_render_callbacks) {
+            self.defer(cx, callback);
+        }
 
         #[cfg(feature = "profiler")]
         {
@@ -8215,6 +8231,76 @@ mod tests {
             test_window.frame_wake_count() > baseline || callback_ran.get(),
             "a frame request with pending next-frame callbacks must either run them or re-arm the frame source"
         );
+    }
+
+    struct FocusTarget {
+        focus_handle: FocusHandle,
+        rendered: bool,
+    }
+
+    impl Render for FocusTarget {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let root = div();
+            if self.rendered {
+                root.child(div().track_focus(&self.focus_handle))
+            } else {
+                root
+            }
+        }
+    }
+
+    fn is_rendered(focus_handle: &FocusHandle, window: &Window) -> bool {
+        window
+            .rendered_frame
+            .dispatch_tree
+            .focusable_node_id(focus_handle.id)
+            .is_some()
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_sees_the_frame_it_waited_for(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget {
+            focus_handle: cx.focus_handle(),
+            rendered: false,
+        });
+        cx.run_until_parked();
+
+        let rendered_when_called = Rc::new(Cell::new(None));
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                assert!(!is_rendered(&target.focus_handle, window));
+                let focus_handle = target.focus_handle.clone();
+                let rendered_when_called = rendered_when_called.clone();
+                window.on_next_render(move |window, _| {
+                    rendered_when_called.set(Some(is_rendered(&focus_handle, window)));
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(rendered_when_called.get(), Some(true));
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_requests_the_frame_it_waits_for(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget {
+            focus_handle: cx.focus_handle(),
+            rendered: true,
+        });
+        cx.run_until_parked();
+
+        let calls = Rc::new(Cell::new(0));
+        window
+            .update(cx, |_, window, _| {
+                let calls = calls.clone();
+                window.on_next_render(move |_, _| calls.set(calls.get() + 1));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(calls.get(), 1);
     }
 
     #[gpui::test]
