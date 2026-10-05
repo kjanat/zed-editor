@@ -25,6 +25,7 @@ on:
 permissions: { contents: read }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
 defaults: { run: { shell: "bash -euxo pipefail {0}" } }
+env: { SENTRY_CLI: "github:getsentry/sentry-cli@3.8.0" }
 jobs:
   create_draft_release:
     if: github.repository == 'kjanat/zed-editor'
@@ -86,7 +87,11 @@ jobs:
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { GH_REPO: &REPO "${{ github.repository }}" }
+    environment: &ReleaseSecrets { name: release, deployment: false }
+    env: &BundleEnv
+      GH_REPO: &REPO "${{ github.repository }}"
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -94,7 +99,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.arch == 'x86_64'
         with: { shared-key: bundle-linux-x86_64, cache-on-failure: true }
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with: { cache: false, bootstrap: true, bootstrap_skip: compose }
       - &icu70
         name: Install ICU 70 for the LLVM release binaries
@@ -117,16 +122,38 @@ jobs:
         name: Prepare the stable release build
         env: { tag: &TAG "${{ needs.create_draft_release.outputs.tag }}" }
         run: mise run release-prepare
+      - &SentryEndpoint
+        name: Compile in the Sentry crash report endpoint
+        shell: bash -euo pipefail {0}
+        env: { SENTRY_DSN: "${{ secrets.SENTRY_DSN }}" }
+        run: |
+          if ! [[ "${SENTRY_DSN}" =~ ^https://([0-9a-f]+)@([^/]+)/([0-9]+)$ ]]; then
+            echo "SENTRY_DSN is not a Sentry DSN" >&2
+            exit 1
+          fi
+          endpoint="https://${BASH_REMATCH[2]}/api/${BASH_REMATCH[3]}/minidump/?sentry_key=${BASH_REMATCH[1]}"
+          echo "::add-mask::${endpoint}"
+          echo "ZED_MINIDUMP_ENDPOINT=${endpoint}" >> "${GITHUB_ENV}"
+      - &SentryCheck
+        name: Check the Sentry token
+        if: &PushOrUpload github.event_name == 'push' || inputs.upload
+        env: { SENTRY_AUTH_TOKEN: &SENTRY_TOKEN "${{ secrets.SENTRY_AUTH_TOKEN }}" }
+        run: mise exec "${SENTRY_CLI}" -- sentry-cli info
       - name: Bundle
         run: mise run bundle-linux
       - name: Collect the debug symbols
         env: { arch: "${{ matrix.arch }}" }
-        run: |
-          tar -czf "target/zed-linux-${arch}.dbg.tar.gz" \
-            -C "${PWD}/target/${arch}-unknown-linux-gnu/release" zed.dbg \
-            -C "${PWD}/target/${arch}-unknown-linux-musl/release" remote_server.dbg
+        run: tar -czf "target/zed-linux-${arch}.dbg.tar.gz"
+          -C "${PWD}/target/${arch}-unknown-linux-gnu/release" zed.dbg
+          -C "${PWD}/target/${arch}-unknown-linux-musl/release" remote_server.dbg
+      - name: Upload the debug symbols to Sentry
+        if: *PushOrUpload
+        env: { SENTRY_AUTH_TOKEN: *SENTRY_TOKEN, arch: "${{ matrix.arch }}" }
+        run: mise exec "${SENTRY_CLI}" -- sentry-cli debug-files upload --include-sources --wait
+          "target/${arch}-unknown-linux-gnu/release/zed"
+          "target/${arch}-unknown-linux-musl/release/remote_server"
       - name: Attest build provenance
-        if: &PushOrUpload github.event_name == 'push' || inputs.upload
+        if: *PushOrUpload
         uses: &attest actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -143,11 +170,10 @@ jobs:
           GH_TOKEN: &TOKEN ${{ github.token }}
           tag: *TAG
           arch: ${{ matrix.arch }}
-        run: |
-          gh release upload "${tag}" --clobber \
-            "target/release/zed-linux-${arch}.tar.gz#Zed for Linux (${arch}, tar.gz)" \
-            "target/zed-remote-server-linux-${arch}.gz#Zed remote server for Linux (${arch})" \
-            "target/zed-linux-${arch}.dbg.tar.gz#Debug symbols for Linux (${arch}, DWARF)"
+        run: gh release upload "${tag}" --clobber
+          "target/release/zed-linux-${arch}.tar.gz#Zed for Linux (${arch}, tar.gz)"
+          "target/zed-remote-server-linux-${arch}.gz#Zed remote server for Linux (${arch})"
+          "target/zed-linux-${arch}.dbg.tar.gz#Debug symbols for Linux (${arch}, DWARF)"
 
   bundle_mac:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.mac)
@@ -159,18 +185,27 @@ jobs:
     timeout-minutes: 240
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { GH_REPO: *REPO }
+    environment: *ReleaseSecrets
+    env: *BundleEnv
     steps:
       - *checkout
       - &mise
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - *prepare
+      - *SentryEndpoint
+      - *SentryCheck
       - name: Bundle
         env: { target: "${{ matrix.target }}" }
         run: mise run bundle-mac "${target}"
       - name: Collect the debug symbols
         env: { target: "${{ matrix.target }}", arch: "${{ matrix.arch }}" }
         run: tar -czf "target/zed-macos-${arch}.dwarf.tar.gz" -C "target/${target}/release" zed.dwarf remote_server.dwarf
+      - name: Upload the debug symbols to Sentry
+        if: *PushOrUpload
+        env: { SENTRY_AUTH_TOKEN: *SENTRY_TOKEN, target: "${{ matrix.target }}" }
+        run: mise exec "${SENTRY_CLI}" -- sentry-cli debug-files upload --include-sources --wait
+          "target/${target}/release/zed.dwarf"
+          "target/${target}/release/remote_server.dwarf"
       - name: Attest build provenance
         if: *PushOrUpload
         uses: *attest
@@ -183,11 +218,10 @@ jobs:
       - name: Upload to the draft release
         if: *PushOrUpload
         env: { GH_TOKEN: *TOKEN, tag: *TAG, target: "${{ matrix.target }}", arch: "${{ matrix.arch }}" }
-        run: |
-          gh release upload "${tag}" --clobber \
-            "target/${target}/release/Zed-${arch}.dmg#Zed for macOS (${arch}, DMG)" \
-            "target/zed-remote-server-macos-${arch}.gz#Zed remote server for macOS (${arch})" \
-            "target/zed-macos-${arch}.dwarf.tar.gz#Debug symbols for macOS (${arch}, DWARF)"
+        run: gh release upload "${tag}" --clobber
+          "target/${target}/release/Zed-${arch}.dmg#Zed for macOS (${arch}, DMG)"
+          "target/zed-remote-server-macos-${arch}.gz#Zed remote server for macOS (${arch})"
+          "target/zed-macos-${arch}.dwarf.tar.gz#Debug symbols for macOS (${arch}, DWARF)"
 
   bundle_windows:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.windows)
@@ -199,20 +233,26 @@ jobs:
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    env: { GH_REPO: *REPO }
+    environment: *ReleaseSecrets
+    env: *BundleEnv
     steps:
       - *checkout
       - *mise
       - *prepare
+      - *SentryEndpoint
+      - *SentryCheck
       - name: Bundle
         env: { arch: "${{ matrix.arch }}" }
         run: mise run bundle-windows -- -Architecture "${arch}"
       - name: Collect the debug symbols
         env: { arch: "${{ matrix.arch }}" }
-        run: |
-          archives=(target/"${arch}"-pc-windows-msvc/release/zed-*.dbg.zip)
-          [[ ${#archives[@]} -eq 1 && -f "${archives[0]}" ]]
+        run: archives=(target/"${arch}"-pc-windows-msvc/release/zed-*.dbg.zip);
+          [[ ${#archives[@]} -eq 1 && -f "${archives[0]}" ]];
           mv "${archives[0]}" "target/zed-windows-${arch}.dbg.zip"
+      - name: Upload the debug symbols to Sentry
+        if: *PushOrUpload
+        env: { SENTRY_AUTH_TOKEN: *SENTRY_TOKEN, arch: "${{ matrix.arch }}" }
+        run: mise exec "${SENTRY_CLI}" -- sentry-cli debug-files upload --include-sources --wait "target/${arch}-pc-windows-msvc/release"
       - name: Attest build provenance
         if: *PushOrUpload
         uses: *attest
@@ -228,11 +268,10 @@ jobs:
       - name: Upload to the draft release
         if: *PushOrUpload
         env: { GH_TOKEN: *TOKEN, arch: "${{ matrix.arch }}", tag: *TAG }
-        run: |
-          gh release upload "${tag}" --clobber \
-            "target/Zed-${arch}.exe#Zed for Windows (${arch}, installer)" \
-            "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})" \
-            "target/zed-windows-${arch}.dbg.zip#Debug symbols for Windows (${arch}, PDB)"
+        run: gh release upload "${tag}" --clobber
+          "target/Zed-${arch}.exe#Zed for Windows (${arch}, installer)"
+          "target/zed-remote-server-windows-${arch}.zip#Zed remote server for Windows (${arch})"
+          "target/zed-windows-${arch}.dbg.zip#Debug symbols for Windows (${arch}, PDB)"
 
   remote_server_freebsd:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.freebsd)
@@ -247,14 +286,12 @@ jobs:
       - *checkout
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { shared-key: remote-server-freebsd, cache-on-failure: true }
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with: { cache: false }
       - *icu70
       - *prepare
       - name: Cross-compile against the FreeBSD 13.2 sysroot
-        run: |
-          mise run remote-server-freebsd
-          mv target/zed-remote-server-freebsd-x86_64.gz .
+        run: mise run remote-server-freebsd && mv target/zed-remote-server-freebsd-x86_64.gz .
       # The oldest release the fork supports, so a load failure on any 13.2+
       # host shows up here.
       - name: Smoke-test the binary in a FreeBSD VM
@@ -291,10 +328,9 @@ jobs:
         with: { github_access_token: *TOKEN }
       - name: Build static bubblewrap
         env: { arch: "${{ matrix.arch }}" }
-        run: |
-          nix build nixpkgs#pkgsStatic.bubblewrap -L
-          cp result/bin/bwrap "bwrap-linux-${arch}"
-          chmod 755 "bwrap-linux-${arch}"
+        run: nix build nixpkgs#pkgsStatic.bubblewrap -L;
+          cp result/bin/bwrap "bwrap-linux-${arch}";
+          chmod 755 "bwrap-linux-${arch}";
           gzip -f --stdout --best "bwrap-linux-${arch}" > "bwrap-linux-${arch}.gz"
       - name: Attest build provenance
         if: *PushOrUpload
@@ -316,7 +352,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - name: Install Arch packaging tools
         run: mise bootstrap packages apply --yes
       - name: Download the Linux tarballs
@@ -360,15 +396,13 @@ jobs:
             zed-kjanat-aarch64.files
       - name: Upload to the draft release
         if: *PushOrUpload
-        run: |
-          version="${tag#v}"
-          gh release upload "${tag}" --clobber \
-            "zed-kjanat-${version}-1-x86_64.pkg.tar.zst#Arch/Manjaro package (x86_64)" \
-            "zed-kjanat-${version}-1-aarch64.pkg.tar.zst#Arch/Manjaro package (aarch64)" \
-            "zed-kjanat.db#Pacman repo database (x86_64)" \
-            "zed-kjanat.files#Pacman repo file list (x86_64)" \
-            "zed-kjanat-aarch64.db#Pacman repo database (aarch64)" \
-            "zed-kjanat-aarch64.files#Pacman repo file list (aarch64)"
+        run: gh release upload "${tag}" --clobber
+          "zed-kjanat-${tag#v}-1-x86_64.pkg.tar.zst#Arch/Manjaro package (x86_64)"
+          "zed-kjanat-${tag#v}-1-aarch64.pkg.tar.zst#Arch/Manjaro package (aarch64)"
+          "zed-kjanat.db#Pacman repo database (x86_64)"
+          "zed-kjanat.files#Pacman repo file list (x86_64)"
+          "zed-kjanat-aarch64.db#Pacman repo database (aarch64)"
+          "zed-kjanat-aarch64.files#Pacman repo file list (aarch64)"
 
   publish:
     if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && (github.event_name == 'push' || (inputs.linux && inputs.mac && inputs.windows && inputs.freebsd && inputs.bwrap && inputs.pacman)) && (github.event_name == 'push' || inputs.upload)
@@ -377,8 +411,17 @@ jobs:
     timeout-minutes: 10
     cancel-timeout-minutes: 1
     permissions: { contents: write }
+    environment: *ReleaseSecrets
     env: { GH_REPO: *REPO, GH_TOKEN: *TOKEN, tag: *TAG }
     steps:
+      - *checkout
+      - name: Create the Sentry release
+        uses: getsentry/action-release@6fb9aeade7061441cf3864e34fbe11a1457ad7dc # v3.7.1
+        env:
+          SENTRY_AUTH_TOKEN: *SENTRY_TOKEN
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        with: { release: "${{ github.sha }}", set_commits: auto }
       - name: Take the release out of draft
         run: gh release edit "${tag}" --draft=false
       - name: Show release

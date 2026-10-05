@@ -221,7 +221,11 @@ fn main() {
 
     // `zed --crash-handler` Makes zed operate in minidump crash handler mode
     if let Some(socket) = &args.crash_handler {
-        crashes::crash_server(socket.as_path(), paths::logs_dir().clone());
+        crashes::crash_server(
+            socket.as_path(),
+            paths::logs_dir().clone(),
+            Some(paths::log_file().clone()),
+        );
         return;
     }
 
