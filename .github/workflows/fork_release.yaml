@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    environment: release
+    environment: &ReleaseSecrets { name: release, deployment: false }
     env: &BundleEnv
       GH_REPO: &REPO "${{ github.repository }}"
       SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
@@ -185,7 +185,7 @@ jobs:
     timeout-minutes: 240
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    environment: release
+    environment: *ReleaseSecrets
     env: *BundleEnv
     steps:
       - *checkout
@@ -233,7 +233,7 @@ jobs:
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
-    environment: release
+    environment: *ReleaseSecrets
     env: *BundleEnv
     steps:
       - *checkout
@@ -411,7 +411,7 @@ jobs:
     timeout-minutes: 10
     cancel-timeout-minutes: 1
     permissions: { contents: write }
-    environment: release
+    environment: *ReleaseSecrets
     env: { GH_REPO: *REPO, GH_TOKEN: *TOKEN, tag: *TAG }
     steps:
       - *checkout
