@@ -63,3 +63,4 @@ crates/docs_preprocessor/actions.json
 
 .local*
 .cache
+/release-notes-*.md

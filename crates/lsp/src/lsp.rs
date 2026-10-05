@@ -1240,19 +1240,22 @@ impl LanguageServer {
     /// Kills a server whose startup failed and waits for its stdout and stderr to be
     /// read to the end, so the failure is reported with everything the server wrote.
     async fn stop_and_drain_output(&self, disconnected: bool) {
-        let killed = match self.server.lock().as_mut().map(|server| server.kill()) {
-            Some(Ok(())) => true,
-            Some(Err(error)) => {
-                log::warn!(
-                    "failed to kill language server {} (id {}): {error}",
-                    self.name,
-                    self.server_id
-                );
-                false
-            }
+        let stopped = match self.server.lock().as_mut() {
+            Some(server) => match server.kill() {
+                Ok(()) => true,
+                Err(_) if matches!(server.try_status(), Ok(Some(_))) => true,
+                Err(error) => {
+                    log::warn!(
+                        "failed to kill language server {} (id {}): {error}",
+                        self.name,
+                        self.server_id
+                    );
+                    false
+                }
+            },
             None => false,
         };
-        if !killed && !disconnected {
+        if !stopped && !disconnected {
             return;
         }
         let mut input_done = self.input_done_rx.clone();
