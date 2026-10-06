@@ -27,6 +27,7 @@ jobs:
       scope: ${{ steps.plan.outputs.scope }}
       packages: ${{ steps.plan.outputs.packages }}
       package_args: ${{ steps.plan.outputs.package_args }}
+      sync: ${{ steps.plan.outputs.sync }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false, fetch-depth: 2 }
@@ -51,9 +52,19 @@ jobs:
             *) base="" ;;
           esac
           mise run affected-packages --base "${base}" --head HEAD | tee -a "${GITHUB_OUTPUT}"
+          sync_inputs=(
+            .cargo/config.toml .dprint.jsonc .mise.toml mise.lock rust-toolchain.toml rustfmt.toml tombi.toml
+            .github/workflows/fork_ci.yaml .github/workflows/fork_upstream_sync.yaml script/upstream-sync
+          )
+          if [[ -n "${base}" ]] && git diff --quiet "${base}" HEAD -- "${sync_inputs[@]}"; then
+            echo "sync=false"
+          else
+            echo "sync=true"
+          fi | tee -a "${GITHUB_OUTPUT}"
 
   sync_security:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && needs.plan.outputs.sync == 'true'
+    needs: plan
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     cancel-timeout-minutes: 1
