@@ -1065,7 +1065,7 @@ mod tests {
     async fn unstage_first_hunk_and_move_to_next(
         through_toolbar: bool,
         cx: &mut TestAppContext,
-    ) -> u32 {
+    ) -> Option<u32> {
         let committed_contents = numbered_lines(&[]);
         let staged_contents =
             numbered_lines(&[(2, "first change"), (SECOND_HUNK_ROW, "second change")]);
@@ -1140,14 +1140,16 @@ mod tests {
         }
         cx.run_until_parked();
 
-        editor.read_with(cx, |editor, cx| {
-            let head = editor.selections.newest_anchor().head();
-            let (_, buffer_point) = editor
-                .buffer()
-                .read(cx)
-                .point_to_buffer_point(head, cx)
-                .expect("the cursor should be in the staged file");
-            buffer_point.row
+        editor.update_in(cx, |editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            let head = editor
+                .selections
+                .newest::<Point>(&snapshot.display_snapshot)
+                .head();
+            snapshot
+                .buffer_snapshot()
+                .point_to_buffer_point(head)
+                .map(|(_, buffer_point)| buffer_point.row)
         })
     }
 
@@ -1161,7 +1163,8 @@ mod tests {
         let from_toolbar = unstage_first_hunk_and_move_to_next(true, cx).await;
 
         assert_eq!(
-            from_editor, SECOND_HUNK_ROW,
+            from_editor,
+            Some(SECOND_HUNK_ROW),
             "the editor's Unstage and Next should move to the second hunk"
         );
         assert_eq!(
