@@ -71,6 +71,14 @@ impl LeaseRegistry {
         self.0.iter().any(|lease| lease.target == target)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn innermost_global(&self) -> Option<(LeaseTarget, &'static str)> {
+        self.0
+            .iter()
+            .rfind(|lease| matches!(lease.target, LeaseTarget::Global(_)))
+            .map(|lease| (lease.target, lease.type_name))
+    }
+
     #[cold]
     #[inline(never)]
     #[track_caller]
@@ -133,5 +141,18 @@ mod tests {
         leases.acquire(outer, "()", Location::caller());
         leases.acquire(inner, "u8", Location::caller());
         leases.release(outer);
+    }
+
+    #[test]
+    fn test_innermost_global_is_the_latest_global_acquired() {
+        let mut leases = LeaseRegistry::default();
+        let outer = LeaseTarget::Global(TypeId::of::<()>());
+        let inner = LeaseTarget::Global(TypeId::of::<u8>());
+        assert_eq!(leases.innermost_global(), None);
+
+        leases.acquire(outer, "()", Location::caller());
+        leases.acquire(inner, "u8", Location::caller());
+
+        assert_eq!(leases.innermost_global(), Some((inner, "u8")));
     }
 }

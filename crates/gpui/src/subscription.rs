@@ -111,7 +111,7 @@ where
     where
         F: FnMut(&mut Callback) -> bool,
     {
-        let Some(mut subscribers) = self
+        let Some(subscribers) = self
             .0
             .borrow_mut()
             .subscribers
@@ -121,7 +121,12 @@ where
             return;
         };
 
-        subscribers.retain(|_, subscriber| {
+        let mut invocation = Invocation {
+            state: &self.0,
+            emitter,
+            subscribers,
+        };
+        invocation.subscribers.retain(|_, subscriber| {
             if !subscriber.active.get() {
                 return true;
             }
@@ -131,15 +136,28 @@ where
             let keep = f(&mut subscriber.callback);
             keep && !subscriber.dropped.get()
         });
-        let mut lock = self.0.borrow_mut();
+    }
+}
+
+struct Invocation<'a, EmitterKey: Ord + Clone, Callback> {
+    state: &'a RefCell<SubscriberSetState<EmitterKey, Callback>>,
+    emitter: &'a EmitterKey,
+    subscribers: BTreeMap<usize, Subscriber<Callback>>,
+}
+
+impl<EmitterKey: Ord + Clone, Callback> Drop for Invocation<'_, EmitterKey, Callback> {
+    fn drop(&mut self) {
+        let mut subscribers = std::mem::take(&mut self.subscribers);
+        let mut lock = self.state.borrow_mut();
 
         // Add any new subscribers that were added while invoking the callback.
-        if let Some(Some(new_subscribers)) = lock.subscribers.remove(emitter) {
+        if let Some(Some(new_subscribers)) = lock.subscribers.remove(self.emitter) {
             subscribers.extend(new_subscribers);
         }
 
         if !subscribers.is_empty() {
-            lock.subscribers.insert(emitter.clone(), Some(subscribers));
+            lock.subscribers
+                .insert(self.emitter.clone(), Some(subscribers));
         }
     }
 }

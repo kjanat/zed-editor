@@ -383,11 +383,23 @@ where
     where
         G: Global,
     {
-        let mut global = self.borrow_mut().lease_global::<G>();
+        let app = self.borrow_mut();
+        let mut global = app.lease_global::<G>();
+        app.start_update();
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut global, self)));
-        self.borrow_mut().end_global_lease(global);
-        result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+        let app = self.borrow_mut();
+        app.end_global_lease(global);
+        match result {
+            Ok(result) => {
+                app.finish_update();
+                result
+            }
+            Err(payload) => {
+                app.abandon_update();
+                std::panic::resume_unwind(payload)
+            }
+        }
     }
 
     fn update_default_global<G, R>(&mut self, f: impl FnOnce(&mut G, &mut Self) -> R) -> R

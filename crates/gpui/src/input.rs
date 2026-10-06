@@ -288,9 +288,10 @@ mod tests {
     use super::*;
     use crate::{
         AnyWindowHandle, AppContext as _, FocusHandle, InteractiveElement as _, IntoElement,
-        ParentElement as _, Render, Styled as _, TestAppContext, TextInputAction,
+        ParentElement as _, Render, StyleRefinement, Styled as _, TestAppContext, TextInputAction,
         TextInputStateChange, canvas, div,
     };
+    use std::{cell::Cell, rc::Rc};
 
     #[gpui::test]
     fn text_input_configuration_and_focus_state_are_forwarded_on_change(cx: &mut TestAppContext) {
@@ -302,8 +303,8 @@ mod tests {
         let window = cx.add_window({
             let custom = custom.clone();
             move |_, cx| ConfigurationTestView {
-                focus_handle: cx.focus_handle(),
                 configuration: custom,
+                ..ConfigurationTestView::new(cx)
             }
         });
         let view = window.root(cx).unwrap();
@@ -381,13 +382,143 @@ mod tests {
         );
     }
 
+    fn assert_panics(access: impl FnOnce()) {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(access)).is_err(),
+            "the access should panic"
+        );
+    }
+
+    fn draw(window: AnyWindowHandle, cx: &mut TestAppContext) {
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+
+    fn focus_and_draw(
+        window: AnyWindowHandle,
+        focus_handle: &FocusHandle,
+        cx: &mut TestAppContext,
+    ) {
+        cx.update_window(window, |_, window, cx| window.focus(focus_handle, cx))
+            .unwrap();
+        draw(window, cx);
+    }
+
+    #[gpui::test]
+    fn input_handler_stays_with_the_platform_when_it_panics(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| ConfigurationTestView::new(cx));
+        let view = window.root(cx).unwrap();
+        let test_window = cx.test_window(window.into());
+        let window = AnyWindowHandle::from(window);
+        let focus_handle = view.read_with(cx, |view, _| view.focus_handle.clone());
+        focus_and_draw(window, &focus_handle, cx);
+        assert!(test_window.has_input_handler());
+
+        view.update(cx, |view, _| view.panic_next_configuration = true);
+        assert_panics(|| draw(window, cx));
+
+        assert!(test_window.has_input_handler());
+    }
+
+    #[gpui::test]
+    fn input_handler_returns_to_the_platform_when_a_draw_panics_before_handing_it_over(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| ConfigurationTestView::new(cx));
+        let view = window.root(cx).unwrap();
+        let test_window = cx.test_window(window.into());
+        let window = AnyWindowHandle::from(window);
+        let focus_handle = view.read_with(cx, |view, _| view.focus_handle.clone());
+        focus_and_draw(window, &focus_handle, cx);
+        assert!(test_window.has_input_handler());
+
+        assert_panics(|| {
+            view.update(cx, |view, cx| {
+                view.panic_next_render = true;
+                cx.notify();
+            })
+        });
+
+        assert!(test_window.has_input_handler());
+    }
+
+    struct CachedInputRoot {
+        input: Entity<ConfigurationTestView>,
+        panic_next_paint: Rc<Cell<bool>>,
+    }
+
+    impl Render for CachedInputRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let panic_next_paint = self.panic_next_paint.clone();
+            div()
+                .size_full()
+                .child(
+                    self.input
+                        .clone()
+                        .cached(StyleRefinement::default().size_full()),
+                )
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |_, _, _, _| {
+                            if panic_next_paint.replace(false) {
+                                panic!("painting failed");
+                            }
+                        },
+                    )
+                    .size_full(),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn input_handler_returns_to_the_platform_when_a_draw_panics_after_reusing_it(
+        cx: &mut TestAppContext,
+    ) {
+        let panic_next_paint = Rc::new(Cell::new(false));
+        let window = cx.add_window({
+            let panic_next_paint = panic_next_paint.clone();
+            move |_, cx| CachedInputRoot {
+                input: cx.new(|cx| ConfigurationTestView::new(cx)),
+                panic_next_paint,
+            }
+        });
+        let root = window.root(cx).unwrap();
+        let test_window = cx.test_window(window.into());
+        let window = AnyWindowHandle::from(window);
+        let focus_handle = root.read_with(cx, |root, cx| root.input.read(cx).focus_handle.clone());
+        focus_and_draw(window, &focus_handle, cx);
+        assert!(test_window.has_input_handler());
+
+        panic_next_paint.set(true);
+        assert_panics(|| root.update(cx, |_, cx| cx.notify()));
+
+        assert!(test_window.has_input_handler());
+    }
+
     struct ConfigurationTestView {
         focus_handle: FocusHandle,
         configuration: TextInputConfiguration,
+        panic_next_configuration: bool,
+        panic_next_render: bool,
+    }
+
+    impl ConfigurationTestView {
+        fn new(cx: &mut App) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+                configuration: TextInputConfiguration::default(),
+                panic_next_configuration: false,
+                panic_next_render: false,
+            }
+        }
     }
 
     impl Render for ConfigurationTestView {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if std::mem::take(&mut self.panic_next_render) {
+                panic!("rendering failed");
+            }
             let view = cx.entity();
             let focus_handle = self.focus_handle.clone();
             div().size_full().track_focus(&self.focus_handle).child(
@@ -479,6 +610,9 @@ mod tests {
             _window: &mut Window,
             _cx: &mut Context<Self>,
         ) -> TextInputConfiguration {
+            if std::mem::take(&mut self.panic_next_configuration) {
+                panic!("reading the configuration failed");
+            }
             self.configuration.clone()
         }
     }

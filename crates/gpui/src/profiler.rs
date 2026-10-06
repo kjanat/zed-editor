@@ -886,6 +886,13 @@ enum WindowActivity {
     },
 }
 
+#[cfg(feature = "profiler")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ActivityDepth {
+    activities: usize,
+    actions: usize,
+}
+
 /// Collects profiling information for one window.
 ///
 /// Aggregate histograms are always populated when the `profiler` feature is
@@ -1020,6 +1027,25 @@ impl WindowProfiler {
             });
         }
         journal::end_foreground_turn();
+    }
+
+    pub(crate) fn activity_depth(&self) -> ActivityDepth {
+        ActivityDepth {
+            activities: self.active_activities.len(),
+            actions: self.active_actions.len(),
+        }
+    }
+
+    pub(crate) fn unwind_to(&mut self, depth: ActivityDepth) {
+        while self.active_actions.len() > depth.actions {
+            self.active_actions.pop();
+            actions::clear_running_action();
+            journal::end_foreground_turn();
+        }
+        while self.active_activities.len() > depth.activities {
+            self.active_activities.pop();
+            journal::end_foreground_turn();
+        }
     }
 
     /// Records the beginning of a window draw.

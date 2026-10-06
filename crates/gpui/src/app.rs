@@ -333,6 +333,7 @@ impl Application {
 
 type Handler = Box<dyn FnMut(&mut App) -> bool + 'static>;
 type Listener = Box<dyn FnMut(&dyn Any, &mut App) -> bool + 'static>;
+pub(crate) type GlobalActionListener = Rc<dyn Fn(&dyn Any, DispatchPhase, &mut App)>;
 type MissingGlyphCallback = Box<dyn FnMut(&[MissingGlyph], &mut App) + 'static>;
 pub(crate) type KeystrokeObserver =
     Box<dyn FnMut(&KeystrokeEvent, &mut Window, &mut App) -> bool + 'static>;
@@ -780,8 +781,7 @@ pub struct App {
     pub(crate) keymap: Rc<RefCell<Keymap>>,
     pub(crate) keyboard_layout: Box<dyn PlatformKeyboardLayout>,
     pub(crate) keyboard_mapper: Rc<dyn PlatformKeyboardMapper>,
-    pub(crate) global_action_listeners:
-        TypeIdHashMap<Vec<Rc<dyn Fn(&dyn Any, DispatchPhase, &mut Self)>>>,
+    pub(crate) global_action_listeners: TypeIdHashMap<Vec<GlobalActionListener>>,
     pending_effects: VecDeque<Effect>,
     after_effects_settle: VecDeque<Box<dyn FnOnce(&mut App)>>,
 
@@ -1252,7 +1252,7 @@ impl App {
                 result
             }
             Err(payload) => {
-                self.pending_updates -= 1;
+                self.abandon_update();
                 panic::resume_unwind(payload)
             }
         }
@@ -1269,9 +1269,19 @@ impl App {
         } else {
             Ok(())
         };
+        match flushed {
+            Ok(()) => self.pending_updates -= 1,
+            Err(payload) => {
+                self.abandon_update();
+                panic::resume_unwind(payload)
+            }
+        }
+    }
+
+    pub(crate) fn abandon_update(&mut self) {
         self.pending_updates -= 1;
-        if let Err(payload) = flushed {
-            panic::resume_unwind(payload);
+        if self.pending_updates == 0 {
+            self.after_effects_settle.clear();
         }
     }
 
@@ -2244,7 +2254,7 @@ impl App {
 
     /// Runs `f` once the current update has ended and every effect queued before and during
     /// it, including the effects of those effects, has been applied. Runs before tasks that the
-    /// update spawned.
+    /// update spawned. Drops `f` when the outermost update or one of those effects panics.
     pub(crate) fn defer_until_effects_settle(&mut self, f: impl FnOnce(&mut App) + 'static) {
         self.after_effects_settle.push_back(Box::new(f));
         if self.pending_updates == 0 {
@@ -2362,25 +2372,30 @@ impl App {
         self.globals_by_type.insert(global_type, Box::new(global));
     }
 
-    /// Clear all stored globals. Does not notify global observers.
+    /// Clear all stored globals. Does not notify global observers. Panics if a global is being
+    /// updated.
     #[cfg(any(test, feature = "test-support"))]
+    #[track_caller]
     pub fn clear_globals(&mut self) {
+        if let Some((target, type_name)) = self.leases.innermost_global() {
+            self.leases
+                .reentry_panic("clear", target, type_name, Location::caller())
+        }
         self.globals_by_type.drain();
     }
 
     /// Remove the global of the given type from the app context and notify its observers. Panics
-    /// if the global is being updated.
+    /// if the global is being updated or does not exist.
     #[track_caller]
     pub fn remove_global<G: Global>(&mut self) -> G {
-        self.assert_global_not_leased::<G>("remove", Location::caller());
+        let location = Location::caller();
+        self.assert_global_not_leased::<G>("remove", location);
         let global_type = TypeId::of::<G>();
+        let Some(global) = self.globals_by_type.remove(&global_type) else {
+            self.missing_global_panic::<G>("remove", location)
+        };
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
-        *self
-            .globals_by_type
-            .remove(&global_type)
-            .unwrap_or_else(|| panic!("no global added for {}", type_name::<G>()))
-            .downcast()
-            .unwrap()
+        *global.downcast().unwrap()
     }
 
     /// Register a callback to be invoked when a global of the given type is updated.
@@ -2804,48 +2819,46 @@ impl App {
 
     fn dispatch_global_action(&mut self, action: &dyn Action) {
         self.propagate_event = true;
+        let action_type = action.as_any().type_id();
 
-        if let Some(mut global_listeners) = self
-            .global_action_listeners
-            .remove(&action.as_any().type_id())
-        {
-            for listener in &global_listeners {
-                listener(action.as_any(), DispatchPhase::Capture, self);
-                if !self.propagate_event {
+        self.with_global_action_listeners(action_type, |listeners, cx| {
+            for listener in listeners {
+                listener(action.as_any(), DispatchPhase::Capture, cx);
+                if !cx.propagate_event {
                     break;
                 }
             }
+        });
 
-            global_listeners.extend(
-                self.global_action_listeners
-                    .remove(&action.as_any().type_id())
-                    .unwrap_or_default(),
-            );
-
-            self.global_action_listeners
-                .insert(action.as_any().type_id(), global_listeners);
+        if self.propagate_event {
+            self.with_global_action_listeners(action_type, |listeners, cx| {
+                for listener in listeners.iter().rev() {
+                    listener(action.as_any(), DispatchPhase::Bubble, cx);
+                    if !cx.propagate_event {
+                        break;
+                    }
+                }
+            });
         }
+    }
 
-        if self.propagate_event
-            && let Some(mut global_listeners) = self
-                .global_action_listeners
-                .remove(&action.as_any().type_id())
-        {
-            for listener in global_listeners.iter().rev() {
-                listener(action.as_any(), DispatchPhase::Bubble, self);
-                if !self.propagate_event {
-                    break;
-                }
-            }
-
-            global_listeners.extend(
-                self.global_action_listeners
-                    .remove(&action.as_any().type_id())
-                    .unwrap_or_default(),
-            );
-
+    pub(crate) fn with_global_action_listeners(
+        &mut self,
+        action_type: TypeId,
+        invoke: impl FnOnce(&[GlobalActionListener], &mut App),
+    ) {
+        let Some(mut listeners) = self.global_action_listeners.remove(&action_type) else {
+            return;
+        };
+        let invoked = panic::catch_unwind(AssertUnwindSafe(|| invoke(&listeners, self)));
+        listeners.extend(
             self.global_action_listeners
-                .insert(action.as_any().type_id(), global_listeners);
+                .remove(&action_type)
+                .unwrap_or_default(),
+        );
+        self.global_action_listeners.insert(action_type, listeners);
+        if let Err(payload) = invoked {
+            panic::resume_unwind(payload);
         }
     }
 
@@ -3116,10 +3129,14 @@ impl App {
             let root_view = window.root.clone().unwrap();
 
             cx.window_update_stack.push(window.handle.id);
+            #[cfg(feature = "profiler")]
+            let profiler_depth = window.window_profiler.activity_depth();
             let updated = panic::catch_unwind(AssertUnwindSafe(|| {
                 update(Some((root_view, &mut window, cx)))
             }));
             if let Err(payload) = updated {
+                #[cfg(feature = "profiler")]
+                window.window_profiler.unwind_to(profiler_depth);
                 cx.window_update_stack.pop();
                 if let Some(slot) = cx.windows.get_mut(window_id) {
                     slot.replace(window);
@@ -3563,7 +3580,7 @@ impl<'a, T> Drop for GpuiBorrow<'a, T> {
         self.app.notify(lease.id);
         self.app.entities.end_lease(lease, &mut self.app.leases);
         if std::thread::panicking() {
-            self.app.pending_updates -= 1;
+            self.app.abandon_update();
         } else {
             self.app.finish_update();
         }
@@ -4086,6 +4103,210 @@ mod test {
 
         assert!(message.starts_with("cannot update"), "{message}");
         assert_app_recovered(&cx);
+    }
+
+    fn assert_panics(access: impl FnOnce()) {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(access)).is_err(),
+            "the access should panic"
+        );
+    }
+
+    #[test]
+    fn test_app_recovers_from_a_panic_while_an_entity_is_borrowed() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| 0_usize));
+
+        assert_panics(|| {
+            cx.update(|cx| {
+                let _borrow = entity.as_mut(cx);
+                panic!("the borrow's user failed")
+            })
+        });
+
+        assert_app_recovered(&cx);
+    }
+
+    #[test]
+    fn test_observers_survive_an_observer_that_panics() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let first_observer_panics = Rc::new(Cell::new(true));
+        let second_observer_calls = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let first_observer_panics = first_observer_panics.clone();
+            cx.observe(&entity, move |_, _| {
+                if first_observer_panics.replace(false) {
+                    panic!("the observer failed");
+                }
+            })
+            .detach();
+            let second_observer_calls = second_observer_calls.clone();
+            cx.observe(&entity, move |_, _| {
+                second_observer_calls.set(second_observer_calls.get() + 1)
+            })
+            .detach();
+        });
+
+        assert_panics(|| cx.update(|cx| entity.update(cx, |_, cx| cx.notify())));
+        cx.update(|cx| entity.update(cx, |_, cx| cx.notify()));
+
+        assert!(!first_observer_panics.get());
+        assert_eq!(
+            second_observer_calls.get(),
+            1,
+            "both observers should stay subscribed after one of them panicked"
+        );
+    }
+
+    actions!(app_test, [GlobalTestAction]);
+
+    #[test]
+    fn test_global_action_listeners_survive_a_listener_that_panics() {
+        let cx = TestAppContext::single();
+        let calls = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let calls = calls.clone();
+            cx.on_action(move |_: &GlobalTestAction, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    panic!("the listener failed");
+                }
+            });
+        });
+
+        assert_panics(|| cx.update(|cx| cx.dispatch_action(&GlobalTestAction)));
+        cx.update(|cx| cx.dispatch_action(&GlobalTestAction));
+
+        assert_eq!(
+            calls.get(),
+            2,
+            "the listener should stay registered after it panicked"
+        );
+    }
+
+    #[test]
+    fn test_update_global_outside_an_update_applies_its_effects() {
+        let cx = TestAppContext::single();
+        cx.update(|cx| cx.set_global(TestGlobal(0)));
+        let observed = Rc::new(Cell::new(None));
+        cx.update(|cx| {
+            let observed = observed.clone();
+            cx.observe_global::<TestGlobal>(move |cx| {
+                observed.set(Some(cx.global::<TestGlobal>().0))
+            })
+            .detach();
+        });
+        let settled_with_active_leases = Rc::new(Cell::new(None));
+
+        cx.app
+            .borrow_mut()
+            .update_global::<TestGlobal, _>(|global, cx| {
+                global.0 = 1;
+                let settled_with_active_leases = settled_with_active_leases.clone();
+                cx.defer_until_effects_settle(move |cx| {
+                    settled_with_active_leases.set(Some(cx.has_active_leases()))
+                });
+            });
+
+        assert_eq!(
+            observed.get(),
+            Some(1),
+            "the observers should run when the global update ends"
+        );
+        assert_eq!(
+            settled_with_active_leases.get(),
+            Some(false),
+            "the effects of a global update settle after the global is back"
+        );
+    }
+
+    #[test]
+    fn test_settle_callbacks_of_an_update_that_panics_are_dropped() {
+        let cx = TestAppContext::single();
+        let settled = Rc::new(Cell::new(false));
+
+        assert_panics(|| {
+            cx.update(|cx| {
+                let settled = settled.clone();
+                cx.defer_until_effects_settle(move |_| settled.set(true));
+                panic!("the update failed")
+            })
+        });
+        assert_app_recovered(&cx);
+
+        assert!(
+            !settled.get(),
+            "the update that the callback waited for failed"
+        );
+    }
+
+    #[test]
+    fn test_settle_callbacks_waiting_on_an_effect_that_panics_are_dropped() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let observer_panics = Rc::new(Cell::new(true));
+        cx.update(|cx| {
+            let observer_panics = observer_panics.clone();
+            cx.observe(&entity, move |_, _| {
+                if observer_panics.replace(false) {
+                    panic!("the observer failed");
+                }
+            })
+            .detach();
+        });
+        let settled = Rc::new(Cell::new(false));
+
+        assert_panics(|| {
+            cx.update(|cx| {
+                entity.update(cx, |_, cx| cx.notify());
+                let settled = settled.clone();
+                cx.defer_until_effects_settle(move |_| settled.set(true));
+            })
+        });
+        assert_app_recovered(&cx);
+
+        assert!(
+            !settled.get(),
+            "an effect that the callback waited for failed"
+        );
+    }
+
+    #[test]
+    fn test_removing_a_missing_global_notifies_no_observers() {
+        let cx = TestAppContext::single();
+        let notified = Rc::new(Cell::new(false));
+        cx.update(|cx| {
+            let notified = notified.clone();
+            cx.observe_global::<TestGlobal>(move |_| notified.set(true))
+                .detach();
+        });
+
+        let message = panic_message(|| {
+            cx.update(|cx| {
+                cx.remove_global::<TestGlobal>();
+            })
+        });
+        assert_app_recovered(&cx);
+
+        assert!(
+            message.starts_with("no global registered of type"),
+            "{message}"
+        );
+        assert!(!notified.get(), "no global was removed");
+    }
+
+    #[test]
+    fn test_clearing_globals_during_a_global_update_panics() {
+        let message = panic_message_during_global_update(|cx| cx.clear_globals());
+
+        assert!(
+            message.starts_with(&format!(
+                "cannot clear {} (global) while it is already being updated",
+                std::any::type_name::<TestGlobal>()
+            )),
+            "{message}"
+        );
     }
 
     #[gpui::test]

@@ -132,22 +132,34 @@ impl TestWindow {
             start_external_drag_result: false,
         })))
     }
+    fn with_callback<Callback, R>(
+        &self,
+        slot: impl Fn(&mut TestWindowState) -> &mut Option<Callback>,
+        invoke: impl FnOnce(&mut Callback) -> R,
+    ) -> Option<R> {
+        let mut callback = slot(&mut *self.0.lock()).take()?;
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| invoke(&mut callback)));
+        *slot(&mut *self.0.lock()) = Some(callback);
+        Some(result.unwrap_or_else(|payload| std::panic::resume_unwind(payload)))
+    }
+
     pub fn simulate_scheduled_frame(&self) -> bool {
-        let callback = {
+        {
             let mut state = self.0.lock();
             if !std::mem::take(&mut state.frame_scheduled) {
                 return false;
             }
             state.frame_callback_pending = false;
-            state.request_frame_callback.take()
-        };
-        let Some(mut callback) = callback else {
+        }
+        let ran = self.with_callback(
+            |state| &mut state.request_frame_callback,
+            |callback| callback(RequestFrameOptions::default()),
+        );
+        if ran.is_none() {
             self.0.lock().frame_scheduled = true;
             return false;
-        };
-
-        callback(RequestFrameOptions::default());
-        self.0.lock().request_frame_callback = Some(callback);
+        }
         true
     }
 
@@ -156,39 +168,32 @@ impl TestWindow {
     }
 
     pub fn simulate_visibility_change(&self, visibility: WindowVisibility) {
-        let callback = {
-            let mut state = self.0.lock();
-            state.visibility = visibility;
-            state.visibility_callback.take()
-        };
-        if let Some(mut callback) = callback {
-            callback(visibility);
-            self.0.lock().visibility_callback = Some(callback);
-        }
+        self.0.lock().visibility = visibility;
+        self.with_callback(
+            |state| &mut state.visibility_callback,
+            |callback| callback(visibility),
+        );
     }
 
     pub fn simulate_visual_viewport_change(&self, bounds: Bounds<Pixels>) {
-        let callback = {
-            let mut state = self.0.lock();
-            state.visual_viewport = Some(bounds);
-            state.visual_viewport_callback.take()
-        };
-        if let Some(mut callback) = callback {
-            callback();
-            self.0.lock().visual_viewport_callback = Some(callback);
-        }
+        self.0.lock().visual_viewport = Some(bounds);
+        self.with_callback(
+            |state| &mut state.visual_viewport_callback,
+            |callback| callback(),
+        );
     }
 
     pub fn simulate_insets_change(&self, insets: WindowInsets) {
-        let callback = {
-            let mut state = self.0.lock();
-            state.insets = insets.clone();
-            state.insets_callback.take()
-        };
-        if let Some(mut callback) = callback {
-            callback(insets);
-            self.0.lock().insets_callback = Some(callback);
-        }
+        self.0.lock().insets = insets.clone();
+        self.with_callback(
+            |state| &mut state.insets_callback,
+            |callback| callback(insets),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_input_handler(&self) -> bool {
+        self.0.lock().input_handler.is_some()
     }
 
     pub fn virtual_keyboard_requests(&self) -> usize {
@@ -210,15 +215,12 @@ impl TestWindow {
 
     pub fn simulate_resize(&mut self, size: Size<Pixels>) {
         let scale_factor = self.scale_factor();
-        let mut lock = self.0.lock();
         // Always update bounds, even if no callback is registered
-        lock.bounds.size = size;
-        let Some(mut callback) = lock.resize_callback.take() else {
-            return;
-        };
-        drop(lock);
-        callback(size, scale_factor);
-        self.0.lock().resize_callback = Some(callback);
+        self.0.lock().bounds.size = size;
+        self.with_callback(
+            |state| &mut state.resize_callback,
+            |callback| callback(size, scale_factor),
+        );
     }
 
     /// Simulates a display scale change through the resize callback, preserving logical bounds.
@@ -232,24 +234,18 @@ impl TestWindow {
     }
 
     pub(crate) fn simulate_active_status_change(&self, active: bool) {
-        let mut lock = self.0.lock();
-        let Some(mut callback) = lock.active_status_change_callback.take() else {
-            return;
-        };
-        drop(lock);
-        callback(active);
-        self.0.lock().active_status_change_callback = Some(callback);
+        self.with_callback(
+            |state| &mut state.active_status_change_callback,
+            |callback| callback(active),
+        );
     }
 
     pub fn simulate_appearance_change(&self, appearance: WindowAppearance) {
-        let mut lock = self.0.lock();
-        lock.appearance = appearance;
-        let Some(mut callback) = lock.appearance_change_callback.take() else {
-            return;
-        };
-        drop(lock);
-        callback();
-        self.0.lock().appearance_change_callback = Some(callback);
+        self.0.lock().appearance = appearance;
+        self.with_callback(
+            |state| &mut state.appearance_change_callback,
+            |callback| callback(),
+        );
     }
 
     /// Returns how many times this window's frame waker has been invoked.
@@ -260,24 +256,18 @@ impl TestWindow {
     /// Delivers a frame request to the window, as the platform's frame source
     /// would.
     pub fn simulate_frame_request(&self, options: RequestFrameOptions) {
-        let mut lock = self.0.lock();
-        let Some(mut callback) = lock.request_frame_callback.take() else {
-            return;
-        };
-        drop(lock);
-        callback(options);
-        self.0.lock().request_frame_callback = Some(callback);
+        self.with_callback(
+            |state| &mut state.request_frame_callback,
+            |callback| callback(options),
+        );
     }
 
     pub fn simulate_input(&mut self, event: PlatformInput) -> bool {
-        let mut lock = self.0.lock();
-        let Some(mut callback) = lock.input_callback.take() else {
-            return false;
-        };
-        drop(lock);
-        let result = callback(event);
-        self.0.lock().input_callback = Some(callback);
-        !result.propagate
+        self.with_callback(
+            |state| &mut state.input_callback,
+            |callback| callback(event),
+        )
+        .is_some_and(|result| !result.propagate)
     }
 
     pub fn external_drag_files(&self) -> Vec<(PathBuf, bool)> {
