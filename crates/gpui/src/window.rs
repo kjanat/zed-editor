@@ -635,70 +635,95 @@ impl FocusHandle {
 
     /// Dispatch an action on the element that rendered this focus handle.
     ///
-    /// The action runs immediately when no entity is being updated and the most recently
-    /// rendered frame contains the element. Otherwise it runs after the next frame has been
-    /// drawn, once that frame contains the element, waiting up to two drawn frames. The action
-    /// is dropped with a warning when the element is never drawn, and dropped silently when
-    /// this focus handle is released first.
+    /// While an entity or global is being updated, the action waits until those updates have
+    /// ended. It then runs on the most recently rendered frame when nothing has changed the
+    /// window since that frame was drawn, and on the next drawn frame otherwise. The action is
+    /// dropped with a warning when that frame has no element for this focus handle, and
+    /// dropped silently when this focus handle is released first.
     pub fn dispatch_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) {
-        if !cx.has_active_entity_updates()
-            && self.dispatch_action_in_rendered_frame(action, window, cx)
-        {
+        if cx.has_active_leases() {
+            let target = self.downgrade();
+            let action = action.boxed_clone();
+            window.defer(cx, move |window, cx| {
+                let Some(focus_handle) = target.upgrade() else {
+                    return;
+                };
+                if focus_handle.route_action(&*action, false, window, cx) == Routing::AwaitRender {
+                    await_render(target, action, MAX_RENDERS_AWAITED, window);
+                }
+            });
             return;
         }
-        dispatch_action_after_next_render(
-            self.downgrade(),
-            action.boxed_clone(),
-            DISPATCH_RENDER_ATTEMPTS,
-            window,
-        );
+        if self.route_action(action, false, window, cx) == Routing::AwaitRender {
+            await_render(
+                self.downgrade(),
+                action.boxed_clone(),
+                MAX_RENDERS_AWAITED,
+                window,
+            );
+        }
     }
 
-    fn dispatch_action_in_rendered_frame(
+    fn route_action(
         &self,
         action: &dyn Action,
+        just_rendered: bool,
         window: &mut Window,
         cx: &mut App,
-    ) -> bool {
+    ) -> Routing {
         debug_assert!(
-            !cx.has_active_entity_updates(),
-            "actions must not be dispatched while an entity is being updated"
+            !cx.has_active_leases(),
+            "actions must not be dispatched while an entity or global is being updated"
         );
-        let Some(node_id) = window
-            .rendered_frame
-            .dispatch_tree
-            .focusable_node_id(self.id)
-        else {
-            return false;
-        };
-        window.dispatch_action_on_node(node_id, action, cx);
-        true
+        let frame_is_current = !window.invalidator.is_dirty();
+        if (frame_is_current || just_rendered)
+            && let Some(node_id) = window
+                .rendered_frame
+                .dispatch_tree
+                .focusable_node_id(self.id)
+        {
+            window.dispatch_action_on_node(node_id, action, cx);
+            return Routing::Done;
+        }
+        if frame_is_current {
+            log::warn!(
+                "dropped {} because its target is not rendered",
+                action.name()
+            );
+            Routing::Done
+        } else {
+            Routing::AwaitRender
+        }
     }
 }
 
-const DISPATCH_RENDER_ATTEMPTS: usize = 2;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Routing {
+    Done,
+    AwaitRender,
+}
 
-fn dispatch_action_after_next_render(
+const MAX_RENDERS_AWAITED: usize = 8;
+
+fn await_render(
     target: WeakFocusHandle,
     action: Box<dyn Action>,
     renders_left: usize,
     window: &mut Window,
 ) {
+    let Some(renders_left) = renders_left.checked_sub(1) else {
+        log::warn!(
+            "dropped {} because its target was not rendered within {MAX_RENDERS_AWAITED} frames",
+            action.name()
+        );
+        return;
+    };
     window.on_next_render(move |window, cx| {
         let Some(focus_handle) = target.upgrade() else {
             return;
         };
-        if focus_handle.dispatch_action_in_rendered_frame(&*action, window, cx) {
-            return;
-        }
-        match renders_left.checked_sub(1) {
-            Some(renders_left) if renders_left > 0 => {
-                dispatch_action_after_next_render(target, action, renders_left, window)
-            }
-            _ => log::warn!(
-                "dropped {} because its target was never rendered",
-                action.name()
-            ),
+        if focus_handle.route_action(&*action, true, window, cx) == Routing::AwaitRender {
+            await_render(target, action, renders_left, window);
         }
     });
 }
@@ -2765,7 +2790,8 @@ impl Window {
     }
 
     /// Schedule the given closure to run once the next frame has been drawn, when the
-    /// elements and focus handles it rendered can receive actions. Requests that frame.
+    /// elements and focus handles it rendered can receive actions. Requests that frame. A
+    /// callback scheduled while a frame is being drawn waits for the frame after it.
     pub fn on_next_render(&mut self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
         self.after_render_callbacks.push(Box::new(callback));
         if self.invalidator.not_drawing() {
@@ -3440,6 +3466,7 @@ impl Window {
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
         self.invalidator.set_dirty(false);
+        let after_render_callbacks = mem::take(&mut self.after_render_callbacks);
         self.requested_autoscroll = None;
 
         // Restore the previously-used input handler.
@@ -3563,8 +3590,11 @@ impl Window {
             self.refresh();
         }
         self.needs_present.set(true);
-        for callback in mem::take(&mut self.after_render_callbacks) {
+        for callback in after_render_callbacks {
             self.defer(cx, callback);
+        }
+        if !self.after_render_callbacks.is_empty() {
+            self.invalidator.set_dirty(true);
         }
 
         #[cfg(feature = "profiler")]
@@ -7857,17 +7887,18 @@ fn with_element_arena_erased(callback: &mut dyn FnMut(&mut Arena)) -> Result<(),
 mod tests {
     use std::{
         cell::{Cell, RefCell},
+        mem,
         path::PathBuf,
         rc::Rc,
         time::Duration,
     };
 
     use crate::{
-        AnyWindowHandle, App, AppContext as _, Bounds, ContentMask, Context, DispatchPhase,
-        DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
-        FocusHandle, InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent,
-        Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-        Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
+        AnyWindowHandle, App, AppContext as _, BorrowAppContext, Bounds, ContentMask, Context,
+        DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths,
+        FileDropEvent, FocusHandle, Global, InputEvent as _, InteractiveElement as _, IntoElement,
+        KeyDownEvent, Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+        ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
         StatefulInteractiveElement as _, Styled, TestAppContext, TouchDragEvent, TouchEvent,
         TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance, WindowHandle,
         WindowOptions, canvas, div, hsla, point, px, size,
@@ -8456,8 +8487,12 @@ mod tests {
         let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
         cx.run_until_parked();
 
+        let task_ran = Rc::new(Cell::new(false));
+
         window
             .update(cx, |target, window, cx| {
+                let task_ran = task_ran.clone();
+                cx.spawn(async move |_, _| task_ran.set(true)).detach();
                 target
                     .focus_handle
                     .dispatch_action(&CountDispatch, window, cx);
@@ -8468,7 +8503,92 @@ mod tests {
             })
             .unwrap();
 
+        assert_eq!(
+            dispatched(window, cx),
+            1,
+            "the window did not change, so the action should run when the update ends"
+        );
+        assert!(
+            !task_ran.get(),
+            "the action should run before tasks that the update spawned"
+        );
+    }
+
+    struct DispatchGlobal;
+
+    impl Global for DispatchGlobal {}
+
+    #[gpui::test]
+    fn test_dispatch_action_during_a_global_update_runs_after_it(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        cx.update(|cx| cx.set_global(DispatchGlobal));
+        let target = window.root(cx).unwrap();
+        let focus_handle = target.read_with(cx, |target, _| target.focus_handle.clone());
+
+        cx.update_window(window.into(), |_, window, cx| {
+            cx.update_global::<DispatchGlobal, _>(|_, cx| {
+                focus_handle.dispatch_action(&CountDispatch, window, cx);
+                assert_eq!(
+                    target.read(cx).dispatched,
+                    0,
+                    "the action must wait for the global update to end"
+                );
+            })
+        })
+        .unwrap();
+
         assert_eq!(dispatched(window, cx), 1);
+    }
+
+    struct RegistersDuringRender {
+        renders: Rc<Cell<usize>>,
+        register: bool,
+        renders_seen: Rc<Cell<Option<(usize, usize)>>>,
+    }
+
+    impl Render for RegistersDuringRender {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            if mem::take(&mut self.register) {
+                let registered_in = self.renders.get();
+                let renders = self.renders.clone();
+                let renders_seen = self.renders_seen.clone();
+                window.on_next_render(move |_, _| {
+                    renders_seen.set(Some((registered_in, renders.get())));
+                });
+            }
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_scheduled_while_drawing_waits_for_the_next_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let renders_seen = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let renders_seen = renders_seen.clone();
+            |_, _| RegistersDuringRender {
+                renders: Rc::new(Cell::new(0)),
+                register: false,
+                renders_seen,
+            }
+        });
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, cx| {
+                view.register = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let (registered_in, ran_after) = renders_seen
+            .get()
+            .expect("the callback should run once the next frame is drawn");
+        assert_eq!(ran_after, registered_in + 1);
     }
 
     #[gpui::test]

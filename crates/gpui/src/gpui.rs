@@ -384,9 +384,10 @@ where
         G: Global,
     {
         let mut global = self.borrow_mut().lease_global::<G>();
-        let result = f(&mut global, self);
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut global, self)));
         self.borrow_mut().end_global_lease(global);
-        result
+        result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
     }
 
     fn update_default_global<G, R>(&mut self, f: impl FnOnce(&mut G, &mut Self) -> R) -> R

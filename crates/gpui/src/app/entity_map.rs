@@ -59,13 +59,108 @@ pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, Box<dyn Any>>,
     pub accessed_entities: RefCell<FxHashSet<EntityId>>,
     ref_counts: Arc<RwLock<EntityRefCounts>>,
-    active_leases: SmallVec<[ActiveLease; 8]>,
+    pub(crate) leases: LeaseStack,
+}
+
+/// State that an update has taken out of the app, so that code reaching it again panics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeaseTarget {
+    Entity(EntityId),
+    Global(TypeId),
+}
+
+impl Display for LeaseTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LeaseTarget::Entity(entity_id) => write!(f, "#{entity_id}"),
+            LeaseTarget::Global(_) => f.write_str("(global)"),
+        }
+    }
 }
 
 struct ActiveLease {
-    entity_id: EntityId,
-    entity_type: &'static str,
+    target: LeaseTarget,
+    type_name: &'static str,
     location: &'static Location<'static>,
+}
+
+/// The entity and global updates in progress, outermost first.
+#[derive(Default)]
+pub(crate) struct LeaseStack(SmallVec<[ActiveLease; 8]>);
+
+impl LeaseStack {
+    pub(crate) fn push(
+        &mut self,
+        target: LeaseTarget,
+        type_name: &'static str,
+        location: &'static Location<'static>,
+    ) {
+        self.0.push(ActiveLease {
+            target,
+            type_name,
+            location,
+        });
+    }
+
+    pub(crate) fn pop(&mut self, target: LeaseTarget) {
+        let innermost = self.0.last();
+        assert!(
+            innermost.is_some_and(|innermost| innermost.target == target),
+            "ended the update of {target} while the innermost update was {}",
+            innermost.map_or_else(
+                || "none".to_string(),
+                |innermost| format!(
+                    "{} {} at {}",
+                    innermost.type_name, innermost.target, innermost.location
+                )
+            ),
+        );
+        self.0.pop();
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn contains(&self, target: LeaseTarget) -> bool {
+        self.0.iter().any(|lease| lease.target == target)
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[track_caller]
+    pub(crate) fn reentry_panic(
+        &self,
+        operation: &str,
+        target: LeaseTarget,
+        type_name: &str,
+        location: &'static Location<'static>,
+    ) -> ! {
+        let existing_lease = self
+            .0
+            .iter()
+            .rfind(|lease| lease.target == target)
+            .map_or_else(
+                || "none recorded".to_string(),
+                |lease| lease.location.to_string(),
+            );
+        let active_leases = self
+            .0
+            .iter()
+            .map(|lease| {
+                format!(
+                    "\n  {} {} at {}",
+                    lease.type_name, lease.target, lease.location
+                )
+            })
+            .collect::<String>();
+        panic!(
+            "cannot {operation} {type_name} {target} while it is already being updated\n\
+             {operation} at: {location}\n\
+             existing update at: {existing_lease}\n\
+             active updates, outermost first:{active_leases}"
+        )
+    }
 }
 
 #[doc(hidden)]
@@ -94,7 +189,7 @@ impl EntityMap {
                     entity_handles: HashMap::default(),
                 },
             })),
-            active_leases: SmallVec::new(),
+            leases: LeaseStack::default(),
         }
     }
 
@@ -167,9 +262,9 @@ impl EntityMap {
             .and_then(|entity| entity.downcast_ref())
         {
             Some(entity) => entity,
-            None => self.double_lease_panic(
+            None => self.leases.reentry_panic(
                 "read",
-                entity.entity_id,
+                LeaseTarget::Entity(entity.entity_id),
                 type_name::<T>(),
                 Location::caller(),
             ),
@@ -183,68 +278,20 @@ impl EntityMap {
         location: &'static Location<'static>,
     ) -> LeaseInner {
         self.assert_valid_context(pointer);
+        let target = LeaseTarget::Entity(pointer.entity_id);
         let Some(entity) = self.lease_inner(pointer.entity_id) else {
-            self.double_lease_panic("update", pointer.entity_id, entity_type, location)
+            self.leases
+                .reentry_panic("update", target, entity_type, location)
         };
-        self.active_leases.push(ActiveLease {
-            entity_id: pointer.entity_id,
-            entity_type,
-            location,
-        });
+        self.leases.push(target, entity_type, location);
         LeaseInner {
             entity: Some(entity),
         }
     }
 
     pub(super) fn end_lease_erased(&mut self, entity_id: EntityId, mut lease: LeaseInner) {
-        let innermost = self.active_leases.pop();
-        assert!(
-            innermost
-                .as_ref()
-                .is_some_and(|innermost| innermost.entity_id == entity_id),
-            "ended the update of {entity_id} while the innermost update was {}",
-            innermost.map_or_else(
-                || "none".to_string(),
-                |innermost| format!("{} at {}", innermost.entity_type, innermost.location)
-            ),
-        );
+        self.leases.pop(LeaseTarget::Entity(entity_id));
         self.end_lease_inner(entity_id, lease.entity.take().unwrap());
-    }
-
-    /// Whether any entity is currently being updated.
-    pub fn has_active_leases(&self) -> bool {
-        !self.active_leases.is_empty()
-    }
-
-    #[cold]
-    #[inline(never)]
-    #[track_caller]
-    fn double_lease_panic(
-        &self,
-        operation: &str,
-        entity_id: EntityId,
-        entity_type: &str,
-        location: &'static Location<'static>,
-    ) -> ! {
-        let existing_lease = self
-            .active_leases
-            .iter()
-            .rfind(|lease| lease.entity_id == entity_id)
-            .map_or_else(
-                || "none recorded".to_string(),
-                |lease| lease.location.to_string(),
-            );
-        let active_leases = self
-            .active_leases
-            .iter()
-            .map(|lease| format!("\n  {} at {}", lease.entity_type, lease.location))
-            .collect::<String>();
-        panic!(
-            "cannot {operation} {entity_type} while it is already being updated\n\
-             {operation} at: {location}\n\
-             existing update at: {existing_lease}\n\
-             active updates, outermost first:{active_leases}"
-        )
     }
 
     fn assert_valid_context(&self, entity: &AnyEntity) {

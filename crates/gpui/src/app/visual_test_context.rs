@@ -1,9 +1,9 @@
 use crate::{
     Action, AnyView, AnyWindowHandle, App, AppCell, AppContext, AssetSource, BackgroundExecutor,
-    Bounds, ClipboardItem, Context, Entity, EntityId, ForegroundExecutor, Global, InputEvent,
-    Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Platform, Point, Render, Result, Size, Task, TestDispatcher, TextSystem, VisualTestPlatform,
-    Window, WindowBounds, WindowHandle, WindowOptions, app::GpuiMode,
+    BorrowAppContext, Bounds, ClipboardItem, Context, Entity, EntityId, ForegroundExecutor, Global,
+    InputEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Platform, Point, Render, Result, Size, Task, TestDispatcher, TextSystem,
+    VisualTestPlatform, Window, WindowBounds, WindowHandle, WindowOptions, app::GpuiMode,
 };
 use anyhow::anyhow;
 use image::RgbaImage;
@@ -211,12 +211,7 @@ impl VisualTestAppContext {
     /// Updates a global value.
     pub fn update_global<G: Global, R>(&mut self, f: impl FnOnce(&mut G, &mut App) -> R) -> R {
         let mut lock = self.app.borrow_mut();
-        lock.update(|cx| {
-            let mut global = cx.lease_global::<G>();
-            let result = f(&mut global, cx);
-            cx.end_global_lease(global);
-            result
-        })
+        lock.update(|cx| cx.update_global(f))
     }
 
     /// Simulates a sequence of keystrokes on the given window.
