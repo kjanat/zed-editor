@@ -636,25 +636,35 @@ impl FocusHandle {
     /// Dispatch an action on the element that rendered this focus handle.
     ///
     /// While an entity or global is being updated, the action waits until those updates have
-    /// ended. It then runs on the most recently rendered frame when nothing has changed the
-    /// window since that frame was drawn, and on the next drawn frame otherwise. The action is
-    /// dropped with a warning when that frame has no element for this focus handle, and
-    /// dropped silently when this focus handle is released first.
+    /// ended and every effect they queued, such as observer notifications, has been applied.
+    /// It runs before tasks that the updates spawned.
+    ///
+    /// The action then runs on the most recently drawn frame if nothing has changed the window
+    /// since that frame was drawn. Otherwise it waits for the next drawn frame and checks again,
+    /// for at most eight frames while the window keeps changing. The action is dropped with a
+    /// warning when an unchanged window has no element for this focus handle or the window is
+    /// still changing after eight frames, and dropped silently when this focus handle is
+    /// released first.
     pub fn dispatch_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) {
         if cx.has_active_leases() {
             let target = self.downgrade();
             let action = action.boxed_clone();
-            window.defer(cx, move |window, cx| {
-                let Some(focus_handle) = target.upgrade() else {
-                    return;
-                };
-                if focus_handle.route_action(&*action, false, window, cx) == Routing::AwaitRender {
-                    await_render(target, action, MAX_RENDERS_AWAITED, window);
-                }
+            let window_handle = window.handle;
+            cx.defer_until_effects_settle(move |cx| {
+                window_handle
+                    .update(cx, |_, window, cx| {
+                        let Some(focus_handle) = target.upgrade() else {
+                            return;
+                        };
+                        if focus_handle.route_action(&*action, window, cx) == Routing::AwaitRender {
+                            await_render(target, action, MAX_RENDERS_AWAITED, window);
+                        }
+                    })
+                    .ok();
             });
             return;
         }
-        if self.route_action(action, false, window, cx) == Routing::AwaitRender {
+        if self.route_action(action, window, cx) == Routing::AwaitRender {
             await_render(
                 self.downgrade(),
                 action.boxed_clone(),
@@ -664,36 +674,26 @@ impl FocusHandle {
         }
     }
 
-    fn route_action(
-        &self,
-        action: &dyn Action,
-        just_rendered: bool,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Routing {
+    fn route_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) -> Routing {
         debug_assert!(
             !cx.has_active_leases(),
             "actions must not be dispatched while an entity or global is being updated"
         );
-        let frame_is_current = !window.invalidator.is_dirty();
-        if (frame_is_current || just_rendered)
-            && let Some(node_id) = window
-                .rendered_frame
-                .dispatch_tree
-                .focusable_node_id(self.id)
-        {
-            window.dispatch_action_on_node(node_id, action, cx);
-            return Routing::Done;
+        if window.invalidator.is_dirty() {
+            return Routing::AwaitRender;
         }
-        if frame_is_current {
-            log::warn!(
+        match window
+            .rendered_frame
+            .dispatch_tree
+            .focusable_node_id(self.id)
+        {
+            Some(node_id) => window.dispatch_action_on_node(node_id, action, cx),
+            None => log::warn!(
                 "dropped {} because its target is not rendered",
                 action.name()
-            );
-            Routing::Done
-        } else {
-            Routing::AwaitRender
+            ),
         }
+        Routing::Done
     }
 }
 
@@ -722,7 +722,7 @@ fn await_render(
         let Some(focus_handle) = target.upgrade() else {
             return;
         };
-        if focus_handle.route_action(&*action, true, window, cx) == Routing::AwaitRender {
+        if focus_handle.route_action(&*action, window, cx) == Routing::AwaitRender {
             await_render(target, action, renders_left, window);
         }
     });
@@ -3448,6 +3448,34 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.draw_frame(cx))) {
+            Ok(arena_clear_needed) => arena_clear_needed,
+            Err(payload) => {
+                self.discard_interrupted_frame();
+                std::panic::resume_unwind(payload)
+            }
+        }
+    }
+
+    fn discard_interrupted_frame(&mut self) {
+        self.invalidator.set_phase(DrawPhase::None);
+        self.next_frame.clear();
+        self.element_id_stack.clear();
+        self.text_style_stack.clear();
+        self.rendered_entity_stack.clear();
+        self.element_offset_stack.clear();
+        self.content_mask_stack.clear();
+        self.image_cache_stack.clear();
+        self.rem_size_override_stack.clear();
+        self.element_opacity = 1.0;
+        match self.layout_engine.as_mut() {
+            Some(layout_engine) => layout_engine.clear(),
+            None => self.layout_engine = Some(TaffyLayoutEngine::new()),
+        }
+        self.refresh();
+    }
+
+    fn draw_frame(&mut self, cx: &mut App) -> ArenaClearNeeded {
         // Drain every draw in profiler builds so a previous frame's
         // first-invalidation timestamp can't be attributed to this one.
         #[cfg(feature = "profiler")]
@@ -8589,6 +8617,259 @@ mod tests {
             .get()
             .expect("the callback should run once the next frame is drawn");
         assert_eq!(ran_after, registered_in + 1);
+    }
+
+    fn open_production_window<V: Render + 'static>(
+        cx: &mut TestAppContext,
+        build_view: impl FnOnce(&mut Window, &mut Context<V>) -> V + 'static,
+    ) -> (WindowHandle<V>, crate::TestWindow) {
+        cx.app.borrow_mut().mode = crate::app::GpuiMode::Production;
+        let window = cx.add_window(build_view);
+        let test_window = cx.test_window(window.into());
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+        (window, test_window)
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_runs_after_the_platform_draws_the_frame(cx: &mut TestAppContext) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+        let rendered_when_called = Rc::new(Cell::new(None));
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                let focus_handle = target.focus_handle.clone();
+                let rendered_when_called = rendered_when_called.clone();
+                window.on_next_render(move |window, _| {
+                    rendered_when_called.set(Some(is_rendered(&focus_handle, window)));
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            rendered_when_called.get(),
+            None,
+            "the platform has not drawn a frame since the callback was scheduled"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(rendered_when_called.get(), Some(true));
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_scheduled_while_the_platform_draws_requests_another_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let renders_seen = Rc::new(Cell::new(None));
+        let (window, test_window) = open_production_window(cx, {
+            let renders_seen = renders_seen.clone();
+            |_, _| RegistersDuringRender {
+                renders: Rc::new(Cell::new(0)),
+                register: false,
+                renders_seen,
+            }
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                view.register = true;
+                cx.notify();
+            })
+            .unwrap();
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(
+            renders_seen.get(),
+            None,
+            "the callback must not run after the frame that scheduled it"
+        );
+        assert!(
+            cx.update_window(window.into(), |_, window, _| window.invalidator.is_dirty())
+                .unwrap(),
+            "the frame that scheduled the callback should request the next one"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        let (registered_in, ran_after) = renders_seen
+            .get()
+            .expect("the callback should run once the next frame is drawn");
+        assert_eq!(ran_after, registered_in + 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_waits_for_the_platform_to_draw_its_target(cx: &mut TestAppContext) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "the platform has not drawn the target yet"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_after_an_unchanged_update_skips_the_platform_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, _test_window) = open_production_window(cx, |_, cx| FocusTarget::new(true, cx));
+
+        window
+            .update(cx, |target, window, cx| {
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+
+        assert_eq!(
+            dispatched(window, cx),
+            1,
+            "the last drawn frame is current, so the action should not wait for another"
+        );
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_waits_for_a_frame_that_nothing_changed_since(cx: &mut TestAppContext) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                window.on_next_render(|window, _| window.refresh());
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "a callback changed the window after the first frame, so that frame is stale"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_during_a_global_update_waits_for_its_observers(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        cx.update(|cx| cx.set_global(DispatchGlobal));
+        let target = window.root(cx).unwrap();
+        cx.update(|cx| {
+            let target = target.clone();
+            cx.observe_global::<DispatchGlobal>(move |cx| {
+                target.update(cx, |target, cx| {
+                    target.rendered = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        });
+        let focus_handle = target.read_with(cx, |target, _| target.focus_handle.clone());
+
+        cx.update_window(window.into(), |_, window, cx| {
+            cx.update_global::<DispatchGlobal, _>(|_, cx| {
+                focus_handle.dispatch_action(&CountDispatch, window, cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "an observer of the global hid the target before the action could run"
+        );
+    }
+
+    struct PanicsOnRender {
+        panic_next_render: Rc<Cell<bool>>,
+        renders: Rc<Cell<usize>>,
+    }
+
+    impl Render for PanicsOnRender {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            if self.panic_next_render.replace(false) {
+                panic!("rendering failed");
+            }
+            self.renders.set(self.renders.get() + 1);
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn test_window_draws_again_after_a_draw_panics(cx: &mut TestAppContext) {
+        let panic_next_render = Rc::new(Cell::new(false));
+        let renders = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let panic_next_render = panic_next_render.clone();
+            let renders = renders.clone();
+            |_, _| PanicsOnRender {
+                panic_next_render,
+                renders,
+            }
+        });
+        cx.run_until_parked();
+
+        panic_next_render.set(true);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            window.update(cx, |_, _, cx| cx.notify())
+        }));
+        assert!(panic.is_err());
+
+        let renders_before = renders.get();
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(
+                window.invalidator.not_drawing(),
+                "the interrupted draw should have ended"
+            );
+        })
+        .unwrap();
+        cx.update(|_| {});
+
+        assert!(
+            renders.get() > renders_before,
+            "the window should draw again after the interrupted draw"
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "actions must not be dispatched while an entity or global is being updated"
+    )]
+    fn test_routing_an_action_inside_an_update_panics() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+
+        window
+            .update(&mut cx, |target, window, cx| {
+                target.focus_handle.route_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
     }
 
     #[gpui::test]
