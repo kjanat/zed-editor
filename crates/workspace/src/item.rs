@@ -405,28 +405,21 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     }
 }
 
-/// The actions an item offers on its tab. Each one is an entry in the tab's context menu.
-/// Double-clicking the tab dispatches the first entry when the list was created with
-/// [`TabActions::with_double_click`], and nothing otherwise.
+/// The actions an item offers on its tab. Each one is an entry in the tab's context menu, and
+/// double-clicking the tab dispatches at most one of them. Build one with
+/// [`TabActions::builder`].
 #[derive(Default)]
 pub struct TabActions {
     entries: Vec<(SharedString, Box<dyn Action>)>,
-    first_entry_on_double_click: bool,
+    double_click: Option<usize>,
 }
 
 impl TabActions {
-    /// Starts the list with an entry that double-clicking the tab also dispatches.
-    pub fn with_double_click(label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
-        Self {
-            entries: vec![(label.into(), action)],
-            first_entry_on_double_click: true,
+    /// Starts a list of tab actions.
+    pub fn builder() -> TabActionsBuilder {
+        TabActionsBuilder {
+            entries: Vec::new(),
         }
-    }
-
-    /// Adds an entry to the tab's context menu.
-    pub fn entry(mut self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
-        self.entries.push((label.into(), action));
-        self
     }
 
     /// The tab's context menu entries, in the order they were added.
@@ -438,11 +431,67 @@ impl TabActions {
 
     /// The action that double-clicking the tab dispatches.
     pub fn double_click_action(&self) -> Option<&dyn Action> {
-        if !self.first_entry_on_double_click {
-            return None;
-        }
-        let (_, action) = self.entries.first()?;
+        let (_, action) = self.entries.get(self.double_click?)?;
         Some(action.as_ref())
+    }
+}
+
+/// Tab actions without a double-click entry yet.
+pub struct TabActionsBuilder {
+    entries: Vec<(SharedString, Box<dyn Action>)>,
+}
+
+impl TabActionsBuilder {
+    /// Adds an entry to the tab's context menu.
+    pub fn entry(mut self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
+        self.entries.push((label.into(), action));
+        self
+    }
+
+    /// Adds an entry to the tab's context menu that double-clicking the tab also dispatches.
+    pub fn double_click_entry(
+        mut self,
+        label: impl Into<SharedString>,
+        action: Box<dyn Action>,
+    ) -> TabActionsWithDoubleClick {
+        let double_click = self.entries.len();
+        self.entries.push((label.into(), action));
+        TabActionsWithDoubleClick {
+            entries: self.entries,
+            double_click,
+        }
+    }
+}
+
+impl From<TabActionsBuilder> for TabActions {
+    fn from(builder: TabActionsBuilder) -> Self {
+        Self {
+            entries: builder.entries,
+            double_click: None,
+        }
+    }
+}
+
+/// Tab actions with their double-click entry, which accept further context menu entries only.
+pub struct TabActionsWithDoubleClick {
+    entries: Vec<(SharedString, Box<dyn Action>)>,
+    double_click: usize,
+}
+
+impl TabActionsWithDoubleClick {
+    /// Adds an entry to the tab's context menu.
+    pub fn entry(mut self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
+        self.entries.push((label.into(), action));
+        self
+    }
+}
+
+impl From<TabActionsWithDoubleClick> for TabActions {
+    fn from(builder: TabActionsWithDoubleClick) -> Self {
+        Self {
+            entries: builder.entries,
+            double_click: Some(builder.double_click),
+        }
     }
 }
 
@@ -1753,7 +1802,9 @@ pub mod test {
                 pane.read(cx).active_item();
             }
             match &self.tab_double_click_action {
-                Some(action) => TabActions::with_double_click("Double-Click", action.boxed_clone()),
+                Some(action) => TabActions::builder()
+                    .double_click_entry("Double-Click", action.boxed_clone())
+                    .into(),
                 None => TabActions::default(),
             }
         }

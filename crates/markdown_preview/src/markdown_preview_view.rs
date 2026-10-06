@@ -1822,7 +1822,9 @@ impl Item for MarkdownPreviewView {
     }
 
     fn tab_actions(&self, _: EntityId, _: &App) -> TabActions {
-        TabActions::default().entry("Show Source", Box::new(CloseAndReturnToEditor))
+        TabActions::builder()
+            .entry("Show Source", Box::new(CloseAndReturnToEditor))
+            .into()
     }
 
     fn added_to_workspace(

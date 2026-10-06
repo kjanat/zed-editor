@@ -7400,32 +7400,33 @@ mod tests {
 
     #[test]
     fn test_tab_actions_double_click_entry_is_a_menu_entry() {
-        let actions = TabActions::with_double_click("First", Box::new(DoubleClickTestItem))
-            .entry("Second", Box::new(DoubleClickTestItem));
+        let actions: TabActions = TabActions::builder()
+            .entry("First", Box::new(DoubleClickTestItem))
+            .double_click_entry("Second", Box::new(DoubleClickTestItem))
+            .entry("Third", Box::new(DoubleClickTestItem))
+            .into();
 
         assert_eq!(
             actions
                 .entries()
                 .map(|(label, _)| label.as_ref())
                 .collect::<Vec<_>>(),
-            ["First", "Second"]
+            ["First", "Second", "Third"]
         );
-        let (_, first) = actions
+        let (_, second) = actions
             .entries()
-            .next()
+            .nth(1)
             .expect("the double-click entry should be in the menu");
         assert!(
             actions
                 .double_click_action()
-                .is_some_and(|action| std::ptr::addr_eq(action, first)),
-            "double-clicking should dispatch the entry the list started with"
+                .is_some_and(|action| std::ptr::addr_eq(action, second)),
+            "double-clicking should dispatch the entry declared for it, wherever it sits"
         );
-        assert!(
-            TabActions::default()
-                .entry("Only", Box::new(DoubleClickTestItem))
-                .double_click_action()
-                .is_none()
-        );
+        let without_double_click: TabActions = TabActions::builder()
+            .entry("Only", Box::new(DoubleClickTestItem))
+            .into();
+        assert!(without_double_click.double_click_action().is_none());
     }
 
     #[gpui::test]

@@ -1235,7 +1235,7 @@ impl Item for Editor {
     }
 
     fn tab_actions(&self, _item_id: EntityId, cx: &App) -> TabActions {
-        let mut actions = TabActions::default();
+        let mut actions = TabActions::builder();
 
         let is_markdown = self
             .buffer()
@@ -1263,7 +1263,7 @@ impl Item for Editor {
             actions = actions.entry("Open SVG Preview", Box::new(OpenSvgPreview));
         }
 
-        actions
+        actions.into()
     }
 
     fn preserve_preview(&self, cx: &App) -> bool {
