@@ -137,10 +137,10 @@ impl TestWindow {
         slot: impl Fn(&mut TestWindowState) -> &mut Option<Callback>,
         invoke: impl FnOnce(&mut Callback) -> R,
     ) -> Option<R> {
-        let mut callback = slot(&mut *self.0.lock()).take()?;
+        let mut callback = slot(&mut self.0.lock()).take()?;
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| invoke(&mut callback)));
-        *slot(&mut *self.0.lock()) = Some(callback);
+        *slot(&mut self.0.lock()) = Some(callback);
         Some(result.unwrap_or_else(|payload| std::panic::resume_unwind(payload)))
     }
 
