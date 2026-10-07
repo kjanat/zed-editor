@@ -32,6 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false, fetch-depth: 2 }
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with: { cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - name: Test the planner
         run: mise run test-fork-ci
       - name: Select the affected packages
@@ -72,6 +73,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with: { cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - name: Test the upstream sync
         run: mise run test-upstream-sync
   style:
@@ -102,10 +104,10 @@ jobs:
         with: { persist-credentials: false }
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         if: env.SCOPE != 'none'
-        with: { bootstrap: true, bootstrap_skip: compose }
+        with: { bootstrap: true, bootstrap_skip: compose, cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: env.SCOPE != 'none'
-        with: { shared-key: fork-ci-clippy, cache-on-failure: false }
+        with: { shared-key: fork-ci-clippy, save-if: "${{ github.ref == 'refs/heads/master' }}", cache-on-failure: false }
       - name: Clippy
         if: env.SCOPE != 'none'
         shell: bash
@@ -152,10 +154,13 @@ jobs:
       # Concurrent action startup can lock the runner's event.json on Windows.
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         if: steps.suite.outputs.run == 'true'
-        with: { bootstrap: true, bootstrap_skip: "${{ matrix.suite != 'affected' && 'compose' || '' }}" }
+        with:
+          bootstrap: true
+          bootstrap_skip: ${{ matrix.suite != 'affected' && 'compose' || '' }}
+          cache_save: ${{ github.ref == 'refs/heads/master' }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.suite.outputs.run == 'true'
-        with: { shared-key: fork-ci-tests, key: "${{ matrix.suite }}", cache-on-failure: false }
+        with: { shared-key: fork-ci-tests, save-if: "${{ github.ref == 'refs/heads/master' && matrix.suite == 'affected' }}", cache-on-failure: false }
       # The extension store test allows 60 seconds for installing the test extension.
       - name: Build the test extension
         if: >-
