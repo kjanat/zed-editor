@@ -3914,8 +3914,7 @@ impl AcpThread {
         // Worktree events that leave the directories as they were, such as opening
         // a file outside the project, must not look like a change to the thread.
         if self
-            .work_dirs
-            .as_ref()
+            .work_dirs()
             .is_some_and(|current| current.ordered_paths().eq(work_dirs.ordered_paths()))
         {
             return;

@@ -5280,6 +5280,7 @@ impl Project {
                 .request(proto::GetPathMetadata {
                     project_id: REMOTE_SERVER_PROJECT_ID,
                     path: path.to_string_lossy().into_owned(),
+                    canonicalize: false,
                 });
             cx.background_spawn(async move {
                 let metadata = request.await?;
