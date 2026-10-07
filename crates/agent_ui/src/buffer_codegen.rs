@@ -1668,6 +1668,7 @@ mod tests {
         "};
         let buffer = cx.new(|cx| Buffer::local(text, cx).with_language(rust_lang(), cx));
         let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+        cx.background_executor.run_until_parked();
         let range = buffer.read_with(cx, |buffer, cx| {
             let snapshot = buffer.snapshot(cx);
             snapshot.anchor_before(Point::new(1, 0))..snapshot.anchor_after(Point::new(4, 5))
@@ -1730,6 +1731,7 @@ mod tests {
         "};
         let buffer = cx.new(|cx| Buffer::local(text, cx).with_language(rust_lang(), cx));
         let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+        cx.background_executor.run_until_parked();
         let range = buffer.read_with(cx, |buffer, cx| {
             let snapshot = buffer.snapshot(cx);
             snapshot.anchor_before(Point::new(1, 6))..snapshot.anchor_after(Point::new(1, 6))
@@ -1794,6 +1796,7 @@ mod tests {
         );
         let buffer = cx.new(|cx| Buffer::local(text, cx).with_language(rust_lang(), cx));
         let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+        cx.background_executor.run_until_parked();
         let range = buffer.read_with(cx, |buffer, cx| {
             let snapshot = buffer.snapshot(cx);
             snapshot.anchor_before(Point::new(1, 2))..snapshot.anchor_after(Point::new(1, 2))
