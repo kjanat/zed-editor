@@ -1,5 +1,15 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 
+[tools]
+cargo-about = "0.9.2"
+dprint      = "0.58.0"
+node        = "24"
+python      = "3.14"
+
+[tools.nextest]
+version        = "0.9.146"
+version_prefix = "cargo-nextest-"
+
 [env]
 CARGO_INCREMENTAL        = "0"
 CARGO_PROFILE_DEV_DEBUG  = "0"
