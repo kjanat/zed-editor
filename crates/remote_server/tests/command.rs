@@ -147,7 +147,11 @@ fn test_remote_command_inherits_shell_environment() -> Result<()> {
     smol::block_on(async {
         let home = tempfile::tempdir()?;
         let shell_only_binary = home.path().join("shell-only-printenv");
-        std::os::unix::fs::symlink("/usr/bin/printenv", &shell_only_binary)?;
+        std::fs::write(
+            &shell_only_binary,
+            "#!/bin/sh\nexec /usr/bin/printenv \"$@\"\n",
+        )?;
+        std::fs::set_permissions(&shell_only_binary, std::fs::Permissions::from_mode(0o755))?;
         let home_path = home.path().display().to_string();
         let quoted_home = ShellKind::Posix
             .try_quote(&home_path)
