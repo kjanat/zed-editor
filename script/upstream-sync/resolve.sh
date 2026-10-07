@@ -204,6 +204,13 @@ bounded() {
 	LC_ALL=C awk -v limit="$1" '{ size += length($0) + 1; if (size > limit) exit; print }'
 }
 
+announce() {
+	cat "$1"
+	if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+		cat "$1" >>"${GITHUB_STEP_SUMMARY}"
+	fi
+}
+
 fenced() {
 	local fence
 	fence="$(bash "${here}/prepare.sh" --markdown-fence <"$1")"
@@ -275,6 +282,8 @@ verify() {
 		fi
 		cp "${artifact}"/{formatting-only,formatted-three-way,structured,lockfiles,fork-deleted,dropped-github}.txt "${output}/"
 		printf 'resolved\n' >"${output}/result"
+		printf "## Verification passed\n\nClaude's resolution passed every check. The candidate is %s.\n\n" "${commit}" >"${state}/verdict.md"
+		announce "${state}/verdict.md"
 		return 0
 	fi
 
@@ -316,6 +325,7 @@ verify() {
 		cat "${state}/failure.md"
 	} >"${output}/issue-body.md"
 	printf 'conflict\n' >"${output}/result"
+	announce "${state}/failure.md"
 }
 
 [[ $# -ge 1 ]] || usage

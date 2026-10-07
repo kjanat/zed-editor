@@ -4,7 +4,7 @@ Resolve the upstream sync merge for kjanat/zed-editor, a fork of zed-industries/
 
 - The prepare job's output is in `$RUNNER_TEMP/sync-candidate`. `sync.bundle` holds its partial merge, `conflict-report.md` describes what it resolved and what it left, and `human.txt` lists the paths that still conflict.
 - `script/upstream-sync/resolve.sh setup "$RUNNER_TEMP/sync-candidate"` turns this checkout into that merge, in progress, with the remaining conflicts unmerged.
-- `script/upstream-sync/resolve.sh check` checks for unmerged paths, conflict markers, changes to `.github`, `script/upstream-sync` or `script/clippy`, whitespace errors and formatting, compiles the whole workspace, then runs clippy and the tests of every crate with a conflicted file. The `verify` job runs the same checks again on a clean runner after you finish. `check` writes its logs to `.sync/`. A full run takes a long time, so run it in the background.
+- `script/upstream-sync/resolve.sh check` checks for unmerged paths, conflict markers, changes to `.github`, `script/upstream-sync` or `script/clippy`, whitespace errors and formatting, compiles the whole workspace, then runs clippy and the tests of every crate with a conflicted file. The `verify` job runs the same checks again on a clean runner after you finish. `check` writes its logs to `.sync/`. A full run takes a long time, so run it in the background and wait for it to exit. You are done only after `check` prints `Every check passed`. If it fails, fix the cause and run it again.
 - `.agents/skills/upstream-sync-conflict/SKILL.md` describes how a person does this merge by hand.
 - The repository has the full history of both sides.
 

@@ -196,6 +196,7 @@ class Fixture:
         return {
             **os.environ,
             "GITHUB_ACTIONS": "true",
+            "GITHUB_STEP_SUMMARY": str(self.summary),
             "MISE_TRUSTED_CONFIG_PATHS": f"{self.repository}:{self.verifier}",
             "MISE_YES": "1",
         }
@@ -227,6 +228,10 @@ class Fixture:
     @property
     def state(self) -> Path:
         return self.repository / ".sync"
+
+    @property
+    def summary(self) -> Path:
+        return self.root / "summary.md"
 
     def agent(self, files: dict[str, str], tests: str | None = None) -> None:
         for name, contents in files.items():
@@ -315,6 +320,9 @@ class ResolverTests(unittest.TestCase):
         self.assertIn(reason, body)
         self.assertIn("alpha/src/lib.rs", body)
         self.assertLessEqual(len(body.encode()), 60000)
+        summary = fixture.summary.read_text()
+        self.assertIn("## Automatic resolution failed", summary)
+        self.assertIn(reason, summary)
         return body
 
     def test_setup_rebuilds_the_exact_recorded_merge(self):
@@ -399,6 +407,9 @@ class ResolverTests(unittest.TestCase):
             git(fixture.verifier, "log", "-1", "--format=%an", head),
             "github-actions[bot]",
         )
+        summary = fixture.summary.read_text()
+        self.assertIn("## Verification passed", summary)
+        self.assertIn(git(fixture.verifier, "rev-parse", head), summary)
         merged = git(fixture.verifier, "show", f"{head}:alpha/src/lib.rs")
         self.assertNotIn("<<<<<<<", merged)
         self.assertIn('"upstream"', merged)

@@ -94,6 +94,13 @@ def gh(*arguments: str) -> str:
     return run("gh", *arguments, "--repo", REPOSITORY)
 
 
+def announce(message: str):
+    print(message)
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(summary).open("a") as file:
+            _ = file.write(f"{message}\n\n")
+
+
 def is_conflict_title(title: str):
     return (
         re.fullmatch(
@@ -103,7 +110,7 @@ def is_conflict_title(title: str):
     )
 
 
-def report(title: str, body: str):
+def report(title: str, body: str) -> str:
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as message:
         _ = message.write(body)
         message.flush()
@@ -137,9 +144,9 @@ def report(title: str, body: str):
                 edits.extend(["--add-label", "upstream-sync-conflict"])
             if edits:
                 _ = gh("issue", "edit", number, *edits)
-            _ = gh("issue", "comment", number, "--body-file", message.name)
+            return gh("issue", "comment", number, "--body-file", message.name)
         else:
-            _ = gh(
+            return gh(
                 "issue",
                 "create",
                 "--title",
@@ -230,11 +237,15 @@ def inspect_sync_pr():
     })
     state = details["mergeStateStatus"]
     if state in {"DIRTY", "BLOCKED"} or failed:
-        report(
+        issue = report(
             "Upstream sync needs attention",
             f"Sync PR: #{number}\n\nMerge state: `{state}`\n\n"
             + f"Failing checks: {', '.join(failed) or 'none'}\n\n"
             + "The next candidate will still be attempted. If the same checks fail again, review the sync PR.",
+        )
+        announce(
+            f"Sync PR #{number} needs attention: merge state `{state}`, "
+            + f"failing checks: {', '.join(failed) or 'none'}. Reported in {issue}"
         )
     return number
 
@@ -374,7 +385,7 @@ def enable_auto_merge(pull_request: str, head: str):
             time.sleep(10 * attempt)
 
 
-def open_sync_pr(directory: Path):
+def open_sync_pr(directory: Path) -> bool:
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("Unexpected repository")
     auto_merge = os.environ.get("SYNC_AUTO_MERGE") == "true"
@@ -383,40 +394,51 @@ def open_sync_pr(directory: Path):
         raise ValueError("Invalid trusted base")
     result = (directory / "result").read_text().strip()
     if result == "unchanged":
-        print("No upstream changes")
-        return
+        announce("Upstream has no commits that master lacks.")
+        return True
     _ = inspect_sync_pr()
     verify = os.environ.get("SYNC_VERIFY")
     if result == "partial" and verify == "skipped":
         if pull_request := any_open_sync_pr():
-            print(
-                f"Sync PR #{pull_request} is open; Claude resolves again after it merges"
+            announce(
+                f"Sync PR #{pull_request} is open. Claude resolves the conflicts again after it merges."
             )
-            return
-        report(
+            return True
+        issue = report(
             "Upstream sync conflict",
             (directory / "conflict-report.md").read_text()
             + f"\nClaude already tried `master` at {base} and failed. "
             + "Close this issue to let the next run try again.\n",
         )
-        return
+        announce(
+            f"Claude already tried `master` at {base} and failed. Conflict reported in {issue}"
+        )
+        return False
     if result == "partial" and verify not in (None, "success"):
         run_url = "{}/{}/actions/runs/{}".format(
             os.environ.get("GITHUB_SERVER_URL", "https://github.com"),
             REPOSITORY,
             os.environ.get("GITHUB_RUN_ID", ""),
         )
-        report(
+        issue = report(
             "Upstream sync conflict",
             (directory / "conflict-report.md").read_text()
             + "\n## Automatic resolution failed\n\n"
             + f"The `verify` job ended with `{verify}`. See {run_url}.\n\n"
             + f"<!-- claude-attempt fork={base} -->\n",
         )
-        return
+        announce(
+            f"The `verify` job ended with `{verify}`. Conflict reported in {issue}"
+        )
+        return False
     if result == "conflict":
-        report("Upstream sync conflict", (directory / "issue-body.md").read_text())
-        return
+        issue = report(
+            "Upstream sync conflict", (directory / "issue-body.md").read_text()
+        )
+        announce(
+            f"Claude's resolution failed verification. Conflict reported in {issue}"
+        )
+        return False
     if result not in ("clean", "resolved"):
         raise ValueError("Invalid preparation result")
 
@@ -436,7 +458,8 @@ def open_sync_pr(directory: Path):
     try:
         head = validate(directory / "sync.bundle", base)
     except ValueError as error:
-        report("Upstream sync requires security review", str(error))
+        issue = report("Upstream sync requires security review", str(error))
+        announce(f"{error}. Reported in {issue}")
         raise
 
     branch = BRANCH
@@ -484,6 +507,7 @@ def open_sync_pr(directory: Path):
         _ = message.write(body)
         message.flush()
         if number:
+            url = f"https://github.com/{REPOSITORY}/pull/{number}"
             assignee_count = gh(
                 "pr",
                 "view",
@@ -502,7 +526,7 @@ def open_sync_pr(directory: Path):
                 *(("--add-assignee", ASSIGNEE) if assignee_count == "0" else ()),
             )
         else:
-            _ = gh(
+            url = gh(
                 "pr",
                 "create",
                 "--head",
@@ -518,11 +542,16 @@ def open_sync_pr(directory: Path):
                 "--assignee",
                 ASSIGNEE,
             )
+    announce(
+        f"{'Updated' if number else 'Opened'} the sync PR {url} with `{result}` merge {head}."
+    )
     if auto_merge:
         enable_auto_merge(number or branch, head)
+        announce("Auto-merge is on. The PR merges once the required checks pass.")
     else:
-        print("Auto-merge skipped: SYNC_TOKEN is not configured")
+        announce("Auto-merge was not requested. Merge the PR by hand.")
+    return True
 
 
 if __name__ == "__main__":
-    open_sync_pr(Path(sys.argv[1]).resolve())
+    sys.exit(0 if open_sync_pr(Path(sys.argv[1]).resolve()) else 1)

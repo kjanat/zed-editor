@@ -1,10 +1,12 @@
 import importlib.util
+import io
 import os
 import subprocess
 import tempfile
 import textwrap
 import time
 import unittest
+from contextlib import redirect_stdout
 from functools import cached_property
 from itertools import takewhile
 from pathlib import Path
@@ -17,7 +19,7 @@ class SyncPr(Protocol):
 
     def run(self, *arguments: str, cwd: Path | None = None) -> str: ...
     def validate(self, candidate: Path, base: str) -> str: ...
-    def report(self, title: str, body: str) -> None: ...
+    def report(self, title: str, body: str) -> str: ...
     def inspect_sync_pr(self) -> str: ...
     def resolution_details(self, directory: Path) -> str: ...
     def dropped_automation(self, directory: Path) -> str: ...
@@ -26,7 +28,7 @@ class SyncPr(Protocol):
         self, resolutions: str = "", *, auto_merge: bool = False
     ) -> str: ...
     def enable_auto_merge(self, pull_request: str, head: str) -> None: ...
-    def open_sync_pr(self, directory: Path) -> None: ...
+    def open_sync_pr(self, directory: Path) -> bool: ...
 
 
 class Exporter:
@@ -69,6 +71,15 @@ def load(name: str) -> object:
 
 exporter = Exporter()
 sync_pr = cast(SyncPr, load("open-sync-pr"))
+ISSUE = "https://github.com/kjanat/zed-editor/issues/9"
+PULL = "https://github.com/kjanat/zed-editor/pull/7"
+
+
+def setUpModule():
+    environment = patch.dict(os.environ)
+    environment.start()
+    unittest.addModuleCleanup(environment.stop)
+    _ = os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
 
 class ExportTests(unittest.TestCase):
@@ -452,13 +463,17 @@ class ReportingTests(unittest.TestCase):
                 {"name": "pending", "conclusion": None},
             ],
         }
+        printed = io.StringIO()
         with (
             patch.object(sync_pr, "gh", side_effect=["42", json.dumps(details)]),
-            patch.object(sync_pr, "report") as report,
+            patch.object(sync_pr, "report", return_value=ISSUE) as report,
+            redirect_stdout(printed),
         ):
             self.assertEqual(sync_pr.inspect_sync_pr(), "42")
         self.assertEqual(report.call_args.args[0], "Upstream sync needs attention")
         self.assertIn("Failing checks: tests", cast(str, report.call_args.args[1]))
+        self.assertIn("Sync PR #42 needs attention", printed.getvalue())
+        self.assertIn(ISSUE, printed.getvalue())
 
     def test_dirty_and_blocked_prs_alert_without_failed_checks(self):
         import json
@@ -526,6 +541,72 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Auto-merge is enabled with a merge commit", body)
         self.assertNotIn("Auto-merge is enabled", manual_body)
         self.assertIn("manual action", manual_body)
+
+
+class OutcomeTests(unittest.TestCase):
+    def publish(
+        self, result: str, verify: str | None = None, open_pr: str = ""
+    ) -> tuple[bool, str, str]:
+        base, head = "a" * 40, "b" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            summary = directory / "summary.md"
+            _ = (directory / "result").write_text(result)
+            _ = (directory / "issue-body.md").write_text("Validation failed.\n")
+            _ = (directory / "conflict-report.md").write_text("## Needs a human\n")
+            for name in (
+                "formatting-only.txt",
+                "formatted-three-way.txt",
+                "structured.txt",
+                "lockfiles.txt",
+                "fork-deleted.txt",
+            ):
+                _ = (directory / name).write_text("")
+            environment = {
+                "GITHUB_REPOSITORY": sync_pr.REPOSITORY,
+                "GITHUB_SHA": base,
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+            if verify is not None:
+                environment["SYNC_VERIFY"] = verify
+            printed = io.StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(sync_pr, "inspect_sync_pr", return_value=""),
+                patch.object(sync_pr, "any_open_sync_pr", return_value=open_pr),
+                patch.object(sync_pr, "open_pr_from", return_value=""),
+                patch.object(sync_pr, "validate", return_value=head),
+                patch.object(
+                    sync_pr,
+                    "git",
+                    side_effect=["", base, "", "", f"{head} refs/heads/sync/upstream"],
+                ),
+                patch.object(sync_pr, "sync_pr_body", return_value="body"),
+                patch.object(sync_pr, "gh", return_value=PULL),
+                patch.object(sync_pr, "report", return_value=ISSUE) as report,
+                redirect_stdout(printed),
+            ):
+                published = sync_pr.open_sync_pr(directory)
+                self.assertEqual(report.called, not published)
+            return published, printed.getvalue(), summary.read_text()
+
+    def test_every_outcome_is_printed_and_summarized(self):
+        for result, verify, open_pr, published, expected in (
+            ("unchanged", None, "", True, "no commits that master lacks"),
+            ("clean", None, "", True, PULL),
+            ("resolved", "success", "", True, PULL),
+            ("partial", "skipped", "5", True, "Sync PR #5 is open"),
+            ("partial", "skipped", "", False, ISSUE),
+            ("partial", "failure", "", False, ISSUE),
+            ("conflict", "success", "", False, ISSUE),
+        ):
+            with self.subTest(result=result, verify=verify, open_pr=open_pr):
+                outcome, printed, summary = self.publish(result, verify, open_pr)
+                self.assertEqual(outcome, published)
+                self.assertIn(expected, printed)
+                self.assertIn(expected, summary)
+                if result in ("clean", "resolved"):
+                    self.assertIn("Merge the PR by hand", summary)
 
 
 class AutoMergeTests(unittest.TestCase):
