@@ -48,7 +48,6 @@
 		"**/target",
 		"**/test_data",
 		"crates/gpui_web/examples/hello_web/.cargo/config.toml",
-		"nix/livekit-libwebrtc/update.sh",
 		"script/lib/deploy-helpers.sh",
 	],
 	"plugins": [
