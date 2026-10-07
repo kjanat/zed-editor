@@ -174,7 +174,12 @@ language, `"..."` will automatically include it. If you want full control over
 which servers are enabled, omit `"..."` — only the servers you list by name will
 be used.
 
-Some language servers are disabled by default for some of their languages, e.g. `typescript-language-server` for TypeScript, or `ty` for Python. Extensions can also mark their language servers as [disabled by default](./extensions/languages.md#opt-in-language-servers). Such servers are never included by `"..."`, regardless of your configuration, and only start when you list them by name, e.g. `["my-alternative-server", "..."]`.
+Some language servers are disabled by default for some of their languages, e.g.
+`typescript-language-server` for TypeScript, or `ty` for Python. Extensions can
+also mark their language servers as
+[disabled by default](./extensions/languages.md#opt-in-language-servers). Such
+servers are never included by `"..."`, regardless of your configuration, and
+only start when you list them by name, e.g. `["my-alternative-server", "..."]`.
 
 #### Examples
 
@@ -586,6 +591,13 @@ parameter names or inferred types. Configure inlay hints in your
   "show_other_hints": true
 }
 ```
+
+Hover a hint to see its tooltip, and double-click it to insert it into the code,
+if the language server provides the edits for that (for example, rust-analyzer's
+type hints). If a hint has a command, clicking it runs that command instead.
+
+{#action editor::AcceptInlayHint} inserts the first editable hint within the
+selection, one hint per invocation.
 
 For language-specific inlay hint settings, refer to the documentation for each
 language.
