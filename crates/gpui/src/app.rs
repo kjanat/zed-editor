@@ -6,6 +6,7 @@ use std::{
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
+    panic::{self, AssertUnwindSafe, Location},
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering::SeqCst},
@@ -32,6 +33,7 @@ use gpui_util::{ResultExt, debug_panic};
 #[cfg(any(test, feature = "test-support"))]
 pub use headless_app_context::*;
 use http_client::{HttpClient, Url};
+pub(crate) use lease_registry::{LeaseRegistry, LeaseTarget};
 use smallvec::SmallVec;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_app::*;
@@ -66,6 +68,7 @@ mod context;
 mod entity_map;
 #[cfg(any(test, feature = "test-support"))]
 mod headless_app_context;
+mod lease_registry;
 #[cfg(any(test, feature = "test-support"))]
 mod test_app;
 #[cfg(any(test, feature = "test-support"))]
@@ -330,6 +333,7 @@ impl Application {
 
 type Handler = Box<dyn FnMut(&mut App) -> bool + 'static>;
 type Listener = Box<dyn FnMut(&dyn Any, &mut App) -> bool + 'static>;
+pub(crate) type GlobalActionListener = Rc<dyn Fn(&dyn Any, DispatchPhase, &mut App)>;
 type MissingGlyphCallback = Box<dyn FnMut(&[MissingGlyph], &mut App) + 'static>;
 pub(crate) type KeystrokeObserver =
     Box<dyn FnMut(&KeystrokeEvent, &mut Window, &mut App) -> bool + 'static>;
@@ -777,9 +781,9 @@ pub struct App {
     pub(crate) keymap: Rc<RefCell<Keymap>>,
     pub(crate) keyboard_layout: Box<dyn PlatformKeyboardLayout>,
     pub(crate) keyboard_mapper: Rc<dyn PlatformKeyboardMapper>,
-    pub(crate) global_action_listeners:
-        TypeIdHashMap<Vec<Rc<dyn Fn(&dyn Any, DispatchPhase, &mut Self)>>>,
+    pub(crate) global_action_listeners: TypeIdHashMap<Vec<GlobalActionListener>>,
     pending_effects: VecDeque<Effect>,
+    after_effects_settle: VecDeque<Box<dyn FnOnce(&mut App)>>,
 
     pub(crate) observers: SubscriberSet<EntityId, Handler>,
     pub(crate) event_listeners: SubscriberSet<EntityId, (TypeId, Listener)>,
@@ -844,6 +848,7 @@ pub struct App {
     /// accesskit APIs will be called when this flag is set.
     pub(crate) accessibility_force_disabled: bool,
     pending_updates: usize,
+    pub(crate) leases: LeaseRegistry,
     quit_mode: QuitMode,
     quitting: bool,
 
@@ -887,6 +892,7 @@ impl App {
                 mode: GpuiMode::Production,
                 actions: Rc::new(ActionRegistry::default()),
                 pending_updates: 0,
+                leases: LeaseRegistry::default(),
                 active_drag: None,
                 platform_owned_drag: None,
                 background_executor,
@@ -911,6 +917,7 @@ impl App {
                 keyboard_mapper,
                 global_action_listeners: Default::default(),
                 pending_effects: VecDeque::new(),
+                after_effects_settle: VecDeque::new(),
                 pending_notifications: FxHashSet::default(),
                 pending_global_notifications: Default::default(),
                 observers: SubscriberSet::new(),
@@ -1239,9 +1246,16 @@ impl App {
     #[inline(always)]
     pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
         self.start_update();
-        let result = update(self);
-        self.finish_update();
-        result
+        match panic::catch_unwind(AssertUnwindSafe(|| update(self))) {
+            Ok(result) => {
+                self.finish_update();
+                result
+            }
+            Err(payload) => {
+                self.abandon_update();
+                panic::resume_unwind(payload)
+            }
+        }
     }
 
     pub(crate) fn start_update(&mut self) {
@@ -1250,10 +1264,25 @@ impl App {
 
     #[inline(never)]
     pub(crate) fn finish_update(&mut self) {
-        if self.pending_updates == 1 {
-            self.flush_effects();
+        let flushed = if self.pending_updates == 1 {
+            panic::catch_unwind(AssertUnwindSafe(|| self.flush_effects()))
+        } else {
+            Ok(())
+        };
+        match flushed {
+            Ok(()) => self.pending_updates -= 1,
+            Err(payload) => {
+                self.abandon_update();
+                panic::resume_unwind(payload)
+            }
         }
+    }
+
+    pub(crate) fn abandon_update(&mut self) {
         self.pending_updates -= 1;
+        if self.pending_updates == 0 {
+            self.after_effects_settle.clear();
+        }
     }
 
     /// Arrange a callback to be invoked when the given entity calls `notify` on its respective context.
@@ -1434,18 +1463,28 @@ impl App {
             let handle = WindowHandle::new(id);
             match Window::new(handle.into(), options, cx) {
                 Ok(mut window) => {
-                    cx.window_update_stack.push(id);
-                    let root_view = build_root_view(&mut window, cx);
-                    cx.window_update_stack.pop();
-                    window.root.replace(root_view.into());
-                    window.defer(cx, |window: &mut Window, cx| window.appearance_changed(cx));
+                    let built = panic::catch_unwind(AssertUnwindSafe(|| {
+                        cx.window_update_stack.push(id);
+                        let root_view = build_root_view(&mut window, cx);
+                        cx.window_update_stack.pop();
+                        window.root.replace(root_view.into());
+                        window.defer(cx, |window: &mut Window, cx| window.appearance_changed(cx));
 
-                    // allow a window to draw at least once before returning
-                    // this didn't cause any issues on non windows platforms as it seems we always won the race to on_request_frame
-                    // on windows we quite frequently lose the race and return a window that has never rendered, which leads to a crash
-                    // where DispatchTree::root_node_id asserts on empty nodes
-                    let clear = window.draw(cx);
-                    clear.clear(cx);
+                        // allow a window to draw at least once before returning
+                        // this didn't cause any issues on non windows platforms as it seems we always won the race to on_request_frame
+                        // on windows we quite frequently lose the race and return a window that has never rendered, which leads to a crash
+                        // where DispatchTree::root_node_id asserts on empty nodes
+                        let clear = window.draw(cx);
+                        clear.clear(cx);
+                    }));
+                    if let Err(payload) = built {
+                        if cx.window_update_stack.last() == Some(&id) {
+                            cx.window_update_stack.pop();
+                        }
+                        cx.windows.remove(id);
+                        SystemWindowTabController::remove_tab(cx, id);
+                        panic::resume_unwind(payload);
+                    }
 
                     cx.window_handles.insert(id, window.handle);
                     cx.windows.get_mut(id).unwrap().replace(Box::new(window));
@@ -1906,6 +1945,11 @@ impl App {
                     }
                 }
             } else {
+                if let Some(callback) = self.after_effects_settle.pop_front() {
+                    callback(self);
+                    continue;
+                }
+
                 #[cfg(any(test, feature = "test-support"))]
                 if matches!(self.mode, GpuiMode::Test { .. }) {
                     for window in self
@@ -2030,6 +2074,7 @@ impl App {
         tid: TypeId,
         window: Option<WindowId>,
     ) {
+        let window = window.filter(|id| self.windows.contains_key(*id));
         // Seed the entity's current window from its creation context so
         // `with_window` resolves correctly before the entity has ever been
         // rendered.
@@ -2207,6 +2252,16 @@ impl App {
         });
     }
 
+    /// Runs `f` once the current update has ended and every effect queued before and during
+    /// it, including the effects of those effects, has been applied. Runs before tasks that the
+    /// update spawned. Drops `f` when the outermost update or one of those effects panics.
+    pub(crate) fn defer_until_effects_settle(&mut self, f: impl FnOnce(&mut App) + 'static) {
+        self.after_effects_settle.push_back(Box::new(f));
+        if self.pending_updates == 0 {
+            self.update(|_| {});
+        }
+    }
+
     /// Accessor for the application's asset source, which is provided when constructing the `App`.
     pub fn asset_source(&self) -> &Arc<dyn AssetSource> {
         &self.asset_source
@@ -2253,22 +2308,28 @@ impl App {
         })
     }
 
-    /// Check whether a global of the given type has been assigned.
+    /// Check whether a global of the given type has been assigned, including while it is being
+    /// updated.
     pub fn has_global<G: Global>(&self) -> bool {
-        self.globals_by_type.contains_key(&TypeId::of::<G>())
+        let global_type = TypeId::of::<G>();
+        self.globals_by_type.contains_key(&global_type)
+            || self.leases.contains(LeaseTarget::Global(global_type))
     }
 
     /// Access the global of the given type. Panics if a global for that type has not been assigned.
     #[track_caller]
     pub fn global<G: Global>(&self) -> &G {
-        self.globals_by_type
-            .get(&TypeId::of::<G>())
-            .map(|any_state| any_state.downcast_ref::<G>().unwrap())
-            .unwrap_or_else(|| panic!("no state of type {} exists", type_name::<G>()))
+        match self.globals_by_type.get(&TypeId::of::<G>()) {
+            Some(any_state) => any_state.downcast_ref::<G>().unwrap(),
+            None => self.missing_global_panic::<G>("read", Location::caller()),
+        }
     }
 
-    /// Access the global of the given type if a value has been assigned.
+    /// Access the global of the given type if a value has been assigned. Panics if the global is
+    /// being updated.
+    #[track_caller]
     pub fn try_global<G: Global>(&self) -> Option<&G> {
+        self.assert_global_not_leased::<G>("read", Location::caller());
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -2278,6 +2339,9 @@ impl App {
     #[track_caller]
     pub fn global_mut<G: Global>(&mut self) -> &mut G {
         let global_type = TypeId::of::<G>();
+        if !self.globals_by_type.contains_key(&global_type) {
+            self.missing_global_panic::<G>("update", Location::caller())
+        }
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
         self.globals_by_type
             .get_mut(&global_type)
@@ -2286,8 +2350,10 @@ impl App {
     }
 
     /// Access the global of the given type mutably. A default value is assigned if a global of this type has not
-    /// yet been assigned.
+    /// yet been assigned. Panics if the global is being updated.
+    #[track_caller]
     pub fn default_global<G: Global + Default>(&mut self) -> &mut G {
+        self.assert_global_not_leased::<G>("update", Location::caller());
         let global_type = TypeId::of::<G>();
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
         self.globals_by_type
@@ -2297,29 +2363,39 @@ impl App {
             .unwrap()
     }
 
-    /// Sets the value of the global of the given type.
+    /// Sets the value of the global of the given type. Panics if the global is being updated.
+    #[track_caller]
     pub fn set_global<G: Global>(&mut self, global: G) {
+        self.assert_global_not_leased::<G>("replace", Location::caller());
         let global_type = TypeId::of::<G>();
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
         self.globals_by_type.insert(global_type, Box::new(global));
     }
 
-    /// Clear all stored globals. Does not notify global observers.
+    /// Clear all stored globals. Does not notify global observers. Panics if a global is being
+    /// updated.
     #[cfg(any(test, feature = "test-support"))]
+    #[track_caller]
     pub fn clear_globals(&mut self) {
+        if let Some((target, type_name)) = self.leases.innermost_global() {
+            self.leases
+                .reentry_panic("clear", target, type_name, Location::caller())
+        }
         self.globals_by_type.drain();
     }
 
-    /// Remove the global of the given type from the app context. Does not notify global observers.
+    /// Remove the global of the given type from the app context and notify its observers. Panics
+    /// if the global is being updated or does not exist.
+    #[track_caller]
     pub fn remove_global<G: Global>(&mut self) -> G {
+        let location = Location::caller();
+        self.assert_global_not_leased::<G>("remove", location);
         let global_type = TypeId::of::<G>();
+        let Some(global) = self.globals_by_type.remove(&global_type) else {
+            self.missing_global_panic::<G>("remove", location)
+        };
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
-        *self
-            .globals_by_type
-            .remove(&global_type)
-            .unwrap_or_else(|| panic!("no global added for {}", type_name::<G>()))
-            .downcast()
-            .unwrap()
+        *global.downcast().unwrap()
     }
 
     /// Register a callback to be invoked when a global of the given type is updated.
@@ -2341,20 +2417,48 @@ impl App {
     /// Move the global of the given type to the stack.
     #[track_caller]
     pub(crate) fn lease_global<G: Global>(&mut self) -> GlobalLease<G> {
-        GlobalLease::new(
-            self.globals_by_type
-                .remove(&TypeId::of::<G>())
-                .with_context(|| format!("no global registered of type {}", type_name::<G>()))
-                .unwrap(),
-        )
+        let location = Location::caller();
+        let global_type = TypeId::of::<G>();
+        let Some(global) = self.globals_by_type.remove(&global_type) else {
+            self.missing_global_panic::<G>("update", location)
+        };
+        self.leases
+            .acquire(LeaseTarget::Global(global_type), type_name::<G>(), location);
+        GlobalLease::new(global)
     }
 
     /// Restore the global of the given type after it is moved to the stack.
     pub(crate) fn end_global_lease<G: Global>(&mut self, lease: GlobalLease<G>) {
         let global_type = TypeId::of::<G>();
 
+        self.leases.release(LeaseTarget::Global(global_type));
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
         self.globals_by_type.insert(global_type, lease.global);
+    }
+
+    #[track_caller]
+    fn assert_global_not_leased<G: Global>(
+        &self,
+        operation: &str,
+        location: &'static Location<'static>,
+    ) {
+        let target = LeaseTarget::Global(TypeId::of::<G>());
+        if self.leases.contains(target) {
+            self.leases
+                .reentry_panic(operation, target, type_name::<G>(), location)
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[track_caller]
+    fn missing_global_panic<G: Global>(
+        &self,
+        operation: &str,
+        location: &'static Location<'static>,
+    ) -> ! {
+        self.assert_global_not_leased::<G>(operation, location);
+        panic!("no global registered of type {}", type_name::<G>())
     }
 
     pub(crate) fn new_entity_observer(
@@ -2715,48 +2819,46 @@ impl App {
 
     fn dispatch_global_action(&mut self, action: &dyn Action) {
         self.propagate_event = true;
+        let action_type = action.as_any().type_id();
 
-        if let Some(mut global_listeners) = self
-            .global_action_listeners
-            .remove(&action.as_any().type_id())
-        {
-            for listener in &global_listeners {
-                listener(action.as_any(), DispatchPhase::Capture, self);
-                if !self.propagate_event {
+        self.with_global_action_listeners(action_type, |listeners, cx| {
+            for listener in listeners {
+                listener(action.as_any(), DispatchPhase::Capture, cx);
+                if !cx.propagate_event {
                     break;
                 }
             }
+        });
 
-            global_listeners.extend(
-                self.global_action_listeners
-                    .remove(&action.as_any().type_id())
-                    .unwrap_or_default(),
-            );
-
-            self.global_action_listeners
-                .insert(action.as_any().type_id(), global_listeners);
+        if self.propagate_event {
+            self.with_global_action_listeners(action_type, |listeners, cx| {
+                for listener in listeners.iter().rev() {
+                    listener(action.as_any(), DispatchPhase::Bubble, cx);
+                    if !cx.propagate_event {
+                        break;
+                    }
+                }
+            });
         }
+    }
 
-        if self.propagate_event
-            && let Some(mut global_listeners) = self
-                .global_action_listeners
-                .remove(&action.as_any().type_id())
-        {
-            for listener in global_listeners.iter().rev() {
-                listener(action.as_any(), DispatchPhase::Bubble, self);
-                if !self.propagate_event {
-                    break;
-                }
-            }
-
-            global_listeners.extend(
-                self.global_action_listeners
-                    .remove(&action.as_any().type_id())
-                    .unwrap_or_default(),
-            );
-
+    pub(crate) fn with_global_action_listeners(
+        &mut self,
+        action_type: TypeId,
+        invoke: impl FnOnce(&[GlobalActionListener], &mut App),
+    ) {
+        let Some(mut listeners) = self.global_action_listeners.remove(&action_type) else {
+            return;
+        };
+        let invoked = panic::catch_unwind(AssertUnwindSafe(|| invoke(&listeners, self)));
+        listeners.extend(
             self.global_action_listeners
-                .insert(action.as_any().type_id(), global_listeners);
+                .remove(&action_type)
+                .unwrap_or_default(),
+        );
+        self.global_action_listeners.insert(action_type, listeners);
+        if let Err(payload) = invoked {
+            panic::resume_unwind(payload);
         }
     }
 
@@ -3027,7 +3129,20 @@ impl App {
             let root_view = window.root.clone().unwrap();
 
             cx.window_update_stack.push(window.handle.id);
-            update(Some((root_view, &mut window, cx)));
+            #[cfg(feature = "profiler")]
+            let profiler_depth = window.window_profiler.activity_depth();
+            let updated = panic::catch_unwind(AssertUnwindSafe(|| {
+                update(Some((root_view, &mut window, cx)))
+            }));
+            if let Err(payload) = updated {
+                #[cfg(feature = "profiler")]
+                window.window_profiler.unwind_to(profiler_depth);
+                cx.window_update_stack.pop();
+                if let Some(slot) = cx.windows.get_mut(window_id) {
+                    slot.replace(window);
+                }
+                panic::resume_unwind(payload);
+            }
             fn trail(window_id: WindowId, window: Box<Window>, cx: &mut App) -> Option<()> {
                 cx.window_update_stack.pop();
 
@@ -3077,14 +3192,48 @@ impl App {
     fn update_entity_erased(
         &mut self,
         handle: &AnyEntity,
-        entity_type: &str,
+        entity_type: &'static str,
+        location: &'static Location<'static>,
         update: &mut dyn FnMut(&mut dyn Any, &mut App),
     ) {
         self.update(|cx| {
-            let mut lease = cx.entities.lease_erased(handle, entity_type);
-            update(lease.entity.as_deref_mut().unwrap(), cx);
-            cx.entities.end_lease_erased(handle.entity_id, lease);
+            let mut lease = cx
+                .entities
+                .lease_erased(handle, entity_type, location, &mut cx.leases);
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                update(lease.entity.as_deref_mut().unwrap(), cx)
+            }));
+            cx.entities
+                .end_lease_erased(handle.entity_id, lease, &mut cx.leases);
+            if let Err(payload) = result {
+                panic::resume_unwind(payload);
+            }
         });
+    }
+
+    /// Updates the entity like [`AppContext::update_entity`], attributing the
+    /// update to `location`.
+    pub(crate) fn update_entity_at<T: 'static, R>(
+        &mut self,
+        handle: &Entity<T>,
+        location: &'static Location<'static>,
+        update: impl FnOnce(&mut T, &mut Context<T>) -> R,
+    ) -> R {
+        let mut update = Some(update);
+        let mut result = None;
+        self.update_entity_erased(handle, type_name::<T>(), location, &mut |entity, cx| {
+            let value = update.take().unwrap()(
+                entity.downcast_mut::<T>().unwrap(),
+                &mut Context::new_context(cx, handle.downgrade()),
+            );
+            result = Some(value);
+        });
+        result.unwrap()
+    }
+
+    /// Whether an entity or global is being updated, so its state is out of the app.
+    pub(crate) fn has_active_leases(&self) -> bool {
+        !self.leases.is_empty()
     }
 
     #[inline(never)]
@@ -3142,16 +3291,7 @@ impl AppContext for App {
         handle: &Entity<T>,
         update: impl FnOnce(&mut T, &mut Context<T>) -> R,
     ) -> R {
-        let mut update = Some(update);
-        let mut result = None;
-        self.update_entity_erased(handle, type_name::<T>(), &mut |entity, cx| {
-            let value = update.take().unwrap()(
-                entity.downcast_mut::<T>().unwrap(),
-                &mut Context::new_context(cx, handle.downgrade()),
-            );
-            result = Some(value);
-        });
-        result.unwrap()
+        self.update_entity_at(handle, Location::caller(), update)
     }
 
     fn as_mut<'a, T>(&'a mut self, handle: &Entity<T>) -> GpuiBorrow<'a, T>
@@ -3166,7 +3306,7 @@ impl AppContext for App {
     where
         T: 'static,
     {
-        let entity = self.entities.read(handle);
+        let entity = self.entities.read(handle, &self.leases);
         read(entity, self)
     }
 
@@ -3397,9 +3537,10 @@ pub struct GpuiBorrow<'a, T> {
 }
 
 impl<'a, T: 'static> GpuiBorrow<'a, T> {
+    #[track_caller]
     fn new(inner: Entity<T>, app: &'a mut App) -> Self {
+        let lease = app.entities.lease(&inner, &mut app.leases);
         app.start_update();
-        let lease = app.entities.lease(&inner);
         Self {
             inner: Some(lease),
             app,
@@ -3437,8 +3578,12 @@ impl<'a, T> Drop for GpuiBorrow<'a, T> {
     fn drop(&mut self) {
         let lease = self.inner.take().unwrap();
         self.app.notify(lease.id);
-        self.app.entities.end_lease(lease);
-        self.app.finish_update();
+        self.app.entities.end_lease(lease, &mut self.app.leases);
+        if std::thread::panicking() {
+            self.app.abandon_update();
+        } else {
+            self.app.finish_update();
+        }
     }
 }
 
@@ -3455,8 +3600,8 @@ mod test {
     use std::os::unix::ffi::OsStringExt;
 
     use crate::{
-        AppContext, Context, Empty, FallbackFontClass, IntoElement, MissingGlyph, Render,
-        TestAppContext, Window,
+        App, AppContext, BorrowAppContext, Context, Empty, Entity, FallbackFontClass, Global,
+        IntoElement, MissingGlyph, Render, TestAppContext, Window,
     };
 
     struct RenderCounter(Rc<Cell<usize>>);
@@ -3599,6 +3744,598 @@ mod test {
         });
 
         assert_eq!(*observation_count.borrow(), 2);
+    }
+
+    #[derive(Default)]
+    struct TestGlobal(usize);
+
+    impl Global for TestGlobal {}
+
+    #[test]
+    fn test_active_leases_follow_nested_entity_and_global_updates() {
+        let cx = TestAppContext::single();
+        let (outer, inner) = cx.update(|cx| (cx.new(|_| ()), cx.new(|_| ())));
+        cx.update(|cx| cx.set_global(TestGlobal(0)));
+
+        cx.update(|cx| {
+            assert!(!cx.has_active_leases());
+            outer.update(cx, |_, cx| {
+                inner.update(cx, |_, cx| assert!(cx.has_active_leases()));
+                assert!(cx.has_active_leases());
+            });
+            assert!(!cx.has_active_leases());
+            cx.update_global::<TestGlobal, _>(|_, cx| assert!(cx.has_active_leases()));
+            assert!(!cx.has_active_leases());
+        });
+    }
+
+    fn panic_message(access: impl FnOnce()) -> String {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(access))
+            .expect_err("the access should panic");
+        panic
+            .downcast_ref::<String>()
+            .cloned()
+            .expect("the panic message should be formatted")
+    }
+
+    fn assert_app_recovered(cx: &TestAppContext) {
+        let deferred = Rc::new(Cell::new(false));
+        cx.update(|cx| {
+            assert!(
+                !cx.has_active_leases(),
+                "an update that panicked should have ended"
+            );
+            let deferred = deferred.clone();
+            cx.defer(move |_| deferred.set(true));
+        });
+        assert!(
+            deferred.get(),
+            "effects should flush after an update that panicked"
+        );
+    }
+
+    struct Counter(usize);
+
+    impl Render for Counter {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Empty
+        }
+    }
+
+    #[gpui::test]
+    fn test_entity_listener_runs_outside_its_entity_update(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Counter(0));
+        let counter = window.root(cx).unwrap();
+        let listener = counter.update(cx, |_, cx| {
+            cx.entity_listener(|counter: Entity<Counter>, increment: &usize, _, cx| {
+                counter.update(cx, |counter, _| counter.0 += increment);
+            })
+        });
+
+        cx.update_window(window.into(), |_, window, cx| listener(&2, window, cx))
+            .unwrap();
+
+        assert_eq!(counter.read_with(cx, |counter, _| counter.0), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "an entity_listener callback started while")]
+    fn test_entity_listener_refuses_to_run_inside_another_update() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, _| Counter(0));
+        let counter = window.root(&mut cx).unwrap();
+        let outer = cx.update(|cx| cx.new(|_| ()));
+        let listener = counter.update(&mut cx, |_, cx| {
+            cx.entity_listener(|_: Entity<Counter>, _: &(), _, _| {})
+        });
+
+        cx.update_window(window.into(), |_, window, cx| {
+            outer.update(cx, |_, cx| listener(&(), window, cx))
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_reentrant_entity_read_panic_locates_both_accesses() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let mut update_line = 0;
+        let mut read_line = 0;
+
+        let message = panic_message(|| {
+            cx.update(|cx| {
+                update_line = line!() + 1;
+                entity.update(cx, |_, cx| {
+                    read_line = line!() + 1;
+                    entity.read(cx);
+                })
+            })
+        });
+
+        assert!(
+            message.contains(&format!("\nread at: {}:{read_line}:", file!())),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("\nexisting update at: {}:{update_line}:", file!())),
+            "{message}"
+        );
+        assert_app_recovered(&cx);
+        cx.update(|cx| {
+            entity.read(cx);
+        });
+    }
+
+    #[test]
+    fn test_reentrant_entity_update_panic_locates_both_updates() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let mut outer_line = 0;
+        let mut inner_line = 0;
+
+        let message = panic_message(|| {
+            cx.update(|cx| {
+                outer_line = line!() + 1;
+                entity.update(cx, |_, cx| {
+                    inner_line = line!() + 1;
+                    entity.update(cx, |_, _| {})
+                })
+            })
+        });
+
+        assert!(
+            message.contains(&format!("\nupdate at: {}:{inner_line}:", file!())),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("\nexisting update at: {}:{outer_line}:", file!())),
+            "{message}"
+        );
+        assert_app_recovered(&cx);
+        cx.update(|cx| entity.update(cx, |_, _| {}));
+    }
+
+    struct Node;
+
+    #[test]
+    fn test_reentrant_entity_access_panic_lists_active_updates_by_entity() {
+        let cx = TestAppContext::single();
+        let (first, second) = cx.update(|cx| (cx.new(|_| Node), cx.new(|_| Node)));
+        let mut first_line = 0;
+        let mut second_line = 0;
+
+        let message = panic_message(|| {
+            cx.update(|cx| {
+                first_line = line!() + 1;
+                first.update(cx, |_, cx| {
+                    second_line = line!() + 1;
+                    second.update(cx, |_, cx| {
+                        first.read(cx);
+                    })
+                })
+            })
+        });
+
+        let entry = |entity: &Entity<Node>, line: u32| {
+            format!(
+                "\n  {} #{} at {}:{line}:",
+                std::any::type_name::<Node>(),
+                entity.entity_id(),
+                file!()
+            )
+        };
+        let first_position = message.find(&entry(&first, first_line));
+        let second_position = message.find(&entry(&second, second_line));
+        assert!(
+            first_position.is_some() && second_position.is_some(),
+            "{message}"
+        );
+        assert!(first_position < second_position, "{message}");
+        assert_app_recovered(&cx);
+    }
+
+    #[gpui::test]
+    fn test_window_survives_a_panic_in_its_update(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Counter(0));
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            window.update(cx, |_, _, _| panic!("the update failed"))
+        }));
+
+        assert!(panic.is_err());
+        window
+            .update(cx, |counter, _, _| counter.0 += 1)
+            .expect("the window should be back in the app");
+        assert!(cx.app.borrow().window_update_stack.is_empty());
+        assert_eq!(window.read_with(cx, |counter, _| counter.0).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_global_survives_a_panic_in_its_update() {
+        let cx = TestAppContext::single();
+        cx.update(|cx| cx.set_global(TestGlobal(1)));
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cx.update(|cx| cx.update_global::<TestGlobal, ()>(|_, _| panic!("the update failed")))
+        }));
+
+        assert!(panic.is_err());
+        assert_app_recovered(&cx);
+        cx.update(|cx| assert_eq!(cx.global::<TestGlobal>().0, 1));
+    }
+
+    #[test]
+    fn test_reentrant_global_read_panic_locates_both_accesses() {
+        let cx = TestAppContext::single();
+        cx.update(|cx| cx.set_global(TestGlobal(1)));
+        let mut update_line = 0;
+        let mut read_line = 0;
+
+        let message = panic_message(|| {
+            cx.update(|cx| {
+                update_line = line!() + 1;
+                cx.update_global::<TestGlobal, _>(|_, cx| {
+                    read_line = line!() + 1;
+                    cx.global::<TestGlobal>();
+                })
+            })
+        });
+
+        assert!(
+            message.contains(&format!("\nread at: {}:{read_line}:", file!())),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("\nexisting update at: {}:{update_line}:", file!())),
+            "{message}"
+        );
+        assert_app_recovered(&cx);
+    }
+
+    fn panic_message_during_global_update(access: impl FnOnce(&mut App)) -> String {
+        let cx = TestAppContext::single();
+        cx.update(|cx| cx.set_global(TestGlobal(1)));
+
+        let message =
+            panic_message(|| cx.update(|cx| cx.update_global::<TestGlobal, _>(|_, cx| access(cx))));
+
+        assert_app_recovered(&cx);
+        cx.update(|cx| {
+            assert_eq!(
+                cx.global::<TestGlobal>().0,
+                1,
+                "the global should keep the value from before its update"
+            )
+        });
+        message
+    }
+
+    #[test]
+    fn test_global_operations_during_its_update_panic() {
+        let messages = [
+            (
+                "replace",
+                panic_message_during_global_update(|cx| cx.set_global(TestGlobal(2))),
+            ),
+            (
+                "update",
+                panic_message_during_global_update(|cx| {
+                    cx.default_global::<TestGlobal>();
+                }),
+            ),
+            (
+                "update",
+                panic_message_during_global_update(|cx| {
+                    cx.update_default_global::<TestGlobal, _>(|_, _| {});
+                }),
+            ),
+            (
+                "remove",
+                panic_message_during_global_update(|cx| {
+                    cx.remove_global::<TestGlobal>();
+                }),
+            ),
+            (
+                "read",
+                panic_message_during_global_update(|cx| {
+                    cx.try_global::<TestGlobal>();
+                }),
+            ),
+        ];
+
+        for (operation, message) in messages {
+            assert!(
+                message.starts_with(&format!(
+                    "cannot {operation} {} (global) while it is already being updated",
+                    std::any::type_name::<TestGlobal>()
+                )),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_has_global_reports_a_global_that_is_being_updated() {
+        let cx = TestAppContext::single();
+        cx.update(|cx| cx.set_global(TestGlobal(1)));
+
+        cx.update(|cx| {
+            cx.update_global::<TestGlobal, _>(|_, cx| assert!(cx.has_global::<TestGlobal>()))
+        });
+    }
+
+    #[test]
+    fn test_app_recovers_from_a_panic_while_applying_effects() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let observer_panics = Rc::new(Cell::new(true));
+        cx.update(|cx| {
+            let observer_panics = observer_panics.clone();
+            cx.observe(&entity, move |_, _| {
+                if observer_panics.get() {
+                    panic!("the observer failed");
+                }
+            })
+            .detach();
+        });
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cx.update(|cx| entity.update(cx, |_, cx| cx.notify()))
+        }));
+
+        assert!(panic.is_err());
+        observer_panics.set(false);
+        assert_app_recovered(&cx);
+    }
+
+    #[test]
+    fn test_app_recovers_from_a_reentrant_as_mut() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| 0_usize));
+
+        let message = panic_message(|| {
+            cx.update(|cx| {
+                entity.update(cx, |_, cx| {
+                    entity.as_mut(cx);
+                })
+            })
+        });
+
+        assert!(message.starts_with("cannot update"), "{message}");
+        assert_app_recovered(&cx);
+    }
+
+    fn assert_panics(access: impl FnOnce()) {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(access)).is_err(),
+            "the access should panic"
+        );
+    }
+
+    #[test]
+    fn test_app_recovers_from_a_panic_while_an_entity_is_borrowed() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| 0_usize));
+
+        assert_panics(|| {
+            cx.update(|cx| {
+                let _borrow = entity.as_mut(cx);
+                panic!("the borrow's user failed")
+            })
+        });
+
+        assert_app_recovered(&cx);
+    }
+
+    #[test]
+    fn test_observers_survive_an_observer_that_panics() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let first_observer_panics = Rc::new(Cell::new(true));
+        let second_observer_calls = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let first_observer_panics = first_observer_panics.clone();
+            cx.observe(&entity, move |_, _| {
+                if first_observer_panics.replace(false) {
+                    panic!("the observer failed");
+                }
+            })
+            .detach();
+            let second_observer_calls = second_observer_calls.clone();
+            cx.observe(&entity, move |_, _| {
+                second_observer_calls.set(second_observer_calls.get() + 1)
+            })
+            .detach();
+        });
+
+        assert_panics(|| cx.update(|cx| entity.update(cx, |_, cx| cx.notify())));
+        cx.update(|cx| entity.update(cx, |_, cx| cx.notify()));
+
+        assert!(!first_observer_panics.get());
+        assert_eq!(
+            second_observer_calls.get(),
+            1,
+            "both observers should stay subscribed after one of them panicked"
+        );
+    }
+
+    actions!(app_test, [GlobalTestAction]);
+
+    #[test]
+    fn test_global_action_listeners_survive_a_listener_that_panics() {
+        let cx = TestAppContext::single();
+        let calls = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let calls = calls.clone();
+            cx.on_action(move |_: &GlobalTestAction, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    panic!("the listener failed");
+                }
+            });
+        });
+
+        assert_panics(|| cx.update(|cx| cx.dispatch_action(&GlobalTestAction)));
+        cx.update(|cx| cx.dispatch_action(&GlobalTestAction));
+
+        assert_eq!(
+            calls.get(),
+            2,
+            "the listener should stay registered after it panicked"
+        );
+    }
+
+    #[test]
+    fn test_update_global_outside_an_update_applies_its_effects() {
+        let cx = TestAppContext::single();
+        cx.update(|cx| cx.set_global(TestGlobal(0)));
+        let observed = Rc::new(Cell::new(None));
+        cx.update(|cx| {
+            let observed = observed.clone();
+            cx.observe_global::<TestGlobal>(move |cx| {
+                observed.set(Some(cx.global::<TestGlobal>().0))
+            })
+            .detach();
+        });
+        let settled_with_active_leases = Rc::new(Cell::new(None));
+
+        cx.app
+            .borrow_mut()
+            .update_global::<TestGlobal, _>(|global, cx| {
+                global.0 = 1;
+                let settled_with_active_leases = settled_with_active_leases.clone();
+                cx.defer_until_effects_settle(move |cx| {
+                    settled_with_active_leases.set(Some(cx.has_active_leases()))
+                });
+            });
+
+        assert_eq!(
+            observed.get(),
+            Some(1),
+            "the observers should run when the global update ends"
+        );
+        assert_eq!(
+            settled_with_active_leases.get(),
+            Some(false),
+            "the effects of a global update settle after the global is back"
+        );
+    }
+
+    #[test]
+    fn test_settle_callbacks_of_an_update_that_panics_are_dropped() {
+        let cx = TestAppContext::single();
+        let settled = Rc::new(Cell::new(false));
+
+        assert_panics(|| {
+            cx.update(|cx| {
+                let settled = settled.clone();
+                cx.defer_until_effects_settle(move |_| settled.set(true));
+                panic!("the update failed")
+            })
+        });
+        assert_app_recovered(&cx);
+
+        assert!(
+            !settled.get(),
+            "the update that the callback waited for failed"
+        );
+    }
+
+    #[test]
+    fn test_settle_callbacks_waiting_on_an_effect_that_panics_are_dropped() {
+        let cx = TestAppContext::single();
+        let entity = cx.update(|cx| cx.new(|_| ()));
+        let observer_panics = Rc::new(Cell::new(true));
+        cx.update(|cx| {
+            let observer_panics = observer_panics.clone();
+            cx.observe(&entity, move |_, _| {
+                if observer_panics.replace(false) {
+                    panic!("the observer failed");
+                }
+            })
+            .detach();
+        });
+        let settled = Rc::new(Cell::new(false));
+
+        assert_panics(|| {
+            cx.update(|cx| {
+                entity.update(cx, |_, cx| cx.notify());
+                let settled = settled.clone();
+                cx.defer_until_effects_settle(move |_| settled.set(true));
+            })
+        });
+        assert_app_recovered(&cx);
+
+        assert!(
+            !settled.get(),
+            "an effect that the callback waited for failed"
+        );
+    }
+
+    #[test]
+    fn test_removing_a_missing_global_notifies_no_observers() {
+        let cx = TestAppContext::single();
+        let notified = Rc::new(Cell::new(false));
+        cx.update(|cx| {
+            let notified = notified.clone();
+            cx.observe_global::<TestGlobal>(move |_| notified.set(true))
+                .detach();
+        });
+
+        let message = panic_message(|| {
+            cx.update(|cx| {
+                cx.remove_global::<TestGlobal>();
+            })
+        });
+        assert_app_recovered(&cx);
+
+        assert!(
+            message.starts_with("no global registered of type"),
+            "{message}"
+        );
+        assert!(!notified.get(), "no global was removed");
+    }
+
+    #[test]
+    fn test_clearing_globals_during_a_global_update_panics() {
+        let message = panic_message_during_global_update(|cx| cx.clear_globals());
+
+        assert!(
+            message.starts_with(&format!(
+                "cannot clear {} (global) while it is already being updated",
+                std::any::type_name::<TestGlobal>()
+            )),
+            "{message}"
+        );
+    }
+
+    #[gpui::test]
+    fn test_entity_created_for_a_window_that_failed_to_open_reaches_its_observers(
+        cx: &mut TestAppContext,
+    ) {
+        let windows_seen = Rc::new(RefCell::new(Vec::new()));
+        let _observer = cx.update(|cx| {
+            let windows_seen = windows_seen.clone();
+            cx.observe_new::<Counter>(move |_, window, _| {
+                windows_seen.borrow_mut().push(window.is_some());
+            })
+        });
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cx.add_window(|_, cx: &mut Context<Counter>| -> Counter {
+                let _child = cx.new(|_| Counter(1));
+                panic!("building the root view failed")
+            })
+        }));
+
+        assert!(panic.is_err());
+        assert_app_recovered(cx);
+        assert_eq!(
+            *windows_seen.borrow(),
+            [false],
+            "the entity's window no longer exists, so its observers get none"
+        );
+        assert!(cx.app.borrow().window_update_stack.is_empty());
     }
 
     #[gpui::test]

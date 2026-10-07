@@ -247,6 +247,7 @@ pub trait AppContext {
     ) -> Entity<T>;
 
     /// Update a entity in the app context.
+    #[track_caller]
     fn update_entity<T, R>(
         &mut self,
         handle: &Entity<T>,
@@ -256,11 +257,13 @@ pub trait AppContext {
         T: 'static;
 
     /// Update a entity in the app context.
+    #[track_caller]
     fn as_mut<'a, T>(&'a mut self, handle: &Entity<T>) -> GpuiBorrow<'a, T>
     where
         T: 'static;
 
     /// Read a entity from the app context.
+    #[track_caller]
     fn read_entity<T, R>(&self, handle: &Entity<T>, read: impl FnOnce(&T, &App) -> R) -> R
     where
         T: 'static;
@@ -321,6 +324,7 @@ pub trait VisualContext: AppContext {
     fn window_handle(&self) -> AnyWindowHandle;
 
     /// Update a view with the given callback
+    #[track_caller]
     fn update_window_entity<T: 'static, R>(
         &mut self,
         entity: &Entity<T>,
@@ -379,10 +383,23 @@ where
     where
         G: Global,
     {
-        let mut global = self.borrow_mut().lease_global::<G>();
-        let result = f(&mut global, self);
-        self.borrow_mut().end_global_lease(global);
-        result
+        let app = self.borrow_mut();
+        let mut global = app.lease_global::<G>();
+        app.start_update();
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut global, self)));
+        let app = self.borrow_mut();
+        app.end_global_lease(global);
+        match result {
+            Ok(result) => {
+                app.finish_update();
+                result
+            }
+            Err(payload) => {
+                app.abandon_update();
+                std::panic::resume_unwind(payload)
+            }
+        }
     }
 
     fn update_default_global<G, R>(&mut self, f: impl FnOnce(&mut G, &mut Self) -> R) -> R

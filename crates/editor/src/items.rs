@@ -51,7 +51,7 @@ use util::{
     paths::{PathExt, UrlExt as _},
     rel_path::RelPath,
 };
-use workspace::item::{Dedup, ItemSettings, SerializableItem, TabContentParams};
+use workspace::item::{Dedup, ItemSettings, SerializableItem, TabActions, TabContentParams};
 use workspace::{
     CollaboratorId, ItemId, ItemNavHistory, OpenOptions, OpenVisible, ToolbarItemLocation, ViewId,
     Workspace, WorkspaceId,
@@ -1234,12 +1234,8 @@ impl Item for Editor {
         }
     }
 
-    fn tab_extra_context_menu_actions(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
-        let mut actions = Vec::new();
+    fn tab_actions(&self, _item_id: EntityId, cx: &App) -> TabActions {
+        let mut actions = TabActions::builder();
 
         let is_markdown = self
             .buffer()
@@ -1260,20 +1256,14 @@ impl Item for Editor {
             });
 
         if is_markdown {
-            actions.push((
-                "Open Markdown Preview".into(),
-                Box::new(OpenMarkdownPreview) as Box<dyn gpui::Action>,
-            ));
+            actions = actions.entry("Open Markdown Preview", Box::new(OpenMarkdownPreview));
         }
 
         if is_svg {
-            actions.push((
-                "Open SVG Preview".into(),
-                Box::new(OpenSvgPreview) as Box<dyn gpui::Action>,
-            ));
+            actions = actions.entry("Open SVG Preview", Box::new(OpenSvgPreview));
         }
 
-        actions
+        actions.into()
     }
 
     fn preserve_preview(&self, cx: &App) -> bool {

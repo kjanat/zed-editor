@@ -1,6 +1,7 @@
-FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+FROM ghcr.io/jdx/mise:2026.10.3-debian@sha256:58c4c847f5518a9a87a9a582886a485443dbca5eb024426577f58d586a0990c6
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git unzip \
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN apt-get update && apt-get install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/*
 RUN git config --system advice.detachedHead false
 ARG MERGIRAF_VERSION=0.20.0
@@ -11,13 +12,24 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL --output /tmp/mergiraf.tar.gz \
     && tar -xzf /tmp/mergiraf.tar.gz -C /usr/local/bin mergiraf \
     && rm /tmp/mergiraf.tar.gz
 ENV CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-RUN npm install --global dprint@0.58.0
-ENV PATH="/opt/npm/bin:/opt/cargo/bin:${PATH}" \
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_INIT_SHA256=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+RUN curl --proto '=https' --tlsv1.2 -sSfL --output /tmp/rustup-init \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
+    && echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum --check --quiet \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none \
+    && rm /tmp/rustup-init
+
+# Mise shims read the mise config of the candidate checkout.
+WORKDIR /opt/sync-tools
+COPY .mise.toml mise.lock ./
+RUN mise trust .mise.toml \
+    && mise install --locked dprint node tombi \
+    && ln -s "$(mise which dprint)" "$(mise which node)" "$(mise which tombi)" /usr/local/bin/
+ENV PATH="/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     HOME=/tmp \
-    DPRINT_CACHE_DIR=/opt/dprint-cache \
-    NPM_CONFIG_CACHE=/opt/npm-cache \
-    NPM_CONFIG_PREFIX=/opt/npm
+    DPRINT_CACHE_DIR=/opt/dprint-cache
 
 # Match prepare.sh so configDir and cacheKeyFiles resolve against the checkout.
 WORKDIR /tmp/work
@@ -29,6 +41,6 @@ COPY .cargo/config.toml .cargo/config.toml
 RUN dprint output-resolved-config >/dev/null \
     && printf 'value = 1\n' | dprint fmt --stdin warmup.toml >/dev/null \
     && printf 'fn main() {}\n' | dprint fmt --stdin warmup.rs >/dev/null \
-    && chmod -R a+rwX /opt/dprint-cache /opt/npm-cache /opt/npm
+    && chmod -R a+rwX /opt/dprint-cache
 WORKDIR /
 RUN rm -rf /tmp/work

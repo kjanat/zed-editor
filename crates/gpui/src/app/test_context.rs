@@ -12,7 +12,8 @@ use anyhow::{anyhow, bail};
 use futures::{Stream, StreamExt, channel::oneshot};
 
 use std::{
-    cell::RefCell, future::Future, ops::Deref, path::PathBuf, rc::Rc, sync::Arc, time::Duration,
+    cell::RefCell, future::Future, ops::Deref, panic::Location, path::PathBuf, rc::Rc, sync::Arc,
+    time::Duration,
 };
 
 /// A TestAppContext is provided to tests created with `#[gpui::test]`, it provides
@@ -1197,12 +1198,13 @@ impl VisualContext for VisualTestContext {
         view: &Entity<V>,
         update: impl FnOnce(&mut V, &mut Window, &mut Context<V>) -> R,
     ) -> R {
+        let location = Location::caller();
         let view = view.clone();
         self.cx
             .app
             .borrow_mut()
             .with_window(view.entity_id(), |window, app| {
-                view.update(app, |v, cx| update(v, window, cx))
+                app.update_entity_at(&view, location, |v, cx| update(v, window, cx))
             })
             .expect("entity has no current window; use `update` instead of `update_in`")
     }

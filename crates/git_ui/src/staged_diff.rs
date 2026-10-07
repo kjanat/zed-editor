@@ -1047,4 +1047,129 @@ mod tests {
             );
         });
     }
+
+    fn numbered_lines(changed: &[(u32, &str)]) -> String {
+        (0..20)
+            .map(|row| {
+                let line = changed
+                    .iter()
+                    .find(|(changed_row, _)| *changed_row == row)
+                    .map_or_else(|| format!("line {row}"), |(_, text)| text.to_string());
+                format!("{line}\n")
+            })
+            .collect()
+    }
+
+    const SECOND_HUNK_ROW: u32 = 15;
+
+    async fn unstage_first_hunk_and_move_to_next(
+        through_toolbar: bool,
+        cx: &mut TestAppContext,
+    ) -> Option<u32> {
+        let committed_contents = numbered_lines(&[]);
+        let staged_contents =
+            numbered_lines(&[(2, "first change"), (SECOND_HUNK_ROW, "second change")]);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "src": {
+                    "lines.txt": staged_contents.clone(),
+                }
+            }),
+        )
+        .await;
+        fs.set_head_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("src/lines.txt", committed_contents)],
+            "deadbeef",
+        );
+        fs.set_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("src/lines.txt", staged_contents)],
+        );
+
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        cx.run_until_parked();
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            StagedDiff::deploy_at(workspace, None, window, cx);
+        });
+        cx.run_until_parked();
+
+        let staged_diff = workspace.update(cx, |workspace, cx| {
+            workspace.active_item_as::<StagedDiff>(cx).unwrap()
+        });
+        let editor = staged_diff.read_with(cx, |staged_diff, cx| {
+            staged_diff
+                .diff
+                .read(cx)
+                .editor()
+                .read(cx)
+                .rhs_editor()
+                .clone()
+        });
+        let first_hunk_start = editor.read_with(cx, |editor, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            let hunks = editor
+                .diff_hunks_in_ranges(&[editor::Anchor::Min..editor::Anchor::Max], &snapshot)
+                .collect::<Vec<_>>();
+            assert_eq!(hunks.len(), 2, "the staged view should show both hunks");
+            hunks[0].multi_buffer_range.start
+        });
+        editor.update_in(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_anchor_ranges([first_hunk_start..first_hunk_start]);
+            });
+        });
+
+        if through_toolbar {
+            staged_diff.update_in(cx, |staged_diff, window, cx| {
+                staged_diff.unstage_selected_staged_hunks(true, window, cx);
+            });
+        } else {
+            cx.focus(&editor);
+            cx.update(|window, cx| {
+                window.dispatch_action(UnstageAndNext.boxed_clone(), cx);
+            });
+        }
+        cx.run_until_parked();
+
+        editor.update_in(cx, |editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            let head = editor
+                .selections
+                .newest::<Point>(&snapshot.display_snapshot)
+                .head();
+            snapshot
+                .buffer_snapshot()
+                .point_to_buffer_point(head)
+                .map(|(_, buffer_point)| buffer_point.row)
+        })
+    }
+
+    #[gpui::test]
+    async fn test_unstage_and_next_from_the_toolbar_matches_the_editor_action(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let from_editor = unstage_first_hunk_and_move_to_next(false, cx).await;
+        let from_toolbar = unstage_first_hunk_and_move_to_next(true, cx).await;
+
+        assert_eq!(
+            from_editor,
+            Some(SECOND_HUNK_ROW),
+            "the editor's Unstage and Next should move to the second hunk"
+        );
+        assert_eq!(
+            from_toolbar, from_editor,
+            "the toolbar's Unstage and Next should move where the editor action does"
+        );
+    }
 }

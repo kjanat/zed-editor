@@ -27,10 +27,11 @@ jobs:
       scope: ${{ steps.plan.outputs.scope }}
       packages: ${{ steps.plan.outputs.packages }}
       package_args: ${{ steps.plan.outputs.package_args }}
+      sync: ${{ steps.plan.outputs.sync }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false, fetch-depth: 2 }
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - name: Test the planner
         run: mise run test-fork-ci
       - name: Select the affected packages
@@ -51,16 +52,26 @@ jobs:
             *) base="" ;;
           esac
           mise run affected-packages --base "${base}" --head HEAD | tee -a "${GITHUB_OUTPUT}"
+          sync_inputs=(
+            .cargo/config.toml .dprint.jsonc .mise.toml mise.lock rust-toolchain.toml rustfmt.toml tombi.toml
+            .github/workflows/fork_ci.yaml .github/workflows/fork_upstream_sync.yaml script/upstream-sync
+          )
+          if [[ -n "${base}" ]] && git diff --quiet "${base}" HEAD -- "${sync_inputs[@]}"; then
+            echo "sync=false"
+          else
+            echo "sync=true"
+          fi | tee -a "${GITHUB_OUTPUT}"
 
   sync_security:
-    if: github.repository == 'kjanat/zed-editor'
+    if: github.repository == 'kjanat/zed-editor' && needs.plan.outputs.sync == 'true'
+    needs: plan
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     cancel-timeout-minutes: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - name: Test the upstream sync
         run: mise run test-upstream-sync
   style:
@@ -89,7 +100,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.SCOPE != 'none'
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         if: env.SCOPE != 'none'
         with: { bootstrap: true, bootstrap_skip: compose }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -139,7 +150,7 @@ jobs:
         if: steps.suite.outputs.run == 'true'
         with: { persist-credentials: false }
       # Concurrent action startup can lock the runner's event.json on Windows.
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         if: steps.suite.outputs.run == 'true'
         with: { bootstrap: true, bootstrap_skip: "${{ matrix.suite != 'affected' && 'compose' || '' }}" }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

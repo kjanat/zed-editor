@@ -255,6 +255,32 @@ impl<'a, T: 'static> Context<'a, T> {
         }
     }
 
+    /// Like [`Context::listener`], but passes the callback this entity's handle instead of
+    /// updating it. Use it for callbacks that update other entities or call code that may read
+    /// this entity, and update this entity only for as long as the callback needs to. The
+    /// callback is skipped once this entity has been released, and panics if it starts while
+    /// an entity or global is being updated. Code that the callback calls can change this entity, so
+    /// look up again whatever the callback read before that call.
+    #[inline(always)]
+    pub fn entity_listener<E: ?Sized, F>(
+        &self,
+        listener: F,
+    ) -> impl Fn(&E, &mut Window, &mut App) + 'static + use<T, E, F>
+    where
+        F: Fn(Entity<T>, &E, &mut Window, &mut App) + 'static,
+    {
+        let entity = self.weak_entity();
+        move |event: &E, window: &mut Window, cx: &mut App| {
+            assert!(
+                !cx.has_active_leases(),
+                "an entity_listener callback started while an entity or global was being updated"
+            );
+            if let Some(entity) = entity.upgrade() {
+                listener(entity, event, window, cx);
+            }
+        }
+    }
+
     /// Convenience method for producing view state in a closure.
     /// See `listener` for more details.
     pub fn processor<E, R>(

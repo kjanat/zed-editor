@@ -200,6 +200,11 @@ pub(crate) fn save_action_timing() {
     ACTION_STATISTICS.lock().save_action_timing();
 }
 
+#[cfg(feature = "profiler")]
+pub(crate) fn clear_running_action() {
+    ACTION_STATISTICS.lock().running = None;
+}
+
 #[doc(hidden)]
 #[cfg(feature = "profiler")]
 pub fn take_action_stats() -> ActionStatistics {

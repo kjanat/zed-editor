@@ -398,14 +398,100 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
         false
     }
 
-    /// Returns additional actions to add to the tab's context menu.
-    /// Each entry is a label and an action to dispatch.
-    fn tab_extra_context_menu_actions(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Vec<(SharedString, Box<dyn Action>)> {
-        Vec::new()
+    /// Returns the actions this item offers on its tab. Implementations may read other
+    /// entities, including the pane that holds this item.
+    fn tab_actions(&self, _item_id: EntityId, _cx: &App) -> TabActions {
+        TabActions::default()
+    }
+}
+
+/// The actions an item offers on its tab. Each one is an entry in the tab's context menu, and
+/// double-clicking the tab dispatches at most one of them. Build one with
+/// [`TabActions::builder`].
+#[derive(Default)]
+pub struct TabActions {
+    entries: Vec<(SharedString, Box<dyn Action>)>,
+    double_click: Option<usize>,
+}
+
+impl TabActions {
+    /// Starts a list of tab actions.
+    pub fn builder() -> TabActionsBuilder {
+        TabActionsBuilder {
+            entries: Vec::new(),
+        }
+    }
+
+    /// The tab's context menu entries, in the order they were added.
+    pub fn entries(&self) -> impl Iterator<Item = (&SharedString, &dyn Action)> {
+        self.entries
+            .iter()
+            .map(|(label, action)| (label, action.as_ref()))
+    }
+
+    /// The action that double-clicking the tab dispatches.
+    pub fn double_click_action(&self) -> Option<&dyn Action> {
+        let (_, action) = self.entries.get(self.double_click?)?;
+        Some(action.as_ref())
+    }
+}
+
+/// Tab actions without a double-click entry yet.
+pub struct TabActionsBuilder {
+    entries: Vec<(SharedString, Box<dyn Action>)>,
+}
+
+impl TabActionsBuilder {
+    /// Adds an entry to the tab's context menu.
+    pub fn entry(mut self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
+        self.entries.push((label.into(), action));
+        self
+    }
+
+    /// Adds an entry to the tab's context menu that double-clicking the tab also dispatches.
+    pub fn double_click_entry(
+        mut self,
+        label: impl Into<SharedString>,
+        action: Box<dyn Action>,
+    ) -> TabActionsWithDoubleClick {
+        let double_click = self.entries.len();
+        self.entries.push((label.into(), action));
+        TabActionsWithDoubleClick {
+            entries: self.entries,
+            double_click,
+        }
+    }
+}
+
+impl From<TabActionsBuilder> for TabActions {
+    fn from(builder: TabActionsBuilder) -> Self {
+        Self {
+            entries: builder.entries,
+            double_click: None,
+        }
+    }
+}
+
+/// Tab actions with their double-click entry, which accept further context menu entries only.
+pub struct TabActionsWithDoubleClick {
+    entries: Vec<(SharedString, Box<dyn Action>)>,
+    double_click: usize,
+}
+
+impl TabActionsWithDoubleClick {
+    /// Adds an entry to the tab's context menu.
+    pub fn entry(mut self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
+        self.entries.push((label.into(), action));
+        self
+    }
+}
+
+impl From<TabActionsWithDoubleClick> for TabActions {
+    fn from(builder: TabActionsWithDoubleClick) -> Self {
+        Self {
+            entries: builder.entries,
+            double_click: Some(builder.double_click),
+        }
     }
 }
 
@@ -582,11 +668,7 @@ pub trait ItemHandle: 'static + Send {
         window: &mut Window,
         cx: &mut App,
     ) -> bool;
-    fn tab_extra_context_menu_actions(
-        &self,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Vec<(SharedString, Box<dyn Action>)>;
+    fn tab_actions(&self, cx: &App) -> TabActions;
     fn can_autosave(&self, cx: &App) -> bool {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
@@ -1178,14 +1260,8 @@ impl<T: Item> ItemHandle for Entity<T> {
         })
     }
 
-    fn tab_extra_context_menu_actions(
-        &self,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Vec<(SharedString, Box<dyn Action>)> {
-        self.update(cx, |this, cx| {
-            this.tab_extra_context_menu_actions(window, cx)
-        })
+    fn tab_actions(&self, cx: &App) -> TabActions {
+        self.read(cx).tab_actions(self.item_id(), cx)
     }
 }
 
@@ -1432,15 +1508,15 @@ impl<T: FollowableItem> WeakFollowableItemHandle for WeakEntity<T> {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test {
-    use super::{Item, ItemEvent, SerializableItem, TabContentParams};
+    use super::{Item, ItemEvent, SerializableItem, TabActions, TabContentParams};
     use crate::{
-        ItemId, ItemNavHistory, Pane, Workspace, WorkspaceId,
+        ItemId, ItemNavHistory, Workspace, WorkspaceId,
         item::{ItemBufferKind, SaveOptions},
     };
     use gpui::{
-        AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, Focusable,
-        InteractiveElement, IntoElement, ParentElement, Render, SharedString, Task, WeakEntity,
-        Window,
+        Action, AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter,
+        Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Task,
+        WeakEntity, Window,
     };
     use language::Capability;
     use project::{Project, ProjectEntryId, ProjectPath, WorktreeId};
@@ -1483,8 +1559,9 @@ pub mod test {
         serialize: Option<Box<dyn Fn() -> Option<Task<anyhow::Result<()>>>>>,
         focus_handle: gpui::FocusHandle,
         pub child_focus_handles: Vec<gpui::FocusHandle>,
-        pane_read_by_tab_extra_actions: Option<WeakEntity<Pane>>,
-        pub tab_extra_actions_requests: Cell<usize>,
+        tab_double_click_action: Option<Box<dyn Action>>,
+        workspace_read_by_tab_actions: Option<WeakEntity<Workspace>>,
+        pub tab_actions_requests: Cell<usize>,
     }
 
     impl project::ProjectItem for TestProjectItem {
@@ -1580,8 +1657,9 @@ pub mod test {
                 focus_handle: cx.focus_handle(),
                 serialize: None,
                 child_focus_handles: Vec::new(),
-                pane_read_by_tab_extra_actions: None,
-                tab_extra_actions_requests: Cell::new(0),
+                tab_double_click_action: None,
+                workspace_read_by_tab_actions: None,
+                tab_actions_requests: Cell::new(0),
             }
         }
 
@@ -1610,10 +1688,16 @@ pub mod test {
             self
         }
 
-        /// Mirrors items like `Editor` that inspect their pane while computing
-        /// tab extra actions.
-        pub fn with_pane_read_by_tab_extra_actions(mut self, pane: WeakEntity<Pane>) -> Self {
-            self.pane_read_by_tab_extra_actions = Some(pane);
+        pub fn with_tab_double_click_action(mut self, action: Box<dyn Action>) -> Self {
+            self.tab_double_click_action = Some(action);
+            self
+        }
+
+        pub fn with_workspace_read_by_tab_actions(
+            mut self,
+            workspace: WeakEntity<Workspace>,
+        ) -> Self {
+            self.workspace_read_by_tab_actions = Some(workspace);
             self
         }
 
@@ -1703,21 +1787,26 @@ pub mod test {
             f(*event)
         }
 
-        fn tab_extra_context_menu_actions(
-            &self,
-            _window: &mut Window,
-            cx: &mut Context<Self>,
-        ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
-            self.tab_extra_actions_requests
-                .set(self.tab_extra_actions_requests.get() + 1);
-            if let Some(pane) = self
-                .pane_read_by_tab_extra_actions
+        fn tab_actions(&self, item_id: EntityId, cx: &App) -> TabActions {
+            self.tab_actions_requests
+                .set(self.tab_actions_requests.get() + 1);
+            if let Some(workspace) = self
+                .workspace_read_by_tab_actions
                 .as_ref()
-                .and_then(|pane| pane.upgrade())
+                .and_then(|workspace| workspace.upgrade())
             {
+                let pane = workspace
+                    .read(cx)
+                    .pane_for_item_id(item_id)
+                    .expect("the item must be in a pane");
                 pane.read(cx).active_item();
             }
-            Vec::new()
+            match &self.tab_double_click_action {
+                Some(action) => TabActions::builder()
+                    .double_click_entry("Double-Click", action.boxed_clone())
+                    .into(),
+                None => TabActions::default(),
+            }
         }
 
         fn tab_content_text(&self, detail: usize, _cx: &App) -> SharedString {
@@ -1825,8 +1914,12 @@ pub mod test {
                         .iter()
                         .map(|_| cx.focus_handle())
                         .collect(),
-                    pane_read_by_tab_extra_actions: self.pane_read_by_tab_extra_actions.clone(),
-                    tab_extra_actions_requests: Cell::new(0),
+                    tab_double_click_action: self
+                        .tab_double_click_action
+                        .as_ref()
+                        .map(|action| action.boxed_clone()),
+                    workspace_read_by_tab_actions: self.workspace_read_by_tab_actions.clone(),
+                    tab_actions_requests: Cell::new(0),
                 }
             })))
         }

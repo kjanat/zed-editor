@@ -198,9 +198,11 @@ mod conditional {
     impl Render for Inspector {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             if let Some(inspector_renderer) = cx.inspector_renderer.take() {
-                let result = inspector_renderer(self, window, cx);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    inspector_renderer(self, window, cx)
+                }));
                 cx.inspector_renderer = Some(inspector_renderer);
-                result
+                result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
             } else {
                 Empty.into_any_element()
             }

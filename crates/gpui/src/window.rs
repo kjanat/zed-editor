@@ -266,6 +266,17 @@ impl WindowInvalidator {
         mem::take(&mut self.inner.borrow_mut().frame_dirty)
     }
 
+    #[cfg(feature = "profiler")]
+    fn restore_frame_dirty(&self, taken: FrameDirtyAccumulator) {
+        let mut inner = self.inner.borrow_mut();
+        let frame_dirty = &mut inner.frame_dirty;
+        frame_dirty.dirty_at = match (taken.dirty_at, frame_dirty.dirty_at) {
+            (Some(taken_at), Some(dirty_at)) => Some(taken_at.min(dirty_at)),
+            (taken_at, dirty_at) => taken_at.or(dirty_at),
+        };
+        frame_dirty.invalidations += taken.invalidations;
+    }
+
     pub fn take_views(&self) -> FxHashSet<EntityId> {
         mem::take(&mut self.inner.borrow_mut().dirty_views)
     }
@@ -633,30 +644,99 @@ impl FocusHandle {
         self.id.contains(other.id, window)
     }
 
-    /// Dispatch an action on the element that rendered this focus handle
+    /// Dispatch an action on the element that rendered this focus handle.
+    ///
+    /// While an entity or global is being updated, the action waits until those updates have
+    /// ended and every effect they queued, such as observer notifications, has been applied.
+    /// It runs before tasks that the updates spawned.
+    ///
+    /// The action then runs on the most recently drawn frame if nothing has changed the window
+    /// since that frame was drawn. Otherwise it waits for the next drawn frame and checks again,
+    /// for at most eight frames while the window keeps changing. The action is dropped with a
+    /// warning when an unchanged window has no element for this focus handle or the window is
+    /// still changing after eight frames, and dropped silently when this focus handle is
+    /// released first.
     pub fn dispatch_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) {
-        self.try_dispatch_action(action, window, cx);
+        if cx.has_active_leases() {
+            let target = self.downgrade();
+            let action = action.boxed_clone();
+            let window_handle = window.handle;
+            cx.defer_until_effects_settle(move |cx| {
+                window_handle
+                    .update(cx, |_, window, cx| {
+                        let Some(focus_handle) = target.upgrade() else {
+                            return;
+                        };
+                        if focus_handle.route_action(&*action, window, cx) == Routing::AwaitRender {
+                            await_render(target, action, MAX_RENDERS_AWAITED, window);
+                        }
+                    })
+                    .ok();
+            });
+            return;
+        }
+        if self.route_action(action, window, cx) == Routing::AwaitRender {
+            await_render(
+                self.downgrade(),
+                action.boxed_clone(),
+                MAX_RENDERS_AWAITED,
+                window,
+            );
+        }
     }
 
-    /// Dispatch an action on the element that rendered this focus handle, returning
-    /// `false` without dispatching when that element isn't in the most recently
-    /// rendered frame (e.g. it was only just made visible).
-    pub fn try_dispatch_action(
-        &self,
-        action: &dyn Action,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> bool {
-        let Some(node_id) = window
+    fn route_action(&self, action: &dyn Action, window: &mut Window, cx: &mut App) -> Routing {
+        assert!(
+            !cx.has_active_leases(),
+            "actions must not be dispatched while an entity or global is being updated"
+        );
+        if window.invalidator.is_dirty() {
+            return Routing::AwaitRender;
+        }
+        match window
             .rendered_frame
             .dispatch_tree
             .focusable_node_id(self.id)
-        else {
-            return false;
-        };
-        window.dispatch_action_on_node(node_id, action, cx);
-        true
+        {
+            Some(node_id) => window.dispatch_action_on_node(node_id, action, cx),
+            None => log::warn!(
+                "dropped {} because its target is not rendered",
+                action.name()
+            ),
+        }
+        Routing::Done
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Routing {
+    Done,
+    AwaitRender,
+}
+
+const MAX_RENDERS_AWAITED: usize = 8;
+
+fn await_render(
+    target: WeakFocusHandle,
+    action: Box<dyn Action>,
+    renders_left: usize,
+    window: &mut Window,
+) {
+    let Some(renders_left) = renders_left.checked_sub(1) else {
+        log::warn!(
+            "dropped {} because its target was not rendered within {MAX_RENDERS_AWAITED} frames",
+            action.name()
+        );
+        return;
+    };
+    window.on_next_render(move |window, cx| {
+        let Some(focus_handle) = target.upgrade() else {
+            return;
+        };
+        if focus_handle.route_action(&*action, window, cx) == Routing::AwaitRender {
+            await_render(target, action, renders_left, window);
+        }
+    });
 }
 
 impl Clone for FocusHandle {
@@ -742,6 +822,94 @@ impl<M: Focusable + EventEmitter<DismissEvent> + Render> ManagedView for M {}
 pub struct DismissEvent;
 
 type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+
+struct FrameAttempt {
+    after_render_callbacks: Vec<FrameCallback>,
+    input_handler_slot: Option<usize>,
+    #[cfg(feature = "profiler")]
+    frame_dirty: FrameDirtyAccumulator,
+    #[cfg(feature = "profiler")]
+    profiler_depth: profiler::ActivityDepth,
+}
+
+impl FrameAttempt {
+    fn begin(window: &mut Window) -> Self {
+        #[cfg(feature = "profiler")]
+        let profiler_depth = window.window_profiler.activity_depth();
+        // Drain every draw in profiler builds so a previous frame's
+        // first-invalidation timestamp can't be attributed to this one.
+        #[cfg(feature = "profiler")]
+        let frame_dirty = window.invalidator.take_frame_dirty();
+        #[cfg(feature = "profiler")]
+        window.window_profiler.begin_draw();
+
+        // Restore the previously-used input handler.
+        // Place it back into a None slot (left by a previous .take()) so that
+        // cached paint_range indices in reuse_paint find the handler at the
+        // expected position.
+        let input_handler_slot = window
+            .platform_window
+            .take_input_handler()
+            .map(|input_handler| {
+                let input_handlers = &mut window.rendered_frame.input_handlers;
+                match input_handlers.iter().rposition(Option::is_none) {
+                    Some(slot) => {
+                        input_handlers[slot] = Some(input_handler);
+                        slot
+                    }
+                    None => {
+                        input_handlers.push(Some(input_handler));
+                        input_handlers.len() - 1
+                    }
+                }
+            });
+
+        Self {
+            after_render_callbacks: mem::take(&mut window.after_render_callbacks),
+            input_handler_slot,
+            #[cfg(feature = "profiler")]
+            frame_dirty,
+            #[cfg(feature = "profiler")]
+            profiler_depth,
+        }
+    }
+
+    fn commit(self, window: &mut Window, cx: &mut App) {
+        for callback in self.after_render_callbacks {
+            window.defer(cx, callback);
+        }
+        if !window.after_render_callbacks.is_empty() {
+            window.defer(cx, |window, _| window.request_render());
+        }
+
+        #[cfg(feature = "profiler")]
+        {
+            let draw_duration = window
+                .window_profiler
+                .end_draw(self.frame_dirty.dirty_at, self.frame_dirty.invalidations);
+            window.debug_frame_overlay.record_frame(draw_duration);
+        }
+    }
+
+    fn abort(self, window: &mut Window) {
+        let registered_during_attempt = mem::replace(
+            &mut window.after_render_callbacks,
+            self.after_render_callbacks,
+        );
+        window
+            .after_render_callbacks
+            .extend(registered_during_attempt);
+        window.restore_input_handler(self.input_handler_slot);
+
+        #[cfg(feature = "profiler")]
+        {
+            window.window_profiler.unwind_to(self.profiler_depth);
+            window.invalidator.restore_frame_dirty(self.frame_dirty);
+        }
+
+        window.discard_interrupted_frame();
+    }
+}
 
 pub(crate) type AnyMouseListener =
     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
@@ -1264,6 +1432,7 @@ pub struct Window {
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+    after_render_callbacks: Vec<FrameCallback>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
@@ -1288,7 +1457,7 @@ pub struct Window {
     /// Used to selectively enable VRR optimization only when input rate exceeds 60fps.
     pub(crate) input_rate_tracker: Rc<RefCell<InputRateTracker>>,
     #[cfg(feature = "profiler")]
-    window_profiler: profiler::WindowProfiler,
+    pub(crate) window_profiler: profiler::WindowProfiler,
     last_input_modality: InputModality,
     touch_gestures: TouchGestureRecognizer,
     touch_prediction_enabled: bool,
@@ -1878,9 +2047,7 @@ impl Window {
                 if !pending_next_frame_callbacks.is_empty() {
                     handle
                         .update(&mut cx, |_, window, cx| {
-                            for callback in pending_next_frame_callbacks {
-                                callback(window, cx);
-                            }
+                            window.run_next_frame_callbacks(pending_next_frame_callbacks, cx)
                         })
                         .log_err();
                 }
@@ -2152,6 +2319,7 @@ impl Window {
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
+            after_render_callbacks: Vec::new(),
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
@@ -2708,13 +2876,29 @@ impl Window {
         AsyncWindowContext::new_context(cx.to_async(), self.handle)
     }
 
-    /// Schedule the given closure to be run directly after the current frame is rendered.
+    /// Schedule the given closure to run at the start of the next frame, before that frame is
+    /// drawn. Use [`Window::on_next_render`] to run after the next frame is drawn.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
         self.platform_window.schedule_frame();
         // Next-frame callbacks create frame demand without dirtying the
         // window, so the platform's frame source must be woken explicitly.
         self.invalidator.wake_platform();
+    }
+
+    /// Schedule the given closure to run once the next frame has been drawn, when the
+    /// elements and focus handles it rendered can receive actions. Requests that frame. A
+    /// callback scheduled while a frame is being drawn waits for the frame after it.
+    pub fn on_next_render(&mut self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+        self.after_render_callbacks.push(Box::new(callback));
+        if self.invalidator.not_drawing() {
+            self.request_render();
+        }
+    }
+
+    fn request_render(&mut self) {
+        self.invalidator.set_dirty(true);
+        self.platform_window.schedule_frame();
     }
 
     /// Schedule a frame to be drawn on the next animation frame.
@@ -2742,10 +2926,26 @@ impl Window {
     pub fn simulate_next_frame(&mut self, cx: &mut App) -> usize {
         let callbacks = self.next_frame_callbacks.take();
         let count = callbacks.len();
-        for callback in callbacks {
-            callback(self, cx);
-        }
+        self.run_next_frame_callbacks(callbacks, cx);
         count
+    }
+
+    fn run_next_frame_callbacks(&mut self, callbacks: Vec<FrameCallback>, cx: &mut App) {
+        let mut callbacks = callbacks.into_iter();
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for callback in callbacks.by_ref() {
+                callback(self, cx);
+            }
+        }));
+        if let Err(payload) = ran {
+            let mut next_frame_callbacks = RefCell::borrow_mut(&self.next_frame_callbacks);
+            let scheduled_since = mem::take(&mut *next_frame_callbacks);
+            next_frame_callbacks.extend(callbacks);
+            next_frame_callbacks.extend(scheduled_since);
+            drop(next_frame_callbacks);
+            self.platform_window.schedule_frame();
+            std::panic::resume_unwind(payload);
+        }
     }
 
     /// Spawn the future returned by the given closure on the application thread pool.
@@ -3365,13 +3565,57 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
-        // Drain every draw in profiler builds so a previous frame's
-        // first-invalidation timestamp can't be attributed to this one.
-        #[cfg(feature = "profiler")]
-        let frame_dirty = self.invalidator.take_frame_dirty();
-        #[cfg(feature = "profiler")]
-        self.window_profiler.begin_draw();
+        let frame = FrameAttempt::begin(self);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.draw_frame(cx))) {
+            Ok(arena_clear_needed) => {
+                frame.commit(self, cx);
+                arena_clear_needed
+            }
+            Err(payload) => {
+                frame.abort(self);
+                std::panic::resume_unwind(payload)
+            }
+        }
+    }
 
+    fn restore_input_handler(&mut self, slot: Option<usize>) {
+        if let Some(input_handler) = self.platform_window.take_input_handler() {
+            self.platform_window.set_input_handler(input_handler);
+            return;
+        }
+        let input_handler = slot
+            .and_then(|slot| self.rendered_frame.input_handlers.get_mut(slot)?.take())
+            .or_else(|| {
+                self.next_frame
+                    .input_handlers
+                    .iter_mut()
+                    .rev()
+                    .find_map(Option::take)
+            });
+        if let Some(input_handler) = input_handler {
+            self.platform_window.set_input_handler(input_handler);
+        }
+    }
+
+    fn discard_interrupted_frame(&mut self) {
+        self.invalidator.set_phase(DrawPhase::None);
+        self.next_frame.clear();
+        self.element_id_stack.clear();
+        self.text_style_stack.clear();
+        self.rendered_entity_stack.clear();
+        self.element_offset_stack.clear();
+        self.content_mask_stack.clear();
+        self.image_cache_stack.clear();
+        self.rem_size_override_stack.clear();
+        self.element_opacity = 1.0;
+        match self.layout_engine.as_mut() {
+            Some(layout_engine) => layout_engine.clear(),
+            None => self.layout_engine = Some(TaffyLayoutEngine::new()),
+        }
+        self.refresh();
+    }
+
+    fn draw_frame(&mut self, cx: &mut App) -> ArenaClearNeeded {
         // Set up the per-App arena for element allocation during this draw.
         // This ensures that multiple test Apps have isolated arenas.
         let arena_scope = ElementArenaScope::enter(&cx.element_arena);
@@ -3385,23 +3629,6 @@ impl Window {
         self.invalidator.set_dirty(false);
         self.requested_autoscroll = None;
 
-        // Restore the previously-used input handler.
-        // Place it back into a None slot (left by a previous .take()) so that
-        // cached paint_range indices in reuse_paint find the handler at the
-        // expected position.
-        if let Some(input_handler) = self.platform_window.take_input_handler() {
-            if let Some(slot) = self
-                .rendered_frame
-                .input_handlers
-                .iter_mut()
-                .rev()
-                .find(|h| h.is_none())
-            {
-                *slot = Some(input_handler);
-            } else {
-                self.rendered_frame.input_handlers.push(Some(input_handler));
-            }
-        }
         if !cx.mode.skip_drawing() {
             self.draw_roots(cx);
             #[cfg(feature = "profiler")]
@@ -3423,16 +3650,18 @@ impl Window {
         // paint_range indices remain valid for reuse_paint on the next frame.
         // Search backwards to find the last Some entry, since reuse_paint may
         // have copied None slots from the previous frame. (Fixes #50456)
-        let focused_text_input_active = if let Some(mut input_handler) = self
+        let focused_text_input_active = if let Some(input_handler) = self
             .next_frame
             .input_handlers
             .iter_mut()
             .rev()
             .find_map(|h| h.take())
         {
-            let accepts_text_input = input_handler.accepts_text_input(self, cx);
             self.platform_window.set_input_handler(input_handler);
-            accepts_text_input
+            self.with_platform_input_handler(cx, |input_handler, window, cx| {
+                input_handler.accepts_text_input(window, cx)
+            })
+            .unwrap_or(false)
         } else {
             false
         };
@@ -3506,14 +3735,6 @@ impl Window {
             self.refresh();
         }
         self.needs_present.set(true);
-
-        #[cfg(feature = "profiler")]
-        {
-            let draw_duration = self
-                .window_profiler
-                .end_draw(frame_dirty.dirty_at, frame_dirty.invalidations);
-            self.debug_frame_overlay.record_frame(draw_duration);
-        }
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
         // scope's teardown itself happens in `ElementArenaScope::drop`.
@@ -3657,20 +3878,30 @@ impl Window {
         let mut tooltip_element = None;
         if let Some(prompt) = self.prompt.take() {
             let mut element = prompt.view.any_view().into_any_element();
-            let prompt_layout_id = element.request_layout(self, cx);
-            self.layout_engine
-                .as_mut()
-                .unwrap()
-                .stretch_auto_size_to_fill(prompt_layout_id, root_size, scale_factor);
-            element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
-            prompt_element = Some(element);
+            let prepainted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let prompt_layout_id = element.request_layout(self, cx);
+                self.layout_engine
+                    .as_mut()
+                    .unwrap()
+                    .stretch_auto_size_to_fill(prompt_layout_id, root_size, scale_factor);
+                element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
+            }));
             self.prompt = Some(prompt);
+            if let Err(payload) = prepainted {
+                std::panic::resume_unwind(payload);
+            }
+            prompt_element = Some(element);
         } else if let Some(active_drag) = cx.active_drag.take() {
             let mut element = active_drag.view.clone().into_any_element();
             let offset = self.mouse_position() - active_drag.cursor_offset;
-            element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
-            active_drag_element = Some(element);
+            let prepainted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
+            }));
             cx.active_drag = Some(active_drag);
+            if let Err(payload) = prepainted {
+                std::panic::resume_unwind(payload);
+            }
+            active_drag_element = Some(element);
         } else {
             tooltip_element = self.prepaint_tooltip(cx);
         }
@@ -5333,14 +5564,11 @@ impl Window {
     /// input handler the default configuration applies, so a field's
     /// preferences don't outlive its focus.
     fn apply_text_input_configuration(&mut self, cx: &mut App) {
-        let configuration = match self.platform_window.take_input_handler() {
-            Some(mut input_handler) => {
-                let configuration = input_handler.text_input_configuration(self, cx);
-                self.platform_window.set_input_handler(input_handler);
-                configuration
-            }
-            None => TextInputConfiguration::default(),
-        };
+        let configuration = self
+            .with_platform_input_handler(cx, |input_handler, window, cx| {
+                input_handler.text_input_configuration(window, cx)
+            })
+            .unwrap_or_default();
         if self.last_text_input_configuration.as_ref() != Some(&configuration) {
             self.platform_window
                 .set_text_input_configuration(configuration.clone());
@@ -5487,14 +5715,29 @@ impl Window {
         }
 
         if let Some(input) = keystroke.key_char
-            && let Some(mut input_handler) = self.platform_window.take_input_handler()
+            && self
+                .with_platform_input_handler(cx, |input_handler, window, cx| {
+                    input_handler.dispatch_input(&input, window, cx)
+                })
+                .is_some()
         {
-            input_handler.dispatch_input(&input, self, cx);
-            self.platform_window.set_input_handler(input_handler);
             return true;
         }
 
         false
+    }
+
+    fn with_platform_input_handler<R>(
+        &mut self,
+        cx: &mut App,
+        f: impl FnOnce(&mut PlatformInputHandler, &mut Window, &mut App) -> R,
+    ) -> Option<R> {
+        let mut input_handler = self.platform_window.take_input_handler()?;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f(&mut input_handler, self, cx)
+        }));
+        self.platform_window.set_input_handler(input_handler);
+        Some(result.unwrap_or_else(|payload| std::panic::resume_unwind(payload)))
     }
 
     /// Return a key binding string for an action, to display in the UI. Uses the highest precedence
@@ -5867,28 +6110,33 @@ impl Window {
 
         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
 
-        // Capture phase, events bubble from back to front. Handlers for this phase are used for
-        // special purposes, such as detecting events outside of a given Bounds.
-        for listener in &mut mouse_listeners {
-            let listener = listener.as_mut().unwrap();
-            listener(event, DispatchPhase::Capture, self, cx);
-            if !cx.propagate_event {
-                break;
-            }
-        }
-
-        // Bubble phase, where most normal handlers do their work.
-        if cx.propagate_event {
-            for listener in mouse_listeners.iter_mut().rev() {
+        let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Capture phase, events bubble from back to front. Handlers for this phase are used for
+            // special purposes, such as detecting events outside of a given Bounds.
+            for listener in &mut mouse_listeners {
                 let listener = listener.as_mut().unwrap();
-                listener(event, DispatchPhase::Bubble, self, cx);
+                listener(event, DispatchPhase::Capture, self, cx);
                 if !cx.propagate_event {
                     break;
                 }
             }
-        }
+
+            // Bubble phase, where most normal handlers do their work.
+            if cx.propagate_event {
+                for listener in mouse_listeners.iter_mut().rev() {
+                    let listener = listener.as_mut().unwrap();
+                    listener(event, DispatchPhase::Bubble, self, cx);
+                    if !cx.propagate_event {
+                        break;
+                    }
+                }
+            }
+        }));
 
         self.rendered_frame.mouse_listeners = mouse_listeners;
+        if let Err(payload) = dispatched {
+            std::panic::resume_unwind(payload);
+        }
 
         if cx.has_active_drag() {
             if event.is::<MouseMoveEvent>() {
@@ -5918,11 +6166,13 @@ impl Window {
         if !prefer_character_input {
             return InputPreference::KeyBindings;
         }
-        let Some(mut input_handler) = self.platform_window.take_input_handler() else {
+        let Some(accepts_text_input) = self
+            .with_platform_input_handler(cx, |input_handler, window, cx| {
+                input_handler.accepts_text_input(window, cx)
+            })
+        else {
             return InputPreference::KeyBindings;
         };
-        let accepts_text_input = input_handler.accepts_text_input(self, cx);
-        self.platform_window.set_input_handler(input_handler);
         if accepts_text_input {
             InputPreference::CharacterInput
         } else {
@@ -6040,12 +6290,12 @@ impl Window {
             let text_input_requires_timeout = event
                 .downcast_ref::<KeyDownEvent>()
                 .filter(|key_down| key_down.keystroke.key_char.is_some())
-                .and_then(|_| self.platform_window.take_input_handler())
-                .map_or(false, |mut input_handler| {
-                    let accepts = input_handler.accepts_text_input(self, cx);
-                    self.platform_window.set_input_handler(input_handler);
-                    accepts
-                });
+                .and_then(|_| {
+                    self.with_platform_input_handler(cx, |input_handler, window, cx| {
+                        input_handler.accepts_text_input(window, cx)
+                    })
+                })
+                .unwrap_or(false);
 
             let needs_timeout = previous_timeout.is_some()
                 || match_result.pending_has_binding
@@ -6375,11 +6625,10 @@ impl Window {
             if !cx.propagate_event {
                 continue 'replay;
             }
-            if let Some(input) = replay.keystroke.key_char.as_ref().cloned()
-                && let Some(mut input_handler) = self.platform_window.take_input_handler()
-            {
-                input_handler.dispatch_input(&input, self, cx);
-                self.platform_window.set_input_handler(input_handler)
+            if let Some(input) = replay.keystroke.key_char.as_ref().cloned() {
+                self.with_platform_input_handler(cx, |input_handler, window, cx| {
+                    input_handler.dispatch_input(&input, window, cx)
+                });
             }
         }
     }
@@ -6420,11 +6669,9 @@ impl Window {
 
         // Capture phase for global actions.
         cx.propagate_event = true;
-        if let Some(mut global_listeners) = cx
-            .global_action_listeners
-            .remove(&action.as_any().type_id())
-        {
-            for listener in &global_listeners {
+        let action_type_id = action.as_any().type_id();
+        cx.with_global_action_listeners(action_type_id, |listeners, cx| {
+            for listener in listeners {
                 #[cfg(feature = "profiler")]
                 self.window_profiler.begin_action_handler(action, cx);
                 listener(action.as_any(), DispatchPhase::Capture, cx);
@@ -6434,16 +6681,7 @@ impl Window {
                     break;
                 }
             }
-
-            global_listeners.extend(
-                cx.global_action_listeners
-                    .remove(&action.as_any().type_id())
-                    .unwrap_or_default(),
-            );
-
-            cx.global_action_listeners
-                .insert(action.as_any().type_id(), global_listeners);
-        }
+        });
 
         if !cx.propagate_event {
             return;
@@ -6497,11 +6735,8 @@ impl Window {
         }
 
         // Bubble phase for global actions.
-        if let Some(mut global_listeners) = cx
-            .global_action_listeners
-            .remove(&action.as_any().type_id())
-        {
-            for listener in global_listeners.iter().rev() {
+        cx.with_global_action_listeners(action_type_id, |listeners, cx| {
+            for listener in listeners.iter().rev() {
                 cx.propagate_event = false; // Actions stop propagation by default during the bubble phase
 
                 #[cfg(feature = "profiler")]
@@ -6513,16 +6748,7 @@ impl Window {
                     break;
                 }
             }
-
-            global_listeners.extend(
-                cx.global_action_listeners
-                    .remove(&action.as_any().type_id())
-                    .unwrap_or_default(),
-            );
-
-            cx.global_action_listeners
-                .insert(action.as_any().type_id(), global_listeners);
-        }
+        });
     }
 
     /// Register the given handler to be invoked whenever the global of the given type
@@ -6576,11 +6802,12 @@ impl Window {
     /// Updates the IME panel position suggestions for languages like japanese, chinese.
     pub fn invalidate_character_coordinates(&self) {
         self.on_next_frame(|window, cx| {
-            if let Some(mut input_handler) = window.platform_window.take_input_handler() {
-                if let Some(bounds) = input_handler.selected_bounds(window, cx) {
-                    window.platform_window.update_ime_position(bounds);
-                }
-                window.platform_window.set_input_handler(input_handler);
+            if let Some(Some(bounds)) = window
+                .with_platform_input_handler(cx, |input_handler, window, cx| {
+                    input_handler.selected_bounds(window, cx)
+                })
+            {
+                window.platform_window.update_ime_position(bounds);
             }
         });
     }
@@ -6609,21 +6836,29 @@ impl Window {
             .map(|answer| answer.clone().into())
             .collect::<Vec<_>>();
 
-        let receiver = match &prompt_builder {
-            PromptBuilder::Default => self
-                .platform_window
-                .prompt(level, message, detail, &answers)
-                .unwrap_or_else(|| {
+        let receiver =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &prompt_builder {
+                PromptBuilder::Default => self
+                    .platform_window
+                    .prompt(level, message, detail, &answers)
+                    .unwrap_or_else(|| {
+                        self.build_custom_prompt(
+                            &prompt_builder,
+                            level,
+                            message,
+                            detail,
+                            &answers,
+                            cx,
+                        )
+                    }),
+                PromptBuilder::Custom(_) => {
                     self.build_custom_prompt(&prompt_builder, level, message, detail, &answers, cx)
-                }),
-            PromptBuilder::Custom(_) => {
-                self.build_custom_prompt(&prompt_builder, level, message, detail, &answers, cx)
-            }
-        };
+                }
+            }));
 
         cx.prompt_builder = Some(prompt_builder);
 
-        receiver
+        receiver.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
     }
 
     fn build_custom_prompt(
@@ -6961,15 +7196,20 @@ impl Window {
         if let Some(mut listeners) = self.a11y.action_listeners.remove(&request.target_node) {
             let extra_data = request.data.as_ref();
             let mut matched = false;
-            for (action, listener) in &mut listeners {
-                if *action == request.action {
-                    listener(extra_data, self, cx);
-                    matched = true;
+            let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for (action, listener) in &mut listeners {
+                    if *action == request.action {
+                        listener(extra_data, self, cx);
+                        matched = true;
+                    }
                 }
-            }
+            }));
             self.a11y
                 .action_listeners
                 .insert(request.target_node, listeners);
+            if let Err(payload) = invoked {
+                std::panic::resume_unwind(payload);
+            }
             if matched {
                 return;
             }
@@ -7089,13 +7329,18 @@ impl Window {
     fn prepaint_inspector(&mut self, inspector_width: Pixels, cx: &mut App) -> Option<AnyElement> {
         if let Some(inspector) = self.inspector.take() {
             let mut inspector_element = AnyView::from(inspector.clone()).into_any_element();
-            inspector_element.prepaint_as_root(
-                point(self.viewport_size.width - inspector_width, px(0.0)),
-                size(inspector_width, self.viewport_size.height).into(),
-                self,
-                cx,
-            );
+            let prepainted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                inspector_element.prepaint_as_root(
+                    point(self.viewport_size.width - inspector_width, px(0.0)),
+                    size(inspector_width, self.viewport_size.height).into(),
+                    self,
+                    cx,
+                );
+            }));
             self.inspector = Some(inspector);
+            if let Err(payload) = prepainted {
+                std::panic::resume_unwind(payload);
+            }
             Some(inspector_element)
         } else {
             None
@@ -7797,20 +8042,21 @@ fn with_element_arena_erased(callback: &mut dyn FnMut(&mut Arena)) -> Result<(),
 mod tests {
     use std::{
         cell::{Cell, RefCell},
+        mem,
         path::PathBuf,
         rc::Rc,
         time::Duration,
     };
 
     use crate::{
-        AnyWindowHandle, AppContext as _, Bounds, ContentMask, Context, DispatchPhase,
-        DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
-        FocusHandle, InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent,
-        Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-        Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
+        AnyWindowHandle, App, AppContext as _, BorrowAppContext, Bounds, ContentMask, Context,
+        DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths,
+        FileDropEvent, FocusHandle, Global, InputEvent as _, InteractiveElement as _, IntoElement,
+        KeyDownEvent, Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+        ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
         StatefulInteractiveElement as _, Styled, TestAppContext, TouchDragEvent, TouchEvent,
-        TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance, WindowOptions,
-        canvas, div, hsla, point, px, size,
+        TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance, WindowHandle,
+        WindowOptions, canvas, div, hsla, point, px, size,
     };
 
     #[cfg(feature = "profiler")]
@@ -8277,6 +8523,1033 @@ mod tests {
             test_window.frame_wake_count() > baseline || callback_ran.get(),
             "a frame request with pending next-frame callbacks must either run them or re-arm the frame source"
         );
+    }
+
+    actions!(window_test, [CountDispatch]);
+
+    struct FocusTarget {
+        focus_handle: FocusHandle,
+        rendered: bool,
+        dispatched: usize,
+        panic_next_render: bool,
+    }
+
+    impl FocusTarget {
+        fn new(rendered: bool, cx: &mut App) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+                rendered,
+                dispatched: 0,
+                panic_next_render: false,
+            }
+        }
+    }
+
+    impl Render for FocusTarget {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if mem::take(&mut self.panic_next_render) {
+                panic!("rendering failed");
+            }
+            let root = div();
+            if self.rendered {
+                root.child(div().track_focus(&self.focus_handle).on_action(
+                    cx.listener(|target: &mut Self, _: &CountDispatch, _, _| {
+                        target.dispatched += 1
+                    }),
+                ))
+            } else {
+                root
+            }
+        }
+    }
+
+    fn count_global_dispatches(cx: &mut TestAppContext) -> Rc<Cell<usize>> {
+        let dispatched = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let dispatched = dispatched.clone();
+            cx.on_action(move |_: &CountDispatch, _| dispatched.set(dispatched.get() + 1));
+        });
+        dispatched
+    }
+
+    fn dispatched(window: WindowHandle<FocusTarget>, cx: &mut TestAppContext) -> usize {
+        window.read_with(cx, |target, _| target.dispatched).unwrap()
+    }
+
+    fn is_rendered(focus_handle: &FocusHandle, window: &Window) -> bool {
+        window
+            .rendered_frame
+            .dispatch_tree
+            .focusable_node_id(focus_handle.id)
+            .is_some()
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_sees_the_frame_it_waited_for(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+
+        let rendered_when_called = Rc::new(Cell::new(None));
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                assert!(!is_rendered(&target.focus_handle, window));
+                let focus_handle = target.focus_handle.clone();
+                let rendered_when_called = rendered_when_called.clone();
+                window.on_next_render(move |window, _| {
+                    rendered_when_called.set(Some(is_rendered(&focus_handle, window)));
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(rendered_when_called.get(), Some(true));
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_requests_the_frame_it_waits_for(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+
+        let calls = Rc::new(Cell::new(0));
+        window
+            .update(cx, |_, window, _| {
+                let calls = calls.clone();
+                window.on_next_render(move |_, _| calls.set(calls.get() + 1));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_outside_updates_runs_synchronously(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        let target = window.root(cx).unwrap();
+        let focus_handle = target.read_with(cx, |target, _| target.focus_handle.clone());
+
+        cx.update_window(window.into(), |_, window, cx| {
+            focus_handle.dispatch_action(&CountDispatch, window, cx);
+            assert_eq!(
+                target.read(cx).dispatched,
+                1,
+                "with no entity being updated, the action should run before dispatch_action returns"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_during_its_handlers_update_runs_after_it(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+
+        let task_ran = Rc::new(Cell::new(false));
+
+        window
+            .update(cx, |target, window, cx| {
+                let task_ran = task_ran.clone();
+                cx.spawn(async move |_, _| task_ran.set(true)).detach();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+                assert_eq!(
+                    target.dispatched, 0,
+                    "the handler updates this entity, so it must wait for this update to end"
+                );
+            })
+            .unwrap();
+
+        assert_eq!(
+            dispatched(window, cx),
+            1,
+            "the window did not change, so the action should run when the update ends"
+        );
+        assert!(
+            !task_ran.get(),
+            "the action should run before tasks that the update spawned"
+        );
+    }
+
+    struct DispatchGlobal;
+
+    impl Global for DispatchGlobal {}
+
+    #[gpui::test]
+    fn test_dispatch_action_during_a_global_update_runs_after_it(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        cx.update(|cx| cx.set_global(DispatchGlobal));
+        let target = window.root(cx).unwrap();
+        let focus_handle = target.read_with(cx, |target, _| target.focus_handle.clone());
+
+        cx.update_window(window.into(), |_, window, cx| {
+            cx.update_global::<DispatchGlobal, _>(|_, cx| {
+                focus_handle.dispatch_action(&CountDispatch, window, cx);
+                assert_eq!(
+                    target.read(cx).dispatched,
+                    0,
+                    "the action must wait for the global update to end"
+                );
+            })
+        })
+        .unwrap();
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    struct RegistersDuringRender {
+        renders: Rc<Cell<usize>>,
+        register: bool,
+        renders_seen: Rc<Cell<Option<(usize, usize)>>>,
+    }
+
+    impl Render for RegistersDuringRender {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            if mem::take(&mut self.register) {
+                let registered_in = self.renders.get();
+                let renders = self.renders.clone();
+                let renders_seen = self.renders_seen.clone();
+                window.on_next_render(move |_, _| {
+                    renders_seen.set(Some((registered_in, renders.get())));
+                });
+            }
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_scheduled_while_drawing_waits_for_the_next_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let renders_seen = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let renders_seen = renders_seen.clone();
+            |_, _| RegistersDuringRender {
+                renders: Rc::new(Cell::new(0)),
+                register: false,
+                renders_seen,
+            }
+        });
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, cx| {
+                view.register = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let (registered_in, ran_after) = renders_seen
+            .get()
+            .expect("the callback should run once the next frame is drawn");
+        assert_eq!(ran_after, registered_in + 1);
+    }
+
+    fn open_production_window<V: Render + 'static>(
+        cx: &mut TestAppContext,
+        build_view: impl FnOnce(&mut Window, &mut Context<V>) -> V + 'static,
+    ) -> (WindowHandle<V>, crate::TestWindow) {
+        cx.app.borrow_mut().mode = crate::app::GpuiMode::Production;
+        let window = cx.add_window(build_view);
+        let test_window = cx.test_window(window.into());
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+        (window, test_window)
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_runs_after_the_platform_draws_the_frame(cx: &mut TestAppContext) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+        let rendered_when_called = Rc::new(Cell::new(None));
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                let focus_handle = target.focus_handle.clone();
+                let rendered_when_called = rendered_when_called.clone();
+                window.on_next_render(move |window, _| {
+                    rendered_when_called.set(Some(is_rendered(&focus_handle, window)));
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            rendered_when_called.get(),
+            None,
+            "the platform has not drawn a frame since the callback was scheduled"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(rendered_when_called.get(), Some(true));
+    }
+
+    #[gpui::test]
+    fn test_next_render_callback_scheduled_while_the_platform_draws_requests_another_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let renders_seen = Rc::new(Cell::new(None));
+        let (window, test_window) = open_production_window(cx, {
+            let renders_seen = renders_seen.clone();
+            |_, _| RegistersDuringRender {
+                renders: Rc::new(Cell::new(0)),
+                register: false,
+                renders_seen,
+            }
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                view.register = true;
+                cx.notify();
+            })
+            .unwrap();
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(
+            renders_seen.get(),
+            None,
+            "the callback must not run after the frame that scheduled it"
+        );
+        assert!(
+            cx.update_window(window.into(), |_, window, _| window.invalidator.is_dirty())
+                .unwrap(),
+            "the frame that scheduled the callback should request the next one"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        let (registered_in, ran_after) = renders_seen
+            .get()
+            .expect("the callback should run once the next frame is drawn");
+        assert_eq!(ran_after, registered_in + 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_waits_for_the_platform_to_draw_its_target(cx: &mut TestAppContext) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "the platform has not drawn the target yet"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_after_an_unchanged_update_skips_the_platform_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, _test_window) = open_production_window(cx, |_, cx| FocusTarget::new(true, cx));
+
+        window
+            .update(cx, |target, window, cx| {
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+
+        assert_eq!(
+            dispatched(window, cx),
+            1,
+            "the last drawn frame is current, so the action should not wait for another"
+        );
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_waits_for_a_frame_that_nothing_changed_since(cx: &mut TestAppContext) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                window.on_next_render(|window, _| window.refresh());
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "a callback changed the window after the first frame, so that frame is stale"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_during_a_global_update_waits_for_its_observers(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        cx.update(|cx| cx.set_global(DispatchGlobal));
+        let target = window.root(cx).unwrap();
+        cx.update(|cx| {
+            let target = target.clone();
+            cx.observe_global::<DispatchGlobal>(move |cx| {
+                target.update(cx, |target, cx| {
+                    target.rendered = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        });
+        let focus_handle = target.read_with(cx, |target, _| target.focus_handle.clone());
+
+        cx.update_window(window.into(), |_, window, cx| {
+            cx.update_global::<DispatchGlobal, _>(|_, cx| {
+                focus_handle.dispatch_action(&CountDispatch, window, cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "an observer of the global hid the target before the action could run"
+        );
+    }
+
+    struct PanicsOnRender {
+        panic_next_render: Rc<Cell<bool>>,
+        renders: Rc<Cell<usize>>,
+    }
+
+    impl Render for PanicsOnRender {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            if self.panic_next_render.replace(false) {
+                panic!("rendering failed");
+            }
+            self.renders.set(self.renders.get() + 1);
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn test_window_draws_again_after_a_draw_panics(cx: &mut TestAppContext) {
+        let panic_next_render = Rc::new(Cell::new(false));
+        let renders = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let panic_next_render = panic_next_render.clone();
+            let renders = renders.clone();
+            |_, _| PanicsOnRender {
+                panic_next_render,
+                renders,
+            }
+        });
+        cx.run_until_parked();
+
+        panic_next_render.set(true);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            window.update(cx, |_, _, cx| cx.notify())
+        }));
+        assert!(panic.is_err());
+
+        let renders_before = renders.get();
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(
+                window.invalidator.not_drawing(),
+                "the interrupted draw should have ended"
+            );
+        })
+        .unwrap();
+        cx.update(|_| {});
+
+        assert!(
+            renders.get() > renders_before,
+            "the window should draw again after the interrupted draw"
+        );
+    }
+
+    fn assert_panics(access: impl FnOnce()) {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(access)).is_err(),
+            "the access should panic"
+        );
+    }
+
+    struct RegistersThenPanics {
+        order: Rc<RefCell<Vec<&'static str>>>,
+        panic_next_render: Rc<Cell<bool>>,
+    }
+
+    impl Render for RegistersThenPanics {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            if self.panic_next_render.replace(false) {
+                let order = self.order.clone();
+                window.on_next_render(move |_, _| {
+                    order.borrow_mut().push("scheduled during the failed draw")
+                });
+                panic!("rendering failed");
+            }
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn test_next_render_callbacks_survive_a_draw_that_panics(cx: &mut TestAppContext) {
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let panic_next_render = Rc::new(Cell::new(false));
+        let window = cx.add_window({
+            let order = order.clone();
+            let panic_next_render = panic_next_render.clone();
+            |_, _| RegistersThenPanics {
+                order,
+                panic_next_render,
+            }
+        });
+        cx.run_until_parked();
+
+        panic_next_render.set(true);
+        assert_panics(|| {
+            window
+                .update(cx, |_, window, cx| {
+                    let order = order.clone();
+                    window.on_next_render(move |_, _| {
+                        order.borrow_mut().push("scheduled before the failed draw")
+                    });
+                    cx.notify();
+                })
+                .unwrap();
+        });
+        assert!(
+            order.borrow().is_empty(),
+            "no frame has been drawn since the callbacks were scheduled"
+        );
+
+        cx.update(|_| {});
+
+        assert_eq!(
+            *order.borrow(),
+            [
+                "scheduled before the failed draw",
+                "scheduled during the failed draw"
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_waiting_for_a_draw_that_panics_runs_after_the_next_draw(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                target.panic_next_render = true;
+                cx.notify();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        assert_panics(|| test_window.simulate_frame_request(RequestFrameOptions::default()));
+        assert_eq!(dispatched(window, cx), 0, "no frame has been drawn yet");
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert_eq!(
+            dispatched(window, cx),
+            1,
+            "the action should wait through the failed draw for the next one"
+        );
+    }
+
+    struct PanicsOnRenderPrompt {
+        focus_handle: FocusHandle,
+        panic_next_render: Rc<Cell<bool>>,
+    }
+
+    impl crate::EventEmitter<crate::PromptResponse> for PanicsOnRenderPrompt {}
+
+    impl crate::Focusable for PanicsOnRenderPrompt {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for PanicsOnRenderPrompt {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            if self.panic_next_render.replace(false) {
+                panic!("rendering the prompt failed");
+            }
+            div().track_focus(&self.focus_handle)
+        }
+    }
+
+    #[gpui::test]
+    fn test_prompt_survives_a_draw_that_panics(cx: &mut TestAppContext) {
+        let panic_next_render = Rc::new(Cell::new(false));
+        cx.update(|cx| {
+            let panic_next_render = panic_next_render.clone();
+            cx.set_prompt_builder(move |_, _, _, _, handle, window, cx| {
+                let prompt = cx.new(|cx| PanicsOnRenderPrompt {
+                    focus_handle: cx.focus_handle(),
+                    panic_next_render: panic_next_render.clone(),
+                });
+                handle.with_view(prompt, window, cx)
+            });
+        });
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        window
+            .update(cx, |_, window, cx| {
+                let _answer = window.prompt(crate::PromptLevel::Info, "message", None, &["OK"], cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        panic_next_render.set(true);
+        assert_panics(|| window.update(cx, |_, window, _| window.refresh()).unwrap());
+
+        window
+            .update(cx, |_, window, _| {
+                assert!(window.prompt.is_some(), "the prompt should still be shown")
+            })
+            .unwrap();
+    }
+
+    struct PanicsOnRenderView(Rc<Cell<bool>>);
+
+    impl Render for PanicsOnRenderView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            if self.0.replace(false) {
+                panic!("rendering failed");
+            }
+            Empty
+        }
+    }
+
+    #[gpui::test]
+    fn test_active_drag_survives_a_draw_that_panics(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        let panic_next_render = Rc::new(Cell::new(false));
+        let preview = cx.new(|_| PanicsOnRenderView(panic_next_render.clone()));
+        cx.update(|cx| {
+            cx.active_drag = Some(crate::AnyDrag {
+                view: preview.into(),
+                value: std::sync::Arc::new(()),
+                cursor_offset: Point::default(),
+                cursor_style: None,
+                external_payload_source: None,
+            })
+        });
+
+        panic_next_render.set(true);
+        assert_panics(|| window.update(cx, |_, window, _| window.refresh()).unwrap());
+
+        assert!(
+            cx.update(|cx| cx.has_active_drag()),
+            "the drag should still be active"
+        );
+    }
+
+    struct PanicsOnMouseDown {
+        presses: Rc<Cell<usize>>,
+    }
+
+    impl Render for PanicsOnMouseDown {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let presses = self.presses.clone();
+            div()
+                .size_full()
+                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                    presses.set(presses.get() + 1);
+                    if presses.get() == 1 {
+                        panic!("the mouse listener failed");
+                    }
+                })
+        }
+    }
+
+    #[gpui::test]
+    fn test_mouse_listeners_survive_a_listener_that_panics(cx: &mut TestAppContext) {
+        let presses = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let presses = presses.clone();
+            |_, _| PanicsOnMouseDown { presses }
+        });
+        cx.run_until_parked();
+        let press = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        position: point(px(10.), px(10.)),
+                        button: MouseButton::Left,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+            })
+            .unwrap();
+        };
+
+        assert_panics(|| press(cx));
+        press(cx);
+
+        assert_eq!(
+            presses.get(),
+            2,
+            "the listener should stay registered after it panicked"
+        );
+    }
+
+    fn register_listener_that_panics_once(cx: &mut TestAppContext) -> Rc<Cell<usize>> {
+        let calls = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let calls = calls.clone();
+            cx.on_action(move |_: &CountDispatch, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    panic!("the listener failed");
+                }
+            });
+        });
+        calls
+    }
+
+    fn dispatch_to_window(window: WindowHandle<FocusTarget>, cx: &mut TestAppContext) {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.dispatch_action(Box::new(CountDispatch), cx)
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_global_action_listeners_survive_a_listener_that_panics_in_a_window(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        let calls = register_listener_that_panics_once(cx);
+
+        assert_panics(|| dispatch_to_window(window, cx));
+        dispatch_to_window(window, cx);
+
+        assert_eq!(
+            calls.get(),
+            2,
+            "the listener should stay registered after it panicked"
+        );
+    }
+
+    #[cfg(feature = "profiler")]
+    #[gpui::test]
+    fn test_window_profiler_ends_the_activities_that_a_panic_interrupted(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        register_listener_that_panics_once(cx);
+        let activity_depth = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, _| {
+                window.window_profiler.activity_depth()
+            })
+            .unwrap()
+        };
+        let depth_before = activity_depth(cx);
+
+        assert_panics(|| dispatch_to_window(window, cx));
+        assert_eq!(activity_depth(cx), depth_before, "after an action handler");
+
+        assert_panics(|| {
+            window
+                .update(cx, |target, _, cx| {
+                    target.panic_next_render = true;
+                    cx.notify();
+                })
+                .unwrap();
+        });
+        assert_eq!(activity_depth(cx), depth_before, "after a draw");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[gpui::test]
+    fn test_a11y_action_listeners_survive_a_listener_that_panics(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        let node_id = accesskit::NodeId(1);
+        let calls = Rc::new(Cell::new(0));
+        cx.update_window(window.into(), |_, window, _| {
+            let calls = calls.clone();
+            window.on_a11y_action(node_id, accesskit::Action::Click, move |_, _, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    panic!("the accessibility listener failed");
+                }
+            });
+        })
+        .unwrap();
+        let click = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.handle_a11y_action(
+                    accesskit::ActionRequest {
+                        action: accesskit::Action::Click,
+                        target_tree: accesskit::TreeId::ROOT,
+                        target_node: node_id,
+                        data: None,
+                    },
+                    cx,
+                )
+            })
+            .unwrap();
+        };
+
+        assert_panics(|| click(cx));
+        click(cx);
+
+        assert_eq!(
+            calls.get(),
+            2,
+            "the listener should stay registered after it panicked"
+        );
+    }
+
+    #[gpui::test]
+    fn test_prompts_work_after_a_prompt_builder_panics(cx: &mut TestAppContext) {
+        let builder_panics = Rc::new(Cell::new(true));
+        cx.update(|cx| {
+            let builder_panics = builder_panics.clone();
+            cx.set_prompt_builder(move |level, message, detail, actions, handle, window, cx| {
+                if builder_panics.replace(false) {
+                    panic!("building the prompt failed");
+                }
+                crate::fallback_prompt_renderer(level, message, detail, actions, handle, window, cx)
+            });
+        });
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        let prompt = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, window, cx| {
+                    let _answer =
+                        window.prompt(crate::PromptLevel::Info, "message", None, &["OK"], cx);
+                })
+                .unwrap();
+        };
+
+        assert_panics(|| prompt(cx));
+        prompt(cx);
+
+        window
+            .update(cx, |_, window, _| {
+                assert!(window.prompt.is_some(), "the second prompt should be shown")
+            })
+            .unwrap();
+    }
+
+    fn schedule_recorded_frame(
+        window: WindowHandle<FocusTarget>,
+        ran: &Rc<RefCell<Vec<&'static str>>>,
+        name: &'static str,
+        cx: &mut TestAppContext,
+    ) {
+        let ran = ran.clone();
+        cx.update_window(window.into(), |_, window, _| {
+            window.on_next_frame(move |_, _| ran.borrow_mut().push(name))
+        })
+        .unwrap();
+    }
+
+    fn schedule_failing_frame(window: WindowHandle<FocusTarget>, cx: &mut TestAppContext) {
+        cx.update_window(window.into(), |_, window, _| {
+            window.on_next_frame(|_, _| panic!("the frame callback failed"))
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_next_frame_callbacks_after_one_that_panics_run_on_the_next_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, test_window) = open_production_window(cx, |_, cx| FocusTarget::new(false, cx));
+        let unthrottled_frame = RequestFrameOptions {
+            require_presentation: true,
+            ..Default::default()
+        };
+        let ran = Rc::new(RefCell::new(Vec::new()));
+        schedule_failing_frame(window, cx);
+        schedule_recorded_frame(window, &ran, "scheduled with the failed one", cx);
+
+        assert_panics(|| test_window.simulate_frame_request(unthrottled_frame));
+        schedule_recorded_frame(window, &ran, "scheduled after the failure", cx);
+        test_window.simulate_frame_request(unthrottled_frame);
+
+        assert_eq!(
+            *ran.borrow(),
+            [
+                "scheduled with the failed one",
+                "scheduled after the failure"
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn test_simulated_next_frame_keeps_the_callbacks_after_one_that_panics(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        let ran = Rc::new(RefCell::new(Vec::new()));
+        schedule_failing_frame(window, cx);
+        schedule_recorded_frame(window, &ran, "scheduled with the failed one", cx);
+        let simulate_next_frame = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.simulate_next_frame(cx)
+            })
+            .unwrap()
+        };
+
+        assert_panics(|| {
+            simulate_next_frame(cx);
+        });
+
+        assert_eq!(simulate_next_frame(cx), 1);
+        assert_eq!(*ran.borrow(), ["scheduled with the failed one"]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "actions must not be dispatched while an entity or global is being updated"
+    )]
+    fn test_routing_an_action_inside_an_update_panics() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+
+        window
+            .update(&mut cx, |target, window, cx| {
+                target.focus_handle.route_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_waits_for_its_target_to_render(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = true;
+                cx.notify();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(dispatched(window, cx), 1);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_during_an_update_that_hides_its_target_is_dropped(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(true, cx));
+        cx.run_until_parked();
+        let global_dispatches = count_global_dispatches(cx);
+
+        window
+            .update(cx, |target, window, cx| {
+                target.rendered = false;
+                cx.notify();
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "the frame drawn before the update must not route an action dispatched during it"
+        );
+        assert_eq!(global_dispatches.get(), 0);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_is_dropped_when_its_target_is_released(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        let global_dispatches = count_global_dispatches(cx);
+
+        window
+            .update(cx, |target, window, cx| {
+                target
+                    .focus_handle
+                    .dispatch_action(&CountDispatch, window, cx);
+                target.focus_handle = cx.focus_handle();
+                target.rendered = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "the element now rendering in the released target's place must not receive its action"
+        );
+        assert_eq!(global_dispatches.get(), 0);
+    }
+
+    #[gpui::test]
+    fn test_dispatch_action_is_dropped_when_its_target_never_renders(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| FocusTarget::new(false, cx));
+        cx.run_until_parked();
+        let global_dispatches = count_global_dispatches(cx);
+        let focus_handle = window
+            .read_with(cx, |target, _| target.focus_handle.clone())
+            .unwrap();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            focus_handle.dispatch_action(&CountDispatch, window, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |target, _, cx| {
+                target.rendered = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            dispatched(window, cx),
+            0,
+            "an action that gave up waiting must not run when its target renders later"
+        );
+        assert_eq!(global_dispatches.get(), 0);
     }
 
     #[gpui::test]
@@ -9532,6 +10805,47 @@ mod inspector_tests {
                 .expect("close inspector");
             assert_closed_inspector(windows[0].into(), cx);
         }
+    }
+
+    #[gpui::test]
+    fn inspector_survives_a_renderer_that_panics(cx: &mut TestAppContext) {
+        let renderer_panics = Rc::new(Cell::new(true));
+        let inspector_renders = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let renderer_panics = renderer_panics.clone();
+            let inspector_renders = inspector_renders.clone();
+            cx.set_inspector_renderer(Box::new(move |_, _, _| {
+                if renderer_panics.replace(false) {
+                    panic!("rendering the inspector failed");
+                }
+                inspector_renders.set(inspector_renders.get() + 1);
+                div().into_any_element()
+            }));
+        });
+        let window = cx.add_window(|_, cx| InspectorTestRoot {
+            child: cx.new(|_| InspectorTestView::default()),
+        });
+        cx.run_until_parked();
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.toggle_inspector(cx);
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }));
+        assert!(panic.is_err());
+
+        cx.update_window(window.into(), |_, window, cx| {
+            assert!(window.inspector.is_some(), "the inspector should stay open");
+            assert!(
+                cx.inspector_renderer.is_some(),
+                "the inspector renderer should stay registered"
+            );
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        assert!(inspector_renders.get() > 0);
     }
 
     struct InspectorTestRoot {
