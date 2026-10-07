@@ -565,6 +565,8 @@ if __name__ == "__main__":
         except Exception:
             if issue_exists(args.issue_number):
                 raise
-            print(f"Skipping: issue #{args.issue_number} no longer exists (deleted or transferred)")
+            print(
+                f"Skipping: issue #{args.issue_number} no longer exists (deleted or transferred)"
+            )
     elif args.command == "classify-open":
         classify_open()
