@@ -34,7 +34,7 @@ elif command == "cargo":
     profile = "release" if "--release" in arguments else "debug"
     output = root / "target" / target / profile
     output.mkdir(parents=True, exist_ok=True)
-    if "build" in arguments:
+    if "build" in arguments or "rustc" in arguments:
         if os.environ.get("BUNDLE_TEST_FAILURE") == "build":
             sys.exit(1)
         assert arguments[:2] == ["--config", ".cargo/bundle-config.toml"]
@@ -119,10 +119,14 @@ class BundleMacTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("unexpected rebuild", commands)
         builds = [line for line in commands if line.startswith("cargo --config")]
-        self.assertEqual(len(builds), 2)
-        self.assertIn("--package zed --package cli", builds[0])
-        self.assertIn("--package remote_server", builds[1])
-        self.assertNotIn("--package zed", builds[1])
+        self.assertEqual(len(builds), 3)
+        self.assertIn(" rustc --release --package zed --bin zed ", builds[0])
+        self.assertTrue(
+            builds[0].endswith(" -- -C link-arg=-Wl,-unexported_symbol,__R*")
+        )
+        self.assertIn(" build --release --package cli ", builds[1])
+        self.assertIn("--package remote_server", builds[2])
+        self.assertNotIn("--package zed", builds[2])
         bundle_index = next(
             i for i, line in enumerate(commands) if line.startswith("cargo bundle")
         )
@@ -167,6 +171,16 @@ class BundleMacTests(unittest.TestCase):
                 self.assertFalse(
                     any(line.startswith(("strip ", "dsymutil ")) for line in commands)
                 )
+                builds = [
+                    line for line in commands if line.startswith("cargo --config")
+                ]
+                if option == "-d":
+                    self.assertIn(" build ", builds[0])
+                    self.assertIn("--package zed --package cli", builds[0])
+                else:
+                    self.assertIn(
+                        " rustc --release --package zed --bin zed ", builds[0]
+                    )
                 profile = "debug" if option == "-d" else "release"
                 binary = (
                     root
