@@ -23,9 +23,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL --output /tmp/rustup-init \
 
 # Mise shims read the mise config of the candidate checkout.
 WORKDIR /opt/sync-tools
-COPY .mise.toml mise.lock ./
+COPY .mise.toml ./
 RUN mise trust .mise.toml \
-    && mise install --locked dprint node tombi \
+    && mise install dprint node tombi \
     && ln -s "$(mise which dprint)" "$(mise which node)" "$(mise which tombi)" /usr/local/bin/
 ENV PATH="/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     HOME=/tmp \

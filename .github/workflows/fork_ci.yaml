@@ -53,7 +53,7 @@ jobs:
           esac
           mise run affected-packages --base "${base}" --head HEAD | tee -a "${GITHUB_OUTPUT}"
           sync_inputs=(
-            .cargo/config.toml .dprint.jsonc .mise.toml mise.lock rust-toolchain.toml rustfmt.toml tombi.toml
+            .cargo/config.toml .dprint.jsonc .mise.toml rust-toolchain.toml rustfmt.toml tombi.toml
             .github/workflows/fork_ci.yaml .github/workflows/fork_upstream_sync.yaml script/upstream-sync
           )
           if [[ -n "${base}" ]] && git diff --quiet "${base}" HEAD -- "${sync_inputs[@]}"; then

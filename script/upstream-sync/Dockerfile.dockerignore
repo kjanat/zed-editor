@@ -2,7 +2,6 @@
 !.cargo/config.toml
 !.dprint.jsonc
 !.mise.toml
-!mise.lock
 !rust-toolchain.toml
 !rustfmt.toml
 !tombi.toml

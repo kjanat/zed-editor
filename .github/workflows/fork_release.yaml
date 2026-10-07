@@ -25,7 +25,7 @@ on:
 permissions: { contents: read }
 concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
 defaults: { run: { shell: "bash -euxo pipefail {0}" } }
-env: { SENTRY_CLI: "github:getsentry/sentry-cli@3.8.0" }
+env: { SENTRY_CLI: "npm:@sentry/cli@3.8.0" }
 jobs:
   create_draft_release:
     if: github.repository == 'kjanat/zed-editor'
