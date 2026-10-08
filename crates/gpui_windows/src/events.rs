@@ -1811,9 +1811,17 @@ fn notify_frame_changed(handle: HWND) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::{HWND, WindowsPlatform, window_from_hwnd};
+    use gpui::{AppContext as _, Application, Empty, WindowOptions};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use std::{cell::RefCell, time::Duration};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        time::Duration,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        PostQuitMessage, SendMessageW, WM_DISPLAYCHANGE,
+    };
 
     #[test]
     fn test_display_change_during_app_update_defers_display_callback() {
