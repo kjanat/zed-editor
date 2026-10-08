@@ -744,6 +744,38 @@ fn tooltip_for_server_binary(
     }
 }
 
+struct InactiveServerRow<W> {
+    worktree: W,
+    name: LanguageServerName,
+    server_id: LanguageServerId,
+    binary_status: LanguageServerBinaryStatus,
+}
+
+fn visible_inactive_rows<'a, W, K: Eq + std::hash::Hash>(
+    rows: &'a [InactiveServerRow<W>],
+    worktree_key: impl Fn(&W) -> K,
+    running: &HashSet<(K, LanguageServerName)>,
+    binary_statuses: &'a HashMap<LanguageServerName, LanguageServerBinaryStatus>,
+) -> Vec<(&'a InactiveServerRow<W>, &'a LanguageServerBinaryStatus)> {
+    rows.iter()
+        .filter(|row| !running.contains(&(worktree_key(&row.worktree), row.name.clone())))
+        .map(|row| {
+            let binary_status = binary_statuses
+                .get(&row.name)
+                .filter(|binary_status| {
+                    matches!(
+                        binary_status.status,
+                        BinaryStatus::CheckingForUpdate
+                            | BinaryStatus::Downloading
+                            | BinaryStatus::Starting
+                    )
+                })
+                .unwrap_or(&row.binary_status);
+            (row, binary_status)
+        })
+        .collect()
+}
+
 fn binary_status_for_inactive(server: &InactiveLanguageServer) -> LanguageServerBinaryStatus {
     match &server.state {
         InactiveLanguageServerState::Failed { error } => LanguageServerBinaryStatus {
@@ -1167,7 +1199,7 @@ impl LspButton {
                     }
                 }
             }
-            let mut inactive_statuses = Vec::new();
+            let mut inactive_rows = Vec::new();
             state
                 .lsp_store
                 .update(cx, |lsp_store, cx| {
@@ -1191,26 +1223,31 @@ impl LspButton {
                             .read(cx)
                             .worktree_for_id(worktree_id, cx)
                         {
-                            server_ids_to_worktrees.insert(server.server_id, worktree.clone());
-                            server_names_to_worktrees
-                                .entry(name.clone())
-                                .or_default()
-                                .insert((worktree, server.server_id));
+                            inactive_rows.push(InactiveServerRow {
+                                worktree,
+                                name: name.clone(),
+                                server_id: server.server_id,
+                                binary_status: binary_status_for_inactive(server),
+                            });
                         }
-                        inactive_statuses.push((name.clone(), binary_status_for_inactive(server)));
                     }
                 })
                 .ok();
-            for (name, binary_status) in inactive_statuses {
+            for row in &inactive_rows {
                 state
                     .language_servers
                     .binary_statuses
-                    .entry(name)
-                    .or_insert(binary_status);
+                    .entry(row.name.clone())
+                    .or_insert_with(|| row.binary_status.clone());
             }
+            let inactive_names = inactive_rows
+                .iter()
+                .map(|row| &row.name)
+                .collect::<HashSet<_>>();
 
             let mut servers_per_worktree = BTreeMap::<SharedString, Vec<ServerData>>::new();
             let mut servers_with_health_checks = HashSet::default();
+            let mut running_servers_per_worktree = HashSet::default();
 
             for (server_id, health) in &state.language_servers.health_statuses {
                 let worktree = server_ids_to_worktrees.get(server_id).or_else(|| {
@@ -1222,6 +1259,10 @@ impl LspButton {
                         .map(|(worktree, _)| worktree)
                 });
                 servers_with_health_checks.insert(&health.name);
+                if let Some(worktree) = worktree {
+                    running_servers_per_worktree
+                        .insert((worktree.entity_id(), health.name.clone()));
+                }
                 let worktree_name =
                     worktree.map(|worktree| SharedString::new(worktree.read(cx).root_name_str()));
 
@@ -1272,6 +1313,9 @@ impl LspButton {
                     BinaryStatus::Failed { .. } => {}
                 }
 
+                if inactive_names.contains(server_name) {
+                    continue;
+                }
                 if let Some(worktrees_for_name) = server_names_to_worktrees.get(server_name)
                     && let Some((worktree, server_id)) = worktrees_for_name
                         .iter()
@@ -1288,6 +1332,22 @@ impl LspButton {
                             server_id: *server_id,
                         });
                 }
+            }
+
+            for (row, binary_status) in visible_inactive_rows(
+                &inactive_rows,
+                |worktree| worktree.entity_id(),
+                &running_servers_per_worktree,
+                &state.language_servers.binary_statuses,
+            ) {
+                servers_per_worktree
+                    .entry(SharedString::new(row.worktree.read(cx).root_name_str()))
+                    .or_default()
+                    .push(ServerData::WithBinaryStatus {
+                        server_name: &row.name,
+                        binary_status,
+                        server_id: row.server_id,
+                    });
             }
 
             let mut new_lsp_items = Vec::with_capacity(servers_per_worktree.len() + 1);
@@ -1591,6 +1651,88 @@ mod tests {
             binary_status: Some(binary_status),
             message: None,
         }
+    }
+
+    #[test]
+    fn inactive_servers_get_a_row_in_each_worktree() {
+        let stopped = binary_status_for_inactive(&InactiveLanguageServer {
+            server_id: server_id(1),
+            state: InactiveLanguageServerState::Stopped,
+        });
+        let failed = binary_status_for_inactive(&InactiveLanguageServer {
+            server_id: server_id(3),
+            state: InactiveLanguageServerState::Failed {
+                error: "no free keys".into(),
+            },
+        });
+        let rows = [
+            InactiveServerRow {
+                worktree: "frontend",
+                name: server_name("biome"),
+                server_id: server_id(1),
+                binary_status: stopped.clone(),
+            },
+            InactiveServerRow {
+                worktree: "backend",
+                name: server_name("biome"),
+                server_id: server_id(2),
+                binary_status: stopped,
+            },
+            InactiveServerRow {
+                worktree: "backend",
+                name: server_name("oxfmt"),
+                server_id: server_id(3),
+                binary_status: failed,
+            },
+        ];
+        let visible_rows = |running: &HashSet<(&'static str, LanguageServerName)>,
+                            binary_statuses: &HashMap<
+            LanguageServerName,
+            LanguageServerBinaryStatus,
+        >| {
+            visible_inactive_rows(&rows, |worktree| *worktree, running, binary_statuses)
+                .into_iter()
+                .map(|(row, binary_status)| {
+                    (
+                        row.worktree,
+                        row.name.0.to_string(),
+                        binary_status.status.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let running_elsewhere = HashSet::from_iter([("docs", server_name("biome"))]);
+        assert_eq!(
+            visible_rows(&running_elsewhere, &HashMap::new()),
+            [
+                ("frontend", "biome".to_string(), BinaryStatus::Stopped),
+                ("backend", "biome".to_string(), BinaryStatus::Stopped),
+                (
+                    "backend",
+                    "oxfmt".to_string(),
+                    BinaryStatus::Failed {
+                        error: "no free keys".into()
+                    }
+                ),
+            ]
+        );
+
+        let running_in_backend = HashSet::from_iter([("backend", server_name("biome"))]);
+        let restarting = HashMap::from_iter([(
+            server_name("oxfmt"),
+            LanguageServerBinaryStatus {
+                status: BinaryStatus::Starting,
+                message: None,
+            },
+        )]);
+        assert_eq!(
+            visible_rows(&running_in_backend, &restarting),
+            [
+                ("frontend", "biome".to_string(), BinaryStatus::Stopped),
+                ("backend", "oxfmt".to_string(), BinaryStatus::Starting),
+            ]
+        );
     }
 
     #[test]
