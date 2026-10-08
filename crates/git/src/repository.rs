@@ -60,6 +60,8 @@ static SEARCH_COMMIT_FORMAT: &str = "--format=%H";
 /// Number of commits to load per chunk for the git graph.
 pub const GRAPH_CHUNK_SIZE: usize = 1000;
 
+const REMOTE_DEFAULT_BRANCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Default value for the `git.worktree_directory` setting.
 pub const DEFAULT_WORKTREE_DIRECTORY: &str = "../worktrees";
 
@@ -3355,7 +3357,9 @@ impl GitRepository for RealGitRepository {
         let executor = cx.background_executor().clone();
         let git_binary_path = self.system_git_binary_path.clone();
         let is_trusted = self.is_trusted();
-        async move {
+        let timeout = executor.timer(REMOTE_DEFAULT_BRANCH_TIMEOUT);
+        let remote_name = remote.clone();
+        let lookup = async move {
             let fetch_urls = local_git
                 .run(&["remote", "get-url", "--all", "--", remote.as_str()])
                 .await?;
@@ -3406,16 +3410,27 @@ impl GitRepository for RealGitRepository {
                 .arg("HEAD")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
             let output = run_git_command(env, ask_pass, command, executor).await?;
-            Ok(output
-                .stdout
-                .lines()
-                .find_map(|line| {
-                    line.strip_prefix("ref: refs/heads/")?
-                        .strip_suffix("\tHEAD")
-                })
-                .map(SharedString::from))
+            anyhow::Ok(
+                output
+                    .stdout
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("ref: refs/heads/")?
+                            .strip_suffix("\tHEAD")
+                    })
+                    .map(SharedString::from),
+            )
+        };
+        async move {
+            match futures::future::select(lookup.boxed(), timeout).await {
+                futures::future::Either::Left((result, _)) => result,
+                futures::future::Either::Right(((), _)) => Err(anyhow!(
+                    "timed out reading the default branch of {remote_name:?}"
+                )),
+            }
         }
         .boxed()
     }
@@ -7149,6 +7164,57 @@ mod tests {
             remote_default_branch(&repo, "hosted", cx).await.unwrap(),
             None
         );
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn test_remote_default_branch_times_out(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("local");
+        let ssh = temp_dir.path().join("stalling-ssh");
+        fs::write(&ssh, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        git_init_repo(&repo_dir);
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("config"),
+                OsString::from("core.sshCommand"),
+                ssh.as_os_str().into(),
+            ],
+        );
+        git_command(
+            &repo_dir,
+            [
+                "remote",
+                "add",
+                "origin",
+                "ssh://git@example.invalid/project.git",
+            ],
+        );
+
+        let repo = RealGitRepository::new(
+            &repo_dir.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        let lookup = repo.remote_default_branch(
+            "origin".into(),
+            Arc::new(HashMap::default()),
+            cx.to_async(),
+        );
+        cx.executor()
+            .advance_clock(REMOTE_DEFAULT_BRANCH_TIMEOUT + std::time::Duration::from_secs(1));
+        let error = lookup.await.unwrap_err();
+        assert!(error.to_string().starts_with("timed out"), "{error:#}");
     }
 
     #[cfg(unix)]
