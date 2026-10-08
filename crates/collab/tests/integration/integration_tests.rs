@@ -8213,6 +8213,26 @@ async fn test_remote_git_branches(
         .unwrap()
         .unwrap();
     assert_eq!(default_branch_with_remote_b.as_deref(), Some("origin/main"));
+
+    client_a.fs().set_remote_for_repo(
+        Path::new("/project/.git"),
+        "origin",
+        "https://github.com/example/project.git",
+    );
+    client_a
+        .fs()
+        .set_remote_default_branch_for_repo(Path::new("/project/.git"), "origin", "main");
+    executor.run_until_parked();
+
+    let remote_default_branch_b = cx_b
+        .update(|cx| {
+            repo_b.update(cx, |repository, _cx| {
+                repository.remote_default_branch("origin".into())
+            })
+        })
+        .await
+        .unwrap();
+    assert!(remote_default_branch_b.is_err());
 }
 
 #[gpui::test]

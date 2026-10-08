@@ -4634,6 +4634,41 @@ async fn test_remote_git_branches(cx: &mut TestAppContext, server_cx: &mut TestA
         .unwrap()
         .unwrap();
     assert_eq!(default_branch_with_remote.as_deref(), Some("origin/main"));
+
+    let dot_git = Path::new(path!("/code/project1/.git"));
+    let unknown_remote = cx
+        .update(|cx| {
+            repository.update(cx, |repository, _cx| {
+                repository.remote_default_branch("origin".into())
+            })
+        })
+        .await
+        .unwrap();
+    assert!(unknown_remote.is_err());
+
+    fs.set_remote_for_repo(dot_git, "origin", "https://github.com/example/project1.git");
+    let remote_default_branch = cx
+        .update(|cx| {
+            repository.update(cx, |repository, _cx| {
+                repository.remote_default_branch("origin".into())
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(remote_default_branch, None);
+
+    fs.set_remote_default_branch_for_repo(dot_git, "origin", "dev");
+    let remote_default_branch = cx
+        .update(|cx| {
+            repository.update(cx, |repository, _cx| {
+                repository.remote_default_branch("origin".into())
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(remote_default_branch.as_deref(), Some("dev"));
 }
 
 #[gpui::test]

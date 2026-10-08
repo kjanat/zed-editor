@@ -2524,6 +2524,20 @@ impl FakeFs {
         .unwrap();
     }
 
+    pub fn set_remote_default_branch_for_repo(
+        &self,
+        dot_git: &Path,
+        remote: impl Into<String>,
+        branch: impl Into<String>,
+    ) {
+        self.with_git_state(dot_git, true, |state| {
+            state
+                .remote_default_branches
+                .insert(remote.into(), branch.into());
+        })
+        .unwrap();
+    }
+
     pub fn insert_branches(&self, dot_git: &Path, branches: &[&str]) {
         self.with_git_state(dot_git, true, |state| {
             if let Some(first) = branches.first()
