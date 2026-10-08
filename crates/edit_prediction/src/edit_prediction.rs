@@ -1036,7 +1036,9 @@ impl EditPredictionStore {
         });
 
         let user_store_subscription = cx.subscribe(&user_store, |_, user_store, event, cx| {
-            if let client::user::Event::PrivateUserInfoUpdated = event {
+            if let client::user::Event::PrivateUserInfoUpdated
+            | client::user::Event::OrganizationChanged = event
+            {
                 show_free_plan_edit_predictions_ended_notice_once(&user_store, cx);
             }
         });

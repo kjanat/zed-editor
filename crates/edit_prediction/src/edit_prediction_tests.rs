@@ -2933,6 +2933,64 @@ async fn test_free_plan_edit_predictions_ended_for_zed_provider(cx: &mut TestApp
 }
 
 #[gpui::test]
+async fn test_free_plan_edit_predictions_ended_after_organization_switch(cx: &mut TestAppContext) {
+    let (ep_store, _requests) = init_test_with_fake_client(cx);
+    let user_store = ep_store.read_with(cx, |ep_store, _| ep_store.user_store.clone());
+    let organization = |id: &str| {
+        Arc::new(Organization {
+            id: OrganizationId(id.into()),
+            name: id.into(),
+            is_personal: false,
+        })
+    };
+    let configuration = || OrganizationConfiguration {
+        is_zed_model_provider_enabled: true,
+        is_agent_thread_feedback_enabled: true,
+        is_collaboration_enabled: true,
+        edit_prediction: OrganizationEditPredictionConfiguration {
+            is_enabled: true,
+            is_feedback_enabled: true,
+        },
+    };
+    let free_organization = organization("free");
+    let notice_shown =
+        |cx: &mut TestAppContext| cx.read(|cx| FreePlanEditPredictionsEndedNotice::dismissed(cx));
+
+    user_store.update(cx, |user_store, cx| {
+        user_store.set_current_organization_configuration_for_test(
+            free_organization.clone(),
+            configuration(),
+            cx,
+        );
+        user_store.set_current_organization_plan_for_test(Plan::ZedFree, cx);
+        user_store.set_current_organization_configuration_for_test(
+            organization("pro"),
+            configuration(),
+            cx,
+        );
+        user_store.set_current_organization_plan_for_test(Plan::ZedPro, cx);
+        user_store.update_edit_prediction_usage(
+            EditPredictionUsage(client::RequestUsage {
+                limit: UsageLimit::Limited(2_000),
+                amount: 250,
+            }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(!notice_shown(cx));
+
+    user_store
+        .update(cx, |user_store, cx| {
+            user_store.set_current_organization(free_organization, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    assert!(notice_shown(cx));
+}
+
+#[gpui::test]
 async fn test_edit_prediction_basic_interpolation(cx: &mut TestAppContext) {
     let buffer = cx.new(|cx| Buffer::local("Lorem ipsum dolor", cx));
     let edits: Arc<[(Range<Anchor>, Arc<str>)]> = cx.update(|cx| {
