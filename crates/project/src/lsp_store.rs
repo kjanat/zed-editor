@@ -14301,27 +14301,27 @@ impl LspStore {
             } else {
                 buffers
             };
-            if clear_stopped && !only_restart_servers.is_empty() {
-                let languages = self.languages.clone();
-                if let Some(local) = self.as_local_mut()
-                    && local.all_language_servers_stopped
-                {
-                    local.all_language_servers_stopped = false;
-                    let requested_names = only_restart_servers
-                        .iter()
-                        .filter_map(|selector| match selector {
-                            LanguageServerSelector::Name(name) => Some(name),
-                            LanguageServerSelector::Id(_) => None,
-                        })
-                        .collect::<HashSet<_>>();
-                    local.stopped_language_servers.extend(
-                        languages
-                            .all_lsp_adapters()
-                            .into_iter()
-                            .map(|adapter| adapter.name())
-                            .filter(|name| !requested_names.contains(name)),
-                    );
-                }
+            if clear_stopped
+                && !only_restart_servers.is_empty()
+                && let Some(local) = self.as_local_mut()
+                && local.all_language_servers_stopped
+            {
+                local.all_language_servers_stopped = false;
+                let requested_names = only_restart_servers
+                    .iter()
+                    .filter_map(|selector| match selector {
+                        LanguageServerSelector::Name(name) => Some(name),
+                        LanguageServerSelector::Id(_) => None,
+                    })
+                    .collect::<HashSet<_>>();
+                let still_stopped = local
+                    .inactive_language_servers
+                    .iter()
+                    .filter(|(_, server)| server.state == InactiveLanguageServerState::Stopped)
+                    .map(|((_, name), _)| name.clone())
+                    .filter(|name| !requested_names.contains(name))
+                    .collect::<Vec<_>>();
+                local.stopped_language_servers.extend(still_stopped);
             }
             let (stopped_names, stop_task) = if only_restart_servers.is_empty() {
                 self.stop_local_language_servers_for_buffers(&buffers, HashSet::default(), cx)

@@ -10,7 +10,8 @@ use fs::{FakeFs, Fs};
 use futures::{FutureExt, StreamExt};
 use gpui::{Entity, TestAppContext, UpdateGlobal as _};
 use language::{
-    Buffer, CodeLabel, DiagnosticSourceKind, FakeLspAdapter, HighlightId, LocalFile, rust_lang,
+    Buffer, CodeLabel, DiagnosticSourceKind, FakeLspAdapter, HighlightId, LocalFile, json_lang,
+    rust_lang,
 };
 use lsp::{LanguageServerId, LanguageServerName, LanguageServerSelector, Uri};
 use parking_lot::Mutex;
@@ -1395,11 +1396,22 @@ async fn test_starting_one_server_after_stop_all_leaves_the_others_stopped(
 ) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
-    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
-        .await;
+    fs.insert_tree(
+        path!("/runtime"),
+        json!({ "main.rs": "fn main() {}", "config.json": "{}" }),
+    )
+    .await;
     let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
     let languages = project.read_with(cx, |project, _| project.languages().clone());
     languages.add(rust_lang());
+    languages.add(json_lang());
+    let mut json_servers = languages.register_fake_lsp(
+        "JSON",
+        FakeLspAdapter {
+            name: "json-server",
+            ..Default::default()
+        },
+    );
     let mut first_servers = languages.register_fake_lsp(
         "Rust",
         FakeLspAdapter {
@@ -1461,6 +1473,16 @@ async fn test_starting_one_server_after_stop_all_leaves_the_others_stopped(
             InactiveLanguageServerState::Stopped
         )]
     );
+
+    let (_json_buffer, _json_handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/config.json"), cx)
+        })
+        .await
+        .unwrap();
+    json_servers.next().await.unwrap();
+    cx.run_until_parked();
+    assert!(first_servers.next().now_or_never().is_none());
 }
 
 #[gpui::test(iterations = 10)]
