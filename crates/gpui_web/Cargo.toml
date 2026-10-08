@@ -25,6 +25,7 @@ smallvec.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 anyhow.workspace                   = true
+async-channel.workspace            = true
 console_error_panic_hook.workspace = true
 futures.workspace                  = true
 gpui.workspace                     = true
