@@ -347,7 +347,7 @@ pub fn init(
 
     cx.on_action(|_: &ReloadExtensions, cx| {
         let store = cx.global::<GlobalExtensionStore>().0.clone();
-        store.update(cx, |store, cx| drop(store.reload(None, cx)));
+        store.update(cx, |store, cx| drop(store.reload_all(cx)));
     });
 
     cx.set_global(GlobalExtensionStore(store));
@@ -571,6 +571,12 @@ impl ExtensionStore {
         async move {
             rx.await.ok();
         }
+    }
+
+    pub fn reload_all(&mut self, cx: &mut Context<Self>) -> impl Future<Output = ()> + use<> {
+        self.modified_extensions
+            .extend(self.extension_index.extensions.keys().cloned());
+        self.reload(None, cx)
     }
 
     fn extensions_dir(&self) -> PathBuf {
