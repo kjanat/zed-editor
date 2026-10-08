@@ -15,8 +15,8 @@ use git::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Worktree,
-        commit_hash_search_query,
+        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Upstream,
+        UpstreamTracking, UpstreamTrackingStatus, Worktree, commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -73,6 +73,8 @@ pub struct FakeGitRepositoryState {
     /// List of remotes, keys are names and values are URLs
     pub remotes: HashMap<String, String>,
     pub remote_default_branches: HashMap<String, String>,
+    pub branch_upstreams: HashMap<String, String>,
+    pub push_stderr: String,
     pub simulated_index_write_error_message: Option<String>,
     pub simulated_create_worktree_error: Option<String>,
     pub simulated_graph_error: Option<String>,
@@ -108,6 +110,8 @@ impl FakeGitRepositoryState {
             oids: Default::default(),
             remotes: HashMap::default(),
             remote_default_branches: HashMap::default(),
+            branch_upstreams: HashMap::default(),
+            push_stderr: String::new(),
             graph_commits: Vec::new(),
             commit_data: Default::default(),
             commit_history: Vec::new(),
@@ -651,7 +655,15 @@ impl GitRepository for FakeGitRepository {
                         is_head: Some(branch_name) == current_branch.as_ref(),
                         ref_name,
                         most_recent_commit: None,
-                        upstream: None,
+                        upstream: state.branch_upstreams.get(branch_name).map(|ref_name| {
+                            Upstream {
+                                ref_name: ref_name.clone().into(),
+                                tracking: UpstreamTracking::Tracked(UpstreamTrackingStatus {
+                                    ahead: 0,
+                                    behind: 0,
+                                }),
+                            }
+                        }),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -1266,11 +1278,12 @@ impl GitRepository for FakeGitRepository {
         _env: Arc<HashMap<String, String>>,
         _cx: AsyncApp,
     ) -> BoxFuture<'_, Result<git::repository::RemoteCommandOutput>> {
-        future::ready(Ok(git::repository::RemoteCommandOutput {
-            stdout: String::new(),
-            stderr: String::new(),
-        }))
-        .boxed()
+        self.with_state_async(false, |state| {
+            Ok(git::repository::RemoteCommandOutput {
+                stdout: String::new(),
+                stderr: state.push_stderr.clone(),
+            })
+        })
     }
 
     fn pull(

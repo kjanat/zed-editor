@@ -4782,17 +4782,18 @@ impl GitPanel {
                 this.askpass_delegate(format!("git push {}", remote.name), window, cx)
             })?;
 
+            let remote_branch: SharedString = branch
+                .upstream
+                .as_ref()
+                .filter(|u| matches!(u.tracking, UpstreamTracking::Tracked(_)))
+                .and_then(|u| u.branch_name())
+                .unwrap_or_else(|| branch.name())
+                .to_owned()
+                .into();
             let push = repo.update(cx, |repo, cx| {
                 repo.push(
                     branch.name().to_owned().into(),
-                    branch
-                        .upstream
-                        .as_ref()
-                        .filter(|u| matches!(u.tracking, UpstreamTracking::Tracked(_)))
-                        .and_then(|u| u.branch_name())
-                        .unwrap_or_else(|| branch.name())
-                        .to_owned()
-                        .into(),
+                    remote_branch.clone(),
                     remote.name.clone(),
                     options,
                     askpass_delegate,
@@ -4810,7 +4811,7 @@ impl GitPanel {
             } else {
                 None
             };
-            let offers_pull_request = remote_default_branch.as_deref() != Some(branch.name());
+            let offers_pull_request = remote_default_branch != Some(remote_branch);
 
             let action = RemoteAction::Push(branch.name().to_owned().into(), remote);
             this.update(cx, |this, cx| match remote_output {
@@ -6190,7 +6191,7 @@ impl GitPanel {
                         .color(Color::Muted),
                 );
                 match (style, offers_pull_request) {
-                    (PushPrLink { label, url }, _) => {
+                    (PushPrLink { label, url, .. }, true) => {
                         this.action(label, move |_window, cx| cx.open_url(&url))
                     }
                     (Toast | ToastWithLog { .. }, true) => {
@@ -6204,7 +6205,7 @@ impl GitPanel {
                         })
                     }
                     (Toast, false) => this,
-                    (ToastWithLog { output }, false) => {
+                    (ToastWithLog { output } | PushPrLink { output, .. }, false) => {
                         this.action("View Log", move |window, cx| {
                             let output = output.clone();
                             let output =
@@ -13425,20 +13426,45 @@ mod tests {
         let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
         let panel = workspace.update_in(cx, GitPanel::new);
 
-        for (branch, remote_default_branch, expected_label) in [
-            ("main", Some("main"), "View Log"),
-            ("feature", Some("main"), "Create Pull Request"),
-            ("main", None, "Create Pull Request"),
+        let merge_request_hint = "remote:\nremote: View merge request for main:\nremote:   https://example.com/project/-/merge_requests/1\nremote:\n";
+        for (branch, upstream, push_stderr, remote_default_branch, expected_label) in [
+            ("main", None, "", Some("main"), "View Log"),
+            ("feature", None, "", Some("main"), "Create Pull Request"),
+            ("main", None, "", None, "Create Pull Request"),
+            ("main", None, merge_request_hint, Some("main"), "View Log"),
+            (
+                "feature",
+                None,
+                merge_request_hint,
+                Some("main"),
+                "View Merge Request",
+            ),
+            (
+                "work",
+                Some("refs/remotes/origin/main"),
+                "",
+                Some("main"),
+                "View Log",
+            ),
+            (
+                "main",
+                Some("refs/remotes/origin/release"),
+                "",
+                Some("main"),
+                "Create Pull Request",
+            ),
         ] {
-            fs.with_git_state(dot_git, false, |state| match remote_default_branch {
-                Some(remote_default_branch) => {
-                    state
-                        .remote_default_branches
-                        .insert("origin".into(), remote_default_branch.into());
-                }
-                None => {
-                    state.remote_default_branches.remove("origin");
-                }
+            fs.with_git_state(dot_git, false, |state| {
+                state.push_stderr = push_stderr.to_string();
+                state.branch_upstreams.clear();
+                state
+                    .branch_upstreams
+                    .extend(upstream.map(|upstream| (branch.to_string(), upstream.to_string())));
+                state.remote_default_branches.clear();
+                state.remote_default_branches.extend(
+                    remote_default_branch
+                        .map(|default| ("origin".to_string(), default.to_string())),
+                );
             })
             .unwrap();
             fs.set_branch_name(dot_git, Some(branch));

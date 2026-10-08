@@ -34,8 +34,14 @@ impl RemoteAction {
 
 pub enum SuccessStyle {
     Toast,
-    ToastWithLog { output: RemoteCommandOutput },
-    PushPrLink { label: &'static str, url: String },
+    ToastWithLog {
+        output: RemoteCommandOutput,
+    },
+    PushPrLink {
+        label: &'static str,
+        url: String,
+        output: RemoteCommandOutput,
+    },
 }
 
 pub struct SuccessMessage {
@@ -173,7 +179,7 @@ pub fn format_output(action: &RemoteAction, output: RemoteCommandOutput) -> Succ
             } else if let Some((label, url)) = extract_pull_request_link(&output) {
                 SuccessMessage {
                     message: format!("Pushed {} to {}", branch_name, remote_ref.name),
-                    style: SuccessStyle::PushPrLink { label, url },
+                    style: SuccessStyle::PushPrLink { label, url, output },
                 }
             } else {
                 SuccessMessage {
@@ -214,7 +220,7 @@ mod tests {
         };
 
         let msg = format_output(&action, output);
-        if let SuccessStyle::PushPrLink { label, url } = msg.style {
+        if let SuccessStyle::PushPrLink { label, url, .. } = msg.style {
             assert_eq!(msg.message, "Pushed test_branch to test_remote");
             assert_eq!(label, "Create Pull Request");
             assert_eq!(url, "https://example.com/test/test/pull/new/test");
@@ -248,7 +254,7 @@ mod tests {
 
         let msg = format_output(&action, output);
 
-        if let SuccessStyle::PushPrLink { label, url } = msg.style {
+        if let SuccessStyle::PushPrLink { label, url, .. } = msg.style {
             assert_eq!(msg.message, "Pushed test_branch to test_remote");
             assert_eq!(label, "Create Merge Request");
             assert_eq!(
@@ -312,7 +318,7 @@ mod tests {
 
         let msg = format_output(&action, output);
 
-        if let SuccessStyle::PushPrLink { label, url } = msg.style {
+        if let SuccessStyle::PushPrLink { label, url, .. } = msg.style {
             assert_eq!(msg.message, "Pushed test_branch to test_remote");
             assert_eq!(label, "View Merge Request");
             assert_eq!(url, "https://example.com/test/test/-/merge_requests/99999");
