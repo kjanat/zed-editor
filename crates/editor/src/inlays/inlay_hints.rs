@@ -1713,7 +1713,7 @@ fn spawn_editor_hints_refresh(
                 );
             })
             .ok();
-        finished_sender.send(()).ok();
+        report_hint_refresh_finished(buffer_id, finished_sender);
     });
     HintRefreshTask {
         task,
@@ -1721,9 +1721,17 @@ fn spawn_editor_hints_refresh(
     }
 }
 
+fn report_hint_refresh_finished(buffer_id: BufferId, finished_sender: oneshot::Sender<()>) {
+    if finished_sender.send(()).is_err() {
+        log::debug!("Inlay hint refresh for {buffer_id:?} finished after its waiters were dropped");
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
-    use super::{HintTarget, HoveredInlayHintCommand, LspInlayHintData};
+    use super::{
+        HintTarget, HoveredInlayHintCommand, LspInlayHintData, report_hint_refresh_finished,
+    };
     use crate::editor_tests::{update_test_editor_settings, update_test_language_settings};
     use crate::hover_links::InlayHighlight;
     use crate::inlays::inlay_hints::InlayHintRefreshReason;
@@ -1763,6 +1771,19 @@ pub mod tests {
     use ui::App;
     use util::path;
     use util::paths::natural_sort;
+
+    #[test]
+    fn test_report_hint_refresh_finished() {
+        let buffer_id = BufferId::new(1).expect("buffer id");
+
+        let (finished_sender, mut finished) = oneshot::channel();
+        report_hint_refresh_finished(buffer_id, finished_sender);
+        assert_eq!(finished.try_recv(), Ok(Some(())));
+
+        let (finished_sender, finished) = oneshot::channel();
+        drop(finished);
+        report_hint_refresh_finished(buffer_id, finished_sender);
+    }
 
     #[gpui::test]
     fn test_clearing_buffers_clears_only_matching_hovered_command(cx: &mut TestAppContext) {
