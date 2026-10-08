@@ -364,6 +364,7 @@ pub struct LocalLspStore {
     all_language_servers_stopped: bool,
     runtime: RuntimeState,
     stopped_language_servers: HashSet<LanguageServerName>,
+    inactive_language_servers: HashMap<(WorktreeId, LanguageServerName), InactiveLanguageServer>,
 
     buffers_to_refresh_hash_set: HashSet<BufferId>,
     buffers_to_refresh_queue: VecDeque<BufferId>,
@@ -693,14 +694,15 @@ impl LocalLspStore {
 
                     Err(err) => {
                         let log = stderr_capture.lock().take().unwrap_or_default();
+                        let error = if log.is_empty() {
+                            format!("{err:#}")
+                        } else {
+                            format!("{err:#}\n-- stderr --\n{log}")
+                        };
                         delegate.update_status(
                             adapter.name(),
                             BinaryStatus::Failed {
-                                error: if log.is_empty() {
-                                    format!("{err:#}")
-                                } else {
-                                    format!("{err:#}\n-- stderr --\n{log}")
-                                },
+                                error: error.clone(),
                             },
                         );
                         log::error!(
@@ -720,6 +722,15 @@ impl LocalLspStore {
                                     local
                                         .lsp_tree
                                         .remove_nodes(&BTreeSet::from_iter([server_id]));
+                                    local.inactive_language_servers.insert(
+                                        (key.worktree_id, key.name.clone()),
+                                        InactiveLanguageServer {
+                                            server_id,
+                                            state: InactiveLanguageServerState::Failed {
+                                                error: error.into(),
+                                            },
+                                        },
+                                    );
                                 }
                                 store.cleanup_lsp_data(server_id);
                                 store.language_server_statuses.remove(&server_id);
@@ -4229,6 +4240,8 @@ impl LocalLspStore {
     ) -> Vec<LanguageServerId> {
         self.restricted_worktrees_tasks.remove(&id_to_remove);
         self.diagnostics.remove(&id_to_remove);
+        self.inactive_language_servers
+            .retain(|(worktree_id, _), _| *worktree_id != id_to_remove);
         self.prettier_store.update(cx, |prettier_store, cx| {
             prettier_store.remove_worktree(id_to_remove, cx);
         });
@@ -4985,6 +4998,19 @@ pub struct LanguageServerStatus {
     pub process_id: Option<u32>,
 }
 
+/// A language server of a worktree that isn't running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InactiveLanguageServer {
+    pub server_id: LanguageServerId,
+    pub state: InactiveLanguageServerState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InactiveLanguageServerState {
+    Failed { error: SharedString },
+    Stopped,
+}
+
 #[derive(Clone, Debug)]
 struct CoreSymbol {
     pub language_server_name: LanguageServerName,
@@ -5269,6 +5295,7 @@ impl LspStore {
                 all_language_servers_stopped: false,
                 runtime: RuntimeState::default(),
                 stopped_language_servers: HashSet::default(),
+                inactive_language_servers: HashMap::default(),
                 watched_manifest_filenames: ManifestProvidersStore::global(cx)
                     .manifest_file_names(),
             }),
@@ -13679,6 +13706,20 @@ impl LspStore {
             }
         };
 
+        let seed = local
+            .language_server_ids
+            .iter()
+            .find(|(_, state)| state.id == server_id)
+            .map(|(seed, _)| (seed.worktree_id, seed.name.clone()));
+        if let Some(seed) = &seed {
+            local.inactive_language_servers.insert(
+                seed.clone(),
+                InactiveLanguageServer {
+                    server_id,
+                    state: InactiveLanguageServerState::Stopped,
+                },
+            );
+        }
         // Remove this server ID from all entries in the given worktree.
         local
             .language_server_ids
@@ -13784,6 +13825,11 @@ impl LspStore {
         }
 
         if server_state.is_some() {
+            if let Some((_, name)) = seed
+                && let Some(local) = self.as_local()
+            {
+                local.update_binary_status(name, BinaryStatus::Stopped);
+            }
             cx.emit(LspStoreEvent::LanguageServerRemoved(server_id));
         }
         Task::ready(())
@@ -13836,6 +13882,7 @@ impl LspStore {
     pub fn restart_all_language_servers(&mut self, cx: &mut Context<Self>) {
         if let Some(local) = self.as_local_mut() {
             local.all_language_servers_stopped = false;
+            local.inactive_language_servers.clear();
         }
         // `restart_language_servers_for_buffers` with empty selectors and `clear_stopped`
         // clears `stopped_language_servers` for us.
@@ -13857,6 +13904,17 @@ impl LspStore {
 
     pub fn runtime_starts_servers(&self) -> bool {
         self.runtime().starts_servers()
+    }
+
+    pub fn inactive_language_servers(
+        &self,
+    ) -> impl Iterator<Item = (WorktreeId, &LanguageServerName, &InactiveLanguageServer)> {
+        self.as_local().into_iter().flat_map(|local| {
+            local
+                .inactive_language_servers
+                .iter()
+                .map(|((worktree_id, name), server)| (*worktree_id, name, server))
+        })
     }
 
     fn runtime(&self) -> &RuntimeState {
@@ -14223,6 +14281,48 @@ impl LspStore {
             });
             cx.background_spawn(request).detach_and_log_err(cx);
         } else {
+            let buffers = if buffers.is_empty() && !only_restart_servers.is_empty() {
+                let registered_buffer_ids = self
+                    .as_local()
+                    .map(|local| {
+                        local
+                            .registered_buffers
+                            .iter()
+                            .filter(|(_, count)| **count > 0)
+                            .map(|(buffer_id, _)| *buffer_id)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let buffer_store = self.buffer_store.read(cx);
+                registered_buffer_ids
+                    .into_iter()
+                    .filter_map(|buffer_id| buffer_store.get(buffer_id))
+                    .collect()
+            } else {
+                buffers
+            };
+            if clear_stopped && !only_restart_servers.is_empty() {
+                let languages = self.languages.clone();
+                if let Some(local) = self.as_local_mut()
+                    && local.all_language_servers_stopped
+                {
+                    local.all_language_servers_stopped = false;
+                    let requested_names = only_restart_servers
+                        .iter()
+                        .filter_map(|selector| match selector {
+                            LanguageServerSelector::Name(name) => Some(name),
+                            LanguageServerSelector::Id(_) => None,
+                        })
+                        .collect::<HashSet<_>>();
+                    local.stopped_language_servers.extend(
+                        languages
+                            .all_lsp_adapters()
+                            .into_iter()
+                            .map(|adapter| adapter.name())
+                            .filter(|name| !requested_names.contains(name)),
+                    );
+                }
+            }
             let (stopped_names, stop_task) = if only_restart_servers.is_empty() {
                 self.stop_local_language_servers_for_buffers(&buffers, HashSet::default(), cx)
             } else {
@@ -14633,6 +14733,9 @@ impl LspStore {
         if local.language_server_ids.get(&key).map(|state| state.id) != Some(server_id) {
             return;
         }
+        local
+            .inactive_language_servers
+            .remove(&(key.worktree_id, key.name.clone()));
 
         // Update language_servers collection with Running variant of LanguageServerState
         // indicating that the server is up and running and ready

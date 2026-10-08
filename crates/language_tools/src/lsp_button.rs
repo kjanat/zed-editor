@@ -18,8 +18,10 @@ use language::{BinaryStatus, BufferId, ServerHealth};
 use lsp::{LanguageServerId, LanguageServerName, LanguageServerSelector};
 use path::PathStyle;
 use project::{
-    LspStore, LspStoreEvent, Worktree, lsp_store::log_store::GlobalLogStore,
-    project_settings::ProjectSettings, trusted_worktrees::TrustedWorktrees,
+    LspStore, LspStoreEvent, Worktree,
+    lsp_store::{InactiveLanguageServer, InactiveLanguageServerState, log_store::GlobalLogStore},
+    project_settings::ProjectSettings,
+    trusted_worktrees::TrustedWorktrees,
 };
 use settings::{Settings as _, SettingsStore};
 use ui::{
@@ -206,6 +208,20 @@ impl ServerInfo {
             matches!(status.status, BinaryStatus::None | BinaryStatus::Starting)
         })
     }
+
+    fn restart_label(&self) -> &'static str {
+        let stopped = self.binary_status.as_ref().is_some_and(|status| {
+            matches!(
+                status.status,
+                BinaryStatus::Stopping | BinaryStatus::Stopped
+            )
+        });
+        if stopped {
+            "Start Server"
+        } else {
+            "Restart Server"
+        }
+    }
 }
 
 impl LanguageServerHealthStatus {
@@ -312,7 +328,9 @@ impl LanguageServerState {
                     let state = cx.entity();
                     move |_, cx| {
                         let lsp_store = state.update(cx, |state, _| {
-                            state.language_servers.clear_failed_binary_statuses();
+                            if restart {
+                                state.language_servers.clear_failed_binary_statuses();
+                            }
                             state.lsp_store.clone()
                         });
                         lsp_store
@@ -413,6 +431,7 @@ impl LanguageServerState {
                     let lsp_store = self.lsp_store.clone();
                     let state = cx.entity().downgrade();
                     let can_stop = submenu_server_info.can_stop();
+                    let restart_label = submenu_server_info.restart_label();
                     let process_memory_cache = process_memory_cache.clone();
 
                     move |menu, _window, _cx| {
@@ -497,7 +516,7 @@ impl LanguageServerState {
                         let workspace_for_restart = workspace.clone();
                         let lsp_store_for_restart = lsp_store.clone();
                         let server_name_for_restart = submenu_server_name.clone();
-                        submenu = submenu.entry("Restart Server", None, move |_window, cx| {
+                        submenu = submenu.entry(restart_label, None, move |_window, cx| {
                             let Some(workspace) = workspace_for_restart.upgrade() else {
                                 return;
                             };
@@ -567,20 +586,18 @@ impl LanguageServerState {
                                 })
                                 .unwrap_or_default();
 
-                            if !buffers.is_empty() {
-                                lsp_store_for_restart
-                                    .update(cx, |lsp_store, cx| {
-                                        lsp_store.restart_language_servers_for_buffers(
-                                            buffers,
-                                            HashSet::from_iter([LanguageServerSelector::Name(
-                                                server_name_for_restart.clone(),
-                                            )]),
-                                            true,
-                                            cx,
-                                        );
-                                    })
-                                    .ok();
-                            }
+                            lsp_store_for_restart
+                                .update(cx, |lsp_store, cx| {
+                                    lsp_store.restart_language_servers_for_buffers(
+                                        buffers,
+                                        HashSet::from_iter([LanguageServerSelector::Name(
+                                            server_name_for_restart.clone(),
+                                        )]),
+                                        true,
+                                        cx,
+                                    );
+                                })
+                                .ok();
                         });
 
                         if can_stop {
@@ -727,6 +744,21 @@ fn tooltip_for_server_binary(
     }
 }
 
+fn binary_status_for_inactive(server: &InactiveLanguageServer) -> LanguageServerBinaryStatus {
+    match &server.state {
+        InactiveLanguageServerState::Failed { error } => LanguageServerBinaryStatus {
+            status: BinaryStatus::Failed {
+                error: error.to_string(),
+            },
+            message: Some(error.clone()),
+        },
+        InactiveLanguageServerState::Stopped => LanguageServerBinaryStatus {
+            status: BinaryStatus::Stopped,
+            message: None,
+        },
+    }
+}
+
 impl LanguageServers {
     fn update_binary_status(
         &mut self,
@@ -777,16 +809,12 @@ impl LanguageServers {
         self.binary_statuses.is_empty() && self.health_statuses.is_empty()
     }
 
-    /// Drop all id-keyed state for a server that has been removed (stopped or
-    /// reaching end-of-life via restart). `binary_statuses` is intentionally
-    /// preserved — it is keyed by name and shared across restart cycles to
-    /// drive the "Downloading… → Starting…" status UX.
     /// Drops terminal failure statuses.
     ///
     /// `binary_statuses` is name-keyed and is otherwise only ever inserted into, so a server
     /// whose binary could not start stays reported for the lifetime of the process: closing
-    /// every file of that language does not clear it, and neither does stopping or restarting
-    /// all servers, since those iterate running servers and one that never started is not among
+    /// every file of that language does not clear it, and neither does restarting all
+    /// servers, since that iterates running servers and one that never started is not among
     /// them. The continuity this map exists for covers the steps on the way to running
     /// ("Downloading…" → "Starting…") across a restart cycle, not a terminal failure - a fresh
     /// attempt reports that again by itself if it still fails.
@@ -795,6 +823,10 @@ impl LanguageServers {
             .retain(|_, server| !matches!(server.status, BinaryStatus::Failed { .. }));
     }
 
+    /// Drop all id-keyed state for a server that has been removed (stopped or
+    /// reaching end-of-life via restart). `binary_statuses` is intentionally
+    /// preserved — it is keyed by name and shared across restart cycles to
+    /// drive the "Downloading… → Starting…" status UX.
     fn remove_server(&mut self, server_id: LanguageServerId) {
         self.health_statuses.remove(&server_id);
         self.servers_per_buffer_abs_path
@@ -1135,6 +1167,7 @@ impl LspButton {
                     }
                 }
             }
+            let mut inactive_statuses = Vec::new();
             state
                 .lsp_store
                 .update(cx, |lsp_store, cx| {
@@ -1152,8 +1185,29 @@ impl LspButton {
                                 .insert((worktree, server_id));
                         }
                     }
+                    for (worktree_id, name, server) in lsp_store.inactive_language_servers() {
+                        if let Some(worktree) = lsp_store
+                            .worktree_store()
+                            .read(cx)
+                            .worktree_for_id(worktree_id, cx)
+                        {
+                            server_ids_to_worktrees.insert(server.server_id, worktree.clone());
+                            server_names_to_worktrees
+                                .entry(name.clone())
+                                .or_default()
+                                .insert((worktree, server.server_id));
+                        }
+                        inactive_statuses.push((name.clone(), binary_status_for_inactive(server)));
+                    }
                 })
                 .ok();
+            for (name, binary_status) in inactive_statuses {
+                state
+                    .language_servers
+                    .binary_statuses
+                    .entry(name)
+                    .or_insert(binary_status);
+            }
 
             let mut servers_per_worktree = BTreeMap::<SharedString, Vec<ServerData>>::new();
             let mut servers_with_health_checks = HashSet::default();
@@ -1527,6 +1581,45 @@ mod tests {
                 .collect(),
             worktree: None,
         }
+    }
+
+    fn server_info(binary_status: LanguageServerBinaryStatus) -> ServerInfo {
+        ServerInfo {
+            name: server_name("oxfmt"),
+            id: server_id(1),
+            health: None,
+            binary_status: Some(binary_status),
+            message: None,
+        }
+    }
+
+    #[test]
+    fn inactive_servers_render_as_failed_or_stopped() {
+        let failed = binary_status_for_inactive(&InactiveLanguageServer {
+            server_id: server_id(1),
+            state: InactiveLanguageServerState::Failed {
+                error: "resource table has no free keys".into(),
+            },
+        });
+        assert!(matches!(
+            &failed.status,
+            BinaryStatus::Failed { error } if error == "resource table has no free keys"
+        ));
+        assert_eq!(
+            failed.message.as_deref(),
+            Some("resource table has no free keys")
+        );
+        assert_eq!(server_info(failed).restart_label(), "Restart Server");
+
+        let stopped = binary_status_for_inactive(&InactiveLanguageServer {
+            server_id: server_id(1),
+            state: InactiveLanguageServerState::Stopped,
+        });
+        assert!(matches!(stopped.status, BinaryStatus::Stopped));
+        assert_eq!(stopped.message, None);
+        let stopped = server_info(stopped);
+        assert_eq!(stopped.restart_label(), "Start Server");
+        assert!(!stopped.can_stop());
     }
 
     /// `remove_server` evicts the id from `health_statuses` so a restarted
