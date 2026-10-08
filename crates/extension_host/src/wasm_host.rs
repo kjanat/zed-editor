@@ -32,15 +32,16 @@ use semver::Version;
 use settings::Settings;
 use std::{
     borrow::Cow,
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
 };
 use task::{DebugScenario, SpawnInTerminal, TaskTemplate, ZedDebugConfig};
-use util::paths::SanitizedPath;
+use util::{ResultExt as _, paths::SanitizedPath};
 use wasmtime::{
     CacheStore, Engine, Store,
-    component::{Component, ResourceTable},
+    component::{Component, Resource, ResourceTable},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wit::Extension;
@@ -94,16 +95,17 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Command> {
         self.call_with_language_server_status_source(status_source, move |extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                let command = extension
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
                     .call_language_server_command(
                         store,
                         &language_server_id,
                         &language_name,
-                        resource,
+                        worktree.as_borrowed(),
                     )
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                    .await;
+                store.data_mut().reclaim(worktree);
+                let command = result?.map_err(|err| store.data().extension_error(err))?;
 
                 Ok(command.into())
             }
@@ -121,16 +123,17 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Option<String>> {
         self.call_with_language_server_status_source(status_source, move |extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                let options = extension
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
                     .call_language_server_initialization_options(
                         store,
                         &language_server_id,
                         &language_name,
-                        resource,
+                        worktree.as_borrowed(),
                     )
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                    .await;
+                store.data_mut().reclaim(worktree);
+                let options = result?.map_err(|err| store.data().extension_error(err))?;
                 anyhow::Ok(options)
             }
             .boxed()
@@ -146,15 +149,16 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Option<String>> {
         self.call_with_language_server_status_source(status_source, move |extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                let options = extension
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
                     .call_language_server_workspace_configuration(
                         store,
                         &language_server_id,
-                        resource,
+                        worktree.as_borrowed(),
                     )
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                    .await;
+                store.data_mut().reclaim(worktree);
+                let options = result?.map_err(|err| store.data().extension_error(err))?;
                 anyhow::Ok(options)
             }
             .boxed()
@@ -170,15 +174,16 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Option<String>> {
         self.call_with_language_server_status_source(status_source, move |extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                extension
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
                     .call_language_server_initialization_options_schema(
                         store,
                         &language_server_id,
-                        resource,
+                        worktree.as_borrowed(),
                     )
-                    .await
-                    .map_err(anyhow::Error::from)
+                    .await;
+                store.data_mut().reclaim(worktree);
+                result.map_err(anyhow::Error::from)
             }
             .boxed()
         })
@@ -193,15 +198,16 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Option<String>> {
         self.call_with_language_server_status_source(status_source, move |extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                extension
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
                     .call_language_server_workspace_configuration_schema(
                         store,
                         &language_server_id,
-                        resource,
+                        worktree.as_borrowed(),
                     )
-                    .await
-                    .map_err(anyhow::Error::from)
+                    .await;
+                store.data_mut().reclaim(worktree);
+                result.map_err(anyhow::Error::from)
             }
             .boxed()
         })
@@ -217,16 +223,17 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Option<String>> {
         self.call_with_language_server_status_source(status_source, move |extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                let options = extension
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
                     .call_language_server_additional_initialization_options(
                         store,
                         &language_server_id,
                         &target_language_server_id,
-                        resource,
+                        worktree.as_borrowed(),
                     )
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                    .await;
+                store.data_mut().reclaim(worktree);
+                let options = result?.map_err(|err| store.data().extension_error(err))?;
                 anyhow::Ok(options)
             }
             .boxed()
@@ -243,16 +250,17 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Option<String>> {
         self.call_with_language_server_status_source(status_source, move |extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                let options = extension
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
                     .call_language_server_additional_workspace_configuration(
                         store,
                         &language_server_id,
                         &target_language_server_id,
-                        resource,
+                        worktree.as_borrowed(),
                     )
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                    .await;
+                store.data_mut().reclaim(worktree);
+                let options = result?.map_err(|err| store.data().extension_error(err))?;
                 anyhow::Ok(options)
             }
             .boxed()
@@ -339,16 +347,21 @@ impl extension::Extension for WasmExtension {
     ) -> Result<SlashCommandOutput> {
         self.call(|extension, store| {
             async move {
-                let resource = if let Some(delegate) = delegate {
-                    Some(store.data_mut().table.push(delegate)?)
-                } else {
-                    None
-                };
-
-                let output = extension
-                    .call_run_slash_command(store, &command.into(), &arguments, resource)
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                let delegate = delegate
+                    .map(|delegate| store.data_mut().lend(delegate))
+                    .transpose()?;
+                let result = extension
+                    .call_run_slash_command(
+                        store,
+                        &command.into(),
+                        &arguments,
+                        delegate.as_ref().map(LentResource::as_borrowed),
+                    )
+                    .await;
+                if let Some(delegate) = delegate {
+                    store.data_mut().reclaim(delegate);
+                }
+                let output = result?.map_err(|err| store.data().extension_error(err))?;
 
                 Ok(output.into())
             }
@@ -364,11 +377,16 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Command> {
         self.call(|extension, store| {
             async move {
-                let project_resource = store.data_mut().table.push(project)?;
-                let command = extension
-                    .call_context_server_command(store, context_server_id.clone(), project_resource)
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                let project = store.data_mut().lend(project)?;
+                let result = extension
+                    .call_context_server_command(
+                        store,
+                        context_server_id.clone(),
+                        project.as_borrowed(),
+                    )
+                    .await;
+                store.data_mut().reclaim(project);
+                let command = result?.map_err(|err| store.data().extension_error(err))?;
                 anyhow::Ok(command.into())
             }
             .boxed()
@@ -383,15 +401,17 @@ impl extension::Extension for WasmExtension {
     ) -> Result<Option<ContextServerConfiguration>> {
         self.call(|extension, store| {
             async move {
-                let project_resource = store.data_mut().table.push(project)?;
-                let Some(configuration) = extension
+                let project = store.data_mut().lend(project)?;
+                let result = extension
                     .call_context_server_configuration(
                         store,
                         context_server_id.clone(),
-                        project_resource,
+                        project.as_borrowed(),
                     )
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?
+                    .await;
+                store.data_mut().reclaim(project);
+                let Some(configuration) =
+                    result?.map_err(|err| store.data().extension_error(err))?
                 else {
                     return Ok(None);
                 };
@@ -426,16 +446,17 @@ impl extension::Extension for WasmExtension {
     ) -> Result<()> {
         self.call(|extension, store| {
             async move {
-                let kv_store_resource = store.data_mut().table.push(kv_store)?;
-                extension
+                let kv_store = store.data_mut().lend(kv_store)?;
+                let result = extension
                     .call_index_docs(
                         store,
                         provider.as_ref(),
                         package_name.as_ref(),
-                        kv_store_resource,
+                        kv_store.as_borrowed(),
                     )
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                    .await;
+                store.data_mut().reclaim(kv_store);
+                result?.map_err(|err| store.data().extension_error(err))?;
 
                 anyhow::Ok(())
             }
@@ -453,11 +474,18 @@ impl extension::Extension for WasmExtension {
     ) -> Result<DebugAdapterBinary> {
         self.call(|extension, store| {
             async move {
-                let resource = store.data_mut().table.push(worktree)?;
-                let dap_binary = extension
-                    .call_get_dap_binary(store, dap_name, config, user_installed_path, resource)
-                    .await?
-                    .map_err(|err| store.data().extension_error(err))?;
+                let worktree = store.data_mut().lend(worktree)?;
+                let result = extension
+                    .call_get_dap_binary(
+                        store,
+                        dap_name,
+                        config,
+                        user_installed_path,
+                        worktree.as_borrowed(),
+                    )
+                    .await;
+                store.data_mut().reclaim(worktree);
+                let dap_binary = result?.map_err(|err| store.data().extension_error(err))?;
                 let dap_binary = dap_binary.try_into()?;
                 Ok(dap_binary)
             }
@@ -546,6 +574,18 @@ pub struct WasmState {
     pub host: Arc<WasmHost>,
     pub(crate) capability_granter: CapabilityGranter,
     pub(crate) language_server_status_source: Option<gpui::EntityId>,
+}
+
+/// A host value in the store's resource table that guest calls borrow.
+struct LentResource<T> {
+    rep: u32,
+    _type: PhantomData<fn() -> T>,
+}
+
+impl<T: 'static> LentResource<T> {
+    fn as_borrowed(&self) -> Resource<T> {
+        Resource::new_borrow(self.rep)
+    }
 }
 
 type MainThreadCall = Box<dyn Send + for<'a> FnOnce(&'a mut AsyncApp) -> LocalBoxFuture<'a, ()>>;
@@ -1018,6 +1058,20 @@ impl WasmExtension {
 }
 
 impl WasmState {
+    fn lend<T: Send + 'static>(&mut self, value: T) -> Result<LentResource<T>> {
+        let resource = self.table.push(value)?;
+        Ok(LentResource {
+            rep: resource.rep(),
+            _type: PhantomData,
+        })
+    }
+
+    fn reclaim<T: 'static>(&mut self, lent: LentResource<T>) {
+        self.table
+            .delete(Resource::<T>::new_own(lent.rep))
+            .log_err();
+    }
+
     fn on_main_thread<T, Fn>(&self, f: Fn) -> impl 'static + Future<Output = T>
     where
         T: 'static + Send,

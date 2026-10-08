@@ -8,6 +8,7 @@ use crate::{
         hash_directory_contents, remove_stale_uploads,
     },
     load_plugin_queries, remote_sync_retry_delay,
+    wasm_host::WasmExtension,
 };
 use anyhow::Context as _;
 use async_compression::futures::bufread::GzipEncoder;
@@ -49,7 +50,10 @@ use std::{
 };
 use task::{SpawnInTerminal, ZedDebugConfig};
 use theme::ThemeRegistry;
-use util::{rel_path::rel_path_buf, test::TempTree};
+use util::{
+    rel_path::{RelPath, rel_path_buf},
+    test::TempTree,
+};
 
 #[cfg(test)]
 #[ctor::ctor(unsafe)]
@@ -1209,6 +1213,31 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
         ]
     );
 
+    let wasm_extension = extension_store.read_with(cx, |store, _| {
+        store
+            .wasm_extensions
+            .iter()
+            .find(|(manifest, _)| manifest.id.as_ref() == test_extension_id)
+            .map(|(_, extension)| extension.clone())
+            .expect("the test extension should be loaded")
+    });
+    let entries_before = resource_table_len(&wasm_extension).await;
+    for _ in 0..20 {
+        wasm_extension
+            .language_server_workspace_configuration(
+                LanguageServerName::new_static("gleam"),
+                Arc::new(StubWorktree),
+                lsp_store_id,
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        resource_table_len(&wasm_extension).await,
+        entries_before,
+        "each call must free the worktree it lends the extension"
+    );
+
     // Simulate a new version of the language server being released
     language_server_version.lock().version = "v2.0.0".into();
     language_server_version.lock().binary_contents = "the-new-binary-contents".into();
@@ -1308,6 +1337,40 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
         .unwrap()
         .is_none()
     );
+}
+
+async fn resource_table_len(extension: &WasmExtension) -> usize {
+    extension
+        .call(|_, store| {
+            async move { anyhow::Ok(store.data_mut().table.iter_mut().count()) }.boxed()
+        })
+        .await
+        .unwrap()
+}
+
+struct StubWorktree;
+
+#[async_trait]
+impl WorktreeDelegate for StubWorktree {
+    fn id(&self) -> u64 {
+        0
+    }
+
+    fn root_path(&self) -> String {
+        String::new()
+    }
+
+    async fn read_text_file(&self, _: &RelPath) -> anyhow::Result<String> {
+        anyhow::bail!("the stub worktree has no files")
+    }
+
+    async fn which(&self, _: String) -> Option<String> {
+        None
+    }
+
+    async fn shell_env(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 fn init_test(cx: &mut TestAppContext) {

@@ -688,8 +688,9 @@ impl http_client::HostHttpResponseStream for WasmState {
 
     async fn drop(
         &mut self,
-        _resource: Resource<ExtensionHttpResponseStream>,
+        resource: Resource<ExtensionHttpResponseStream>,
     ) -> wasmtime::Result<()> {
+        self.table.delete(resource)?;
         Ok(())
     }
 }
