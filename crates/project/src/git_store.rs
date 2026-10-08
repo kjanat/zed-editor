@@ -4307,6 +4307,10 @@ impl GitStore {
         envelope: TypedEnvelope<proto::GetDefaultBranch>,
         mut cx: AsyncApp,
     ) -> Result<proto::GetDefaultBranchResponse> {
+        anyhow::ensure!(
+            envelope.payload.remote_name.is_none() || envelope.original_sender_id.is_none(),
+            "collaborators cannot query a remote's default branch"
+        );
         let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
         let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
 

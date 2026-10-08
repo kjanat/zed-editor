@@ -3356,6 +3356,12 @@ impl GitRepository for RealGitRepository {
         let git_binary_path = self.system_git_binary_path.clone();
         let is_trusted = self.is_trusted();
         async move {
+            let remotes = local_git.run(&["remote"]).await?;
+            anyhow::ensure!(
+                remotes.lines().any(|name| name == remote),
+                "{remote:?} is not a configured remote"
+            );
+
             let head = format!("refs/remotes/{remote}/HEAD");
             let target = local_git
                 .run(&["for-each-ref", "--format=%(symref)", head.as_str()])
@@ -3374,7 +3380,7 @@ impl GitRepository for RealGitRepository {
                 executor.clone(),
                 is_trusted,
             );
-            let mut command = git.build_command(&["ls-remote", "--symref"]);
+            let mut command = git.build_command(&["ls-remote", "--symref", "--"]);
             command
                 .envs(env.iter())
                 .env("GCM_INTERACTIVE", "never")
@@ -7048,6 +7054,15 @@ mod tests {
         );
         assert!(remote_default_branch(&repo, "nowhere", cx).await.is_err());
 
+        let injected = temp_dir.path().join("injected");
+        let upload_pack = format!("--upload-pack=touch {}", injected.display());
+        assert!(
+            remote_default_branch(&repo, &upload_pack, cx)
+                .await
+                .is_err()
+        );
+        assert!(!injected.exists());
+
         for (remote, branch) in [("hosted", "elsewhere"), ("origin", "master")] {
             let branch_ref = format!("refs/remotes/{remote}/{branch}");
             git_command(&repo_dir, ["update-ref", branch_ref.as_str(), "HEAD"]);
@@ -7065,10 +7080,7 @@ mod tests {
             remote_default_branch(&repo, "hosted", cx).await.unwrap(),
             Some("elsewhere".into())
         );
-        assert_eq!(
-            remote_default_branch(&repo, "origin", cx).await.unwrap(),
-            Some("master".into())
-        );
+        assert!(remote_default_branch(&repo, "origin", cx).await.is_err());
     }
 
     #[cfg(unix)]
