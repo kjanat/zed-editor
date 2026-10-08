@@ -7205,6 +7205,7 @@ mod tests {
             cx.executor(),
         )
         .unwrap();
+        repo.set_trusted(true);
 
         let lookup = repo.remote_default_branch(
             "origin".into(),
@@ -7267,6 +7268,7 @@ mod tests {
             cx.executor(),
         )
         .unwrap();
+        repo.set_trusted(true);
 
         let answering_askpass = answering_askpass.display().to_string();
         let env = HashMap::from_iter([
