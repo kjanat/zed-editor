@@ -60,6 +60,9 @@ libc.workspace     = true
 nix                = { workspace = true, features = ["resource", "user"] }
 tempfile.workspace = true
 
+[target."cfg(unix)".dev-dependencies]
+which.workspace = true
+
 [target."cfg(windows)".dependencies]
 windows = { workspace = true, features = ["Win32_System_JobObjects"] }
 

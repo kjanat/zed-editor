@@ -2035,7 +2035,6 @@ mod tests {
             .with_measurement(measurement)
             .without_plots()
             .sample_size(10)
-            .nresamples(1000)
             .warm_up_time(std::time::Duration::from_millis(1))
             .measurement_time(std::time::Duration::from_millis(1))
     }

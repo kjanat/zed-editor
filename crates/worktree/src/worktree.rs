@@ -7303,29 +7303,35 @@ const SENTINEL_RETRY_TICKS: usize = 10;
 // event on the current stream.
 #[cfg(feature = "test-support")]
 async fn retouch_sentinel(fs: &dyn Fs, abs_path: &std::path::Path) {
-    fs.create_file(
-        abs_path,
-        fs::CreateOptions {
-            overwrite: true,
-            ignore_if_exists: false,
-        },
-    )
-    .await
-    .unwrap();
+    if let Err(error) = fs
+        .create_file(
+            abs_path,
+            fs::CreateOptions {
+                overwrite: true,
+                ignore_if_exists: false,
+            },
+        )
+        .await
+    {
+        log::warn!("Failed to retouch {abs_path:?}: {error:#}");
+    }
 }
 
 #[cfg(feature = "test-support")]
 async fn retouch_and_remove_sentinel(fs: &dyn Fs, abs_path: &std::path::Path) {
     retouch_sentinel(fs, abs_path).await;
-    fs.remove_file(
-        abs_path,
-        RemoveOptions {
-            recursive: false,
-            ignore_if_not_exists: true,
-        },
-    )
-    .await
-    .unwrap();
+    if let Err(error) = fs
+        .remove_file(
+            abs_path,
+            RemoveOptions {
+                recursive: false,
+                ignore_if_not_exists: true,
+            },
+        )
+        .await
+    {
+        log::warn!("Failed to remove {abs_path:?}: {error:#}");
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -7969,6 +7975,16 @@ mod tests {
     };
     use text::LineEnding;
     use util::{path, rel_path::rel_path};
+
+    #[gpui::test]
+    async fn test_sentinel_retouch_survives_fs_errors(cx: &mut TestAppContext) {
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/root"), json!({})).await;
+        let sentinel = Path::new(path!("/root/missing/fs-event-sentinel"));
+
+        super::retouch_and_remove_sentinel(fs.as_ref(), sentinel).await;
+        assert!(!fs.is_file(sentinel).await);
+    }
 
     #[test]
     fn test_save_conflict_recovery_path_is_reported() {

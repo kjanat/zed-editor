@@ -30,6 +30,8 @@ xtask        = "run --package xtask --"
 # Cargo links Wasmtime statically; its C headers otherwise declare DLL imports on MSVC.
 CFLAGS_aarch64_pc_windows_msvc = "-DWASM_API_EXTERN= -DWASI_API_EXTERN="
 CFLAGS_x86_64_pc_windows_msvc  = "-DWASM_API_EXTERN= -DWASI_API_EXTERN="
+# Criterion runs `cargo metadata` on the whole workspace when `CRITERION_HOME` is unset.
+CRITERION_HOME                 = { value = "target/criterion", relative = true }
 MACOSX_DEPLOYMENT_TARGET       = "10.15.7"
 
 # We need lld to link libwebrtc.a successfully on aarch64-linux

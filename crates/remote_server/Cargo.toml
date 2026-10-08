@@ -74,6 +74,7 @@ acp_thread.workspace            = true
 action_log.workspace            = true
 agent                           = { workspace = true, features = ["test-support"] }
 agent-client-protocol.workspace = true
+agent_servers.workspace         = true
 client                          = { workspace = true, features = ["test-support"] }
 clock                           = { workspace = true, features = ["test-support"] }
 editor                          = { workspace = true, features = ["test-support"] }
@@ -100,6 +101,9 @@ toml_edit.workspace = true
 
 [target.'cfg(not(target_os = "freebsd"))'.dependencies]
 crashes.workspace = true
+
+[target."cfg(unix)".dependencies]
+libc.workspace = true
 
 [target."cfg(windows)".dependencies]
 gpui              = { workspace = true, features = ["windows-manifest"] }
