@@ -8626,6 +8626,11 @@ impl Workspace {
             .update(cx, |toast_layer, cx| toast_layer.toggle_toast(cx, entity))
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn active_toast<V: 'static>(&self, cx: &App) -> Option<Entity<V>> {
+        self.toast_layer.read(cx).active_toast()
+    }
+
     pub fn toggle_centered_layout(
         &mut self,
         _: &ToggleCenteredLayout,

@@ -72,6 +72,11 @@ impl StatusToast {
         self.show_dismiss = show;
         self
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn action_label(&self) -> Option<SharedString> {
+        self.action.as_ref().map(|action| action.label.clone())
+    }
 }
 
 impl Render for StatusToast {

@@ -72,6 +72,7 @@ pub struct FakeGitRepositoryState {
     pub branches: HashSet<String>,
     /// List of remotes, keys are names and values are URLs
     pub remotes: HashMap<String, String>,
+    pub remote_default_branches: HashMap<String, String>,
     pub simulated_index_write_error_message: Option<String>,
     pub simulated_create_worktree_error: Option<String>,
     pub simulated_graph_error: Option<String>,
@@ -106,6 +107,7 @@ impl FakeGitRepositoryState {
             merge_base_contents: Default::default(),
             oids: Default::default(),
             remotes: HashMap::default(),
+            remote_default_branches: HashMap::default(),
             graph_commits: Vec::new(),
             commit_data: Default::default(),
             commit_history: Vec::new(),
@@ -1264,7 +1266,11 @@ impl GitRepository for FakeGitRepository {
         _env: Arc<HashMap<String, String>>,
         _cx: AsyncApp,
     ) -> BoxFuture<'_, Result<git::repository::RemoteCommandOutput>> {
-        unimplemented!()
+        future::ready(Ok(git::repository::RemoteCommandOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+        }))
+        .boxed()
     }
 
     fn pull(
@@ -1303,7 +1309,7 @@ impl GitRepository for FakeGitRepository {
     }
 
     fn get_push_remote(&self, _branch: String) -> BoxFuture<'_, Result<Option<Remote>>> {
-        unimplemented!()
+        future::ready(Ok(None)).boxed()
     }
 
     fn get_branch_remote(&self, _branch: String) -> BoxFuture<'_, Result<Option<Remote>>> {
@@ -1624,6 +1630,23 @@ impl GitRepository for FakeGitRepository {
             }))
         }
         .boxed()
+    }
+
+    fn remote_default_branch(
+        &self,
+        remote: String,
+        _env: Arc<HashMap<String, String>>,
+        _cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<Option<SharedString>>> {
+        self.with_state_async(false, move |state| {
+            if !state.remotes.contains_key(&remote) {
+                bail!("'{remote}' does not appear to be a git repository");
+            }
+            Ok(state
+                .remote_default_branches
+                .get(&remote)
+                .map(|branch| SharedString::from(branch.as_str())))
+        })
     }
 
     fn create_remote(&self, name: String, url: String) -> BoxFuture<'_, Result<()>> {

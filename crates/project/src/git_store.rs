@@ -4312,7 +4312,12 @@ impl GitStore {
 
         let branch = repository_handle
             .update(&mut cx, |repository_handle, _| {
-                repository_handle.default_branch(envelope.payload.include_remote_name)
+                match envelope.payload.remote_name {
+                    Some(remote_name) => {
+                        repository_handle.remote_default_branch(remote_name.into())
+                    }
+                    None => repository_handle.default_branch(envelope.payload.include_remote_name),
+                }
             })
             .await??
             .map(Into::into);
@@ -9728,6 +9733,39 @@ impl Repository {
                             project_id: project_id.0,
                             repository_id: id.to_proto(),
                             include_remote_name,
+                            remote_name: None,
+                        })
+                        .await?;
+
+                    anyhow::Ok(response.branch.map(SharedString::from))
+                }
+            }
+        })
+    }
+
+    pub fn remote_default_branch(
+        &mut self,
+        remote: SharedString,
+    ) -> oneshot::Receiver<Result<Option<SharedString>>> {
+        let id = self.id;
+        self.send_job("remote_default_branch", None, move |repo, cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState {
+                    backend,
+                    environment,
+                    ..
+                }) => {
+                    backend
+                        .remote_default_branch(remote.to_string(), environment, cx)
+                        .await
+                }
+                RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                    let response = client
+                        .request(proto::GetDefaultBranch {
+                            project_id: project_id.0,
+                            repository_id: id.to_proto(),
+                            include_remote_name: false,
+                            remote_name: Some(remote.to_string()),
                         })
                         .await?;
 

@@ -4540,7 +4540,9 @@ impl GitPanel {
                         FetchOptions::Remote(remote) => RemoteAction::Fetch(Some(remote)),
                     };
                     match remote_message {
-                        Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
+                        Ok(remote_message) => {
+                            this.show_remote_output(action, remote_message, false, cx)
+                        }
                         Err(e) => {
                             log::error!("Error while fetching {:?}", e);
                             this.show_error_toast(action.name(), e, cx)
@@ -4701,7 +4703,7 @@ impl GitPanel {
 
             let action = RemoteAction::Pull(remote);
             this.update(cx, |this, cx| match remote_message {
-                Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
+                Ok(remote_message) => this.show_remote_output(action, remote_message, false, cx),
                 Err(e) => {
                     log::error!("Error while pulling {:?}", e);
                     this.show_error_toast(action.name(), e, cx)
@@ -4800,9 +4802,21 @@ impl GitPanel {
 
             let remote_output = push.await?;
 
+            let remote_default_branch = if remote_output.is_ok() {
+                repo.update(cx, |repo, _| repo.remote_default_branch(remote.name.clone()))
+                    .await?
+                    .log_err()
+                    .flatten()
+            } else {
+                None
+            };
+            let offers_pull_request = remote_default_branch.as_deref() != Some(branch.name());
+
             let action = RemoteAction::Push(branch.name().to_owned().into(), remote);
             this.update(cx, |this, cx| match remote_output {
-                Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
+                Ok(remote_message) => {
+                    this.show_remote_output(action, remote_message, offers_pull_request, cx)
+                }
                 Err(e) => {
                     log::error!("Error while pushing {:?}", e);
                     this.show_error_toast(action.name(), e, cx)
@@ -6156,13 +6170,12 @@ impl GitPanel {
         &mut self,
         action: RemoteAction,
         info: RemoteCommandOutput,
+        offers_pull_request: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-
-        let is_push = matches!(action, RemoteAction::Push(_, _));
 
         workspace.update(cx, |workspace, cx| {
             let SuccessMessage { message, style } = remote_output::format_output(&action, info);
@@ -6176,7 +6189,7 @@ impl GitPanel {
                         .size(IconSize::Small)
                         .color(Color::Muted),
                 );
-                match (style, is_push) {
+                match (style, offers_pull_request) {
                     (PushPrLink { label, url }, _) => {
                         this.action(label, move |_window, cx| cx.open_url(&url))
                     }
@@ -13389,6 +13402,58 @@ mod tests {
             assert!(panel.pending_remote_operation.is_none());
             assert!(panel.start_remote_operation(RemoteOperationKind::Pull, cx));
         });
+    }
+
+    #[gpui::test]
+    async fn test_push_toast_offers_pull_request_off_remote_default_branch(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/project"), json!({ ".git": {} }))
+            .await;
+        let dot_git = Path::new(path!("/project/.git"));
+        fs.set_remote_for_repo(dot_git, "origin", "https://github.com/example/project.git");
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let panel = workspace.update_in(cx, GitPanel::new);
+
+        for (branch, remote_default_branch, expected_label) in [
+            ("main", Some("main"), "View Log"),
+            ("feature", Some("main"), "Create Pull Request"),
+            ("main", None, "Create Pull Request"),
+        ] {
+            fs.with_git_state(dot_git, false, |state| match remote_default_branch {
+                Some(remote_default_branch) => {
+                    state
+                        .remote_default_branches
+                        .insert("origin".into(), remote_default_branch.into());
+                }
+                None => {
+                    state.remote_default_branches.remove("origin");
+                }
+            })
+            .unwrap();
+            fs.set_branch_name(dot_git, Some(branch));
+            cx.run_until_parked();
+
+            panel.update_in(cx, |panel, window, cx| panel.push(false, false, window, cx));
+            cx.run_until_parked();
+
+            let label = workspace.update(cx, |workspace, cx| {
+                workspace
+                    .active_toast::<StatusToast>(cx)
+                    .and_then(|toast| toast.read(cx).action_label())
+            });
+            assert_eq!(label.as_deref(), Some(expected_label), "push of {branch}");
+        }
     }
 
     #[gpui::test]

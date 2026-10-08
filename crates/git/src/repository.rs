@@ -1108,6 +1108,13 @@ pub trait GitRepository: Send + Sync {
         include_remote_name: bool,
     ) -> BoxFuture<'_, Result<Option<SharedString>>>;
 
+    fn remote_default_branch(
+        &self,
+        remote: String,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<Option<SharedString>>>;
+
     /// Runs `git rev-list --parents` to get the commit graph structure.
     /// Returns commit SHAs and their parent SHAs for building the graph visualization.
     fn initial_graph_data(
@@ -3333,6 +3340,60 @@ impl GitRepository for RealGitRepository {
                 Ok(None)
             })
             .boxed()
+    }
+
+    fn remote_default_branch(
+        &self,
+        remote: String,
+        env: Arc<HashMap<String, String>>,
+        mut cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<Option<SharedString>>> {
+        let ask_pass = AskPassDelegate::new(&mut cx, |_prompt, _response, _cx| {});
+        let local_git = self.git_binary();
+        let working_directory = self.command_directory();
+        let git_directory = self.path();
+        let executor = cx.background_executor().clone();
+        let git_binary_path = self.system_git_binary_path.clone();
+        let is_trusted = self.is_trusted();
+        async move {
+            let head = format!("refs/remotes/{remote}/HEAD");
+            let target = local_git
+                .run(&["for-each-ref", "--format=%(symref)", head.as_str()])
+                .await?;
+            let prefix = format!("refs/remotes/{remote}/");
+            if let Some(branch) = target.strip_prefix(&prefix) {
+                return Ok(Some(branch.into()));
+            }
+
+            let git_binary_path =
+                git_binary_path.context("git not found on $PATH, can't query the remote")?;
+            let git = GitBinary::new(
+                git_binary_path,
+                working_directory,
+                git_directory,
+                executor.clone(),
+                is_trusted,
+            );
+            let mut command = git.build_command(&["ls-remote", "--symref"]);
+            command
+                .envs(env.iter())
+                .env("GCM_INTERACTIVE", "never")
+                .arg(remote)
+                .arg("HEAD")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let output = run_git_command(env, ask_pass, command, executor).await?;
+            Ok(output
+                .stdout
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("ref: refs/heads/")?
+                        .strip_suffix("\tHEAD")
+                })
+                .map(SharedString::from))
+        }
+        .boxed()
     }
 
     fn run_hook(
@@ -6924,6 +6985,145 @@ mod tests {
             repo.default_branch(true).await.unwrap(),
             Some("origin/main".into())
         );
+    }
+
+    #[gpui::test]
+    async fn test_remote_default_branch(cx: &mut TestAppContext) {
+        async fn remote_default_branch(
+            repo: &RealGitRepository,
+            remote: &str,
+            cx: &TestAppContext,
+        ) -> Result<Option<SharedString>> {
+            repo.remote_default_branch(
+                remote.to_string(),
+                Arc::new(HashMap::default()),
+                cx.to_async(),
+            )
+            .await
+        }
+
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("local");
+        let hosted_dir = temp_dir.path().join("hosted.git");
+        git_init_repo(&repo_dir);
+        git_command(
+            &repo_dir,
+            ["commit", "--allow-empty", "-m", "Initial commit"],
+        );
+        git_command(
+            temp_dir.path(),
+            [
+                OsString::from("init"),
+                OsString::from("--bare"),
+                OsString::from("-b"),
+                OsString::from("trunk"),
+                hosted_dir.as_os_str().into(),
+            ],
+        );
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("remote"),
+                OsString::from("add"),
+                OsString::from("hosted"),
+                hosted_dir.as_os_str().into(),
+            ],
+        );
+        git_command(&repo_dir, ["push", "hosted", "HEAD:trunk"]);
+
+        let repo = RealGitRepository::new(
+            &repo_dir.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            remote_default_branch(&repo, "hosted", cx).await.unwrap(),
+            Some("trunk".into())
+        );
+        assert!(remote_default_branch(&repo, "nowhere", cx).await.is_err());
+
+        for (remote, branch) in [("hosted", "elsewhere"), ("origin", "master")] {
+            let branch_ref = format!("refs/remotes/{remote}/{branch}");
+            git_command(&repo_dir, ["update-ref", branch_ref.as_str(), "HEAD"]);
+            git_command(
+                &repo_dir,
+                [
+                    "symbolic-ref",
+                    format!("refs/remotes/{remote}/HEAD").as_str(),
+                    branch_ref.as_str(),
+                ],
+            );
+        }
+
+        assert_eq!(
+            remote_default_branch(&repo, "hosted", cx).await.unwrap(),
+            Some("elsewhere".into())
+        );
+        assert_eq!(
+            remote_default_branch(&repo, "origin", cx).await.unwrap(),
+            Some("master".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn test_remote_default_branch_declines_credential_prompts(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("local");
+        let ssh = temp_dir.path().join("prompting-ssh");
+        let answer = temp_dir.path().join("answer");
+        fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\n\"$SSH_ASKPASS\" 'Password: ' > '{}'\nexit 255\n",
+                answer.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        git_init_repo(&repo_dir);
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("config"),
+                OsString::from("core.sshCommand"),
+                ssh.as_os_str().into(),
+            ],
+        );
+        git_command(
+            &repo_dir,
+            [
+                "remote",
+                "add",
+                "origin",
+                "ssh://git@example.invalid/project.git",
+            ],
+        );
+
+        let repo = RealGitRepository::new(
+            &repo_dir.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        let result = repo
+            .remote_default_branch("origin".into(), Arc::new(HashMap::default()), cx.to_async())
+            .await;
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&answer).unwrap(), "");
     }
 
     impl RealGitRepository {
