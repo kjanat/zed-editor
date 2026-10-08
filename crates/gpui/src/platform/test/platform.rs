@@ -174,12 +174,22 @@ impl TestPlatform {
         display_id: DisplayId,
         refresh_interval: Option<Duration>,
     ) {
+        self.set_display_refresh_interval(display_id, refresh_interval);
+        self.report_displays_changed();
+    }
+
+    /// Changes a display without telling App yet, as when the platform's
+    /// notification about a window arrives before the one about its display.
+    pub(crate) fn set_display_refresh_interval(
+        &self,
+        display_id: DisplayId,
+        refresh_interval: Option<Duration>,
+    ) {
         for display in self.displays.borrow_mut().iter_mut() {
             if display.id() == display_id {
                 display.refresh_interval = refresh_interval;
             }
         }
-        self.report_displays_changed();
     }
 
     fn report_displays_changed(&self) {
