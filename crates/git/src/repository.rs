@@ -3370,22 +3370,20 @@ impl GitRepository for RealGitRepository {
                 ])
                 .await?;
 
-            let repository = if push_urls == fetch_urls {
-                let head = format!("refs/remotes/{remote}/HEAD");
-                let target = local_git
-                    .run(&["for-each-ref", "--format=%(symref)", head.as_str()])
-                    .await?;
-                let prefix = format!("refs/remotes/{remote}/");
-                if let Some(branch) = target.strip_prefix(&prefix) {
-                    return Ok(Some(branch.into()));
+            let repository = match push_urls.lines().collect::<Vec<_>>().as_slice() {
+                [_] if push_urls == fetch_urls => {
+                    let head = format!("refs/remotes/{remote}/HEAD");
+                    let target = local_git
+                        .run(&["for-each-ref", "--format=%(symref)", head.as_str()])
+                        .await?;
+                    let prefix = format!("refs/remotes/{remote}/");
+                    if let Some(branch) = target.strip_prefix(&prefix) {
+                        return Ok(Some(branch.into()));
+                    }
+                    remote
                 }
-                remote
-            } else {
-                push_urls
-                    .lines()
-                    .next()
-                    .with_context(|| format!("{remote:?} has no push URL"))?
-                    .to_string()
+                [push_url] => push_url.to_string(),
+                _ => return Ok(None),
             };
 
             let git_binary_path =
@@ -7131,6 +7129,22 @@ mod tests {
         assert_eq!(
             remote_default_branch(&repo, "hosted", cx).await.unwrap(),
             Some("release".into())
+        );
+
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("remote"),
+                OsString::from("set-url"),
+                OsString::from("--add"),
+                OsString::from("--push"),
+                OsString::from("hosted"),
+                hosted_dir.as_os_str().into(),
+            ],
+        );
+        assert_eq!(
+            remote_default_branch(&repo, "hosted", cx).await.unwrap(),
+            None
         );
     }
 
