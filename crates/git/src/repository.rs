@@ -3385,6 +3385,9 @@ impl GitRepository for RealGitRepository {
                 [push_url] => push_url.to_string(),
                 _ => return Ok(None),
             };
+            let mut env = (*env).clone();
+            env.remove("GIT_ASKPASS");
+            let env = Arc::new(env);
 
             let git_binary_path =
                 git_binary_path.context("git not found on $PATH, can't query the remote")?;
@@ -7169,6 +7172,9 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        let answering_askpass = temp_dir.path().join("answering-askpass");
+        fs::write(&answering_askpass, "#!/bin/sh\necho secret\n").unwrap();
+        fs::set_permissions(&answering_askpass, fs::Permissions::from_mode(0o755)).unwrap();
         git_init_repo(&repo_dir);
         git_command(
             &repo_dir,
@@ -7196,8 +7202,13 @@ mod tests {
         )
         .unwrap();
 
+        let answering_askpass = answering_askpass.display().to_string();
+        let env = HashMap::from_iter([
+            ("GIT_ASKPASS".to_string(), answering_askpass.clone()),
+            ("SSH_ASKPASS".to_string(), answering_askpass),
+        ]);
         let result = repo
-            .remote_default_branch("origin".into(), Arc::new(HashMap::default()), cx.to_async())
+            .remote_default_branch("origin".into(), Arc::new(env), cx.to_async())
             .await;
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&answer).unwrap(), "");
