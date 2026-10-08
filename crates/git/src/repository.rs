@@ -3356,20 +3356,37 @@ impl GitRepository for RealGitRepository {
         let git_binary_path = self.system_git_binary_path.clone();
         let is_trusted = self.is_trusted();
         async move {
-            let remotes = local_git.run(&["remote"]).await?;
-            anyhow::ensure!(
-                remotes.lines().any(|name| name == remote),
-                "{remote:?} is not a configured remote"
-            );
-
-            let head = format!("refs/remotes/{remote}/HEAD");
-            let target = local_git
-                .run(&["for-each-ref", "--format=%(symref)", head.as_str()])
+            let fetch_urls = local_git
+                .run(&["remote", "get-url", "--all", "--", remote.as_str()])
                 .await?;
-            let prefix = format!("refs/remotes/{remote}/");
-            if let Some(branch) = target.strip_prefix(&prefix) {
-                return Ok(Some(branch.into()));
-            }
+            let push_urls = local_git
+                .run(&[
+                    "remote",
+                    "get-url",
+                    "--push",
+                    "--all",
+                    "--",
+                    remote.as_str(),
+                ])
+                .await?;
+
+            let repository = if push_urls == fetch_urls {
+                let head = format!("refs/remotes/{remote}/HEAD");
+                let target = local_git
+                    .run(&["for-each-ref", "--format=%(symref)", head.as_str()])
+                    .await?;
+                let prefix = format!("refs/remotes/{remote}/");
+                if let Some(branch) = target.strip_prefix(&prefix) {
+                    return Ok(Some(branch.into()));
+                }
+                remote
+            } else {
+                push_urls
+                    .lines()
+                    .next()
+                    .with_context(|| format!("{remote:?} has no push URL"))?
+                    .to_string()
+            };
 
             let git_binary_path =
                 git_binary_path.context("git not found on $PATH, can't query the remote")?;
@@ -3384,7 +3401,7 @@ impl GitRepository for RealGitRepository {
             command
                 .envs(env.iter())
                 .env("GCM_INTERACTIVE", "never")
-                .arg(remote)
+                .arg(repository)
                 .arg("HEAD")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -7081,6 +7098,40 @@ mod tests {
             Some("elsewhere".into())
         );
         assert!(remote_default_branch(&repo, "origin", cx).await.is_err());
+
+        let push_dir = temp_dir.path().join("push.git");
+        git_command(
+            temp_dir.path(),
+            [
+                OsString::from("init"),
+                OsString::from("--bare"),
+                OsString::from("-b"),
+                OsString::from("release"),
+                push_dir.as_os_str().into(),
+            ],
+        );
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("push"),
+                push_dir.as_os_str().into(),
+                OsString::from("HEAD:release"),
+            ],
+        );
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("remote"),
+                OsString::from("set-url"),
+                OsString::from("--push"),
+                OsString::from("hosted"),
+                push_dir.as_os_str().into(),
+            ],
+        );
+        assert_eq!(
+            remote_default_branch(&repo, "hosted", cx).await.unwrap(),
+            Some("release".into())
+        );
     }
 
     #[cfg(unix)]
