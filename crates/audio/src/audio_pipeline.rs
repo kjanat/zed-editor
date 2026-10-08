@@ -268,8 +268,10 @@ fn output_error_handler(cx: &mut App) -> (impl FnMut(Error) + Send + 'static + u
         ) {
             return;
         }
-        if let Some(sender) = sender.take() {
-            sender.send(error).ok();
+        if let Some(sender) = sender.take()
+            && let Err(error) = sender.send(error)
+        {
+            log::warn!("Audio output stream failed after its error handler stopped: {error}");
         }
     };
     let task = cx.spawn(async move |cx| {
