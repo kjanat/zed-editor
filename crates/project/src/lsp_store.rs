@@ -12294,20 +12294,7 @@ impl LspStore {
                     )
                 })
                 .collect();
-            let previous = std::mem::replace(&mut remote.inactive_language_servers, servers);
-            if let Some((client, project_id)) = &lsp_store.downstream_client {
-                for (key, server) in &remote.inactive_language_servers {
-                    if previous.get(key) != Some(server) {
-                        client
-                            .send(inactive_language_server_status_update(
-                                *project_id,
-                                &key.1,
-                                server,
-                            ))
-                            .log_err();
-                    }
-                }
-            }
+            remote.inactive_language_servers = servers;
             cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
             cx.notify();
         });
@@ -12385,6 +12372,23 @@ impl LspStore {
                 non_lsp @ proto::update_language_server::Variant::StatusUpdate(_)
                 | non_lsp @ proto::update_language_server::Variant::RegisteredForBuffer(_)
                 | non_lsp @ proto::update_language_server::Variant::MetadataUpdated(_) => {
+                    if let proto::update_language_server::Variant::StatusUpdate(
+                        proto::StatusUpdate {
+                            status: Some(proto::status_update::Status::Binary(_)),
+                            ..
+                        },
+                    ) = &non_lsp
+                        && let Some((client, project_id)) = &lsp_store.downstream_client
+                    {
+                        client
+                            .send(proto::UpdateLanguageServer {
+                                project_id: *project_id,
+                                language_server_id: language_server_id.to_proto(),
+                                server_name: envelope.payload.server_name.clone(),
+                                variant: Some(non_lsp.clone()),
+                            })
+                            .log_err();
+                    }
                     cx.emit(LspStoreEvent::LanguageServerUpdate {
                         language_server_id,
                         name: envelope

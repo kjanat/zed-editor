@@ -1077,15 +1077,14 @@ async fn test_ssh_shared_guests_see_stopped_language_servers(
         });
         (binary_statuses, observer)
     };
-    let tested_statuses = |statuses: &Rc<RefCell<Vec<(String, i32)>>>| {
+    let last_status = |statuses: &Rc<RefCell<Vec<(String, i32)>>>| {
         statuses
             .borrow()
             .iter()
-            .filter(|(name, _)| name == "the-language-server")
-            .map(|(_, status)| *status)
-            .collect::<Vec<_>>()
+            .rev()
+            .find(|(name, _)| name == "the-language-server")
+            .and_then(|(_, status)| proto::ServerBinaryStatus::try_from(*status).ok())
     };
-    let stopped = [proto::ServerBinaryStatus::Stopped as i32];
 
     let project_id = cx_a
         .read(ActiveCall::global)
@@ -1095,7 +1094,7 @@ async fn test_ssh_shared_guests_see_stopped_language_servers(
     let (statuses_b, _observer_b) = record_binary_statuses(cx_b);
     let _project_b = client_b.join_remote_project(project_id, cx_b).await;
     executor.run_until_parked();
-    assert_eq!(tested_statuses(&statuses_b), []);
+    assert_eq!(last_status(&statuses_b), None);
 
     project_a.update(cx_a, |project, cx| {
         project
@@ -1103,12 +1102,39 @@ async fn test_ssh_shared_guests_see_stopped_language_servers(
             .update(cx, |lsp_store, cx| lsp_store.stop_all_language_servers(cx))
     });
     executor.run_until_parked();
-    assert_eq!(tested_statuses(&statuses_b), stopped);
+    assert_eq!(
+        last_status(&statuses_b),
+        Some(proto::ServerBinaryStatus::Stopped)
+    );
 
     let (statuses_c, _observer_c) = record_binary_statuses(cx_c);
     let _project_c = client_c.join_remote_project(project_id, cx_c).await;
     executor.run_until_parked();
-    assert_eq!(tested_statuses(&statuses_c), stopped);
+    assert_eq!(
+        statuses_c
+            .borrow()
+            .iter()
+            .filter(|(name, _)| name == "the-language-server")
+            .map(|(_, status)| *status)
+            .collect::<Vec<_>>(),
+        [proto::ServerBinaryStatus::Stopped as i32]
+    );
+
+    project_a.update(cx_a, |project, cx| {
+        project.lsp_store().update(cx, |lsp_store, cx| {
+            lsp_store.restart_all_language_servers(cx)
+        })
+    });
+    fake_language_servers.next().await.unwrap();
+    executor.run_until_parked();
+    assert_eq!(
+        last_status(&statuses_b),
+        Some(proto::ServerBinaryStatus::None)
+    );
+    assert_eq!(
+        last_status(&statuses_c),
+        Some(proto::ServerBinaryStatus::None)
+    );
 }
 
 #[gpui::test]
