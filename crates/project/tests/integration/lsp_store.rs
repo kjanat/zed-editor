@@ -1262,6 +1262,53 @@ async fn test_runtime_lease_preserves_buffers_and_manual_stop(cx: &mut TestAppCo
 }
 
 #[gpui::test(iterations = 10)]
+async fn test_document_highlights_do_not_resume_a_suspended_project(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/runtime"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    let mut servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                document_highlight_provider: Some(lsp::OneOf::Left(true)),
+                hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let foreground = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    servers.next().await.unwrap();
+    drop(foreground);
+    cx.run_until_parked();
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
+
+    let highlights = project
+        .update(cx, |project, cx| {
+            project.document_highlights(&buffer, 3, cx)
+        })
+        .await
+        .unwrap();
+    assert!(highlights.is_empty());
+    cx.run_until_parked();
+    assert!(servers.next().now_or_never().is_none());
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
+
+    let _hover = project.update(cx, |project, cx| project.hover(&buffer, 3, cx));
+    servers.next().await.unwrap();
+}
+
+#[gpui::test(iterations = 10)]
 async fn test_runtime_resume_only_registers_buffers_with_live_lsp_handles(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());

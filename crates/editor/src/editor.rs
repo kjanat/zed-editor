@@ -11391,6 +11391,12 @@ impl Editor {
         self.enable_lsp_data && self.mode().is_full()
     }
 
+    fn project_runs_language_servers(&self, cx: &App) -> bool {
+        self.project
+            .as_ref()
+            .is_none_or(|project| project.read(cx).runtime_starts_servers(cx))
+    }
+
     fn update_lsp_data(
         &mut self,
         for_buffer: Option<BufferId>,

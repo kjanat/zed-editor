@@ -13855,6 +13855,10 @@ impl LspStore {
         self.runtime().applied == LanguageServerRuntime::Suspended
     }
 
+    pub fn runtime_starts_servers(&self) -> bool {
+        self.runtime().starts_servers()
+    }
+
     fn runtime(&self) -> &RuntimeState {
         match &self.mode {
             LspStoreMode::Local(local) => &local.runtime,

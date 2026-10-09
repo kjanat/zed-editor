@@ -2308,6 +2308,10 @@ impl Project {
         self.lsp_store.read(cx).runtime_is_suspended()
     }
 
+    pub fn runtime_starts_servers(&self, cx: &App) -> bool {
+        self.lsp_store.read(cx).runtime_starts_servers()
+    }
+
     fn release_runtime_lease(&mut self, cx: &mut Context<Self>) {
         let Some(runtime_lease_count) = self.runtime_lease_count.checked_sub(1) else {
             debug_assert!(false, "released a project runtime lease more than once");
@@ -4744,6 +4748,9 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<DocumentHighlight>>> {
+        if !self.runtime_starts_servers(cx) {
+            return Task::ready(Ok(Vec::new()));
+        }
         let position = position.to_point_utf16(buffer.read(cx));
         self.request_lsp(
             buffer.clone(),
