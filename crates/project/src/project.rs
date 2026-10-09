@@ -5927,7 +5927,7 @@ impl Project {
                 buffer_store.forget_shared_buffers_for(&collaborator.peer_id);
             });
             this.breakpoint_store.read(cx).broadcast();
-            if this.is_local()
+            if !this.is_via_collab()
                 && let Some(project_id) = this.remote_id()
             {
                 for update in this

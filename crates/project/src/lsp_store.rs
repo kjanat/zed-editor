@@ -12272,7 +12272,7 @@ impl LspStore {
             let LspStoreMode::Remote(remote) = &mut lsp_store.mode else {
                 return;
             };
-            remote.inactive_language_servers = envelope
+            let servers = envelope
                 .payload
                 .servers
                 .into_iter()
@@ -12294,6 +12294,20 @@ impl LspStore {
                     )
                 })
                 .collect();
+            let previous = std::mem::replace(&mut remote.inactive_language_servers, servers);
+            if let Some((client, project_id)) = &lsp_store.downstream_client {
+                for (key, server) in &remote.inactive_language_servers {
+                    if previous.get(key) != Some(server) {
+                        client
+                            .send(inactive_language_server_status_update(
+                                *project_id,
+                                &key.1,
+                                server,
+                            ))
+                            .log_err();
+                    }
+                }
+            }
             cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
             cx.notify();
         });
@@ -14026,25 +14040,7 @@ impl LspStore {
     ) -> Vec<proto::UpdateLanguageServer> {
         self.inactive_language_servers()
             .map(|(_, name, server)| {
-                let (binary, message) = match &server.state {
-                    InactiveLanguageServerState::Failed { error } => {
-                        (proto::ServerBinaryStatus::Failed, Some(error.to_string()))
-                    }
-                    InactiveLanguageServerState::Stopped => {
-                        (proto::ServerBinaryStatus::Stopped, None)
-                    }
-                };
-                proto::UpdateLanguageServer {
-                    project_id,
-                    language_server_id: server.server_id.to_proto(),
-                    server_name: Some(name.to_string()),
-                    variant: Some(proto::update_language_server::Variant::StatusUpdate(
-                        proto::StatusUpdate {
-                            message,
-                            status: Some(proto::status_update::Status::Binary(binary as i32)),
-                        },
-                    )),
-                }
+                inactive_language_server_status_update(project_id, name, server)
             })
             .collect()
     }
@@ -16711,6 +16707,30 @@ async fn normalize_lsp_relative_path(
         normalized_path = matched_path;
     }
     Ok(Arc::from(normalized_path))
+}
+
+fn inactive_language_server_status_update(
+    project_id: u64,
+    name: &LanguageServerName,
+    server: &InactiveLanguageServer,
+) -> proto::UpdateLanguageServer {
+    let (binary, message) = match &server.state {
+        InactiveLanguageServerState::Failed { error } => {
+            (proto::ServerBinaryStatus::Failed, Some(error.to_string()))
+        }
+        InactiveLanguageServerState::Stopped => (proto::ServerBinaryStatus::Stopped, None),
+    };
+    proto::UpdateLanguageServer {
+        project_id,
+        language_server_id: server.server_id.to_proto(),
+        server_name: Some(name.to_string()),
+        variant: Some(proto::update_language_server::Variant::StatusUpdate(
+            proto::StatusUpdate {
+                message,
+                status: Some(proto::status_update::Status::Binary(binary as i32)),
+            },
+        )),
+    }
 }
 
 fn subscribe_to_binary_statuses(
