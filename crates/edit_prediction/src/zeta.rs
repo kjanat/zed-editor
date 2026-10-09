@@ -851,33 +851,17 @@ pub(crate) fn edit_prediction_accepted(
     let model_version = current_prediction.prediction.model_version;
     let e2e_latency = current_prediction.e2e_latency;
     let client = store.client.clone();
-    let llm_token = store.llm_token.clone();
-    let organization_id = store
-        .user_store
-        .read(cx)
-        .current_organization()
-        .map(|organization| organization.id.clone());
-    let app_version = AppVersion::global(cx);
 
     cx.background_spawn(async move {
-        let body = serde_json::to_string(&AcceptEditPredictionBody {
+        let item = serde_json::to_value(&AcceptEditPredictionBody {
             request_id,
             model_version,
             e2e_latency_ms: Some(e2e_latency.as_millis()),
         })?;
-
-        let url = client
-            .http_client()
-            .build_zed_llm_url("/predict_edits/accept", &[])?;
-        EditPredictionStore::send_api_request::<()>(
-            move |builder| Ok(builder.uri(url.as_ref()).body(body.clone().into())?),
-            client,
-            llm_token,
-            organization_id,
-            app_version,
-        )
-        .await?;
-        anyhow::Ok(())
+        client
+            .telemetry()
+            .send_sentry_logs("Edit Prediction Accepted", vec![item])
+            .await
     })
     .detach_and_log_err(cx);
 }

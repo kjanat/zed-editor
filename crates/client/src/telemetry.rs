@@ -43,7 +43,6 @@ use self::event_coalescer::EventCoalescer;
 pub struct Telemetry {
     clock: Arc<dyn SystemClock>,
     http_client: Arc<HttpClientWithUrl>,
-    sentry_dsn: Option<SentryDsn>,
     trace_id: String,
     executor: BackgroundExecutor,
     state: Arc<Mutex<TelemetryState>>,
@@ -57,6 +56,7 @@ struct QueuedEvent {
 
 struct TelemetryState {
     settings: TelemetrySettings,
+    sentry_dsn: Option<SentryDsn>,
     system_id: Option<Arc<str>>,       // Per system
     installation_id: Option<Arc<str>>, // Per app installation (different for dev, nightly, preview, and stable)
     session_id: Option<String>,        // Per app launch
@@ -189,6 +189,7 @@ impl Telemetry {
     ) -> Arc<Self> {
         let state = Arc::new(Mutex::new(TelemetryState {
             settings: *TelemetrySettings::get_global(cx),
+            sentry_dsn,
             architecture: env::consts::ARCH,
             release_channel: ReleaseChannel::try_global(cx),
             system_id: None,
@@ -236,7 +237,6 @@ impl Telemetry {
         let this = Arc::new(Self {
             clock,
             http_client: client,
-            sentry_dsn,
             trace_id: sentry::new_id(),
             executor: cx.background_executor().clone(),
             state,
@@ -660,7 +660,7 @@ impl Telemetry {
                 }
             }
 
-            let Some(dsn) = &self.sentry_dsn else {
+            let Some(dsn) = state.sentry_dsn.clone() else {
                 return Ok(());
             };
             let attributes = state.sentry_log_attributes();
@@ -671,10 +671,50 @@ impl Telemetry {
             (dsn, records)
         };
 
-        for envelope in sentry::log_envelopes(records)? {
-            sentry::send_envelope(&*self.http_client, dsn, &envelope).await?;
-        }
-        Ok(())
+        send_log_records(&*self.http_client, &dsn, records).await
+    }
+
+    pub fn send_sentry_logs(
+        self: &Arc<Self>,
+        body: &str,
+        items: Vec<serde_json::Value>,
+    ) -> Task<Result<()>> {
+        let (dsn, records) = {
+            let state = self.state.lock();
+            if !state.settings.metrics {
+                return Task::ready(Ok(()));
+            }
+            let Some(dsn) = state.sentry_dsn.clone() else {
+                return Task::ready(Ok(()));
+            };
+            let attributes = state.sentry_log_attributes();
+            let reported_at = Utc::now();
+            let records: Vec<LogRecord> = items
+                .into_iter()
+                .map(|item| {
+                    let properties = match item {
+                        serde_json::Value::Object(fields) => fields.into_iter().collect(),
+                        value => vec![("value".to_string(), value)],
+                    };
+                    log_record(
+                        body.to_string(),
+                        properties,
+                        reported_at,
+                        &self.trace_id,
+                        attributes.clone(),
+                    )
+                })
+                .collect();
+            (dsn, records)
+        };
+        let http_client = self.http_client.clone();
+        self.executor
+            .spawn(async move { send_log_records(&*http_client, &dsn, records).await })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_sentry_dsn(&self, sentry_dsn: Option<SentryDsn>) {
+        self.state.lock().sentry_dsn = sentry_dsn;
     }
 
     pub fn flush_events(self: &Arc<Self>) -> Task<()> {
@@ -685,7 +725,7 @@ impl Telemetry {
     }
 
     pub fn sentry_enabled(&self) -> bool {
-        self.sentry_dsn.is_some()
+        self.state.lock().sentry_dsn.is_some()
     }
 
     pub fn send_sentry_event(self: &Arc<Self>, event: SentryEvent) -> Task<Result<()>> {
@@ -694,7 +734,7 @@ impl Telemetry {
     }
 
     pub fn report_diagnostic_event(self: &Arc<Self>, event: SentryEvent) {
-        if self.sentry_dsn.is_none() || !self.diagnostics_enabled() {
+        if !self.sentry_enabled() || !self.diagnostics_enabled() {
             return;
         }
         let send = self.send_sentry_event(event);
@@ -745,7 +785,7 @@ impl Telemetry {
     }
 
     fn send_envelope(self: &Arc<Self>, envelope: Envelope) -> Task<Result<()>> {
-        let Some(dsn) = self.sentry_dsn.clone() else {
+        let Some(dsn) = self.state.lock().sentry_dsn.clone() else {
             return Task::ready(Err(anyhow::anyhow!("Sentry DSN not compiled in")));
         };
         let http_client = self.http_client.clone();
@@ -762,19 +802,46 @@ impl QueuedEvent {
             "zed.signed_in".to_string(),
             Attribute::Boolean(self.wrapper.signed_in),
         );
-        for (name, value) in event.event_properties {
-            if let Some(attribute) = Attribute::from_json(value) {
-                attributes.insert(name, attribute);
-            }
-        }
-        LogRecord {
-            timestamp: sentry::timestamp(self.reported_at),
-            trace_id: trace_id.to_string(),
-            level: LogLevel::Info,
-            body: event.event_type,
+        log_record(
+            event.event_type,
+            event.event_properties,
+            self.reported_at,
+            trace_id,
             attributes,
+        )
+    }
+}
+
+fn log_record(
+    body: String,
+    properties: impl IntoIterator<Item = (String, serde_json::Value)>,
+    reported_at: DateTime<Utc>,
+    trace_id: &str,
+    mut attributes: BTreeMap<String, Attribute>,
+) -> LogRecord {
+    for (name, value) in properties {
+        if let Some(attribute) = Attribute::from_json(value) {
+            attributes.insert(name, attribute);
         }
     }
+    LogRecord {
+        timestamp: sentry::timestamp(reported_at),
+        trace_id: trace_id.to_string(),
+        level: LogLevel::Info,
+        body,
+        attributes,
+    }
+}
+
+async fn send_log_records(
+    http_client: &dyn http_client::HttpClient,
+    dsn: &SentryDsn,
+    records: Vec<LogRecord>,
+) -> Result<()> {
+    for envelope in sentry::log_envelopes(records)? {
+        sentry::send_envelope(http_client, dsn, &envelope).await?;
+    }
+    Ok(())
 }
 
 impl TelemetryState {
@@ -1438,6 +1505,73 @@ mod tests {
 
         telemetry.report_diagnostic_event(SentryEvent::new(sentry::EventLevel::Warning, "event"));
         cx.run_until_parked();
+        assert!(requests.lock().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_sentry_logs_carry_each_item_as_attributes(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+
+        telemetry
+            .send_sentry_logs(
+                "Edit Prediction Rejected",
+                vec![
+                    serde_json::json!({"request_id": "a", "was_shown": true, "model_version": null}),
+                    serde_json::json!("bare"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let requests = requests.lock();
+        let [request] = &requests[..] else {
+            panic!("expected one request, got {}", requests.len());
+        };
+        assert_eq!(request.uri, test_dsn().envelope_url());
+        let lines = request.envelope_lines();
+        assert_eq!(lines[1]["item_count"], serde_json::json!(2));
+        let records = lines[2]["items"].as_array().unwrap();
+        assert_eq!(
+            records[0]["body"],
+            serde_json::json!("Edit Prediction Rejected")
+        );
+        assert_eq!(
+            records[0]["attributes"]["request_id"],
+            serde_json::json!({"type": "string", "value": "a"})
+        );
+        assert_eq!(
+            records[0]["attributes"]["was_shown"],
+            serde_json::json!({"type": "boolean", "value": true})
+        );
+        assert_eq!(records[0]["attributes"].get("model_version"), None);
+        assert_eq!(
+            records[0]["attributes"]["sentry.release"],
+            serde_json::json!({"type": "string", "value": "0123abcd"})
+        );
+        assert_eq!(
+            records[1]["attributes"]["value"],
+            serde_json::json!({"type": "string", "value": "bare"})
+        );
+    }
+
+    #[gpui::test]
+    async fn test_sentry_logs_are_dropped_without_metrics_or_dsn(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, None);
+
+        telemetry
+            .send_sentry_logs("Edit Prediction Accepted", vec![serde_json::json!({})])
+            .await
+            .unwrap();
+        assert!(requests.lock().is_empty());
+
+        telemetry.set_sentry_dsn(Some(test_dsn()));
+        telemetry.state.lock().settings.metrics = false;
+        telemetry
+            .send_sentry_logs("Edit Prediction Accepted", vec![serde_json::json!({})])
+            .await
+            .unwrap();
         assert!(requests.lock().is_empty());
     }
 

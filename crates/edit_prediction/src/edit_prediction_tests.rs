@@ -1,5 +1,6 @@
 use client::{
     Credentials, RefreshLlmTokenListener, UserStore,
+    sentry::{SentryDsn, TEST_DSN},
     test::{FakeServer, make_get_authenticated_user_response},
 };
 use clock::FakeSystemClock;
@@ -7,7 +8,6 @@ use clock::ReplicaId;
 use cloud_api_types::{
     CreateLlmTokenResponse, KnownOrUnknown, LlmToken, Organization, OrganizationConfiguration,
     OrganizationEditPredictionConfiguration, OrganizationId, Plan, SettledEditPrediction,
-    SubmitEditPredictionSettledBatchBody, SubmitEditPredictionSettledResponse,
 };
 use cloud_llm_client::{
     EditPredictionRejectReason, EditPredictionRejection, PredictEditsRequestTrigger,
@@ -28,7 +28,7 @@ use futures::{
 use gpui::App;
 use gpui::{
     Entity, TestAppContext, UpdateGlobal,
-    http_client::{FakeHttpClient, Response},
+    http_client::{FakeHttpClient, Response, Url},
 };
 use indoc::indoc;
 use language::{
@@ -2892,6 +2892,76 @@ struct RequestChannels {
     settled: mpsc::UnboundedReceiver<SettledEditPrediction>,
 }
 
+fn sentry_log_records(envelope: &[u8]) -> Vec<(String, serde_json::Value)> {
+    let text = std::str::from_utf8(envelope).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .trim_end_matches('\n')
+        .split('\n')
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines[1]["type"], json!("log"));
+    lines[2]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| {
+            let mut payload = serde_json::Map::new();
+            for (name, attribute) in record["attributes"].as_object().unwrap() {
+                let value = &attribute["value"];
+                let value = match value
+                    .as_str()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                {
+                    Some(parsed @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) => {
+                        parsed
+                    }
+                    _ => value.clone(),
+                };
+                payload.insert(name.clone(), value);
+            }
+            (
+                record["body"].as_str().unwrap().to_string(),
+                serde_json::Value::Object(payload),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn sentry_log_records_rebuild_each_payload() {
+    let envelope = [
+        json!({"event_id": "0"}),
+        json!({"type": "log", "item_count": 1}),
+        json!({"items": [{
+            "body": "Edit Prediction Settled",
+            "attributes": {
+                "request_id": {"type": "string", "value": "id-1"},
+                "kept": {"type": "integer", "value": 3},
+                "can_collect_data": {"type": "boolean", "value": false},
+                "sample_data": {"type": "string", "value": "{\"revision\":\"abc\"}"},
+                "settled_editable_region": {"type": "string", "value": "[not json"},
+            },
+        }]}),
+    ]
+    .iter()
+    .map(|line| line.to_string() + "\n")
+    .collect::<String>();
+
+    assert_eq!(
+        sentry_log_records(envelope.as_bytes()),
+        [(
+            "Edit Prediction Settled".to_string(),
+            json!({
+                "request_id": "id-1",
+                "kept": 3,
+                "can_collect_data": false,
+                "sample_data": {"revision": "abc"},
+                "settled_editable_region": "[not json",
+            })
+        )]
+    );
+}
+
 fn init_test_with_fake_client(
     cx: &mut TestAppContext,
 ) -> (Entity<EditPredictionStore>, RequestChannels) {
@@ -2924,20 +2994,21 @@ fn init_test_with_fake_client_and_legacy_data_collection(
         let (predict_v4_req_tx, predict_v4_req_rx) = mpsc::unbounded();
         let (reject_req_tx, reject_req_rx) = mpsc::unbounded();
         let (settled_req_tx, settled_req_rx) = mpsc::unbounded();
+        let sentry_dsn = SentryDsn::parse(TEST_DSN).unwrap();
+        let envelope_path = Url::parse(&sentry_dsn.envelope_url())
+            .unwrap()
+            .path()
+            .to_string();
 
         let http_client = FakeHttpClient::create({
             move |req| {
                 let uri = req.uri().path().to_string();
-                let content_encoding = req
-                    .headers()
-                    .get("Content-Encoding")
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned);
                 let mut body = req.into_body();
                 let predict_req_tx = predict_req_tx.clone();
                 let predict_v4_req_tx = predict_v4_req_tx.clone();
                 let reject_req_tx = reject_req_tx.clone();
                 let settled_req_tx = settled_req_tx.clone();
+                let envelope_path = envelope_path.clone();
                 async move {
                     let resp = match uri.as_str() {
                         "/client/llm_tokens" => serde_json::to_string(&json!({
@@ -2986,29 +3057,32 @@ fn init_test_with_fake_client_and_legacy_data_collection(
                             }
                             serde_json::to_string(&response).unwrap()
                         }
-                        "/predict_edits/reject" => {
+                        path if path == envelope_path => {
                             let mut buf = Vec::new();
                             body.read_to_end(&mut buf).await.ok();
-                            let req = serde_json::from_slice(&buf).unwrap();
-
-                            let (res_tx, res_rx) = oneshot::channel();
-                            reject_req_tx.unbounded_send((req, res_tx)).unwrap();
-                            serde_json::to_string(&res_rx.await?).unwrap()
-                        }
-                        "/predict_edits/settled" => {
-                            let mut buf = Vec::new();
-                            body.read_to_end(&mut buf).await.ok();
-                            let body = if content_encoding.as_deref() == Some("zstd") {
-                                zstd::decode_all(&buf[..]).unwrap()
-                            } else {
-                                buf
-                            };
-                            let req: SubmitEditPredictionSettledBatchBody =
-                                serde_json::from_slice(&body).unwrap();
-                            for prediction in req.predictions {
-                                settled_req_tx.unbounded_send(prediction).unwrap();
+                            let mut rejections = Vec::new();
+                            for (log_body, payload) in sentry_log_records(&buf) {
+                                match log_body.as_str() {
+                                    "Edit Prediction Rejected" => {
+                                        rejections.push(serde_json::from_value(payload).unwrap())
+                                    }
+                                    "Edit Prediction Settled" => settled_req_tx
+                                        .unbounded_send(serde_json::from_value(payload).unwrap())
+                                        .unwrap(),
+                                    _ => {}
+                                }
                             }
-                            serde_json::to_string(&SubmitEditPredictionSettledResponse {}).unwrap()
+                            if !rejections.is_empty() {
+                                let (res_tx, res_rx) = oneshot::channel();
+                                reject_req_tx
+                                    .unbounded_send((
+                                        RejectEditPredictionsBody { rejections },
+                                        res_tx,
+                                    ))
+                                    .unwrap();
+                                res_rx.await?;
+                            }
+                            "{}".to_string()
                         }
                         _ => {
                             panic!("Unexpected path: {}", uri)
@@ -3021,6 +3095,7 @@ fn init_test_with_fake_client_and_legacy_data_collection(
         });
 
         let client = client::Client::new(Arc::new(FakeSystemClock::new()), http_client, cx);
+        client.telemetry().set_sentry_dsn(Some(sentry_dsn));
         client.cloud_client().set_credentials(1, "test".into());
 
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
