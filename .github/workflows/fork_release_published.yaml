@@ -1,0 +1,31 @@
+---
+name: fork_release_published
+run-name: ${{ github.event.release.tag_name || inputs.tag }}
+on:
+  release: { types: [published] }
+  workflow_dispatch:
+    inputs:
+      tag: { description: Published release tag, type: string, required: true }
+permissions: { contents: read }
+concurrency: { group: "${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}" }
+defaults: { run: { shell: "bash -euxo pipefail {0}" } }
+jobs:
+  sentry_release:
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    cancel-timeout-minutes: 1
+    environment: { name: release, deployment: false }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ github.event.release.tag_name || inputs.tag }}", persist-credentials: false }
+      - name: Resolve the release commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+      - name: Create the Sentry release
+        uses: getsentry/action-release@6fb9aeade7061441cf3864e34fbe11a1457ad7dc # v3.7.1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        with: { release: "${{ steps.commit.outputs.sha }}", set_commits: auto }
