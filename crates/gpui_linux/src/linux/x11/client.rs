@@ -415,6 +415,14 @@ impl X11Connection {
             .reply()
             .context("Failed to get XCB atoms")?;
 
+        for screen in &xcb_connection.setup().roots {
+            check_reply(
+                || "Failed to subscribe to RandR screen changes",
+                xcb_connection.randr_select_input(screen.root, randr::NotifyMask::SCREEN_CHANGE),
+            )
+            .log_err();
+        }
+
         let root = xcb_connection.setup().roots[0].root;
         let compositor_present = check_compositor_present(&xcb_connection, root);
         let gtk_frame_extents_supported =
@@ -1103,6 +1111,7 @@ impl X11Client {
                 drop(state);
                 self.handle_keyboard_layout_change();
             }
+            Event::RandrScreenChangeNotify(_) => self.handle_displays_changed(),
             Event::XkbStateNotify(event) => {
                 let mut state = self.0.borrow_mut();
                 let old_layout = state.xkb.serialize_layout(STATE_LAYOUT_EFFECTIVE);
@@ -1623,6 +1632,19 @@ impl X11Client {
                 state = self.0.borrow_mut();
                 state.common.borrow_mut().callbacks.keyboard_layout_change = Some(callback);
             }
+        }
+    }
+
+    fn handle_displays_changed(&self) {
+        let common = self.0.borrow().common.clone();
+        let callback = common.borrow_mut().callbacks.displays_changed.take();
+        if let Some(mut callback) = callback {
+            callback();
+            common
+                .borrow_mut()
+                .callbacks
+                .displays_changed
+                .get_or_insert(callback);
         }
     }
 }

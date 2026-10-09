@@ -8,21 +8,22 @@ use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
-    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
-    Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
-    Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
-    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
-    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
-    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration,
-    TextInputStateChange, TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayEvent, DisplayId, Edges, Effect,
+    Entity, EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId,
+    GpuSpecs, Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent,
+    KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers,
+    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
+    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
+    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
+    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
+    SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription,
+    SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
+    TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+    WindowOptions, WindowParams, WindowTextSystem, WindowVisibility, point, prelude::*, px, rems,
+    size, transparent_black,
 };
 
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
@@ -3022,16 +3023,18 @@ impl Window {
             return;
         };
         // The platform's notifications about the window and about displays
-        // arrive in no guaranteed order, so make sure App knows the display
-        // before the window's observers read its state.
-        if let Some(display_id) = display_id
-            && !cx.knows_display(display_id)
-        {
-            cx.displays_changed();
+        // arrive in no guaranteed order, so make sure App's copy of the display
+        // is current before the window's observers read its state.
+        let already_notified = display_id.is_some_and(|display_id| {
+            cx.displays_changed()
+                .iter()
+                .any(|event| matches!(event, DisplayEvent::Changed { id, .. } if *id == display_id))
+        });
+        if !already_notified {
+            handle
+                .update(cx, |_, window, cx| window.notify_display_observers(cx))
+                .log_err();
         }
-        handle
-            .update(cx, |_, window, cx| window.notify_display_observers(cx))
-            .log_err();
     }
 
     pub(crate) fn notify_display_observers(&mut self, cx: &mut App) {
@@ -8436,6 +8439,44 @@ mod tests {
                 Empty
             }
         }
+    }
+
+    /// A window that moves to a known display whose properties changed
+    /// before App heard about the change reads the display's current state.
+    #[gpui::test]
+    fn test_move_to_known_display_reads_its_current_state(cx: &mut TestAppContext) {
+        use crate::DisplayId;
+
+        let sixty_hertz = Duration::from_secs(1) / 60;
+        let one_hundred_twenty_hertz = Duration::from_secs(1) / 120;
+        cx.simulate_display_added(DisplayId(2), Some(sixty_hertz));
+
+        let window = cx.add_window(|_, _| EmptyView);
+        let window_notifications = Rc::new(RefCell::new(Vec::new()));
+        let _window_subscription = window
+            .update(cx, {
+                let window_notifications = window_notifications.clone();
+                move |_, window, _| {
+                    window.observe_window_display(move |window, cx| {
+                        window_notifications
+                            .borrow_mut()
+                            .push((window.display_id, window.refresh_interval(cx)));
+                    })
+                }
+            })
+            .unwrap();
+        let test_window = cx.test_window(window.into());
+
+        cx.test_platform()
+            .set_display_refresh_interval(DisplayId(2), Some(one_hundred_twenty_hertz));
+        test_window.simulate_move_to_display(DisplayId(2));
+        assert_eq!(
+            window_notifications.take(),
+            [(Some(DisplayId(2)), Some(one_hundred_twenty_hertz))]
+        );
+
+        cx.simulate_display_refresh_interval_change(DisplayId(2), Some(one_hundred_twenty_hertz));
+        assert!(window_notifications.borrow().is_empty());
     }
 
     #[gpui::test]

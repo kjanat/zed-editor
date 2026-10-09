@@ -1666,7 +1666,7 @@ impl App {
         subscription
     }
 
-    pub(crate) fn displays_changed(&mut self) {
+    pub(crate) fn displays_changed(&mut self) -> Vec<DisplayEvent> {
         let current = read_displays(self.platform.as_ref());
         let events = display_events(&self.displays, &current);
         self.displays = current;
@@ -1683,15 +1683,12 @@ impl App {
                 .log_err();
             }
         }
-        for event in events {
+        for &event in &events {
             self.display_observers
                 .clone()
                 .retain(&(), |callback| (callback)(event, self));
         }
-    }
-
-    pub(crate) fn knows_display(&self, id: DisplayId) -> bool {
-        self.displays.contains_key(&id)
+        events
     }
 
     /// The refresh interval of a connected display, as of the platform's last
