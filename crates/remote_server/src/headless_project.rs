@@ -605,6 +605,15 @@ impl HeadlessProject {
                 })
                 .detach();
             }
+            LspStoreEvent::InactiveLanguageServersChanged => {
+                self.session
+                    .send(
+                        lsp_store
+                            .read(cx)
+                            .inactive_language_servers_message(REMOTE_SERVER_PROJECT_ID),
+                    )
+                    .log_err();
+            }
             _ => {}
         }
     }

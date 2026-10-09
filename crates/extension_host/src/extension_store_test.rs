@@ -8,6 +8,7 @@ use crate::{
         hash_directory_contents, remove_stale_uploads,
     },
     load_plugin_queries, remote_sync_retry_delay,
+    wasm_host::WasmExtension,
 };
 use anyhow::Context as _;
 use async_compression::futures::bufread::GzipEncoder;
@@ -49,7 +50,10 @@ use std::{
 };
 use task::{SpawnInTerminal, ZedDebugConfig};
 use theme::ThemeRegistry;
-use util::{rel_path::rel_path_buf, test::TempTree};
+use util::{
+    rel_path::{RelPath, rel_path_buf},
+    test::TempTree,
+};
 
 #[cfg(test)]
 #[ctor::ctor(unsafe)]
@@ -1209,6 +1213,31 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
         ]
     );
 
+    let wasm_extension = extension_store.read_with(cx, |store, _| {
+        store
+            .wasm_extensions
+            .iter()
+            .find(|(manifest, _)| manifest.id.as_ref() == test_extension_id)
+            .map(|(_, extension)| extension.clone())
+            .expect("the test extension should be loaded")
+    });
+    let entries_before = resource_table_len(&wasm_extension).await;
+    for _ in 0..20 {
+        wasm_extension
+            .language_server_workspace_configuration(
+                LanguageServerName::new_static("gleam"),
+                Arc::new(StubWorktree),
+                lsp_store_id,
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        resource_table_len(&wasm_extension).await,
+        entries_before,
+        "each call must free the worktree it lends the extension"
+    );
+
     // Simulate a new version of the language server being released
     language_server_version.lock().version = "v2.0.0".into();
     language_server_version.lock().binary_contents = "the-new-binary-contents".into();
@@ -1308,6 +1337,40 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
         .unwrap()
         .is_none()
     );
+}
+
+async fn resource_table_len(extension: &WasmExtension) -> usize {
+    extension
+        .call(|_, store| {
+            async move { anyhow::Ok(store.data_mut().table.iter_mut().count()) }.boxed()
+        })
+        .await
+        .unwrap()
+}
+
+struct StubWorktree;
+
+#[async_trait]
+impl WorktreeDelegate for StubWorktree {
+    fn id(&self) -> u64 {
+        0
+    }
+
+    fn root_path(&self) -> String {
+        String::new()
+    }
+
+    async fn read_text_file(&self, _: &RelPath) -> anyhow::Result<String> {
+        anyhow::bail!("the stub worktree has no files")
+    }
+
+    async fn which(&self, _: String) -> Option<String> {
+        None
+    }
+
+    async fn shell_env(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 fn init_test(cx: &mut TestAppContext) {
@@ -3570,6 +3633,58 @@ async fn test_uninstalling_extension_restores_surviving_extensions_language(
         language_registry.language_name_for_extension("shared-b"),
         None,
         "the uninstalled extension's language config should be gone"
+    );
+}
+
+#[gpui::test]
+async fn test_reload_all_reloads_unchanged_extensions(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    let language_registry = Arc::new(LanguageRegistry::test(cx.executor()));
+    let proxy = Arc::new(ExtensionHostProxy::new());
+    language_extension::init(LspAccess::Noop, proxy.clone(), language_registry.clone());
+
+    insert_language_extension(&fs, "ext-a", "Alpha", "alpha").await;
+    insert_language_extension(&fs, "ext-b", "Beta", "beta").await;
+
+    let store = create_extension_store_with(fs, proxy, cx);
+    let installed_changed_count = Arc::new(AtomicUsize::new(0));
+    cx.update(|cx| {
+        let extension_events = extension::ExtensionEvents::try_global(cx)
+            .expect("ExtensionEvents should be initialized in tests");
+        let installed_changed_count = installed_changed_count.clone();
+        cx.subscribe(&extension_events, move |_, event, _cx| {
+            if matches!(event, extension::Event::ExtensionsInstalledChanged) {
+                installed_changed_count.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .detach();
+    });
+
+    let registry_version = language_registry.version();
+    store.update(cx, |store, cx| drop(store.reload(None, cx)));
+    cx.executor().advance_clock(RELOAD_DEBOUNCE_DURATION);
+    cx.run_until_parked();
+    assert_eq!(installed_changed_count.load(Ordering::SeqCst), 0);
+    assert_eq!(language_registry.version(), registry_version);
+
+    store.update(cx, |store, cx| drop(store.reload_all(cx)));
+    cx.executor().advance_clock(RELOAD_DEBOUNCE_DURATION);
+    cx.run_until_parked();
+    assert_eq!(installed_changed_count.load(Ordering::SeqCst), 1);
+    assert!(language_registry.version() > registry_version);
+    for suffix in ["alpha", "beta"] {
+        assert!(
+            language_registry
+                .language_name_for_extension(suffix)
+                .is_some(),
+            "{suffix} should be registered again after the reload"
+        );
+    }
+    assert!(
+        store.read_with(cx, |store, _| store.modified_extensions.is_empty()),
+        "the reload should consume the extensions it marked as modified"
     );
 }
 

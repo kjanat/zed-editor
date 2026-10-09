@@ -737,6 +737,18 @@ message StartLanguageServer {
   string capabilities = 3;
 }
 
+message UpdateInactiveLanguageServers {
+  uint64 project_id = 1;
+  repeated InactiveLanguageServer servers = 2;
+}
+
+message InactiveLanguageServer {
+  uint64 worktree_id = 1;
+  string name = 2;
+  uint64 server_id = 3;
+  optional string error = 4;
+}
+
 message UpdateDiagnosticSummary {
   uint64 project_id = 1;
   uint64 worktree_id = 2;

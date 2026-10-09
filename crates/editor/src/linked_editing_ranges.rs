@@ -60,6 +60,9 @@ pub(super) fn refresh_linked_ranges(
         let mut applicable_selections = Vec::new();
         editor
             .update(cx, |editor, cx| {
+                if !editor.project_runs_language_servers(cx) {
+                    return;
+                }
                 let display_snapshot = editor.display_snapshot(cx);
                 let selections = editor.selections.all_anchors(&display_snapshot);
                 let snapshot = display_snapshot.buffer_snapshot();

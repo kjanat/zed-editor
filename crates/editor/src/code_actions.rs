@@ -389,6 +389,9 @@ impl Editor {
 
                 let (start_buffer, start, _, end, _newest_selection) = editor
                     .update(cx, |editor, cx| {
+                        if !editor.project_runs_language_servers(cx) {
+                            return None;
+                        }
                         let newest_selection = *editor.selections.newest_anchor();
                         if newest_selection.head().diff_base_anchor().is_some() {
                             return None;

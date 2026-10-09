@@ -982,6 +982,187 @@ async fn test_ssh_restarting_language_server_replaces_remote_status(
 }
 
 #[gpui::test]
+async fn test_ssh_shared_guests_follow_language_server_state(
+    executor: BackgroundExecutor,
+    cx_a: &mut TestAppContext,
+    cx_b: &mut TestAppContext,
+    cx_c: &mut TestAppContext,
+    cx_d: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    use project::lsp_store::{LspStore, LspStoreEvent};
+    use std::{cell::RefCell, rc::Rc};
+
+    cx_a.update(|cx| {
+        release_channel::init(semver::Version::new(0, 0, 0), cx);
+    });
+    server_cx.update(|cx| {
+        release_channel::init(semver::Version::new(0, 0, 0), cx);
+    });
+
+    let mut server = TestServer::start(executor.clone()).await;
+    let client_a = server.create_client(cx_a, "user_a").await;
+    let client_b = server.create_client(cx_b, "user_b").await;
+    let client_c = server.create_client(cx_c, "user_c").await;
+    let client_d = server.create_client(cx_d, "user_d").await;
+    server
+        .create_room(&mut [
+            (&client_a, cx_a),
+            (&client_b, cx_b),
+            (&client_c, cx_c),
+            (&client_d, cx_d),
+        ])
+        .await;
+
+    let (opts, server_ssh, _) = RemoteClient::fake_server(cx_a, server_cx);
+    let remote_fs = FakeFs::new(server_cx.executor());
+    remote_fs
+        .insert_tree(path!("/project"), json!({ "a.rs": "fn main() {}" }))
+        .await;
+
+    client_a.language_registry().add(rust_lang());
+    server_cx.update(HeadlessProject::init);
+    let languages = Arc::new(LanguageRegistry::new(server_cx.executor()));
+    languages.add(rust_lang());
+    let mut fake_language_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-language-server",
+            ..Default::default()
+        },
+    );
+    let _headless_project = server_cx.new(|cx| {
+        HeadlessProject::new(
+            HeadlessAppState {
+                session: server_ssh,
+                fs: remote_fs.clone(),
+                http_client: Arc::new(BlockedHttpClient),
+                node_runtime: NodeRuntime::unavailable(),
+                languages,
+                extension_host_proxy: Arc::new(ExtensionHostProxy::new()),
+                startup_time: std::time::Instant::now(),
+            },
+            false,
+            cx,
+        )
+    });
+
+    let client_ssh = RemoteClient::connect_mock(opts, cx_a).await;
+    let (project_a, worktree_id) = client_a
+        .build_ssh_project(path!("/project"), client_ssh, false, cx_a)
+        .await;
+    let (_buffer, _handle) = project_a
+        .update(cx_a, |project, cx| {
+            project.open_buffer_with_lsp((worktree_id, rel_path("a.rs")), cx)
+        })
+        .await
+        .unwrap();
+    fake_language_servers.next().await.unwrap();
+    executor.run_until_parked();
+
+    let record_binary_statuses = |cx: &mut TestAppContext| {
+        let binary_statuses = Rc::new(RefCell::new(Vec::new()));
+        let observer = cx.update(|cx| {
+            let binary_statuses = binary_statuses.clone();
+            cx.observe_new(move |_: &mut LspStore, _, cx| {
+                let binary_statuses = binary_statuses.clone();
+                cx.subscribe_self(move |_, event: &LspStoreEvent, _| {
+                    if let LspStoreEvent::LanguageServerUpdate {
+                        name: Some(name),
+                        message: proto::update_language_server::Variant::StatusUpdate(update),
+                        ..
+                    } = event
+                        && let Some(proto::status_update::Status::Binary(binary)) = update.status
+                    {
+                        binary_statuses
+                            .borrow_mut()
+                            .push((name.0.to_string(), binary));
+                    }
+                })
+                .detach();
+            })
+        });
+        (binary_statuses, observer)
+    };
+    let last_status = |statuses: &Rc<RefCell<Vec<(String, i32)>>>| {
+        statuses
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(name, _)| name == "the-language-server")
+            .and_then(|(_, status)| proto::ServerBinaryStatus::try_from(*status).ok())
+    };
+
+    let running = |project: &gpui::Entity<project::Project>, cx: &TestAppContext| {
+        project.read_with(cx, |project, cx| {
+            project
+                .language_server_statuses(cx)
+                .map(|(_, status)| status.name.0.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let project_id = cx_a
+        .read(ActiveCall::global)
+        .update(cx_a, |call, cx| call.share_project(project_a.clone(), cx))
+        .await
+        .unwrap();
+    let (statuses_b, _observer_b) = record_binary_statuses(cx_b);
+    let project_b = client_b.join_remote_project(project_id, cx_b).await;
+    executor.run_until_parked();
+    assert_eq!(last_status(&statuses_b), None);
+    assert_eq!(running(&project_b, cx_b), ["the-language-server"]);
+
+    project_a.update(cx_a, |project, cx| {
+        project
+            .lsp_store()
+            .update(cx, |lsp_store, cx| lsp_store.stop_all_language_servers(cx))
+    });
+    executor.run_until_parked();
+    assert_eq!(
+        last_status(&statuses_b),
+        Some(proto::ServerBinaryStatus::Stopped)
+    );
+    assert_eq!(running(&project_b, cx_b), Vec::<String>::new());
+
+    let (statuses_c, _observer_c) = record_binary_statuses(cx_c);
+    let project_c = client_c.join_remote_project(project_id, cx_c).await;
+    executor.run_until_parked();
+    assert_eq!(
+        statuses_c
+            .borrow()
+            .iter()
+            .filter(|(name, _)| name == "the-language-server")
+            .map(|(_, status)| *status)
+            .collect::<Vec<_>>(),
+        [proto::ServerBinaryStatus::Stopped as i32]
+    );
+    assert_eq!(running(&project_c, cx_c), Vec::<String>::new());
+
+    project_a.update(cx_a, |project, cx| {
+        project.lsp_store().update(cx, |lsp_store, cx| {
+            lsp_store.restart_all_language_servers(cx)
+        })
+    });
+    fake_language_servers.next().await.unwrap();
+    executor.run_until_parked();
+    assert_eq!(
+        last_status(&statuses_b),
+        Some(proto::ServerBinaryStatus::None)
+    );
+    assert_eq!(
+        last_status(&statuses_c),
+        Some(proto::ServerBinaryStatus::None)
+    );
+    assert_eq!(running(&project_b, cx_b), ["the-language-server"]);
+    assert_eq!(running(&project_c, cx_c), ["the-language-server"]);
+
+    let project_d = client_d.join_remote_project(project_id, cx_d).await;
+    executor.run_until_parked();
+    assert_eq!(running(&project_d, cx_d), ["the-language-server"]);
+}
+
+#[gpui::test]
 async fn test_remote_server_debugger(
     cx_a: &mut TestAppContext,
     server_cx: &mut TestAppContext,

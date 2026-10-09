@@ -29133,6 +29133,64 @@ async fn test_on_type_formatting_does_not_rewind_over_intervening_edits(cx: &mut
 }
 
 #[gpui::test]
+async fn test_suspended_project_editor_does_not_restart_language_servers(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/a"),
+        json!({ "main.rs": "fn main() { let a = 5; }" }),
+    )
+    .await;
+    let project = Project::test(fs, [path!("/a").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let server_starts = Arc::new(AtomicUsize::new(0));
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                document_highlight_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            initializer: Some(Box::new({
+                let server_starts = server_starts.clone();
+                move |_| {
+                    server_starts.fetch_add(1, atomic::Ordering::SeqCst);
+                }
+            })),
+            ..Default::default()
+        },
+    );
+
+    let lease = project.update(cx, |project, cx| project.acquire_runtime_lease(cx));
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/a/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let _fake_server = fake_servers.next().await.unwrap();
+    let _editor = cx.add_window(|window, cx| {
+        Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(server_starts.load(atomic::Ordering::SeqCst), 1);
+
+    drop(lease);
+    for _ in 0..10 {
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+    }
+    assert!(project.read_with(cx, |project, cx| project.runtime_is_suspended(cx)));
+    assert_eq!(
+        server_starts.load(atomic::Ordering::SeqCst),
+        1,
+        "the editor of a suspended project must not start its language servers again"
+    );
+}
+
+#[gpui::test]
 async fn test_language_server_restart_due_to_settings_change(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
