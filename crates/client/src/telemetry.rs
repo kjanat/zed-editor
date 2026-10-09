@@ -1,6 +1,7 @@
 mod event_coalescer;
 
 use crate::TelemetrySettings;
+use crate::sentry::SENTRY_DSN;
 use anyhow::{Context as _, Result};
 use clock::SystemClock;
 use fs::Fs;
@@ -89,17 +90,11 @@ static ZED_CLIENT_CHECKSUM_SEED: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
         })
 });
 
-pub static MINIDUMP_ENDPOINT: LazyLock<Option<String>> = LazyLock::new(|| {
-    option_env!("ZED_MINIDUMP_ENDPOINT")
-        .map(str::to_string)
-        .or_else(|| env::var("ZED_MINIDUMP_ENDPOINT").ok())
-});
-
 pub fn should_install_crash_handler(channel: ReleaseChannel) -> bool {
     matches!(
         env::var("ZED_GENERATE_MINIDUMPS").as_deref(),
         Ok("true" | "1")
-    ) || (channel != ReleaseChannel::Dev && MINIDUMP_ENDPOINT.is_some())
+    ) || (channel != ReleaseChannel::Dev && SENTRY_DSN.is_some())
 }
 
 static DOTNET_PROJECT_FILES_REGEX: LazyLock<Regex> = LazyLock::new(|| {

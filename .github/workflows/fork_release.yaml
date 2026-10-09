@@ -122,8 +122,8 @@ jobs:
         name: Prepare the stable release build
         env: { tag: &TAG "${{ needs.create_draft_release.outputs.tag }}" }
         run: mise run release-prepare
-      - &SentryEndpoint
-        name: Compile in the Sentry crash report endpoint
+      - &SentryDsn
+        name: Compile in the Sentry DSN
         shell: bash -euo pipefail {0}
         env: { SENTRY_DSN: "${{ secrets.SENTRY_DSN }}" }
         run: |
@@ -131,9 +131,7 @@ jobs:
             echo "SENTRY_DSN is not a Sentry DSN" >&2
             exit 1
           fi
-          endpoint="https://${BASH_REMATCH[2]}/api/${BASH_REMATCH[3]}/minidump/?sentry_key=${BASH_REMATCH[1]}"
-          echo "::add-mask::${endpoint}"
-          echo "ZED_MINIDUMP_ENDPOINT=${endpoint}" >> "${GITHUB_ENV}"
+          echo "ZED_SENTRY_DSN=${SENTRY_DSN}" >> "${GITHUB_ENV}"
       - &SentryCheck
         name: Check the Sentry token
         if: &PushOrUpload github.event_name == 'push' || inputs.upload
@@ -192,7 +190,7 @@ jobs:
       - &mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - *prepare
-      - *SentryEndpoint
+      - *SentryDsn
       - *SentryCheck
       - name: Bundle
         env: { target: "${{ matrix.target }}" }
@@ -239,7 +237,7 @@ jobs:
       - *checkout
       - *mise
       - *prepare
-      - *SentryEndpoint
+      - *SentryDsn
       - *SentryCheck
       - name: Bundle
         env: { arch: "${{ matrix.arch }}" }

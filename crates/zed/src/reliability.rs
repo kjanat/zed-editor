@@ -1,5 +1,8 @@
 use anyhow::{Context as _, Result};
-use client::{Client, telemetry::MINIDUMP_ENDPOINT};
+use client::{
+    Client,
+    sentry::{SENTRY_DSN, SentryDsn},
+};
 use feature_flags::FeatureFlagAppExt;
 use futures::{AsyncReadExt, TryStreamExt};
 use gpui::{App, AppContext, Entity, TaskExt, WeakEntity};
@@ -82,7 +85,7 @@ pub fn init(client: Arc<Client>, workspace_store: Entity<WorkspaceStore>, cx: &m
             cx.background_spawn(async move {
                 let GetCrashFilesResponse { crashes } = request.await?;
 
-                let Some(endpoint) = MINIDUMP_ENDPOINT.as_ref() else {
+                let Some(endpoint) = SENTRY_DSN.as_ref().map(SentryDsn::minidump_url) else {
                     return Ok(());
                 };
                 for CrashReport {
@@ -93,7 +96,7 @@ pub fn init(client: Arc<Client>, workspace_store: Entity<WorkspaceStore>, cx: &m
                     if let Some(metadata) = serde_json::from_str(&metadata).log_err() {
                         upload_minidump(
                             client.clone(),
-                            endpoint,
+                            &endpoint,
                             minidump_contents,
                             None,
                             &metadata,
@@ -272,8 +275,8 @@ fn log_worktree_diagnostics(
 }
 
 pub async fn upload_previous_minidumps(client: Arc<Client>) -> anyhow::Result<()> {
-    let Some(minidump_endpoint) = MINIDUMP_ENDPOINT.as_ref() else {
-        log::warn!("Minidump endpoint not set");
+    let Some(minidump_endpoint) = SENTRY_DSN.as_ref().map(SentryDsn::minidump_url) else {
+        log::warn!("Sentry DSN not set");
         return Ok(());
     };
 
@@ -297,7 +300,7 @@ pub async fn upload_previous_minidumps(client: Arc<Client>) -> anyhow::Result<()
         let log_tail = smol::fs::read(&log_tail_path).await.ok();
         if upload_minidump(
             client.clone(),
-            minidump_endpoint,
+            &minidump_endpoint,
             smol::fs::read(&child_path)
                 .await
                 .context("Failed to read minidump")?,

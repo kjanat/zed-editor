@@ -3,6 +3,7 @@ pub mod test;
 
 mod llm_token;
 mod proxy;
+pub mod sentry;
 pub mod telemetry;
 pub mod user;
 pub mod zed_urls;
