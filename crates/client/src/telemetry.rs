@@ -1,26 +1,29 @@
 mod event_coalescer;
 
 use crate::TelemetrySettings;
-use crate::sentry::SENTRY_DSN;
+use crate::sentry::{
+    self, Attachment, Attribute, Envelope, LogLevel, LogRecord, SENTRY_DSN, SentryDsn, SentryEvent,
+    User,
+};
 use anyhow::{Context as _, Result};
+use chrono::{DateTime, Utc};
 use clock::SystemClock;
 use fs::Fs;
 use futures::channel::mpsc;
 use futures::{Future, StreamExt};
 use gpui::{App, AppContext as _, BackgroundExecutor, Task};
-use http_client::{self, AsyncBody, HttpClient, HttpClientWithUrl, Method, Request};
+use http_client::HttpClientWithUrl;
 use parking_lot::Mutex;
 use regex::Regex;
-use release_channel::ReleaseChannel;
+use release_channel::{AppCommitSha, ReleaseChannel};
 use settings::{Settings, SettingsStore};
-use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::sync::LazyLock;
 use std::time::Instant;
 use std::{env, mem, path::PathBuf, sync::Arc, time::Duration};
-use telemetry_events::{AssistantEventData, AssistantPhase, Event, EventRequestBody, EventWrapper};
+use telemetry_events::{AssistantEventData, AssistantPhase, Event, EventWrapper};
 
 pub struct TelemetrySubscription {
     pub historical_events: Result<HistoricalEvents>,
@@ -40,8 +43,16 @@ use self::event_coalescer::EventCoalescer;
 pub struct Telemetry {
     clock: Arc<dyn SystemClock>,
     http_client: Arc<HttpClientWithUrl>,
+    sentry_dsn: Option<SentryDsn>,
+    trace_id: String,
     executor: BackgroundExecutor,
     state: Arc<Mutex<TelemetryState>>,
+}
+
+#[derive(Clone)]
+struct QueuedEvent {
+    wrapper: EventWrapper,
+    reported_at: DateTime<Utc>,
 }
 
 struct TelemetryState {
@@ -50,9 +61,10 @@ struct TelemetryState {
     installation_id: Option<Arc<str>>, // Per app installation (different for dev, nightly, preview, and stable)
     session_id: Option<String>,        // Per app launch
     metrics_id: Option<Arc<str>>,      // Per logged-in user
+    commit_sha: Option<String>,
     release_channel: Option<ReleaseChannel>,
     architecture: &'static str,
-    events_queue: Vec<EventWrapper>,
+    events_queue: Vec<QueuedEvent>,
     flush_events_task: Option<Task<()>>,
 
     log_file: Option<File>,
@@ -80,15 +92,6 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[cfg(not(debug_assertions))]
 const FLUSH_INTERVAL: Duration = Duration::from_secs(60 * 5);
-static ZED_CLIENT_CHECKSUM_SEED: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
-    option_env!("ZED_CLIENT_CHECKSUM_SEED")
-        .map(|s| s.as_bytes().into())
-        .or_else(|| {
-            env::var("ZED_CLIENT_CHECKSUM_SEED")
-                .ok()
-                .map(|s| s.as_bytes().into())
-        })
-});
 
 pub fn should_install_crash_handler(channel: ReleaseChannel) -> bool {
     matches!(
@@ -181,6 +184,7 @@ impl Telemetry {
     pub fn new(
         clock: Arc<dyn SystemClock>,
         client: Arc<HttpClientWithUrl>,
+        sentry_dsn: Option<SentryDsn>,
         cx: &mut App,
     ) -> Arc<Self> {
         let state = Arc::new(Mutex::new(TelemetryState {
@@ -191,6 +195,7 @@ impl Telemetry {
             installation_id: None,
             session_id: None,
             metrics_id: None,
+            commit_sha: None,
             events_queue: Vec::new(),
             flush_events_task: None,
             log_file: None,
@@ -231,6 +236,8 @@ impl Telemetry {
         let this = Arc::new(Self {
             clock,
             http_client: client,
+            sentry_dsn,
+            trace_id: sentry::new_id(),
             executor: cx.background_executor().clone(),
             state,
         });
@@ -287,7 +294,11 @@ impl Telemetry {
         let historical_events = self.read_log_file(fs).await;
 
         let mut state = self.state.lock();
-        let queued_events: Vec<EventWrapper> = state.events_queue.clone();
+        let queued_events = state
+            .events_queue
+            .iter()
+            .map(|queued| queued.wrapper.clone())
+            .collect();
 
         let (tx, rx) = mpsc::unbounded();
         state.subscribers.push(tx);
@@ -344,10 +355,6 @@ impl Telemetry {
         })
     }
 
-    pub fn has_checksum_seed(&self) -> bool {
-        ZED_CLIENT_CHECKSUM_SEED.is_some()
-    }
-
     pub fn start(
         self: &Arc<Self>,
         system_id: Option<String>,
@@ -359,6 +366,7 @@ impl Telemetry {
         state.system_id = system_id.map(|id| id.into());
         state.installation_id = installation_id.map(|id| id.into());
         state.session_id = Some(session_id);
+        state.commit_sha = AppCommitSha::try_global(cx).map(|sha| sha.full());
         state.app_version = release_channel::AppVersion::global(cx).to_string();
         state.os_name = os_name();
     }
@@ -506,10 +514,10 @@ impl Telemetry {
     /// Report a telemetry event that originated on a remote server.
     ///
     /// The remote server cannot upload telemetry itself, so it forwards events
-    /// (as a JSON-serialized [`Event`]) to the client. Since the OS metadata in
-    /// [`EventRequestBody`] is batch-level (describing the uploading client),
-    /// the remote server's OS is attached as event properties instead, so the
-    /// origin can still be distinguished downstream.
+    /// (as a JSON-serialized [`Event`]) to the client. Since the OS attributes
+    /// on each Sentry log record describe the uploading client, the remote
+    /// server's OS is attached as event properties instead, so the origin can
+    /// still be distinguished downstream.
     pub fn report_remote_event(
         self: &Arc<Self>,
         event_json: &str,
@@ -551,8 +559,8 @@ impl Telemetry {
             .lock()
             .events_queue
             .iter()
-            .map(|wrapper| {
-                let Event::Flexible(event) = &wrapper.event;
+            .map(|queued| {
+                let Event::Flexible(event) = &queued.wrapper.event;
                 event.clone()
             })
             .collect()
@@ -605,7 +613,10 @@ impl Telemetry {
             .subscribers
             .retain(|tx| tx.unbounded_send(event_wrapper.clone()).is_ok());
 
-        state.events_queue.push(event_wrapper);
+        state.events_queue.push(QueuedEvent {
+            wrapper: event_wrapper,
+            reported_at: Utc::now(),
+        });
 
         if state.installation_id.is_some() && state.events_queue.len() >= state.max_queue_size {
             drop(state);
@@ -629,31 +640,8 @@ impl Telemetry {
         self.state.lock().is_staff
     }
 
-    fn build_request(
-        self: &Arc<Self>,
-        // We take in the JSON bytes buffer so we can reuse the existing allocation.
-        mut json_bytes: Vec<u8>,
-        event_request: &EventRequestBody,
-    ) -> Result<Request<AsyncBody>> {
-        json_bytes.clear();
-        serde_json::to_writer(&mut json_bytes, event_request)?;
-
-        let checksum = calculate_json_checksum(&json_bytes).unwrap_or_default();
-
-        Ok(Request::builder()
-            .method(Method::POST)
-            .uri(
-                self.http_client
-                    .build_zed_api_url("/telemetry/events", &[])?
-                    .as_ref(),
-            )
-            .header("Content-Type", "application/json")
-            .header("x-zed-checksum", checksum)
-            .body(json_bytes.into())?)
-    }
-
     pub async fn flush_events_inner(self: &Arc<Self>) -> Result<()> {
-        let (json_bytes, request_body) = {
+        let (dsn, records) = {
             let mut state = self.state.lock();
             state.first_event_date_time = None;
             let events = mem::take(&mut state.events_queue);
@@ -662,45 +650,31 @@ impl Telemetry {
                 return Ok(());
             }
 
-            let mut json_bytes = Vec::new();
-
             if let Some(file) = &mut state.log_file {
+                let mut json_bytes = Vec::new();
                 for event in &events {
                     json_bytes.clear();
-                    serde_json::to_writer(&mut json_bytes, event)?;
+                    serde_json::to_writer(&mut json_bytes, &event.wrapper)?;
                     file.write_all(&json_bytes)?;
                     file.write_all(b"\n")?;
                 }
             }
 
-            (
-                json_bytes,
-                EventRequestBody {
-                    system_id: state.system_id.as_deref().map(Into::into),
-                    installation_id: state.installation_id.as_deref().map(Into::into),
-                    session_id: state.session_id.clone(),
-                    metrics_id: state.metrics_id.as_deref().map(Into::into),
-                    is_staff: state.is_staff,
-                    app_version: state.app_version.clone(),
-                    os_name: state.os_name.clone(),
-                    os_version: state.os_version.clone(),
-                    architecture: state.architecture.to_string(),
-
-                    release_channel: state
-                        .release_channel
-                        .map(|channel| channel.display_name().to_owned()),
-                    events,
-                },
-            )
+            let Some(dsn) = &self.sentry_dsn else {
+                return Ok(());
+            };
+            let attributes = state.sentry_log_attributes();
+            let records: Vec<LogRecord> = events
+                .into_iter()
+                .map(|event| event.log_record(&self.trace_id, &attributes))
+                .collect();
+            (dsn, records)
         };
 
-        let request = self.build_request(json_bytes, &request_body)?;
-        let response = self.http_client.send(request).await?;
-        if response.status() != 200 {
-            log::error!("Failed to send events: HTTP {:?}", response.status());
+        for envelope in sentry::log_envelopes(records)? {
+            sentry::send_envelope(&*self.http_client, dsn, &envelope).await?;
         }
-
-        anyhow::Ok(())
+        Ok(())
     }
 
     pub fn flush_events(self: &Arc<Self>) -> Task<()> {
@@ -709,22 +683,140 @@ impl Telemetry {
             this.flush_events_inner().await.log_err();
         })
     }
-}
 
-pub fn calculate_json_checksum(json: &impl AsRef<[u8]>) -> Option<String> {
-    let checksum_seed = ZED_CLIENT_CHECKSUM_SEED.as_ref()?;
-
-    let mut summer = Sha256::new();
-    summer.update(checksum_seed);
-    summer.update(json);
-    summer.update(checksum_seed);
-    let mut checksum = String::new();
-    for byte in summer.finalize().as_slice() {
-        use std::fmt::Write;
-        write!(&mut checksum, "{:02x}", byte).unwrap();
+    pub fn sentry_enabled(&self) -> bool {
+        self.sentry_dsn.is_some()
     }
 
-    Some(checksum)
+    pub fn send_sentry_event(self: &Arc<Self>, event: SentryEvent) -> Task<Result<()>> {
+        let envelope = Envelope::event(self.with_sentry_metadata(event));
+        self.send_envelope(envelope)
+    }
+
+    pub fn submit_feedback(
+        self: &Arc<Self>,
+        event: SentryEvent,
+        attachment: Option<Attachment>,
+    ) -> Task<Result<()>> {
+        let envelope = Envelope::feedback(self.with_sentry_metadata(event), attachment);
+        self.send_envelope(envelope)
+    }
+
+    fn with_sentry_metadata(&self, mut event: SentryEvent) -> SentryEvent {
+        let state = self.state.lock();
+        event.release = state.commit_sha.clone();
+        event.environment = state
+            .release_channel
+            .map(|channel| channel.dev_name().to_string());
+        event.user = state
+            .metrics_id
+            .as_deref()
+            .map(str::to_string)
+            .or_else(|| {
+                state
+                    .installation_id
+                    .as_deref()
+                    .map(|id| format!("installation-{id}"))
+            })
+            .map(|id| User { id });
+        event
+            .tags
+            .entry("version".to_string())
+            .or_insert_with(|| state.app_version.clone());
+        event.contexts.entry("os".to_string()).or_insert_with(|| {
+            serde_json::json!({
+                "name": state.os_name,
+                "version": state.os_version,
+            })
+        });
+        event
+    }
+
+    fn send_envelope(self: &Arc<Self>, envelope: Envelope) -> Task<Result<()>> {
+        let Some(dsn) = self.sentry_dsn.clone() else {
+            return Task::ready(Err(anyhow::anyhow!("Sentry DSN not compiled in")));
+        };
+        let http_client = self.http_client.clone();
+        self.executor
+            .spawn(async move { sentry::send_envelope(&*http_client, &dsn, &envelope).await })
+    }
+}
+
+impl QueuedEvent {
+    fn log_record(self, trace_id: &str, defaults: &BTreeMap<String, Attribute>) -> LogRecord {
+        let Event::Flexible(event) = self.wrapper.event;
+        let mut attributes = defaults.clone();
+        attributes.insert(
+            "zed.signed_in".to_string(),
+            Attribute::Boolean(self.wrapper.signed_in),
+        );
+        for (name, value) in event.event_properties {
+            if let Some(attribute) = Attribute::from_json(value) {
+                attributes.insert(name, attribute);
+            }
+        }
+        LogRecord {
+            timestamp: sentry::timestamp(self.reported_at),
+            trace_id: trace_id.to_string(),
+            level: LogLevel::Info,
+            body: event.event_type,
+            attributes,
+        }
+    }
+}
+
+impl TelemetryState {
+    fn sentry_log_attributes(&self) -> BTreeMap<String, Attribute> {
+        let mut attributes = BTreeMap::from([
+            (
+                "sentry.sdk.name".to_string(),
+                Attribute::from("zed.telemetry"),
+            ),
+            (
+                "sentry.sdk.version".to_string(),
+                Attribute::from(self.app_version.as_str()),
+            ),
+            (
+                "os.name".to_string(),
+                Attribute::from(self.os_name.as_str()),
+            ),
+            (
+                "zed.architecture".to_string(),
+                Attribute::from(self.architecture),
+            ),
+        ]);
+        let optional = [
+            ("sentry.release", self.commit_sha.clone()),
+            (
+                "sentry.environment",
+                self.release_channel
+                    .map(|channel| channel.dev_name().to_string()),
+            ),
+            ("os.version", self.os_version.clone()),
+            (
+                "zed.system_id",
+                self.system_id.as_deref().map(str::to_string),
+            ),
+            (
+                "zed.installation_id",
+                self.installation_id.as_deref().map(str::to_string),
+            ),
+            ("zed.session_id", self.session_id.clone()),
+            (
+                "zed.metrics_id",
+                self.metrics_id.as_deref().map(str::to_string),
+            ),
+        ];
+        for (name, value) in optional {
+            if let Some(value) = value {
+                attributes.insert(name.to_string(), Attribute::String(value));
+            }
+        }
+        if let Some(is_staff) = self.is_staff {
+            attributes.insert("zed.is_staff".to_string(), Attribute::Boolean(is_staff));
+        }
+        attributes
+    }
 }
 
 #[cfg(test)]
@@ -752,7 +844,7 @@ mod tests {
         let session_id = "session_id".to_string();
 
         let (telemetry, first_date_time, event) = cx.update(|cx| {
-            let telemetry = Telemetry::new(clock.clone(), http, cx);
+            let telemetry = Telemetry::new(clock.clone(), http, None, cx);
 
             telemetry.state.lock().max_queue_size = 4;
             telemetry.start(system_id, installation_id, session_id, cx);
@@ -829,7 +921,7 @@ mod tests {
         let session_id = "session_id".to_string();
 
         cx.update(|cx| {
-            let telemetry = Telemetry::new(clock.clone(), http, cx);
+            let telemetry = Telemetry::new(clock.clone(), http, None, cx);
             telemetry.state.lock().max_queue_size = 4;
             telemetry.start(system_id, installation_id, session_id, cx);
 
@@ -875,7 +967,7 @@ mod tests {
         let http = FakeHttpClient::with_200_response();
 
         let telemetry = cx.update(|cx| {
-            let telemetry = Telemetry::new(clock.clone(), http, cx);
+            let telemetry = Telemetry::new(clock.clone(), http, None, cx);
             telemetry.start(
                 Some("system_id".to_string()),
                 Some("installation_id".to_string()),
@@ -910,7 +1002,7 @@ mod tests {
 
         let queue = telemetry.state.lock().events_queue.clone();
         assert_eq!(queue.len(), 1);
-        let Event::Flexible(event) = &queue[0].event;
+        let Event::Flexible(event) = &queue[0].wrapper.event;
         assert_eq!(event.event_type, "fs_watcher_poll");
         // Original properties are preserved.
         assert_eq!(
@@ -947,7 +1039,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, None, cx));
         let worktree_id = 1;
 
         // Scan of empty worktree finds nothing
@@ -971,7 +1063,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, None, cx));
 
         test_project_discovery_helper(
             telemetry,
@@ -987,7 +1079,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, None, cx));
 
         test_project_discovery_helper(
             telemetry,
@@ -1003,7 +1095,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, None, cx));
 
         // Using different worktrees, as production code blocks from reporting a
         // project type for the same worktree multiple times
@@ -1050,9 +1142,283 @@ mod tests {
         );
     }
 
-    // TODO:
-    // Test settings
-    // Update FakeHTTPClient to keep track of the number of requests and assert on it
+    fn flexible_event(
+        event_type: &str,
+        properties: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
+    ) -> Event {
+        Event::Flexible(FlexibleEvent {
+            event_type: event_type.to_string(),
+            event_properties: properties
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect(),
+        })
+    }
+
+    fn started_telemetry(
+        cx: &mut TestAppContext,
+        http: Arc<HttpClientWithUrl>,
+        sentry_dsn: Option<SentryDsn>,
+    ) -> Arc<Telemetry> {
+        init_test(cx);
+        let clock = Arc::new(FakeSystemClock::new());
+        cx.update(|cx| {
+            AppCommitSha::set_global(AppCommitSha::new("0123abcd".to_string()), cx);
+            let telemetry = Telemetry::new(clock, http, sentry_dsn, cx);
+            telemetry.start(
+                Some("system_id".to_string()),
+                Some("installation_id".to_string()),
+                "session_id".to_string(),
+                cx,
+            );
+            telemetry
+        })
+    }
+
+    fn test_dsn() -> SentryDsn {
+        SentryDsn::parse(sentry::TEST_DSN).unwrap()
+    }
+
+    #[gpui::test]
+    async fn test_flush_sends_queued_events_to_sentry_logs(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+
+        telemetry.report_event(flexible_event(
+            "Editor Edited",
+            [
+                ("duration", serde_json::json!(1200)),
+                ("is_via_ssh", serde_json::json!(false)),
+                ("ratio", serde_json::json!(0.25)),
+                ("language", serde_json::json!("Rust")),
+                ("tags", serde_json::json!(["a", "b"])),
+                ("missing", serde_json::Value::Null),
+            ],
+        ));
+        telemetry.report_event(flexible_event("App Closed", []));
+        telemetry.flush_events_inner().await.unwrap();
+
+        assert!(is_empty_state(&telemetry));
+        let requests = requests.lock();
+        let [request] = &requests[..] else {
+            panic!("expected one request, got {}", requests.len());
+        };
+        assert_eq!(request.uri, test_dsn().envelope_url());
+        assert!(!request.uri.contains("zed.dev"));
+        let lines = request.envelope_lines();
+        assert_eq!(lines[1]["type"], serde_json::json!("log"));
+        assert_eq!(lines[1]["item_count"], serde_json::json!(2));
+
+        let records = lines[2]["items"].as_array().unwrap();
+        assert_eq!(records[0]["body"], serde_json::json!("Editor Edited"));
+        assert_eq!(records[1]["body"], serde_json::json!("App Closed"));
+        assert_eq!(records[0]["level"], serde_json::json!("info"));
+        assert_eq!(
+            records[0]["trace_id"],
+            serde_json::json!(telemetry.trace_id)
+        );
+        assert_eq!(
+            records[1]["trace_id"],
+            serde_json::json!(telemetry.trace_id)
+        );
+
+        let attributes = &records[0]["attributes"];
+        let attribute = |name: &str| attributes[name].clone();
+        assert_eq!(
+            attribute("duration"),
+            serde_json::json!({"type": "integer", "value": 1200})
+        );
+        assert_eq!(
+            attribute("is_via_ssh"),
+            serde_json::json!({"type": "boolean", "value": false})
+        );
+        assert_eq!(
+            attribute("ratio"),
+            serde_json::json!({"type": "double", "value": 0.25})
+        );
+        assert_eq!(
+            attribute("language"),
+            serde_json::json!({"type": "string", "value": "Rust"})
+        );
+        assert_eq!(
+            attribute("tags"),
+            serde_json::json!({"type": "string", "value": "[\"a\",\"b\"]"})
+        );
+        assert_eq!(attributes.get("missing"), None);
+        assert_eq!(
+            attribute("event_source"),
+            serde_json::json!({"type": "string", "value": "zed"})
+        );
+        assert_eq!(
+            attribute("sentry.release"),
+            serde_json::json!({"type": "string", "value": "0123abcd"})
+        );
+        assert_eq!(
+            attribute("sentry.sdk.name"),
+            serde_json::json!({"type": "string", "value": "zed.telemetry"})
+        );
+        assert_eq!(
+            attribute("zed.installation_id"),
+            serde_json::json!({"type": "string", "value": "installation_id"})
+        );
+        assert_eq!(
+            attribute("zed.system_id"),
+            serde_json::json!({"type": "string", "value": "system_id"})
+        );
+        assert_eq!(
+            attribute("zed.session_id"),
+            serde_json::json!({"type": "string", "value": "session_id"})
+        );
+        assert_eq!(
+            attribute("zed.signed_in"),
+            serde_json::json!({"type": "boolean", "value": false})
+        );
+        assert_eq!(
+            attribute("zed.architecture"),
+            serde_json::json!({"type": "string", "value": env::consts::ARCH})
+        );
+        assert_eq!(attribute("os.name")["type"], serde_json::json!("string"));
+    }
+
+    #[gpui::test]
+    async fn test_flush_without_dsn_sends_nothing(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, None);
+
+        telemetry.report_event(flexible_event("App Opened", []));
+        assert_eq!(telemetry.state.lock().events_queue.len(), 1);
+        telemetry.flush_events_inner().await.unwrap();
+
+        assert!(is_empty_state(&telemetry));
+        assert!(requests.lock().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_metrics_off_queues_and_sends_nothing(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+        telemetry.state.lock().settings.metrics = false;
+
+        telemetry.report_event(flexible_event("App Opened", []));
+        assert!(is_empty_state(&telemetry));
+        telemetry.flush_events_inner().await.unwrap();
+
+        assert!(requests.lock().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_sentry_events_carry_release_and_user(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+        assert!(telemetry.sentry_enabled());
+
+        let mut event = SentryEvent::new(sentry::EventLevel::Warning, "Hang: draw");
+        event
+            .tags
+            .insert("trigger".to_string(), "late_frame".to_string());
+        telemetry.send_sentry_event(event).await.unwrap();
+
+        let requests = requests.lock();
+        let [request] = &requests[..] else {
+            panic!("expected one request, got {}", requests.len());
+        };
+        assert_eq!(request.uri, test_dsn().envelope_url());
+        let lines = request.envelope_lines();
+        assert_eq!(lines[1]["type"], serde_json::json!("event"));
+        let payload = &lines[2];
+        assert_eq!(payload["release"], serde_json::json!("0123abcd"));
+        assert_eq!(
+            payload["user"],
+            serde_json::json!({"id": "installation-installation_id"})
+        );
+        assert_eq!(payload["tags"]["trigger"], serde_json::json!("late_frame"));
+        assert_eq!(
+            payload["tags"]["version"],
+            serde_json::json!(telemetry.state.lock().app_version)
+        );
+        assert_eq!(
+            payload["contexts"]["os"]["name"],
+            serde_json::json!(telemetry.state.lock().os_name)
+        );
+    }
+
+    #[gpui::test]
+    async fn test_sentry_events_prefer_the_metrics_id_as_user(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+        telemetry.set_authenticated_user_info(Some("metrics-1".to_string()), false);
+
+        telemetry
+            .send_sentry_event(SentryEvent::new(sentry::EventLevel::Info, "event"))
+            .await
+            .unwrap();
+
+        let requests = requests.lock();
+        assert_eq!(
+            requests[0].envelope_lines()[2]["user"],
+            serde_json::json!({"id": "metrics-1"})
+        );
+    }
+
+    #[gpui::test]
+    async fn test_feedback_goes_to_sentry_with_its_attachment(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+
+        let mut feedback = SentryEvent::feedback("rating: positive");
+        feedback
+            .tags
+            .insert("feedback.kind".to_string(), "agent_thread".to_string());
+        telemetry
+            .submit_feedback(
+                feedback,
+                Some(Attachment {
+                    filename: "feedback.json".to_string(),
+                    content_type: "application/json",
+                    data: b"{}".to_vec(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let requests = requests.lock();
+        let [request] = &requests[..] else {
+            panic!("expected one request, got {}", requests.len());
+        };
+        let lines = request.envelope_lines();
+        assert_eq!(lines[1]["type"], serde_json::json!("feedback"));
+        assert_eq!(
+            lines[2]["contexts"]["feedback"]["message"],
+            serde_json::json!("rating: positive")
+        );
+        assert_eq!(
+            lines[2]["tags"]["feedback.kind"],
+            serde_json::json!("agent_thread")
+        );
+        assert_eq!(lines[2]["release"], serde_json::json!("0123abcd"));
+        assert_eq!(lines[3]["type"], serde_json::json!("attachment"));
+        assert_eq!(lines[4], serde_json::json!({}));
+    }
+
+    #[gpui::test]
+    async fn test_sentry_sends_fail_without_dsn(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, None);
+        assert!(!telemetry.sentry_enabled());
+
+        let error = telemetry
+            .submit_feedback(SentryEvent::feedback("rating: negative"), None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Sentry DSN"), "{error}");
+        assert!(
+            telemetry
+                .send_sentry_event(SentryEvent::new(sentry::EventLevel::Info, "event"))
+                .await
+                .is_err()
+        );
+        assert!(requests.lock().is_empty());
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {

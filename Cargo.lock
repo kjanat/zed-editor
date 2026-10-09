@@ -3112,7 +3112,6 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "settings",
- "sha2 0.10.9",
  "smol",
  "telemetry",
  "telemetry_events",
