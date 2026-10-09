@@ -2384,6 +2384,9 @@ async fn test_joining_guest_sees_stopped_language_servers(
             proto::ServerBinaryStatus::Stopped as i32
         )]
     );
+    project_b.read_with(cx_b, |project, cx| {
+        assert_eq!(project.language_server_statuses(cx).count(), 0);
+    });
 
     let server_name = lsp::LanguageServerName::new_static("the-language-server");
     let lsp_store_b = project_b.read_with(cx_b, |project, _| project.lsp_store());

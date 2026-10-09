@@ -5933,7 +5933,7 @@ impl Project {
                 for update in this
                     .lsp_store
                     .read(cx)
-                    .inactive_language_server_status_updates(project_id)
+                    .inactive_language_server_updates(project_id)
                 {
                     this.collab_client.send(update).log_err();
                 }

@@ -6205,6 +6205,24 @@ impl LspStore {
         serde_json::to_string(&self.synced_server_capabilities(server))
     }
 
+    fn serialize_stored_server_capabilities(
+        &self,
+        server_id: LanguageServerId,
+    ) -> Option<serde_json::Result<String>> {
+        let server_capabilities = self.lsp_server_capabilities.get(&server_id)?.clone();
+        Some(serde_json::to_string(&SyncedServerCapabilities {
+            server_capabilities,
+            initial_server_capabilities: self
+                .lsp_server_initial_capabilities
+                .get(&server_id)
+                .cloned(),
+            text_document_registrations: self
+                .lsp_server_text_document_registrations
+                .get(&server_id)
+                .cloned(),
+        }))
+    }
+
     fn notify_server_capabilities_updated(&self, server: &LanguageServer, cx: &mut Context<Self>) {
         let Some(capabilities) = self.serialize_synced_server_capabilities(server).log_err() else {
             return;
@@ -10788,10 +10806,11 @@ impl LspStore {
         self.downstream_client = Some((downstream_client.clone(), project_id));
 
         for (server_id, status) in &self.language_server_statuses {
-            if let Some(server) = self.language_server_for_id(*server_id)
-                && let Some(capabilities) =
-                    self.serialize_synced_server_capabilities(&server).log_err()
-            {
+            let capabilities = match self.language_server_for_id(*server_id) {
+                Some(server) => Some(self.serialize_synced_server_capabilities(&server)),
+                None => self.serialize_stored_server_capabilities(*server_id),
+            };
+            if let Some(capabilities) = capabilities.and_then(|result| result.log_err()) {
                 downstream_client
                     .send(proto::StartLanguageServer {
                         project_id,
@@ -12227,6 +12246,15 @@ impl LspStore {
     ) -> Result<()> {
         let server = envelope.payload.server.context("invalid server")?;
         lsp_store.update(&mut cx, |lsp_store, cx| {
+            if let Some((client, project_id)) = &lsp_store.downstream_client {
+                client
+                    .send(proto::StartLanguageServer {
+                        project_id: *project_id,
+                        server: Some(server.clone()),
+                        capabilities: envelope.payload.capabilities.clone(),
+                    })
+                    .log_err();
+            }
             let server_id = LanguageServerId(server.id as usize);
             let server_name = LanguageServerName::from_proto(server.name.clone());
             let language_name = server.language_name.map(LanguageName::from_proto);
@@ -12360,7 +12388,17 @@ impl LspStore {
                     lsp_store.disk_based_diagnostics_finished(language_server_id, cx)
                 }
 
-                proto::update_language_server::Variant::Removed(_) => {
+                removed @ proto::update_language_server::Variant::Removed(_) => {
+                    if let Some((client, project_id)) = &lsp_store.downstream_client {
+                        client
+                            .send(proto::UpdateLanguageServer {
+                                project_id: *project_id,
+                                language_server_id: language_server_id.to_proto(),
+                                server_name: envelope.payload.server_name,
+                                variant: Some(removed),
+                            })
+                            .log_err();
+                    }
                     lsp_store
                         .language_server_statuses
                         .remove(&language_server_id);
@@ -14038,13 +14076,23 @@ impl LspStore {
         }
     }
 
-    pub fn inactive_language_server_status_updates(
+    pub fn inactive_language_server_updates(
         &self,
         project_id: u64,
     ) -> Vec<proto::UpdateLanguageServer> {
         self.inactive_language_servers()
-            .map(|(_, name, server)| {
-                inactive_language_server_status_update(project_id, name, server)
+            .flat_map(|(_, name, server)| {
+                [
+                    proto::UpdateLanguageServer {
+                        project_id,
+                        language_server_id: server.server_id.to_proto(),
+                        server_name: Some(name.to_string()),
+                        variant: Some(proto::update_language_server::Variant::Removed(
+                            proto::ServerRemoved {},
+                        )),
+                    },
+                    inactive_language_server_status_update(project_id, name, server),
+                ]
             })
             .collect()
     }

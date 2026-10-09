@@ -982,7 +982,7 @@ async fn test_ssh_restarting_language_server_replaces_remote_status(
 }
 
 #[gpui::test]
-async fn test_ssh_shared_guests_see_stopped_language_servers(
+async fn test_ssh_shared_guests_follow_language_server_state(
     executor: BackgroundExecutor,
     cx_a: &mut TestAppContext,
     cx_b: &mut TestAppContext,
@@ -1086,15 +1086,25 @@ async fn test_ssh_shared_guests_see_stopped_language_servers(
             .and_then(|(_, status)| proto::ServerBinaryStatus::try_from(*status).ok())
     };
 
+    let running = |project: &gpui::Entity<project::Project>, cx: &TestAppContext| {
+        project.read_with(cx, |project, cx| {
+            project
+                .language_server_statuses(cx)
+                .map(|(_, status)| status.name.0.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+
     let project_id = cx_a
         .read(ActiveCall::global)
         .update(cx_a, |call, cx| call.share_project(project_a.clone(), cx))
         .await
         .unwrap();
     let (statuses_b, _observer_b) = record_binary_statuses(cx_b);
-    let _project_b = client_b.join_remote_project(project_id, cx_b).await;
+    let project_b = client_b.join_remote_project(project_id, cx_b).await;
     executor.run_until_parked();
     assert_eq!(last_status(&statuses_b), None);
+    assert_eq!(running(&project_b, cx_b), ["the-language-server"]);
 
     project_a.update(cx_a, |project, cx| {
         project
@@ -1106,9 +1116,10 @@ async fn test_ssh_shared_guests_see_stopped_language_servers(
         last_status(&statuses_b),
         Some(proto::ServerBinaryStatus::Stopped)
     );
+    assert_eq!(running(&project_b, cx_b), Vec::<String>::new());
 
     let (statuses_c, _observer_c) = record_binary_statuses(cx_c);
-    let _project_c = client_c.join_remote_project(project_id, cx_c).await;
+    let project_c = client_c.join_remote_project(project_id, cx_c).await;
     executor.run_until_parked();
     assert_eq!(
         statuses_c
@@ -1119,6 +1130,7 @@ async fn test_ssh_shared_guests_see_stopped_language_servers(
             .collect::<Vec<_>>(),
         [proto::ServerBinaryStatus::Stopped as i32]
     );
+    assert_eq!(running(&project_c, cx_c), Vec::<String>::new());
 
     project_a.update(cx_a, |project, cx| {
         project.lsp_store().update(cx, |lsp_store, cx| {
@@ -1135,6 +1147,8 @@ async fn test_ssh_shared_guests_see_stopped_language_servers(
         last_status(&statuses_c),
         Some(proto::ServerBinaryStatus::None)
     );
+    assert_eq!(running(&project_b, cx_b), ["the-language-server"]);
+    assert_eq!(running(&project_c, cx_c), ["the-language-server"]);
 }
 
 #[gpui::test]
