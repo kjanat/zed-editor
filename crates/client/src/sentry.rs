@@ -168,12 +168,20 @@ pub struct User {
     pub id: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventType {
+    Feedback,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SentryEvent {
     pub event_id: String,
     pub timestamp: f64,
     pub platform: &'static str,
     pub level: EventLevel,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<EventType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logentry: Option<LogEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,6 +205,7 @@ impl SentryEvent {
             timestamp: timestamp(Utc::now()),
             platform: "native",
             level,
+            event_type: None,
             logentry: Some(LogEntry {
                 formatted: message.into(),
             }),
@@ -211,6 +220,7 @@ impl SentryEvent {
 
     pub fn feedback(message: &str) -> Self {
         let mut event = Self::new(EventLevel::Info, "User Feedback");
+        event.event_type = Some(EventType::Feedback);
         event.logentry = None;
         event.contexts.insert(
             "feedback".to_string(),
@@ -628,6 +638,7 @@ mod tests {
         assert_eq!(lines[2]["logentry"], json!({"formatted": "Hang: draw"}));
         assert_eq!(lines[2]["fingerprint"], json!(["late_frame", "draw"]));
         assert_eq!(lines[2].get("tags"), None);
+        assert_eq!(lines[2].get("type"), None);
     }
 
     #[test]
@@ -650,6 +661,7 @@ mod tests {
         assert_eq!(feedback_header["type"], json!("feedback"));
         let feedback: Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(feedback["event_id"], json!(event.event_id));
+        assert_eq!(feedback["type"], json!("feedback"));
         assert_eq!(feedback.get("logentry"), None);
         assert_eq!(
             feedback["contexts"]["feedback"]["message"]
