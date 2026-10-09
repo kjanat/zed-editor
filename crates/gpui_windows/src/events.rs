@@ -28,7 +28,7 @@ pub(crate) const WM_GPUI_FORCE_UPDATE_WINDOW: u32 = WM_USER + 5;
 pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
 pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
 pub(crate) const WM_GPUI_KEYDOWN: u32 = WM_USER + 8;
-pub(crate) const WM_GPUI_END_SESSION: u32 = WM_USER + 9;
+pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 
@@ -109,8 +109,6 @@ impl WindowsWindowInner {
             WM_PAINT => self.handle_paint_msg(handle),
             WM_CLOSE => self.handle_close_msg(),
             WM_DESTROY => self.handle_destroy_msg(handle),
-            WM_QUERYENDSESSION => Some(1),
-            WM_ENDSESSION => self.handle_end_session_msg(wparam),
             WM_MOUSEMOVE => self.handle_mouse_move_msg(handle, lparam, wparam),
             WM_MOUSELEAVE | WM_NCMOUSELEAVE => self.handle_mouse_leave_msg(),
             WM_NCMOUSEMOVE => self.handle_nc_mouse_move_msg(handle, lparam),
@@ -173,21 +171,7 @@ impl WindowsWindowInner {
         }
     }
 
-    fn handle_end_session_msg(&self, wparam: WPARAM) -> Option<isize> {
-        if wparam.0 != 0 {
-            unsafe {
-                SendMessageW(
-                    self.platform_window_handle,
-                    WM_GPUI_END_SESSION,
-                    Some(WPARAM(self.validation_number)),
-                    None,
-                );
-            }
-        }
-        Some(0)
-    }
-
-    fn handle_move_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+    fn handle_move_msg(self: &Rc<Self>, handle: HWND, lparam: LPARAM) -> Option<isize> {
         let origin = logical_point(
             lparam.signed_loword() as f32,
             lparam.signed_hiword() as f32,
@@ -209,7 +193,7 @@ impl WindowsWindowInner {
             // monitor is invalid, we do nothing.
             if !monitor.is_invalid() && self.state.display.get().handle != monitor {
                 // we will get the same monitor if we only have one
-                self.state.display.set(WindowsDisplay::new(
+                self.set_display(WindowsDisplay::new(
                     WindowsDisplay::display_id_for_monitor(monitor),
                 )?);
             }
@@ -949,15 +933,29 @@ impl WindowsWindowInner {
         Some(0)
     }
 
-    fn handle_display_change_msg(&self, handle: HWND) -> Option<isize> {
+    fn handle_display_change_msg(self: &Rc<Self>, handle: HWND) -> Option<isize> {
         let new_monitor = unsafe { MonitorFromWindow(handle, MONITOR_DEFAULTTONULL) };
         if new_monitor.is_invalid() {
             log::error!("No monitor detected!");
             return None;
         }
         let new_display = WindowsDisplay::new(WindowsDisplay::display_id_for_monitor(new_monitor))?;
-        self.state.display.set(new_display);
+        self.set_display(new_display);
         Some(0)
+    }
+
+    // `WM_DISPLAYCHANGE` broadcasts can arrive while GPUI is updating this window.
+    fn set_display(self: &Rc<Self>, display: WindowsDisplay) {
+        self.state.display.set(display);
+        let this = self.clone();
+        self.executor
+            .spawn(async move {
+                if let Some(mut callback) = this.state.callbacks.display_changed.take() {
+                    callback();
+                    this.state.callbacks.display_changed.set(Some(callback));
+                }
+            })
+            .detach();
     }
 
     fn handle_hit_test_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
@@ -1808,5 +1806,77 @@ fn notify_frame_changed(handle: HWND) {
                 | SWP_NOZORDER,
         )
         .log_err();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{HWND, WindowsPlatform, window_from_hwnd};
+    use gpui::{AppContext as _, Application, Empty, WindowOptions};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        time::Duration,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        PostQuitMessage, SendMessageW, WM_DISPLAYCHANGE,
+    };
+
+    #[test]
+    fn test_display_change_during_app_update_defers_display_callback() {
+        let platform = WindowsPlatform::new(false).unwrap();
+        let deliveries = Rc::new(RefCell::new(Vec::new()));
+        Application::with_platform(Rc::new(platform)).run({
+            let deliveries = deliveries.clone();
+            move |cx| {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(10))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+
+                let window = cx
+                    .open_window(
+                        WindowOptions {
+                            show: false,
+                            focus: false,
+                            ..WindowOptions::default()
+                        },
+                        |_, cx| cx.new(|_| Empty),
+                    )
+                    .unwrap();
+                let hwnd = window
+                    .update(cx, |_, window, _| {
+                        match HasWindowHandle::window_handle(&*window).unwrap().as_raw() {
+                            RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as _),
+                            raw => panic!("expected a Win32 window handle, got {raw:?}"),
+                        }
+                    })
+                    .unwrap();
+
+                let inner = window_from_hwnd(hwnd).unwrap();
+                let updating = Rc::new(Cell::new(true));
+                let mut gpui_callback = inner.state.callbacks.display_changed.take().unwrap();
+                inner.state.callbacks.display_changed.set(Some(Box::new({
+                    let updating = updating.clone();
+                    move || {
+                        deliveries.borrow_mut().push(updating.get());
+                        if !updating.get() {
+                            gpui_callback();
+                        }
+                        unsafe { PostQuitMessage(0) };
+                    }
+                })));
+
+                unsafe {
+                    SendMessageW(hwnd, WM_DISPLAYCHANGE, None, None);
+                }
+                updating.set(false);
+            }
+        });
+        assert_eq!(*deliveries.borrow(), vec![false]);
     }
 }
