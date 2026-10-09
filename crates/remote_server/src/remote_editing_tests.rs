@@ -2046,6 +2046,113 @@ async fn remote_code_action_resolve(
 }
 
 #[gpui::test]
+async fn test_remote_stopped_servers_reach_the_client_and_restart(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    fs.insert_tree(
+        path!("/code"),
+        json!({
+            "project1": {
+                ".git": {},
+                "src": {
+                    "lib.rs": "fn one() -> usize { 1 }"
+                }
+            },
+        }),
+    )
+    .await;
+
+    let (project, headless) = init_test(&fs, cx, server_cx).await;
+
+    cx.update_entity(&project, |project, _| {
+        project.languages().register_test_language(LanguageConfig {
+            name: "Rust".into(),
+            matcher: (LanguageMatcher {
+                path_suffixes: vec!["rs".into()],
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        });
+        project.languages().register_fake_lsp_adapter(
+            "Rust",
+            FakeLspAdapter {
+                name: "rust-analyzer",
+                ..FakeLspAdapter::default()
+            },
+        );
+    });
+    let mut fake_servers = server_cx.update(|cx| {
+        headless.read(cx).languages.register_fake_lsp_server(
+            LanguageServerName("rust-analyzer".into()),
+            lsp::ServerCapabilities::default(),
+            None,
+        )
+    });
+    cx.run_until_parked();
+
+    let worktree_id = project
+        .update(cx, |project, cx| {
+            project.languages().add(rust_lang());
+            project.find_or_create_worktree(path!("/code/project1"), true, cx)
+        })
+        .await
+        .unwrap()
+        .0
+        .read_with(cx, |worktree, _| worktree.id());
+    cx.run_until_parked();
+
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_buffer_with_lsp((worktree_id, rel_path("src/lib.rs")), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    fake_servers.next().await.unwrap();
+    cx.run_until_parked();
+
+    let server_name = LanguageServerName("rust-analyzer".into());
+    let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
+    let inactive = |cx: &TestAppContext| {
+        lsp_store.read_with(cx, |lsp_store, _| {
+            lsp_store
+                .inactive_language_servers()
+                .map(|(worktree_id, name, server)| {
+                    (worktree_id, name.clone(), server.state.clone())
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(inactive(cx), Vec::new());
+
+    lsp_store.update(cx, |lsp_store, cx| lsp_store.stop_all_language_servers(cx));
+    cx.run_until_parked();
+    server_cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(
+        inactive(cx),
+        [(
+            worktree_id,
+            server_name.clone(),
+            project::lsp_store::InactiveLanguageServerState::Stopped
+        )]
+    );
+
+    lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store.restart_all_language_servers(cx)
+    });
+    cx.run_until_parked();
+    fake_servers.next().await.unwrap();
+    cx.run_until_parked();
+    server_cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(inactive(cx), Vec::new());
+}
+
+#[gpui::test]
 async fn test_remote_code_lens_fetch_after_lsp_starts(
     cx: &mut TestAppContext,
     server_cx: &mut TestAppContext,

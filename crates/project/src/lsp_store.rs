@@ -734,6 +734,7 @@ impl LocalLspStore {
                                 }
                                 store.cleanup_lsp_data(server_id);
                                 store.language_server_statuses.remove(&server_id);
+                                cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
                                 cx.emit(LspStoreEvent::LanguageServerRemoved(server_id));
                             })
                             .log_err();
@@ -4737,6 +4738,7 @@ pub struct RemoteLspStore {
     upstream_client: Option<AnyProtoClient>,
     upstream_project_id: u64,
     runtime: RuntimeState,
+    inactive_language_servers: HashMap<(WorktreeId, LanguageServerName), InactiveLanguageServer>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -4980,6 +4982,7 @@ pub enum LspStoreEvent {
         most_recent_edit: clock::Lamport,
     },
     WorkspaceEditApplied(ProjectTransaction),
+    InactiveLanguageServersChanged,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -5121,6 +5124,7 @@ impl LspStore {
         client.add_entity_request_handler(Self::handle_cancel_language_server_work);
         client.add_entity_message_handler(Self::handle_start_language_server);
         client.add_entity_message_handler(Self::handle_update_language_server);
+        client.add_entity_message_handler(Self::handle_update_inactive_language_servers);
         client.add_entity_message_handler(Self::handle_language_server_log);
         client.add_entity_message_handler(Self::handle_update_diagnostic_summary);
         client.add_entity_request_handler(Self::handle_format_buffers);
@@ -5365,6 +5369,7 @@ impl LspStore {
                 upstream_client: Some(upstream_client),
                 upstream_project_id: project_id,
                 runtime: RuntimeState::default(),
+                inactive_language_servers: HashMap::default(),
             }),
             downstream_client: None,
             last_formatting_failure: None,
@@ -10689,13 +10694,21 @@ impl LspStore {
 
     fn remove_worktree(&mut self, id_to_remove: WorktreeId, cx: &mut Context<Self>) {
         self.diagnostic_summaries.remove(&id_to_remove);
-        if let Some(local) = self.as_local_mut() {
-            let to_remove = local.remove_worktree(id_to_remove, cx);
-            for server in to_remove {
-                self.language_server_statuses.remove(&server);
-                self.cleanup_lsp_data(server);
+        match &mut self.mode {
+            LspStoreMode::Local(local) => {
+                let to_remove = local.remove_worktree(id_to_remove, cx);
+                for server in to_remove {
+                    self.language_server_statuses.remove(&server);
+                    self.cleanup_lsp_data(server);
+                }
+            }
+            LspStoreMode::Remote(remote) => {
+                remote
+                    .inactive_language_servers
+                    .retain(|(worktree_id, _), _| *worktree_id != id_to_remove);
             }
         }
+        cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
     }
 
     fn invalidate_diagnostic_summaries_for_removed_entries(
@@ -12250,6 +12263,43 @@ impl LspStore {
         Ok(())
     }
 
+    async fn handle_update_inactive_language_servers(
+        lsp_store: Entity<Self>,
+        envelope: TypedEnvelope<proto::UpdateInactiveLanguageServers>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        lsp_store.update(&mut cx, |lsp_store, cx| {
+            let LspStoreMode::Remote(remote) = &mut lsp_store.mode else {
+                return;
+            };
+            remote.inactive_language_servers = envelope
+                .payload
+                .servers
+                .into_iter()
+                .map(|server| {
+                    (
+                        (
+                            WorktreeId::from_proto(server.worktree_id),
+                            LanguageServerName(server.name.into()),
+                        ),
+                        InactiveLanguageServer {
+                            server_id: LanguageServerId::from_proto(server.server_id),
+                            state: match server.error {
+                                Some(error) => InactiveLanguageServerState::Failed {
+                                    error: error.into(),
+                                },
+                                None => InactiveLanguageServerState::Stopped,
+                            },
+                        },
+                    )
+                })
+                .collect();
+            cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
+            cx.notify();
+        });
+        Ok(())
+    }
+
     async fn handle_update_language_server(
         lsp_store: Entity<Self>,
         envelope: TypedEnvelope<proto::UpdateLanguageServer>,
@@ -13208,6 +13258,12 @@ impl LspStore {
                 .await?;
             return Ok(proto::Ack {});
         }
+        if envelope.payload.all {
+            this.update(&mut cx, |lsp_store, cx| {
+                lsp_store.restart_all_language_servers(cx)
+            });
+            return Ok(proto::Ack {});
+        }
         this.update(&mut cx, |lsp_store, cx| {
             let buffers =
                 lsp_store.buffer_ids_to_buffers(envelope.payload.buffer_ids.into_iter(), cx);
@@ -13719,6 +13775,7 @@ impl LspStore {
                     state: InactiveLanguageServerState::Stopped,
                 },
             );
+            cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
         }
         // Remove this server ID from all entries in the given worktree.
         local
@@ -13880,9 +13937,29 @@ impl LspStore {
     }
 
     pub fn restart_all_language_servers(&mut self, cx: &mut Context<Self>) {
+        if let Some((client, project_id)) = self.upstream_client() {
+            if !self.runtime().starts_servers() {
+                return;
+            }
+            let request = client.request(proto::RestartLanguageServers {
+                project_id,
+                buffer_ids: self
+                    .buffer_store
+                    .read(cx)
+                    .buffers()
+                    .map(|buffer| buffer.read(cx).remote_id().to_proto())
+                    .collect(),
+                only_servers: Vec::new(),
+                all: true,
+                runtime_resumption: false,
+            });
+            cx.background_spawn(request).detach_and_log_err(cx);
+            return;
+        }
         if let Some(local) = self.as_local_mut() {
             local.all_language_servers_stopped = false;
             local.inactive_language_servers.clear();
+            cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
         }
         // `restart_language_servers_for_buffers` with empty selectors and `clear_stopped`
         // clears `stopped_language_servers` for us.
@@ -13909,12 +13986,67 @@ impl LspStore {
     pub fn inactive_language_servers(
         &self,
     ) -> impl Iterator<Item = (WorktreeId, &LanguageServerName, &InactiveLanguageServer)> {
-        self.as_local().into_iter().flat_map(|local| {
-            local
-                .inactive_language_servers
-                .iter()
-                .map(|((worktree_id, name), server)| (*worktree_id, name, server))
-        })
+        let servers = match &self.mode {
+            LspStoreMode::Local(local) => &local.inactive_language_servers,
+            LspStoreMode::Remote(remote) => &remote.inactive_language_servers,
+        };
+        servers
+            .iter()
+            .map(|((worktree_id, name), server)| (*worktree_id, name, server))
+    }
+
+    pub fn inactive_language_servers_message(
+        &self,
+        project_id: u64,
+    ) -> proto::UpdateInactiveLanguageServers {
+        proto::UpdateInactiveLanguageServers {
+            project_id,
+            servers: self
+                .inactive_language_servers()
+                .map(
+                    |(worktree_id, name, server)| proto::InactiveLanguageServer {
+                        worktree_id: worktree_id.to_proto(),
+                        name: name.to_string(),
+                        server_id: server.server_id.to_proto(),
+                        error: match &server.state {
+                            InactiveLanguageServerState::Failed { error } => {
+                                Some(error.to_string())
+                            }
+                            InactiveLanguageServerState::Stopped => None,
+                        },
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    pub fn inactive_language_server_status_updates(
+        &self,
+        project_id: u64,
+    ) -> Vec<proto::UpdateLanguageServer> {
+        self.inactive_language_servers()
+            .map(|(_, name, server)| {
+                let (binary, message) = match &server.state {
+                    InactiveLanguageServerState::Failed { error } => {
+                        (proto::ServerBinaryStatus::Failed, Some(error.to_string()))
+                    }
+                    InactiveLanguageServerState::Stopped => {
+                        (proto::ServerBinaryStatus::Stopped, None)
+                    }
+                };
+                proto::UpdateLanguageServer {
+                    project_id,
+                    language_server_id: server.server_id.to_proto(),
+                    server_name: Some(name.to_string()),
+                    variant: Some(proto::update_language_server::Variant::StatusUpdate(
+                        proto::StatusUpdate {
+                            message,
+                            status: Some(proto::status_update::Status::Binary(binary as i32)),
+                        },
+                    )),
+                }
+            })
+            .collect()
     }
 
     fn runtime(&self) -> &RuntimeState {
@@ -14733,9 +14865,13 @@ impl LspStore {
         if local.language_server_ids.get(&key).map(|state| state.id) != Some(server_id) {
             return;
         }
-        local
+        if local
             .inactive_language_servers
-            .remove(&(key.worktree_id, key.name.clone()));
+            .remove(&(key.worktree_id, key.name.clone()))
+            .is_some()
+        {
+            cx.emit(LspStoreEvent::InactiveLanguageServersChanged);
+        }
 
         // Update language_servers collection with Running variant of LanguageServerState
         // indicating that the server is up and running and ready

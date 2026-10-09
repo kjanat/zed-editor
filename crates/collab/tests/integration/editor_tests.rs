@@ -2301,6 +2301,92 @@ async fn test_language_server_statuses(cx_a: &mut TestAppContext, cx_b: &mut Tes
 }
 
 #[gpui::test]
+async fn test_joining_guest_sees_stopped_language_servers(
+    cx_a: &mut TestAppContext,
+    cx_b: &mut TestAppContext,
+) {
+    use project::lsp_store::{LspStore, LspStoreEvent};
+    use rpc::proto;
+    use std::{cell::RefCell, rc::Rc};
+
+    let mut server = TestServer::start(cx_a.executor()).await;
+    let executor = cx_a.executor();
+    let client_a = server.create_client(cx_a, "user_a").await;
+    let client_b = server.create_client(cx_b, "user_b").await;
+    server
+        .create_room(&mut [(&client_a, cx_a), (&client_b, cx_b)])
+        .await;
+    let active_call_a = cx_a.read(ActiveCall::global);
+
+    client_a.language_registry().add(rust_lang());
+    let mut fake_language_servers = client_a.language_registry().register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-language-server",
+            ..Default::default()
+        },
+    );
+    client_a
+        .fs()
+        .insert_tree(path!("/dir"), json!({ "main.rs": "const ONE: usize = 1;" }))
+        .await;
+    let (project_a, _) = client_a.build_local_project(path!("/dir"), cx_a).await;
+    let _buffer_a = project_a
+        .update(cx_a, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    fake_language_servers.next().await.unwrap();
+    executor.run_until_parked();
+
+    project_a.update(cx_a, |project, cx| {
+        project
+            .lsp_store()
+            .update(cx, |lsp_store, cx| lsp_store.stop_all_language_servers(cx))
+    });
+    executor.run_until_parked();
+
+    let project_id = active_call_a
+        .update(cx_a, |call, cx| call.share_project(project_a.clone(), cx))
+        .await
+        .unwrap();
+    executor.run_until_parked();
+
+    let binary_statuses = Rc::new(RefCell::new(Vec::new()));
+    let _observer = cx_b.update(|cx| {
+        let binary_statuses = binary_statuses.clone();
+        cx.observe_new(move |_: &mut LspStore, _, cx| {
+            let binary_statuses = binary_statuses.clone();
+            cx.subscribe_self(move |_, event: &LspStoreEvent, _| {
+                if let LspStoreEvent::LanguageServerUpdate {
+                    name: Some(name),
+                    message: proto::update_language_server::Variant::StatusUpdate(update),
+                    ..
+                } = event
+                    && let Some(proto::status_update::Status::Binary(binary)) = update.status
+                {
+                    binary_statuses
+                        .borrow_mut()
+                        .push((name.0.to_string(), binary));
+                }
+            })
+            .detach();
+        })
+    });
+    let _project_b = client_b.join_remote_project(project_id, cx_b).await;
+    executor.run_until_parked();
+
+    assert_eq!(
+        *binary_statuses.borrow(),
+        [(
+            "the-language-server".to_string(),
+            proto::ServerBinaryStatus::Stopped as i32
+        )]
+    );
+}
+
+#[gpui::test]
 async fn test_local_registration_for_new_available_server_from_remote(
     cx_a: &mut TestAppContext,
     cx_b: &mut TestAppContext,

@@ -185,7 +185,7 @@ struct LanguageServerBinaryStatus {
 #[derive(Debug, Clone)]
 struct ServerInfo {
     name: LanguageServerName,
-    id: LanguageServerId,
+    id: Option<LanguageServerId>,
     health: Option<ServerHealth>,
     binary_status: Option<LanguageServerBinaryStatus>,
     message: Option<SharedString>,
@@ -200,7 +200,10 @@ struct ServerMetadata {
 
 impl ServerInfo {
     fn server_selector(&self) -> LanguageServerSelector {
-        LanguageServerSelector::Id(self.id)
+        match self.id {
+            Some(id) => LanguageServerSelector::Id(id),
+            None => LanguageServerSelector::Name(self.name.clone()),
+        }
     }
 
     fn can_stop(&self) -> bool {
@@ -409,8 +412,9 @@ impl LanguageServerState {
                 server_version,
                 binary_display_path,
                 process_id,
-            } = server_metadata
-                .get(&server_info.id)
+            } = server_info
+                .id
+                .and_then(|id| server_metadata.get(&id))
                 .cloned()
                 .unwrap_or_default();
 
@@ -751,6 +755,23 @@ struct InactiveServerRow<W> {
     binary_status: LanguageServerBinaryStatus,
 }
 
+fn unplaced_inactive_statuses(
+    binary_statuses: &HashMap<LanguageServerName, LanguageServerBinaryStatus>,
+    is_placed: impl Fn(&LanguageServerName) -> bool,
+) -> Vec<(&LanguageServerName, &LanguageServerBinaryStatus)> {
+    let mut statuses = binary_statuses
+        .iter()
+        .filter(|(name, binary_status)| {
+            matches!(
+                binary_status.status,
+                BinaryStatus::Stopped | BinaryStatus::Failed { .. }
+            ) && !is_placed(name)
+        })
+        .collect::<Vec<_>>();
+    statuses.sort_by_key(|(name, _)| *name);
+    statuses
+}
+
 fn visible_inactive_rows<'a, W, K: Eq + std::hash::Hash>(
     rows: &'a [InactiveServerRow<W>],
     worktree_key: impl Fn(&W) -> K,
@@ -877,7 +898,7 @@ enum ServerData<'a> {
         binary_status: Option<&'a LanguageServerBinaryStatus>,
     },
     WithBinaryStatus {
-        server_id: LanguageServerId,
+        server_id: Option<LanguageServerId>,
         server_name: &'a LanguageServerName,
         binary_status: &'a LanguageServerBinaryStatus,
     },
@@ -891,7 +912,7 @@ enum LspMenuItem {
         binary_status: Option<LanguageServerBinaryStatus>,
     },
     WithBinaryStatus {
-        server_id: LanguageServerId,
+        server_id: Option<LanguageServerId>,
         server_name: LanguageServerName,
         binary_status: LanguageServerBinaryStatus,
     },
@@ -916,7 +937,7 @@ impl LspMenuItem {
                 ..
             } => Some(ServerInfo {
                 name: health.name.clone(),
-                id: *server_id,
+                id: Some(*server_id),
                 health: health.health(),
                 binary_status: binary_status.clone(),
                 message: health.message(),
@@ -1142,6 +1163,9 @@ impl LspButton {
                 });
                 updated = true;
             }
+            LspStoreEvent::InactiveLanguageServersChanged => {
+                updated = true;
+            }
             _ => {}
         };
 
@@ -1200,9 +1224,11 @@ impl LspButton {
                 }
             }
             let mut inactive_rows = Vec::new();
+            let mut is_remote = false;
             state
                 .lsp_store
                 .update(cx, |lsp_store, cx| {
+                    is_remote = lsp_store.as_remote().is_some();
                     for (server_id, status) in lsp_store.language_server_statuses() {
                         if let Some(worktree) = status.worktree.and_then(|worktree_id| {
                             lsp_store
@@ -1329,10 +1355,29 @@ impl LspButton {
                         .push(ServerData::WithBinaryStatus {
                             server_name,
                             binary_status,
-                            server_id: *server_id,
+                            server_id: Some(*server_id),
                         });
                 }
             }
+
+            let unplaced_servers = if is_remote {
+                unplaced_inactive_statuses(&state.language_servers.binary_statuses, |name| {
+                    servers_with_health_checks.contains(name)
+                        || inactive_names.contains(name)
+                        || server_names_to_worktrees.contains_key(name)
+                })
+            } else {
+                Vec::new()
+            }
+            .into_iter()
+            .map(
+                |(server_name, binary_status)| ServerData::WithBinaryStatus {
+                    server_name,
+                    binary_status,
+                    server_id: None,
+                },
+            )
+            .collect::<Vec<_>>();
 
             for (row, binary_status) in visible_inactive_rows(
                 &inactive_rows,
@@ -1346,7 +1391,7 @@ impl LspButton {
                     .push(ServerData::WithBinaryStatus {
                         server_name: &row.name,
                         binary_status,
-                        server_id: row.server_id,
+                        server_id: Some(row.server_id),
                     });
             }
 
@@ -1360,6 +1405,13 @@ impl LspButton {
                     separator: false,
                 });
                 new_lsp_items.extend(worktree_servers.into_iter().map(ServerData::into_lsp_item));
+            }
+            if !unplaced_servers.is_empty() {
+                new_lsp_items.push(LspMenuItem::Header {
+                    header: None,
+                    separator: !new_lsp_items.is_empty(),
+                });
+                new_lsp_items.extend(unplaced_servers.into_iter().map(ServerData::into_lsp_item));
             }
             // `can_restart_all` is true precisely when every server is stopped, which is also
             // when there is nothing left to list. Gating these buttons on a non-empty item list
@@ -1646,11 +1698,65 @@ mod tests {
     fn server_info(binary_status: LanguageServerBinaryStatus) -> ServerInfo {
         ServerInfo {
             name: server_name("oxfmt"),
-            id: server_id(1),
+            id: Some(server_id(1)),
             health: None,
             binary_status: Some(binary_status),
             message: None,
         }
+    }
+
+    #[test]
+    fn unplaced_inactive_servers_get_a_row() {
+        let binary_status = |status| LanguageServerBinaryStatus {
+            status,
+            message: None,
+        };
+        let binary_statuses = HashMap::from_iter([
+            (server_name("vtsls"), binary_status(BinaryStatus::Stopped)),
+            (
+                server_name("biome"),
+                binary_status(BinaryStatus::Failed {
+                    error: "no free keys".into(),
+                }),
+            ),
+            (server_name("deno"), binary_status(BinaryStatus::Stopped)),
+            (server_name("oxfmt"), binary_status(BinaryStatus::Starting)),
+            (server_name("taplo"), binary_status(BinaryStatus::None)),
+        ]);
+        let placed = server_name("deno");
+        let rows = unplaced_inactive_statuses(&binary_statuses, |name| *name == placed)
+            .into_iter()
+            .map(|(name, binary_status)| (name.0.to_string(), binary_status.status.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "biome".to_string(),
+                    BinaryStatus::Failed {
+                        error: "no free keys".into()
+                    }
+                ),
+                ("vtsls".to_string(), BinaryStatus::Stopped),
+            ]
+        );
+    }
+
+    #[test]
+    fn server_without_known_id_is_selected_by_name() {
+        let mut info = server_info(LanguageServerBinaryStatus {
+            status: BinaryStatus::Stopped,
+            message: None,
+        });
+        assert_eq!(
+            info.server_selector(),
+            LanguageServerSelector::Id(server_id(1))
+        );
+        info.id = None;
+        assert_eq!(
+            info.server_selector(),
+            LanguageServerSelector::Name(server_name("oxfmt"))
+        );
     }
 
     #[test]

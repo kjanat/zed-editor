@@ -4044,6 +4044,7 @@ impl Project {
             LspStoreEvent::WorkspaceEditApplied(transaction) => {
                 cx.emit(Event::WorkspaceEditApplied(transaction.clone()))
             }
+            LspStoreEvent::InactiveLanguageServersChanged => {}
         }
     }
 
@@ -5926,6 +5927,17 @@ impl Project {
                 buffer_store.forget_shared_buffers_for(&collaborator.peer_id);
             });
             this.breakpoint_store.read(cx).broadcast();
+            if this.is_local()
+                && let Some(project_id) = this.remote_id()
+            {
+                for update in this
+                    .lsp_store
+                    .read(cx)
+                    .inactive_language_server_status_updates(project_id)
+                {
+                    this.collab_client.send(update).log_err();
+                }
+            }
             cx.emit(Event::CollaboratorJoined(collaborator.peer_id));
             this.collaborators
                 .insert(collaborator.peer_id, collaborator);
