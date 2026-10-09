@@ -236,6 +236,7 @@ pub struct Project {
     client_state: ProjectClientState,
     git_store: Entity<GitStore>,
     collaborators: HashMap<proto::PeerId, Collaborator>,
+    removed_language_servers: HashSet<LanguageServerId>,
     client_subscriptions: Vec<client::Subscription>,
     worktree_store: Entity<WorktreeStore>,
     buffer_store: Entity<BufferStore>,
@@ -1395,6 +1396,7 @@ impl Project {
             Self {
                 buffer_ordered_messages_tx: tx,
                 collaborators: Default::default(),
+                removed_language_servers: HashSet::default(),
                 worktree_store,
                 buffer_store,
                 image_store,
@@ -1624,6 +1626,7 @@ impl Project {
             let this = Self {
                 buffer_ordered_messages_tx: tx,
                 collaborators: Default::default(),
+                removed_language_servers: HashSet::default(),
                 worktree_store,
                 buffer_store,
                 image_store,
@@ -1940,6 +1943,7 @@ impl Project {
                 context_server_store,
                 active_entry: None,
                 collaborators: Default::default(),
+                removed_language_servers: HashSet::default(),
                 join_project_response_message_id: response.message_id,
                 languages,
                 user_store: user_store.clone(),
@@ -3045,6 +3049,7 @@ impl Project {
         if let ProjectClientState::Shared { remote_id, .. } = self.client_state {
             self.client_state = ProjectClientState::Local;
             self.collaborators.clear();
+            self.removed_language_servers.clear();
             self.client_subscriptions.clear();
             self.worktree_store.update(cx, |store, cx| {
                 store.unshared(cx);
@@ -3871,6 +3876,9 @@ impl Project {
                 Event::SupplementaryLanguageServerAdded(*server_id, name.clone()),
             ),
             LspStoreEvent::LanguageServerRemoved(server_id) => {
+                if !self.is_via_collab() && self.remote_id().is_some() {
+                    self.removed_language_servers.insert(*server_id);
+                }
                 if self.is_local()
                     && let Some(project_id) = self.remote_id()
                 {
@@ -5930,10 +5938,22 @@ impl Project {
             if !this.is_via_collab()
                 && let Some(project_id) = this.remote_id()
             {
+                for server_id in &this.removed_language_servers {
+                    this.collab_client
+                        .send(proto::UpdateLanguageServer {
+                            project_id,
+                            server_name: None,
+                            language_server_id: server_id.to_proto(),
+                            variant: Some(proto::update_language_server::Variant::Removed(
+                                proto::ServerRemoved {},
+                            )),
+                        })
+                        .log_err();
+                }
                 for update in this
                     .lsp_store
                     .read(cx)
-                    .inactive_language_server_updates(project_id)
+                    .inactive_language_server_status_updates(project_id)
                 {
                     this.collab_client.send(update).log_err();
                 }

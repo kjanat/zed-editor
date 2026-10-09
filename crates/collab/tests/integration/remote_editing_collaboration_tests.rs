@@ -987,6 +987,7 @@ async fn test_ssh_shared_guests_follow_language_server_state(
     cx_a: &mut TestAppContext,
     cx_b: &mut TestAppContext,
     cx_c: &mut TestAppContext,
+    cx_d: &mut TestAppContext,
     server_cx: &mut TestAppContext,
 ) {
     use project::lsp_store::{LspStore, LspStoreEvent};
@@ -1003,8 +1004,14 @@ async fn test_ssh_shared_guests_follow_language_server_state(
     let client_a = server.create_client(cx_a, "user_a").await;
     let client_b = server.create_client(cx_b, "user_b").await;
     let client_c = server.create_client(cx_c, "user_c").await;
+    let client_d = server.create_client(cx_d, "user_d").await;
     server
-        .create_room(&mut [(&client_a, cx_a), (&client_b, cx_b), (&client_c, cx_c)])
+        .create_room(&mut [
+            (&client_a, cx_a),
+            (&client_b, cx_b),
+            (&client_c, cx_c),
+            (&client_d, cx_d),
+        ])
         .await;
 
     let (opts, server_ssh, _) = RemoteClient::fake_server(cx_a, server_cx);
@@ -1149,6 +1156,10 @@ async fn test_ssh_shared_guests_follow_language_server_state(
     );
     assert_eq!(running(&project_b, cx_b), ["the-language-server"]);
     assert_eq!(running(&project_c, cx_c), ["the-language-server"]);
+
+    let project_d = client_d.join_remote_project(project_id, cx_d).await;
+    executor.run_until_parked();
+    assert_eq!(running(&project_d, cx_d), ["the-language-server"]);
 }
 
 #[gpui::test]

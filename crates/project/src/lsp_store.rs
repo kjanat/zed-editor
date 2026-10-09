@@ -14076,23 +14076,13 @@ impl LspStore {
         }
     }
 
-    pub fn inactive_language_server_updates(
+    pub fn inactive_language_server_status_updates(
         &self,
         project_id: u64,
     ) -> Vec<proto::UpdateLanguageServer> {
         self.inactive_language_servers()
-            .flat_map(|(_, name, server)| {
-                [
-                    proto::UpdateLanguageServer {
-                        project_id,
-                        language_server_id: server.server_id.to_proto(),
-                        server_name: Some(name.to_string()),
-                        variant: Some(proto::update_language_server::Variant::Removed(
-                            proto::ServerRemoved {},
-                        )),
-                    },
-                    inactive_language_server_status_update(project_id, name, server),
-                ]
+            .map(|(_, name, server)| {
+                inactive_language_server_status_update(project_id, name, server)
             })
             .collect()
     }
