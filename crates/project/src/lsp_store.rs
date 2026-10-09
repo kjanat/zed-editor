@@ -14049,6 +14049,44 @@ impl LspStore {
             .collect()
     }
 
+    pub fn has_open_buffer_for_language_server(
+        &self,
+        worktree_id: Option<WorktreeId>,
+        name: &LanguageServerName,
+        cx: &App,
+    ) -> bool {
+        let buffer_store = self.buffer_store.read(cx);
+        let (buffers, adapter_known) = match &self.mode {
+            LspStoreMode::Local(local) => (
+                local
+                    .registered_buffers
+                    .iter()
+                    .filter(|(_, refcount)| **refcount > 0)
+                    .filter_map(|(buffer_id, _)| buffer_store.get(*buffer_id))
+                    .collect::<Vec<_>>(),
+                true,
+            ),
+            LspStoreMode::Remote(_) => (
+                buffer_store.buffers().collect(),
+                self.languages.adapter_for_name(name).is_some(),
+            ),
+        };
+        buffers.into_iter().any(|buffer| {
+            let buffer = buffer.read(cx);
+            let in_worktree = File::from_dyn(buffer.file()).is_some_and(|file| {
+                worktree_id.is_none_or(|worktree_id| file.worktree_id(cx) == worktree_id)
+            });
+            in_worktree
+                && (!adapter_known
+                    || buffer.language().is_some_and(|language| {
+                        self.languages
+                            .lsp_adapters(&language.name())
+                            .iter()
+                            .any(|adapter| adapter.name() == *name)
+                    }))
+        })
+    }
+
     fn runtime(&self) -> &RuntimeState {
         match &self.mode {
             LspStoreMode::Local(local) => &local.runtime,

@@ -2374,7 +2374,7 @@ async fn test_joining_guest_sees_stopped_language_servers(
             .detach();
         })
     });
-    let _project_b = client_b.join_remote_project(project_id, cx_b).await;
+    let project_b = client_b.join_remote_project(project_id, cx_b).await;
     executor.run_until_parked();
 
     assert_eq!(
@@ -2384,6 +2384,26 @@ async fn test_joining_guest_sees_stopped_language_servers(
             proto::ServerBinaryStatus::Stopped as i32
         )]
     );
+
+    let server_name = lsp::LanguageServerName::new_static("the-language-server");
+    let lsp_store_b = project_b.read_with(cx_b, |project, _| project.lsp_store());
+    let can_start = |cx: &TestAppContext| {
+        lsp_store_b.read_with(cx, |lsp_store, cx| {
+            lsp_store.has_open_buffer_for_language_server(None, &server_name, cx)
+        })
+    };
+    assert!(!can_start(cx_b));
+    let worktree_id = project_b.read_with(cx_b, |project, cx| {
+        project.worktrees(cx).next().unwrap().read(cx).id()
+    });
+    let _buffer_b = project_b
+        .update(cx_b, |project, cx| {
+            project.open_buffer((worktree_id, rel_path("main.rs")), cx)
+        })
+        .await
+        .unwrap();
+    executor.run_until_parked();
+    assert!(can_start(cx_b));
 }
 
 #[gpui::test]

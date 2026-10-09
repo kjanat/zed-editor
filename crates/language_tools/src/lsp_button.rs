@@ -189,6 +189,7 @@ struct ServerInfo {
     health: Option<ServerHealth>,
     binary_status: Option<LanguageServerBinaryStatus>,
     message: Option<SharedString>,
+    can_start: bool,
 }
 
 #[derive(Default, Clone)]
@@ -436,6 +437,7 @@ impl LanguageServerState {
                     let state = cx.entity().downgrade();
                     let can_stop = submenu_server_info.can_stop();
                     let restart_label = submenu_server_info.restart_label();
+                    let can_start = submenu_server_info.can_start;
                     let process_memory_cache = process_memory_cache.clone();
 
                     move |menu, _window, _cx| {
@@ -520,7 +522,9 @@ impl LanguageServerState {
                         let workspace_for_restart = workspace.clone();
                         let lsp_store_for_restart = lsp_store.clone();
                         let server_name_for_restart = submenu_server_name.clone();
-                        submenu = submenu.entry(restart_label, None, move |_window, cx| {
+                        let restart_entry =
+                            ContextMenuEntry::new(restart_label).disabled(!can_start);
+                        submenu = submenu.item(restart_entry.handler(move |_window, cx| {
                             let Some(workspace) = workspace_for_restart.upgrade() else {
                                 return;
                             };
@@ -602,7 +606,11 @@ impl LanguageServerState {
                                     );
                                 })
                                 .ok();
-                        });
+                        }));
+                        if !can_start {
+                            submenu =
+                                submenu.label("Open a file in one of its languages to start it");
+                        }
 
                         if can_stop {
                             let lsp_store_for_stop = lsp_store.clone();
@@ -753,6 +761,7 @@ struct InactiveServerRow<W> {
     name: LanguageServerName,
     server_id: LanguageServerId,
     binary_status: LanguageServerBinaryStatus,
+    can_start: bool,
 }
 
 fn unplaced_inactive_statuses(
@@ -901,6 +910,7 @@ enum ServerData<'a> {
         server_id: Option<LanguageServerId>,
         server_name: &'a LanguageServerName,
         binary_status: &'a LanguageServerBinaryStatus,
+        can_start: bool,
     },
 }
 
@@ -915,6 +925,7 @@ enum LspMenuItem {
         server_id: Option<LanguageServerId>,
         server_name: LanguageServerName,
         binary_status: LanguageServerBinaryStatus,
+        can_start: bool,
     },
     ToggleServersButton {
         restart: bool,
@@ -941,18 +952,20 @@ impl LspMenuItem {
                 health: health.health(),
                 binary_status: binary_status.clone(),
                 message: health.message(),
+                can_start: true,
             }),
             Self::WithBinaryStatus {
                 server_id,
                 server_name,
                 binary_status,
-                ..
+                can_start,
             } => Some(ServerInfo {
                 name: server_name.clone(),
                 id: *server_id,
                 health: None,
                 binary_status: Some(binary_status.clone()),
                 message: binary_status.message.clone(),
+                can_start: *can_start,
             }),
         }
     }
@@ -975,11 +988,12 @@ impl ServerData<'_> {
                 server_id,
                 server_name,
                 binary_status,
-                ..
+                can_start,
             } => LspMenuItem::WithBinaryStatus {
                 server_id,
                 server_name: server_name.clone(),
                 binary_status: binary_status.clone(),
+                can_start,
             },
         }
     }
@@ -1254,6 +1268,11 @@ impl LspButton {
                                 name: name.clone(),
                                 server_id: server.server_id,
                                 binary_status: binary_status_for_inactive(server),
+                                can_start: lsp_store.has_open_buffer_for_language_server(
+                                    Some(worktree_id),
+                                    name,
+                                    cx,
+                                ),
                             });
                         }
                     }
@@ -1356,6 +1375,7 @@ impl LspButton {
                             server_name,
                             binary_status,
                             server_id: Some(*server_id),
+                            can_start: true,
                         });
                 }
             }
@@ -1375,6 +1395,12 @@ impl LspButton {
                     server_name,
                     binary_status,
                     server_id: None,
+                    can_start: state
+                        .lsp_store
+                        .read_with(cx, |lsp_store, cx| {
+                            lsp_store.has_open_buffer_for_language_server(None, server_name, cx)
+                        })
+                        .unwrap_or(false),
                 },
             )
             .collect::<Vec<_>>();
@@ -1392,6 +1418,7 @@ impl LspButton {
                         server_name: &row.name,
                         binary_status,
                         server_id: Some(row.server_id),
+                        can_start: row.can_start,
                     });
             }
 
@@ -1702,6 +1729,7 @@ mod tests {
             health: None,
             binary_status: Some(binary_status),
             message: None,
+            can_start: true,
         }
     }
 
@@ -1777,18 +1805,21 @@ mod tests {
                 name: server_name("biome"),
                 server_id: server_id(1),
                 binary_status: stopped.clone(),
+                can_start: true,
             },
             InactiveServerRow {
                 worktree: "backend",
                 name: server_name("biome"),
                 server_id: server_id(2),
                 binary_status: stopped,
+                can_start: true,
             },
             InactiveServerRow {
                 worktree: "backend",
                 name: server_name("oxfmt"),
                 server_id: server_id(3),
                 binary_status: failed,
+                can_start: false,
             },
         ];
         let visible_rows = |running: &HashSet<(&'static str, LanguageServerName)>,

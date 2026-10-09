@@ -2140,6 +2140,9 @@ async fn test_remote_stopped_servers_reach_the_client_and_restart(
             project::lsp_store::InactiveLanguageServerState::Stopped
         )]
     );
+    assert!(lsp_store.read_with(cx, |lsp_store, cx| {
+        lsp_store.has_open_buffer_for_language_server(Some(worktree_id), &server_name, cx)
+    }));
 
     lsp_store.update(cx, |lsp_store, cx| {
         lsp_store.restart_all_language_servers(cx)

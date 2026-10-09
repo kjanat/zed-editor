@@ -16,7 +16,7 @@ use language::{
 use lsp::{LanguageServerId, LanguageServerName, LanguageServerSelector, Uri};
 use parking_lot::Mutex;
 use project::{
-    DiagnosticSummary, Event, Project,
+    DiagnosticSummary, Event, Project, WorktreeId,
     lsp_store::{
         log_store::{TestRpcLogHeaderState, TestRpcRequestTracker},
         *,
@@ -1483,6 +1483,90 @@ async fn test_starting_one_server_after_stop_all_leaves_the_others_stopped(
     json_servers.next().await.unwrap();
     cx.run_until_parked();
     assert!(first_servers.next().now_or_never().is_none());
+}
+
+#[gpui::test]
+async fn test_stopped_server_can_start_only_with_an_open_file_it_handles(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/runtime"),
+        json!({ "main.rs": "fn main() {}", "config.json": "{}" }),
+    )
+    .await;
+    let project = Project::test(fs, [path!("/runtime").as_ref()], cx).await;
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    languages.add(rust_lang());
+    languages.add(json_lang());
+    let _json_servers = languages.register_fake_lsp(
+        "JSON",
+        FakeLspAdapter {
+            name: "json-server",
+            ..Default::default()
+        },
+    );
+    let mut rust_servers = languages.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "rust-server",
+            ..Default::default()
+        },
+    );
+    let (rust_buffer, rust_handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/runtime/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    rust_servers.next().await.unwrap();
+    cx.run_until_parked();
+
+    let store = project.read_with(cx, |project, _| project.lsp_store());
+    let changes = Rc::new(Cell::new(0));
+    let _subscription = cx.update(|cx| {
+        let changes = changes.clone();
+        cx.subscribe(&store, move |_, event, _| {
+            if matches!(event, LspStoreEvent::InactiveLanguageServersChanged) {
+                changes.set(changes.get() + 1);
+            }
+        })
+    });
+    store.update(cx, |store, cx| store.stop_all_language_servers(cx));
+    cx.run_until_parked();
+    assert_eq!(changes.get(), 1);
+
+    let worktree_id =
+        rust_buffer.read_with(cx, |buffer, cx| buffer.file().unwrap().worktree_id(cx));
+    let rust_server = LanguageServerName::new_static("rust-server");
+    let json_server = LanguageServerName::new_static("json-server");
+    let can_start = |worktree_id, name: &LanguageServerName, cx: &TestAppContext| {
+        store.read_with(cx, |store, cx| {
+            store.has_open_buffer_for_language_server(worktree_id, name, cx)
+        })
+    };
+    assert!(can_start(Some(worktree_id), &rust_server, cx));
+    assert!(can_start(None, &rust_server, cx));
+    assert!(!can_start(
+        Some(WorktreeId::from_proto(999)),
+        &rust_server,
+        cx
+    ));
+    assert!(!can_start(Some(worktree_id), &json_server, cx));
+
+    let _json_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/runtime/config.json"), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!can_start(Some(worktree_id), &json_server, cx));
+
+    cx.update(|_| drop(rust_handle));
+    cx.run_until_parked();
+    assert!(!can_start(Some(worktree_id), &rust_server, cx));
 }
 
 #[gpui::test(iterations = 10)]
