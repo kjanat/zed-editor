@@ -18,6 +18,7 @@ use agent::{
 };
 use agent_settings::UserAgentsMd;
 use agent_skills::MAX_SKILL_DESCRIPTION_LEN;
+use client::sentry::{Attachment, SentryEvent, feedback_report};
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
 use sandbox::{SandboxFsPolicy, SandboxNetPolicy, SandboxPolicy};
@@ -57,6 +58,35 @@ use super::elicitation::{
 use super::*;
 
 const DATA_RETENTION_LEARN_MORE_URL: &str = "https://support.claude.com/en/articles/15425996-data-retention-practices-for-mythos-class-models";
+
+fn agent_thread_feedback_report(
+    body: &SubmitAgentThreadFeedbackBody,
+) -> anyhow::Result<(SentryEvent, Attachment)> {
+    let mut tags = vec![
+        ("feedback.kind", "agent_thread".to_string()),
+        ("agent", body.agent.clone()),
+        ("rating", body.rating.clone()),
+        ("session_id", body.session_id.clone()),
+    ];
+    if let Some(parent_session_id) = &body.parent_session_id {
+        tags.push(("parent_session_id", parent_session_id.clone()));
+    }
+    feedback_report(&format!("Agent thread rated {}", body.rating), tags, body)
+}
+
+fn agent_thread_comments_feedback_report(
+    body: &SubmitAgentThreadFeedbackCommentsBody,
+) -> anyhow::Result<(SentryEvent, Attachment)> {
+    feedback_report(
+        &body.comments,
+        [
+            ("feedback.kind", "agent_thread_comments".to_string()),
+            ("agent", body.agent.clone()),
+            ("session_id", body.session_id.clone()),
+        ],
+        body,
+    )
+}
 
 #[derive(Default)]
 struct ThreadFeedbackState {
@@ -104,20 +134,19 @@ impl ThreadFeedbackState {
         };
         cx.background_spawn(async move {
             let thread = task.await?;
-
-            client
-                .cloud_client()
-                .submit_agent_feedback(SubmitAgentThreadFeedbackBody {
+            let (event, attachment) =
+                agent_thread_feedback_report(&SubmitAgentThreadFeedbackBody {
                     organization_id: organization.map(|organization| organization.id.clone()),
                     agent: agent_telemetry_id.to_string(),
                     session_id: session_id.to_string(),
                     parent_session_id: parent_session_id.map(|id| id.to_string()),
                     rating: rating.to_string(),
                     thread,
-                })
-                .await?;
-
-            anyhow::Ok(())
+                })?;
+            client
+                .telemetry()
+                .submit_feedback(event, Some(attachment))
+                .await
         })
         .detach_and_log_err(cx);
     }
@@ -148,19 +177,18 @@ impl ThreadFeedbackState {
         let task = telemetry.thread_data(&session_id, cx);
         cx.background_spawn(async move {
             let thread = task.await?;
-
-            client
-                .cloud_client()
-                .submit_agent_feedback_comments(SubmitAgentThreadFeedbackCommentsBody {
+            let (event, attachment) =
+                agent_thread_comments_feedback_report(&SubmitAgentThreadFeedbackCommentsBody {
                     organization_id: organization.map(|organization| organization.id.clone()),
                     agent: agent_telemetry_id.to_string(),
                     session_id: session_id.to_string(),
                     comments,
                     thread,
-                })
-                .await?;
-
-            anyhow::Ok(())
+                })?;
+            client
+                .telemetry()
+                .submit_feedback(event, Some(attachment))
+                .await
         })
         .detach_and_log_err(cx);
     }
@@ -13746,6 +13774,69 @@ mod tests {
     use std::sync::Once;
     use util::path;
     use workspace::MultiWorkspace;
+
+    #[test]
+    fn test_agent_thread_feedback_report_goes_to_sentry_feedback() {
+        let (event, attachment) = agent_thread_feedback_report(&SubmitAgentThreadFeedbackBody {
+            organization_id: None,
+            agent: "zed".to_string(),
+            session_id: "session-1".to_string(),
+            parent_session_id: Some("parent-1".to_string()),
+            rating: "negative".to_string(),
+            thread: json!({"messages": ["hi"]}),
+        })
+        .unwrap();
+
+        assert_eq!(
+            event.contexts["feedback"],
+            json!({"message": "Agent thread rated negative"})
+        );
+        assert_eq!(
+            event.tags.get("feedback.kind").map(String::as_str),
+            Some("agent_thread")
+        );
+        assert_eq!(event.tags.get("agent").map(String::as_str), Some("zed"));
+        assert_eq!(
+            event.tags.get("rating").map(String::as_str),
+            Some("negative")
+        );
+        assert_eq!(
+            event.tags.get("session_id").map(String::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            event.tags.get("parent_session_id").map(String::as_str),
+            Some("parent-1")
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&attachment.data).unwrap();
+        assert_eq!(payload["thread"], json!({"messages": ["hi"]}));
+        assert_eq!(payload["rating"], json!("negative"));
+    }
+
+    #[test]
+    fn test_agent_thread_comments_feedback_report_carries_the_comments() {
+        let (event, attachment) =
+            agent_thread_comments_feedback_report(&SubmitAgentThreadFeedbackCommentsBody {
+                organization_id: None,
+                agent: "zed".to_string(),
+                session_id: "session-1".to_string(),
+                comments: "the edit broke my build".to_string(),
+                thread: json!({"messages": []}),
+            })
+            .unwrap();
+
+        assert_eq!(
+            event.contexts["feedback"],
+            json!({"message": "the edit broke my build"})
+        );
+        assert_eq!(
+            event.tags.get("feedback.kind").map(String::as_str),
+            Some("agent_thread_comments")
+        );
+        assert_eq!(event.tags.get("parent_session_id"), None);
+        let payload: serde_json::Value = serde_json::from_slice(&attachment.data).unwrap();
+        assert_eq!(payload["comments"], json!("the edit broke my build"));
+    }
 
     #[test]
     fn test_reported_activity_completion_status() {

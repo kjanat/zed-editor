@@ -2928,6 +2928,47 @@ fn sentry_log_records(envelope: &[u8]) -> Vec<(String, serde_json::Value)> {
 }
 
 #[test]
+fn edit_prediction_feedback_goes_to_sentry_feedback() {
+    let body = cloud_api_types::SubmitEditPredictionFeedbackBody {
+        organization_id: None,
+        request_id: "prediction-1".to_string(),
+        rating: "negative".to_string(),
+        inputs: json!({"events": []}),
+        output: Some("diff".to_string()),
+        expected_output: None,
+        feedback: "wrong indentation".to_string(),
+    };
+    let (event, attachment) = crate::edit_prediction_feedback_report(&body).unwrap();
+    assert_eq!(
+        event.contexts["feedback"],
+        json!({"message": "Edit prediction rated negative: wrong indentation"})
+    );
+    assert_eq!(
+        event.tags.get("feedback.kind").map(String::as_str),
+        Some("edit_prediction")
+    );
+    assert_eq!(
+        event.tags.get("request_id").map(String::as_str),
+        Some("prediction-1")
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&attachment.data).unwrap();
+    assert_eq!(payload["inputs"], json!({"events": []}));
+    assert_eq!(payload["output"], json!("diff"));
+
+    let (event, _) = crate::edit_prediction_feedback_report(
+        &cloud_api_types::SubmitEditPredictionFeedbackBody {
+            feedback: "  ".to_string(),
+            ..body
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        event.contexts["feedback"],
+        json!({"message": "Edit prediction rated negative"})
+    );
+}
+
+#[test]
 fn sentry_log_records_rebuild_each_payload() {
     let envelope = [
         json!({"event_id": "0"}),

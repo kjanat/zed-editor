@@ -1,6 +1,10 @@
 use anyhow::{Context as _, Result, anyhow};
 use buffer_diff::BufferDiff;
-use client::{Client, EditPredictionUsage, UserStore, global_llm_token, zed_urls};
+use client::{
+    Client, EditPredictionUsage, UserStore, global_llm_token,
+    sentry::{Attachment, SentryEvent, feedback_report},
+    zed_urls,
+};
 use cloud_api_client::LlmApiToken;
 use cloud_api_types::{
     EditPredictionRecentFile, EditPredictionSettledKeptChars,
@@ -3258,9 +3262,8 @@ impl EditPredictionStore {
                 .edit_preview
                 .as_unified_diff(prediction.snapshot.file(), &prediction.edits);
             async move {
-                client
-                    .cloud_client()
-                    .submit_edit_prediction_feedback(SubmitEditPredictionFeedbackBody {
+                let (event, attachment) =
+                    edit_prediction_feedback_report(&SubmitEditPredictionFeedbackBody {
                         organization_id: organization.map(|organization| organization.id.clone()),
                         request_id: prediction_id,
                         rating: match rating {
@@ -3271,16 +3274,36 @@ impl EditPredictionStore {
                         output,
                         expected_output,
                         feedback,
-                    })
-                    .await?;
-
-                anyhow::Ok(())
+                    })?;
+                client
+                    .telemetry()
+                    .submit_feedback(event, Some(attachment))
+                    .await
             }
         })
         .detach_and_log_err(cx);
 
         cx.notify();
     }
+}
+
+fn edit_prediction_feedback_report(
+    body: &SubmitEditPredictionFeedbackBody,
+) -> Result<(SentryEvent, Attachment)> {
+    let message = if body.feedback.trim().is_empty() {
+        format!("Edit prediction rated {}", body.rating)
+    } else {
+        format!("Edit prediction rated {}: {}", body.rating, body.feedback)
+    };
+    feedback_report(
+        &message,
+        [
+            ("feedback.kind", "edit_prediction".to_string()),
+            ("rating", body.rating.clone()),
+            ("request_id", body.request_id.clone()),
+        ],
+        body,
+    )
 }
 
 fn collaborator_edit_overlaps_locality_region(

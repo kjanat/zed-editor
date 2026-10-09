@@ -229,6 +229,24 @@ pub struct Attachment {
     pub data: Vec<u8>,
 }
 
+pub fn feedback_report(
+    message: &str,
+    tags: impl IntoIterator<Item = (&'static str, String)>,
+    payload: &impl Serialize,
+) -> Result<(SentryEvent, Attachment)> {
+    let mut event = SentryEvent::feedback(message);
+    event.tags.extend(
+        tags.into_iter()
+            .map(|(name, value)| (name.to_string(), value)),
+    );
+    let attachment = Attachment {
+        filename: "feedback.json".to_string(),
+        content_type: "application/json",
+        data: serde_json::to_vec(payload)?,
+    };
+    Ok((event, attachment))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Item {
     Event(SentryEvent),
@@ -652,6 +670,36 @@ mod tests {
             })
         );
         assert_eq!(lines[4], r#"{"thread":[]}"#);
+    }
+
+    #[test]
+    fn builds_feedback_reports_with_tags_and_payload() {
+        let (event, attachment) = feedback_report(
+            "Agent thread rated negative",
+            [
+                ("feedback.kind", "agent_thread".to_string()),
+                ("rating", "negative".to_string()),
+            ],
+            &json!({"thread": {"messages": []}}),
+        )
+        .unwrap();
+        assert_eq!(
+            event.contexts["feedback"],
+            json!({"message": "Agent thread rated negative"})
+        );
+        assert_eq!(
+            event.tags,
+            BTreeMap::from([
+                ("feedback.kind".to_string(), "agent_thread".to_string()),
+                ("rating".to_string(), "negative".to_string()),
+            ])
+        );
+        assert_eq!(attachment.filename, "feedback.json");
+        assert_eq!(attachment.content_type, "application/json");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&attachment.data).unwrap(),
+            json!({"thread": {"messages": []}})
+        );
     }
 
     #[test]
