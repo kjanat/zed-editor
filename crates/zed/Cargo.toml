@@ -233,6 +233,7 @@ ztracing.workspace                  = true
 activity_indicator          = { workspace = true, features = ["test-support"] }
 agent_ui                    = { workspace = true, features = ["test-support"] }
 call                        = { workspace = true, features = ["test-support"] }
+clock                       = { workspace = true, features = ["test-support"] }
 editor                      = { workspace = true, features = ["test-support"] }
 env_logger.workspace        = true
 fs                          = { workspace = true, features = ["test-support"] }

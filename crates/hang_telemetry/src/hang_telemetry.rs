@@ -98,7 +98,15 @@ pub struct HangTelemetry {
     startup: Instant,
     reporter: Reporter,
     send_event: Box<dyn Fn(FlexibleEvent) + Send>,
-    observe_incidents: Option<Box<dyn FnMut(&[SerializedHangIncident]) + Send>>,
+    observe_incidents: Option<Box<dyn FnMut(&[ObservedHangIncident]) + Send>>,
+}
+
+/// A serialized incident and the [`contributor_name`] of its longest
+/// contributor, the one behind `stall_ms`.
+#[derive(Debug, Clone)]
+pub struct ObservedHangIncident {
+    pub top_contributor: Option<String>,
+    pub incident: SerializedHangIncident,
 }
 
 impl HangTelemetry {
@@ -118,7 +126,7 @@ impl HangTelemetry {
     /// monitor thread, e.g. to attach recent hangs to feedback reports.
     pub fn with_incident_observer(
         mut self,
-        observer: impl FnMut(&[SerializedHangIncident]) + Send + 'static,
+        observer: impl FnMut(&[ObservedHangIncident]) + Send + 'static,
     ) -> Self {
         self.observe_incidents = Some(Box::new(observer));
         self
@@ -140,11 +148,24 @@ impl HangTelemetry {
         for incident in &poll.incidents {
             self.reporter.add_contributors(incident);
         }
+        let top_contributors: Vec<Option<String>> = poll
+            .incidents
+            .iter()
+            .map(|incident| incident.contributors.first().map(contributor_name))
+            .collect();
         let incidents = serialize_incidents(self.startup, poll);
         if !incidents.is_empty()
             && let Some(observe_incidents) = self.observe_incidents.as_mut()
         {
-            observe_incidents(&incidents);
+            let observed: Vec<ObservedHangIncident> = top_contributors
+                .into_iter()
+                .zip(&incidents)
+                .map(|(top_contributor, incident)| ObservedHangIncident {
+                    top_contributor,
+                    incident: incident.clone(),
+                })
+                .collect();
+            observe_incidents(&observed);
         }
         for incident in incidents {
             self.reporter.add(incident);
@@ -202,7 +223,7 @@ struct ContributorTotal {
 
 /// What a contributor was, without timing: the action's name, where the task
 /// was spawned, or the kind of input or frame work.
-fn contributor_name(event: &ForegroundEvent) -> String {
+pub fn contributor_name(event: &ForegroundEvent) -> String {
     match event {
         ForegroundEvent::TaskPoll(timing) => {
             format!("task:{}:{}", timing.location.file(), timing.location.line())
@@ -676,6 +697,75 @@ mod tests {
                 "measurement_version": 3
             })
         );
+    }
+
+    #[test]
+    fn observer_receives_each_incident_with_its_longest_contributor() {
+        use gpui::profiler::{ActionTiming, journal::InputTiming};
+        use std::sync::{Arc, Mutex};
+
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let longest = ForegroundEvent::Action(ActionTiming {
+            name: "editor::Paste",
+            start: at(20),
+            end: at(320),
+        });
+        let earlier = ForegroundEvent::Input(InputTiming {
+            kind: "key_down",
+            start: at(0),
+            end: at(150),
+            caused_invalidation: true,
+        });
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let mut telemetry = HangTelemetry::new(start, |_| {}).with_incident_observer({
+            let observed = observed.clone();
+            move |incidents: &[ObservedHangIncident]| {
+                observed.lock().unwrap().extend_from_slice(incidents);
+            }
+        });
+
+        telemetry.handle_poll(HangMonitorPoll {
+            incidents: vec![
+                incident_with_contributors(vec![longest, earlier]),
+                incident_with_contributors(Vec::new()),
+            ],
+            first_present_at: None,
+            active_time: Duration::ZERO,
+            reason: HangMonitorPollReason::Interval,
+        });
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(
+            observed[0].top_contributor.as_deref(),
+            Some("action:editor::Paste")
+        );
+        assert_eq!(observed[0].incident.stall_ms, 300.0);
+        assert_eq!(observed[1].top_contributor, None);
+    }
+
+    #[test]
+    fn observer_is_not_called_for_polls_without_incidents() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut telemetry = HangTelemetry::new(Instant::now(), |_| {}).with_incident_observer({
+            let calls = calls.clone();
+            move |_: &[ObservedHangIncident]| {
+                calls.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        telemetry.handle_poll(HangMonitorPoll {
+            incidents: Vec::new(),
+            first_present_at: None,
+            active_time: Duration::ZERO,
+            reason: HangMonitorPollReason::Interval,
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     fn incident_with_contributors(contributors: Vec<ForegroundEvent>) -> HangIncident {

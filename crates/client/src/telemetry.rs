@@ -693,6 +693,18 @@ impl Telemetry {
         self.send_envelope(envelope)
     }
 
+    pub fn report_diagnostic_event(self: &Arc<Self>, event: SentryEvent) {
+        if self.sentry_dsn.is_none() || !self.diagnostics_enabled() {
+            return;
+        }
+        let send = self.send_sentry_event(event);
+        self.executor
+            .spawn(async move {
+                send.await.log_err();
+            })
+            .detach();
+    }
+
     pub fn submit_feedback(
         self: &Arc<Self>,
         event: SentryEvent,
@@ -1398,6 +1410,35 @@ mod tests {
         assert_eq!(lines[2]["release"], serde_json::json!("0123abcd"));
         assert_eq!(lines[3]["type"], serde_json::json!("attachment"));
         assert_eq!(lines[4], serde_json::json!({}));
+    }
+
+    #[gpui::test]
+    async fn test_diagnostic_events_follow_the_diagnostics_setting(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+
+        telemetry.report_diagnostic_event(SentryEvent::new(sentry::EventLevel::Warning, "on"));
+        cx.run_until_parked();
+        assert_eq!(requests.lock().len(), 1);
+        assert_eq!(
+            requests.lock()[0].envelope_lines()[2]["logentry"]["formatted"],
+            serde_json::json!("on")
+        );
+
+        telemetry.state.lock().settings.diagnostics = false;
+        telemetry.report_diagnostic_event(SentryEvent::new(sentry::EventLevel::Warning, "off"));
+        cx.run_until_parked();
+        assert_eq!(requests.lock().len(), 1);
+    }
+
+    #[gpui::test]
+    async fn test_diagnostic_events_without_dsn_send_nothing(cx: &mut TestAppContext) {
+        let (http, requests) = sentry::recording_http_client();
+        let telemetry = started_telemetry(cx, http, None);
+
+        telemetry.report_diagnostic_event(SentryEvent::new(sentry::EventLevel::Warning, "event"));
+        cx.run_until_parked();
+        assert!(requests.lock().is_empty());
     }
 
     #[gpui::test]
