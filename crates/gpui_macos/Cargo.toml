@@ -22,12 +22,8 @@ collections.workspace              = true
 core-foundation.workspace          = true
 core-foundation-sys.workspace      = true
 core-graphics.workspace            = true
-core-text                          = { workspace = true, optional = true }
-core-video.workspace               = true
 ctor.workspace                     = true
 dispatch2                          = { workspace = true, features = ["block2", "objc2"] }
-# WARNING: If you change this, you must also publish a new version of zed-font-kit to crates.io
-font-kit                           = { workspace = true, features = ["source"], optional = true }
 foreign-types.workspace            = true
 futures.workspace                  = true
 gpui_apple.workspace               = true
@@ -40,11 +36,11 @@ objc2.workspace                    = true
 objc2-app-kit.workspace            = true
 objc2-core-graphics                = { workspace = true, optional = true }
 objc2-core-media                   = { workspace = true, optional = true }
+objc2-core-video                   = { workspace = true, features = ["CVHostTime"] }
 objc2-foundation.workspace         = true
 objc2-screen-capture-kit           = { workspace = true, optional = true }
 objc2-user-notifications.workspace = true
 parking_lot.workspace              = true
-pathfinder_geometry                = { workspace = true, optional = true }
 raw-window-handle.workspace        = true
 scheduler.workspace                = true
 semver.workspace                   = true
@@ -62,7 +58,7 @@ gpui_apple = { workspace = true, features = ["test-support"] }
 [features]
 default         = ["gpui/default"]
 bench-support   = ["gpui_apple/bench-support", "gpui/bench-support"]
-font-kit        = ["dep:core-text", "dep:font-kit", "dep:pathfinder_geometry"]
+font-kit        = ["gpui_apple/font-kit"]
 runtime_shaders = ["gpui_apple/runtime_shaders"]
 screen-capture  = ["dep:objc2-core-graphics", "dep:objc2-core-media", "dep:objc2-screen-capture-kit", "gpui/screen-capture"]
 test-support    = ["gpui_apple/test-support", "gpui/test-support"]
