@@ -11,7 +11,8 @@ use futures::{FutureExt, StreamExt};
 use gpui::{Entity, TestAppContext, UpdateGlobal as _};
 use language::{
     Buffer, Capability, CodeLabel, DiagnosticSourceKind, FakeLspAdapter, HighlightId, Language,
-    LanguageConfig, LanguageMatcher, LocalFile, json_lang, rust_lang,
+    LanguageConfig, LanguageMatcher, LocalFile, OffsetRangeExt as _, Point, PointUtf16, json_lang,
+    rust_lang,
 };
 use lsp::{LanguageServerId, LanguageServerName, LanguageServerSelector, Uri};
 use parking_lot::Mutex;
@@ -401,6 +402,246 @@ async fn test_open_buffer_via_lsp_loads_deno_virtual_documents(cx: &mut TestAppC
     project.read_with(cx, |project, cx| {
         assert_eq!(project.worktrees(cx).count(), 1);
     });
+}
+
+#[gpui::test]
+async fn test_deno_virtual_documents_are_opened_in_their_server(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "main.ts": "stat();" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(Arc::new(Language::new(
+        LanguageConfig {
+            name: "TypeScript".into(),
+            matcher: (LanguageMatcher {
+                path_suffixes: vec!["ts".into()],
+                ..LanguageMatcher::default()
+            })
+            .into(),
+            ..LanguageConfig::default()
+        },
+        None,
+    )));
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "TypeScript",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                ..lsp::ServerCapabilities::default()
+            },
+            ..FakeLspAdapter::default()
+        },
+    );
+
+    let (main_buffer, _main_handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/root/main.ts"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server = fake_servers.next().await.unwrap();
+    let main_opened = fake_server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(
+        main_opened.text_document.uri,
+        Uri::from_file_path(path!("/root/main.ts")).unwrap()
+    );
+
+    let adapter_uri: Uri = "deno:/https/jsr.io/%40kjanat/dreamcli/4.1.0/src/runtime/adapter.ts"
+        .parse()
+        .unwrap();
+    let lib_uri: Uri = "deno:/asset/lib.deno.ns.d.ts".parse().unwrap();
+    let script_uri: Uri = "deno:/asset/script.mjs".parse().unwrap();
+    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>({
+        let adapter_uri = adapter_uri.clone();
+        let lib_uri = lib_uri.clone();
+        let script_uri = script_uri.clone();
+        move |params, _| {
+            let uri = params.text_document.uri;
+            let text = if uri == adapter_uri {
+                Some("export function stat() {}\n".to_string())
+            } else if uri == lib_uri {
+                Some("declare namespace Deno {}\n".to_string())
+            } else if uri == script_uri {
+                Some("export {};\n".to_string())
+            } else {
+                None
+            };
+            async move { Ok(text) }
+        }
+    });
+    let server_id = project.read_with(cx, |project, cx| {
+        project
+            .lsp_store()
+            .read(cx)
+            .language_server_statuses()
+            .next()
+            .unwrap()
+            .0
+    });
+
+    let adapter = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(adapter_uri.clone(), server_id, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    let adapter_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&adapter, cx)
+    });
+    let adapter_opened = fake_server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(
+        adapter_opened.text_document,
+        lsp::TextDocumentItem::new(
+            adapter_uri.clone(),
+            "typescript".to_string(),
+            0,
+            "export function stat() {}\n".to_string(),
+        )
+    );
+
+    fake_server.set_request_handler::<lsp::request::HoverRequest, _, _>({
+        let adapter_uri = adapter_uri.clone();
+        move |params, _| {
+            assert_eq!(
+                params.text_document_position_params.text_document.uri,
+                adapter_uri
+            );
+            async move {
+                Ok(Some(lsp::Hover {
+                    contents: lsp::HoverContents::Scalar(lsp::MarkedString::String(
+                        "Returns file information".to_string(),
+                    )),
+                    range: None,
+                }))
+            }
+        }
+    });
+    let hovers = project
+        .update(cx, |project, cx| {
+            project.hover(&adapter, PointUtf16::new(0, 17), cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        hovers
+            .iter()
+            .flat_map(|hover| hover.contents.iter().map(|block| block.text.as_str()))
+            .collect::<Vec<_>>(),
+        ["Returns file information"]
+    );
+
+    fake_server.set_request_handler::<lsp::request::GotoDefinition, _, _>({
+        let adapter_uri = adapter_uri.clone();
+        let lib_uri = lib_uri.clone();
+        move |params, _| {
+            assert_eq!(
+                params.text_document_position_params.text_document.uri,
+                adapter_uri
+            );
+            let lib_uri = lib_uri.clone();
+            async move {
+                Ok(Some(lsp::GotoDefinitionResponse::Scalar(
+                    lsp::Location::new(
+                        lib_uri,
+                        lsp::Range::new(lsp::Position::new(0, 18), lsp::Position::new(0, 22)),
+                    ),
+                )))
+            }
+        }
+    });
+    let definitions = project
+        .update(cx, |project, cx| {
+            project.definitions(&adapter, PointUtf16::new(0, 17), cx)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(definitions.len(), 1);
+    let target = &definitions[0].target;
+    target.buffer.read_with(cx, |lib, cx| {
+        assert_eq!(lib.text(), "declare namespace Deno {}\n");
+        assert_eq!(
+            lib.file().unwrap().full_path(cx),
+            PathBuf::from("deno:/asset/lib.deno.ns.d.ts")
+        );
+        assert_eq!(
+            target.range.to_point(lib),
+            Point::new(0, 18)..Point::new(0, 22)
+        );
+    });
+
+    let script = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(script_uri.clone(), server_id, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    script.read_with(cx, |script, _| assert!(script.language().is_none()));
+    let _script_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&script, cx)
+    });
+    language_registry.add(Arc::new(Language::new(
+        LanguageConfig {
+            name: "JavaScript".into(),
+            matcher: (LanguageMatcher {
+                path_suffixes: vec!["mjs".into()],
+                ..LanguageMatcher::default()
+            })
+            .into(),
+            ..LanguageConfig::default()
+        },
+        None,
+    )));
+    let script_opened = fake_server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(
+        script_opened.text_document,
+        lsp::TextDocumentItem::new(
+            script_uri.clone(),
+            "javascript".to_string(),
+            0,
+            "export {};\n".to_string(),
+        )
+    );
+
+    project.update(cx, |project, cx| {
+        project.restart_language_servers_for_buffers(
+            vec![main_buffer.clone()],
+            HashSet::default(),
+            true,
+            cx,
+        )
+    });
+    let mut restarted_server = fake_servers.next().await.unwrap();
+    let mut reopened_uris = Vec::new();
+    while !reopened_uris.contains(&adapter_uri) {
+        reopened_uris.push(
+            restarted_server
+                .receive_notification::<lsp::notification::DidOpenTextDocument>()
+                .await
+                .text_document
+                .uri,
+        );
+    }
+
+    cx.update(|_| drop(adapter_handle));
+    let adapter_closed = restarted_server
+        .receive_notification::<lsp::notification::DidCloseTextDocument>()
+        .await;
+    assert_eq!(adapter_closed.text_document.uri, adapter_uri);
 }
 
 #[gpui::test]

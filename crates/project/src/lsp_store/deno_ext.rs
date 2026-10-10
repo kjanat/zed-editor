@@ -3,7 +3,7 @@ use std::{any::Any, path::PathBuf, sync::Arc};
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{App, Context, Entity, Task};
 use language::{Buffer, DiskState};
-use lsp::{LanguageServerId, Uri};
+use lsp::{LanguageServerId, LanguageServerName, Uri};
 use rpc::proto;
 use serde::{Deserialize, Serialize};
 use settings::Settings as _;
@@ -13,7 +13,10 @@ use util::{
 };
 use worktree::WorktreeId;
 
-use crate::{LspStore, ProjectSettings};
+use crate::{
+    LspStore, ProjectSettings,
+    lsp_store::{LanguageServerState, LocalLspStore, LspBufferSnapshot, LspStoreEvent},
+};
 
 pub const SCHEME: &str = "deno";
 
@@ -37,10 +40,11 @@ pub struct VirtualDocumentFile {
     path: Arc<RelPath>,
     full_path: PathBuf,
     worktree_id: WorktreeId,
+    server_name: LanguageServerName,
 }
 
 impl VirtualDocumentFile {
-    fn new(uri: Uri, worktree_id: WorktreeId) -> Result<Self> {
+    fn new(uri: Uri, worktree_id: WorktreeId, server_name: LanguageServerName) -> Result<Self> {
         let path = uri
             .to_file_path_ext(PathStyle::Unix)
             .map_err(|()| anyhow!("{uri} has no path"))?;
@@ -52,6 +56,7 @@ impl VirtualDocumentFile {
             path,
             full_path,
             worktree_id,
+            server_name,
         })
     }
 
@@ -132,9 +137,19 @@ impl LspStore {
             )));
         };
         let worktree_id = self
-            .language_server_statuses
-            .get(&language_server_id)
-            .and_then(|status| status.worktree)
+            .as_local()
+            .and_then(|local| {
+                local
+                    .language_server_ids
+                    .iter()
+                    .find(|(_, server)| server.id == language_server_id)
+                    .map(|(seed, _)| seed.worktree_id)
+            })
+            .or_else(|| {
+                self.language_server_statuses
+                    .get(&language_server_id)
+                    .and_then(|status| status.worktree)
+            })
             .or_else(|| {
                 self.worktree_store
                     .read(cx)
@@ -145,7 +160,7 @@ impl LspStore {
         let Some(worktree_id) = worktree_id else {
             return Task::ready(Err(anyhow!("no worktree to open {uri} in")));
         };
-        let file = match VirtualDocumentFile::new(uri.clone(), worktree_id) {
+        let file = match VirtualDocumentFile::new(uri.clone(), worktree_id, server.name()) {
             Ok(file) => file,
             Err(error) => return Task::ready(Err(error)),
         };
@@ -180,5 +195,80 @@ impl LspStore {
             VirtualDocumentFile::from_dyn(buffer.read(cx).file())
                 .is_some_and(|file| file.uri == *uri)
         })
+    }
+}
+
+impl LocalLspStore {
+    pub(super) fn virtual_document_server_ids(
+        &self,
+        file: &VirtualDocumentFile,
+    ) -> Vec<LanguageServerId> {
+        self.language_server_ids
+            .iter()
+            .filter(|(seed, _)| {
+                seed.worktree_id == file.worktree_id && seed.name == file.server_name
+            })
+            .map(|(_, server)| server.id)
+            .collect()
+    }
+
+    pub(super) fn register_virtual_document(
+        &mut self,
+        buffer_handle: &Entity<Buffer>,
+        cx: &mut Context<LspStore>,
+    ) {
+        let buffer = buffer_handle.read(cx);
+        let Some(file) = VirtualDocumentFile::from_dyn(buffer.file()) else {
+            return;
+        };
+        let Some(language_name) = buffer.language().map(|language| language.name()) else {
+            return;
+        };
+        let buffer_id = buffer.remote_id();
+        let uri = file.uri.clone();
+        let snapshot = buffer.text_snapshot();
+        for server_id in self.virtual_document_server_ids(file) {
+            let Some(LanguageServerState::Running {
+                server, adapter, ..
+            }) = self.language_servers.get(&server_id)
+            else {
+                continue;
+            };
+            let (server, adapter) = (server.clone(), adapter.clone());
+            let mut registered = false;
+            self.buffer_snapshots
+                .entry(buffer_id)
+                .or_default()
+                .entry(server_id)
+                .or_insert_with(|| {
+                    registered = true;
+                    server.register_buffer(
+                        uri.clone(),
+                        adapter.language_id(&language_name),
+                        0,
+                        snapshot.text_with_line_endings(),
+                    );
+                    vec![LspBufferSnapshot {
+                        version: 0,
+                        snapshot: snapshot.clone(),
+                    }]
+                });
+            self.buffers_opened_in_servers
+                .entry(buffer_id)
+                .or_default()
+                .insert(server_id);
+            if registered {
+                cx.emit(LspStoreEvent::LanguageServerUpdate {
+                    language_server_id: server_id,
+                    name: None,
+                    message: proto::update_language_server::Variant::RegisteredForBuffer(
+                        proto::RegisteredForBuffer {
+                            buffer_abs_path: uri.to_string(),
+                            buffer_id: buffer_id.to_proto(),
+                        },
+                    ),
+                });
+            }
+        }
     }
 }

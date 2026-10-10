@@ -27,6 +27,7 @@ mod semantic_tokens;
 pub mod vue_language_server_ext;
 
 use self::code_lens::CodeLensData;
+use self::deno_ext::VirtualDocumentFile;
 use self::document_colors::DocumentColorData;
 use self::document_links::DocumentLinksData;
 use self::document_symbols::DocumentSymbolsData;
@@ -1493,6 +1494,9 @@ impl LocalLspStore {
         buffer: &Buffer,
         cx: &mut App,
     ) -> Vec<LanguageServerId> {
+        if let Some(file) = VirtualDocumentFile::from_dyn(buffer.file()) {
+            return self.virtual_document_server_ids(file);
+        }
         if let Some((file, language)) = File::from_dyn(buffer.file()).zip(buffer.language()) {
             let worktree_id = file.worktree_id(cx);
 
@@ -3297,6 +3301,10 @@ impl LocalLspStore {
         cx: &mut Context<LspStore>,
     ) {
         if self.all_language_servers_stopped || !self.runtime.starts_servers() {
+            return;
+        }
+        if VirtualDocumentFile::from_dyn(buffer_handle.read(cx).file()).is_some() {
+            self.register_virtual_document(buffer_handle, cx);
             return;
         }
         let buffer = buffer_handle.read(cx);
@@ -5666,10 +5674,10 @@ impl LspStore {
             // When a new unnamed buffer is created and saved, we will start loading it's language. Once the language is loaded, we go over all "language-less" buffers and try to fit that new language
             // with them. However, we do that only for the buffers that we think are open in at least one editor; thus, we need to keep tab of unnamed buffers as well, even though they're not actually registered with any language
             // servers in practice (we don't support non-file URI schemes in our LSP impl).
-            let Some(file) = File::from_dyn(buffer.read(cx).file()) else {
-                return handle;
-            };
-            if !file.is_local() {
+            let file = buffer.read(cx).file();
+            if VirtualDocumentFile::from_dyn(file).is_none()
+                && !File::from_dyn(file).is_some_and(|file| file.is_local())
+            {
                 return handle;
             }
 
@@ -5695,6 +5703,11 @@ impl LspStore {
                         local.registered_buffers.remove(&buffer_id);
 
                         local.buffers_opened_in_servers.remove(&buffer_id);
+                        if let Some(uri) = VirtualDocumentFile::from_dyn(buffer.0.read(cx).file())
+                            .map(|file| file.uri().clone())
+                        {
+                            local.unregister_buffer_from_language_servers(&buffer.0, &uri, cx);
+                        }
                         if let Some(file) = File::from_dyn(buffer.0.read(cx).file()).cloned() {
                             local.unregister_old_buffer_from_language_servers(&buffer.0, &file, cx);
 
@@ -6016,6 +6029,12 @@ impl LspStore {
             Some(&new_language.name()),
             cx,
         );
+        if VirtualDocumentFile::from_dyn(buffer_file.as_ref()).is_some()
+            && let Some(local) = self.as_local_mut()
+            && local.registered_buffers.contains_key(&buffer_id)
+        {
+            local.register_buffer_with_language_servers(buffer_entity, HashSet::default(), cx);
+        }
         let buffer_file = File::from_dyn(buffer_file.as_ref());
 
         let worktree_id = if let Some(file) = buffer_file {
@@ -6638,14 +6657,12 @@ impl LspStore {
             }
         };
 
-        let file = File::from_dyn(buffer.read(cx).file()).and_then(File::as_local);
-
-        let Some(file) = file else {
+        let Some(uri) = lsp_document_uri(buffer.read(cx), cx) else {
             return Task::ready(Ok(Default::default()));
         };
 
         let lsp_params =
-            match request.to_lsp(&file.abs_path(cx), buffer.read(cx), &language_server, cx) {
+            match uri.and_then(|uri| request.to_lsp(&uri, buffer.read(cx), &language_server, cx)) {
                 Ok(lsp_params) => lsp_params,
                 Err(err) => {
                     let err = err.context(format!(
@@ -12534,10 +12551,8 @@ impl LspStore {
                                 .buffer_store()
                                 .read(cx)
                                 .get(buffer_id)
-                                .and_then(|buffer| {
-                                    Some(buffer.read(cx).file()?.as_local()?.abs_path(cx))
-                                })
-                                .map(|path| make_text_document_identifier(&path))
+                                .and_then(|buffer| lsp_document_uri(buffer.read(cx), cx))
+                                .map(|uri| uri.map(|uri| make_text_document_identifier(&uri)))
                         })
                         .transpose()?
                 } else {
@@ -15177,6 +15192,23 @@ impl LspStore {
             });
         }
 
+        let virtual_documents = self
+            .buffer_store
+            .read(cx)
+            .buffers()
+            .filter(|buffer| VirtualDocumentFile::from_dyn(buffer.read(cx).file()).is_some())
+            .collect::<Vec<_>>();
+        if let Some(local) = self.as_local_mut() {
+            for buffer in &virtual_documents {
+                if local
+                    .registered_buffers
+                    .contains_key(&buffer.read(cx).remote_id())
+                {
+                    local.register_virtual_document(buffer, cx);
+                }
+            }
+        }
+
         cx.notify();
     }
 
@@ -16365,10 +16397,11 @@ fn document_selector_context_for_buffer(
     adapter: &CachedLspAdapter,
 ) -> Option<DocumentSelectorContext> {
     let language = buffer.language()?;
-    Some(document_selector_context_for_language(
-        &language.name(),
-        adapter,
-    ))
+    let mut context = document_selector_context_for_language(&language.name(), adapter);
+    if VirtualDocumentFile::from_dyn(buffer.file()).is_some() {
+        context.scheme = deno_ext::SCHEME;
+    }
+    Some(context)
 }
 
 fn document_selector_context_for_language(

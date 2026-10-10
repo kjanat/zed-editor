@@ -1843,7 +1843,7 @@ async fn test_remote_definition_in_deno_virtual_document(
         json!({
             "project1": {
                 "src": {
-                    "lib.rs": "fn main() { stat(); }\n"
+                    "main.ts": "function main() { stat(); }\n"
                 }
             },
         }),
@@ -1857,11 +1857,11 @@ async fn test_remote_definition_in_deno_virtual_document(
         json!({
             "settings.json": r#"
           {
-            "languages": {"Rust":{"language_servers":["rust-analyzer"]}},
+            "languages": {"TypeScript":{"language_servers":["deno"]}},
             "lsp": {
-              "rust-analyzer": {
+              "deno": {
                 "binary": {
-                  "path": "~/.cargo/bin/rust-analyzer"
+                  "path": "~/.deno/bin/deno"
                 }
               }
             }
@@ -1872,21 +1872,22 @@ async fn test_remote_definition_in_deno_virtual_document(
 
     let capabilities = lsp::ServerCapabilities {
         definition_provider: Some(lsp::OneOf::Left(true)),
+        hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
         ..lsp::ServerCapabilities::default()
     };
     cx.update_entity(&project, |project, _| {
         project.languages().register_test_language(LanguageConfig {
-            name: "Rust".into(),
+            name: "TypeScript".into(),
             matcher: Arc::new(LanguageMatcher {
-                path_suffixes: vec!["rs".into()],
+                path_suffixes: vec!["ts".into()],
                 ..LanguageMatcher::default()
             }),
             ..LanguageConfig::default()
         });
         project.languages().register_fake_lsp_adapter(
-            "Rust",
+            "TypeScript",
             FakeLspAdapter {
-                name: "rust-analyzer",
+                name: "deno",
                 capabilities: capabilities.clone(),
                 ..FakeLspAdapter::default()
             },
@@ -1894,8 +1895,16 @@ async fn test_remote_definition_in_deno_virtual_document(
     });
 
     let mut fake_lsp = server_cx.update(|cx| {
+        headless.read(cx).languages.register_fake_lsp_adapter(
+            "TypeScript",
+            FakeLspAdapter {
+                name: "deno",
+                capabilities: capabilities.clone(),
+                ..FakeLspAdapter::default()
+            },
+        );
         headless.read(cx).languages.register_fake_lsp_server(
-            LanguageServerName("rust-analyzer".into()),
+            LanguageServerName("deno".into()),
             capabilities,
             None,
         )
@@ -1905,7 +1914,6 @@ async fn test_remote_definition_in_deno_virtual_document(
 
     let worktree_id = project
         .update(cx, |project, cx| {
-            project.languages().add(rust_lang());
             project.find_or_create_worktree(path!("/code/project1"), true, cx)
         })
         .await
@@ -1917,14 +1925,21 @@ async fn test_remote_definition_in_deno_virtual_document(
 
     let (buffer, _handle) = project
         .update(cx, |project, cx| {
-            project.open_buffer_with_lsp((worktree_id, rel_path("src/lib.rs")), cx)
+            project.open_buffer_with_lsp((worktree_id, rel_path("src/main.ts")), cx)
         })
         .await
         .unwrap();
 
     cx.run_until_parked();
 
-    let fake_lsp = fake_lsp.next().await.unwrap();
+    let mut fake_lsp = fake_lsp.next().await.unwrap();
+    let main_opened = fake_lsp
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(
+        main_opened.text_document.uri,
+        lsp::Uri::from_file_path(path!("/code/project1/src/main.ts")).unwrap()
+    );
     let adapter_uri: lsp::Uri =
         "deno:/https/jsr.io/%40kjanat/dreamcli/4.1.0/src/runtime/adapter.ts"
             .parse()
@@ -1948,7 +1963,7 @@ async fn test_remote_definition_in_deno_virtual_document(
     });
 
     let definitions = project
-        .update(cx, |project, cx| project.definitions(&buffer, 12, cx))
+        .update(cx, |project, cx| project.definitions(&buffer, 18, cx))
         .await
         .unwrap()
         .unwrap();
@@ -1968,6 +1983,45 @@ async fn test_remote_definition_in_deno_virtual_document(
     project.read_with(cx, |project, cx| {
         assert_eq!(project.worktrees(cx).count(), 1);
     });
+
+    let _target_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&target.buffer, cx)
+    });
+    let adapter_opened = fake_lsp
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    assert_eq!(adapter_opened.text_document.uri, adapter_uri);
+
+    fake_lsp.set_request_handler::<lsp::request::HoverRequest, _, _>({
+        let adapter_uri = adapter_uri.clone();
+        move |params, _| {
+            assert_eq!(
+                params.text_document_position_params.text_document.uri,
+                adapter_uri
+            );
+            async move {
+                Ok(Some(lsp::Hover {
+                    contents: lsp::HoverContents::Scalar(lsp::MarkedString::String(
+                        "Returns file information".to_string(),
+                    )),
+                    range: None,
+                }))
+            }
+        }
+    });
+    let hovers = project
+        .update(cx, |project, cx| {
+            project.hover(&target.buffer, PointUtf16::new(1, 17), cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        hovers
+            .iter()
+            .flat_map(|hover| hover.contents.iter().map(|block| block.text.as_str()))
+            .collect::<Vec<_>>(),
+        ["Returns file information"]
+    );
 }
 
 #[gpui::test]
