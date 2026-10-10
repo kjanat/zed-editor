@@ -536,7 +536,7 @@ impl LocalLspStore {
             return;
         }
         let language_name = language.name();
-        let uri = file.uri.clone();
+        let uri = file.uri;
         let mut registered = false;
         self.buffer_snapshots
             .entry(buffer_id)
