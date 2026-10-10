@@ -351,6 +351,7 @@ pub struct LocalLspStore {
     lsp_tree: LanguageServerTree,
     registered_buffers: HashMap<BufferId, usize>,
     buffers_opened_in_servers: HashMap<BufferId, HashSet<LanguageServerId>>,
+    virtual_document_refetches: HashMap<BufferId, LanguageServerId>,
     buffer_pull_diagnostics_result_ids: HashMap<
         LanguageServerId,
         HashMap<Option<SharedString>, HashMap<PathBuf, Option<SharedString>>>,
@@ -5309,6 +5310,7 @@ impl LspStore {
                 toolchain_store,
                 registered_buffers: HashMap::default(),
                 buffers_opened_in_servers: HashMap::default(),
+                virtual_document_refetches: HashMap::default(),
                 buffer_pull_diagnostics_result_ids: HashMap::default(),
                 workspace_pull_diagnostics_result_ids: HashMap::default(),
                 last_sent_workspace_configurations: HashMap::default(),
@@ -5711,6 +5713,7 @@ impl LspStore {
                         local.registered_buffers.remove(&buffer_id);
 
                         local.buffers_opened_in_servers.remove(&buffer_id);
+                        local.virtual_document_refetches.remove(&buffer_id);
                         if let Some(uri) = VirtualDocumentFile::from_dyn(buffer.0.read(cx).file())
                             .map(|file| file.uri().clone())
                         {

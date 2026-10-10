@@ -446,6 +446,11 @@ async fn test_deno_virtual_documents_are_opened_in_their_server(cx: &mut TestApp
         },
         None,
     )));
+    let adapter_uri: Uri = "deno:/https/jsr.io/%40kjanat/dreamcli/4.1.0/src/runtime/adapter.ts"
+        .parse()
+        .unwrap();
+    let lib_uri: Uri = "deno:/asset/lib.deno.ns.d.ts".parse().unwrap();
+    let script_uri: Uri = "deno:/asset/script.mjs".parse().unwrap();
     let mut fake_servers = language_registry.register_fake_lsp(
         "TypeScript",
         FakeLspAdapter {
@@ -454,6 +459,31 @@ async fn test_deno_virtual_documents_are_opened_in_their_server(cx: &mut TestApp
                 definition_provider: Some(lsp::OneOf::Left(true)),
                 ..lsp::ServerCapabilities::default()
             },
+            initializer: Some(Box::new({
+                let adapter_uri = adapter_uri.clone();
+                let lib_uri = lib_uri.clone();
+                let script_uri = script_uri.clone();
+                move |fake_server| {
+                    let adapter_uri = adapter_uri.clone();
+                    let lib_uri = lib_uri.clone();
+                    let script_uri = script_uri.clone();
+                    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(
+                        move |params, _| {
+                            let uri = params.text_document.uri;
+                            let text = if uri == adapter_uri {
+                                Some("export function stat() {}\n".to_string())
+                            } else if uri == lib_uri {
+                                Some("declare namespace Deno {}\n".to_string())
+                            } else if uri == script_uri {
+                                Some("export {};\n".to_string())
+                            } else {
+                                None
+                            };
+                            async move { Ok(text) }
+                        },
+                    );
+                }
+            })),
             ..FakeLspAdapter::default()
         },
     );
@@ -473,29 +503,6 @@ async fn test_deno_virtual_documents_are_opened_in_their_server(cx: &mut TestApp
         Uri::from_file_path(path!("/root/main.ts")).unwrap()
     );
 
-    let adapter_uri: Uri = "deno:/https/jsr.io/%40kjanat/dreamcli/4.1.0/src/runtime/adapter.ts"
-        .parse()
-        .unwrap();
-    let lib_uri: Uri = "deno:/asset/lib.deno.ns.d.ts".parse().unwrap();
-    let script_uri: Uri = "deno:/asset/script.mjs".parse().unwrap();
-    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>({
-        let adapter_uri = adapter_uri.clone();
-        let lib_uri = lib_uri.clone();
-        let script_uri = script_uri.clone();
-        move |params, _| {
-            let uri = params.text_document.uri;
-            let text = if uri == adapter_uri {
-                Some("export function stat() {}\n".to_string())
-            } else if uri == lib_uri {
-                Some("declare namespace Deno {}\n".to_string())
-            } else if uri == script_uri {
-                Some("export {};\n".to_string())
-            } else {
-                None
-            };
-            async move { Ok(text) }
-        }
-    });
     let server_id = project.read_with(cx, |project, cx| {
         project
             .lsp_store()
@@ -1023,8 +1030,20 @@ async fn test_deno_virtual_documents_keep_their_server_without_source_files(
         },
         None,
     )));
-    let mut fake_servers =
-        language_registry.register_fake_lsp("TypeScript", FakeLspAdapter::default());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "TypeScript",
+        FakeLspAdapter {
+            initializer: Some(Box::new(|fake_server| {
+                let server_id = fake_server.server.server_id();
+                fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(
+                    move |_, _| async move {
+                        Ok(Some(format!("declare const server: {};\n", server_id.0)))
+                    },
+                );
+            })),
+            ..FakeLspAdapter::default()
+        },
+    );
 
     let (_main_buffer, main_handle) = project
         .update(cx, |project, cx| {
@@ -1034,9 +1053,6 @@ async fn test_deno_virtual_documents_keep_their_server_without_source_files(
         .unwrap();
     let mut fake_server = fake_servers.next().await.unwrap();
     let server_id = fake_server.server.server_id();
-    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(|_, _| async move {
-        Ok(Some("declare namespace Deno {}\n".to_string()))
-    });
     cx.run_until_parked();
 
     let lib_uri: Uri = "deno:/asset/lib.deno.ns.d.ts".parse().unwrap();
@@ -1105,15 +1121,19 @@ async fn test_deno_virtual_documents_keep_their_server_without_source_files(
         cx,
     );
     let mut replacement = fake_servers.next().await.unwrap();
-    loop {
+    let replacement_id = replacement.server.server_id();
+    let replacement_text = format!("declare const server: {};\n", replacement_id.0);
+    let lib_opened = loop {
         let opened = replacement
             .receive_notification::<lsp::notification::DidOpenTextDocument>()
             .await;
         if opened.text_document.uri == lib_uri {
-            break;
+            break opened;
         }
-    }
-    assert_eq!(lib_servers(cx), [replacement.server.server_id()]);
+    };
+    assert_eq!(lib_opened.text_document.text, replacement_text);
+    assert_eq!(lib.read_with(cx, |lib, _| lib.text()), replacement_text);
+    assert_eq!(lib_servers(cx), [replacement_id]);
 }
 
 struct SharedRustServer {

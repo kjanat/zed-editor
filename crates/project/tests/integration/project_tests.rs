@@ -1798,6 +1798,13 @@ async fn test_deno_virtual_document_follows_the_replacement_of_its_server(
         "Python",
         FakeLspAdapter {
             name: "ty",
+            initializer: Some(Box::new(|fake_server| {
+                let server_id = fake_server.server.server_id();
+                fake_server
+                    .set_request_handler::<project::lsp_store::deno_ext::VirtualTextDocument, _, _>(
+                        move |_, _| async move { Ok(Some(format!("stub = {}\n", server_id.0))) },
+                    );
+            })),
             ..Default::default()
         },
     );
@@ -1870,9 +1877,6 @@ async fn test_deno_virtual_document_follows_the_replacement_of_its_server(
     assert_eq!(servers_for_a, [first_server.server.server_id()]);
 
     let stub_uri: Uri = "deno:/asset/stub.py".parse().unwrap();
-    first_server.set_request_handler::<project::lsp_store::deno_ext::VirtualTextDocument, _, _>(
-        |_, _| async move { Ok(Some("stub = 1\n".to_string())) },
-    );
     let stub = project
         .update(cx, |project, cx| {
             project.open_local_buffer_via_lsp(stub_uri.clone(), servers_for_a[0], cx)
@@ -1884,6 +1888,10 @@ async fn test_deno_virtual_document_follows_the_replacement_of_its_server(
     });
     cx.executor().run_until_parked();
     assert_eq!(servers_for(&stub, cx), servers_for_a);
+    assert_eq!(
+        stub.read_with(cx, |stub, _| stub.text()),
+        format!("stub = {}\n", servers_for_a[0].0)
+    );
 
     cx.update(|cx| {
         SettingsStore::update_global(cx, |settings, cx| {
@@ -1908,6 +1916,10 @@ async fn test_deno_virtual_document_follows_the_replacement_of_its_server(
     assert_eq!(replaced_servers_for_a.len(), 1);
     assert_ne!(replaced_servers_for_a, servers_for_a);
     assert_eq!(servers_for(&stub, cx), replaced_servers_for_a);
+    assert_eq!(
+        stub.read_with(cx, |stub, _| stub.text()),
+        format!("stub = {}\n", replaced_servers_for_a[0].0)
+    );
     for mut server in replacement_servers {
         let opened_stub = server.server.server_id() == replaced_servers_for_a[0];
         let mut opened_uris = Vec::new();

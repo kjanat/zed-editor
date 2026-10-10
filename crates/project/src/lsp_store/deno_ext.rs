@@ -3,7 +3,7 @@ use std::{any::Any, path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{App, Context, Entity, Task};
 use language::{Buffer, Diagnostic, DiagnosticSourceKind, DiskState, ToPointUtf16 as _, Unclipped};
-use lsp::{LanguageServerId, LanguageServerName, Uri};
+use lsp::{LanguageServer, LanguageServerId, LanguageServerName, Uri};
 use rpc::proto;
 use serde::{Deserialize, Serialize};
 use settings::Settings as _;
@@ -47,10 +47,16 @@ pub struct VirtualDocumentFile {
     full_path: PathBuf,
     worktree_id: WorktreeId,
     server: Option<LanguageServerSeed>,
+    text_server: Option<LanguageServerId>,
 }
 
 impl VirtualDocumentFile {
-    fn new(uri: Uri, worktree_id: WorktreeId, server: Option<LanguageServerSeed>) -> Result<Self> {
+    fn new(
+        uri: Uri,
+        worktree_id: WorktreeId,
+        server: Option<LanguageServerSeed>,
+        text_server: Option<LanguageServerId>,
+    ) -> Result<Self> {
         let path = uri
             .to_file_path_ext(PathStyle::Unix)
             .map_err(|()| anyhow!("{uri} has no path"))?;
@@ -63,6 +69,7 @@ impl VirtualDocumentFile {
             full_path,
             worktree_id,
             server,
+            text_server,
         })
     }
 
@@ -73,6 +80,7 @@ impl VirtualDocumentFile {
         Self::new(
             Uri::from_str(&virtual_document.uri)?,
             WorktreeId::from_proto(file.worktree_id),
+            None,
             None,
         )
     }
@@ -174,7 +182,12 @@ impl LspStore {
         let Some(worktree_id) = worktree_id else {
             return Task::ready(Err(anyhow!("no worktree to open {uri} in")));
         };
-        let file = match VirtualDocumentFile::new(uri.clone(), worktree_id, seed) {
+        let file = match VirtualDocumentFile::new(
+            uri.clone(),
+            worktree_id,
+            seed,
+            Some(language_server_id),
+        ) {
             Ok(file) => file,
             Err(error) => return Task::ready(Err(error)),
         };
@@ -335,6 +348,77 @@ impl LocalLspStore {
         }
     }
 
+    fn refetch_virtual_document(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        server: Arc<LanguageServer>,
+        cx: &mut Context<LspStore>,
+    ) {
+        let buffer_id = buffer.read(cx).remote_id();
+        let server_id = server.server_id();
+        if self.virtual_document_refetches.get(&buffer_id) == Some(&server_id) {
+            return;
+        }
+        let Some(uri) =
+            VirtualDocumentFile::from_dyn(buffer.read(cx).file()).map(|file| file.uri.clone())
+        else {
+            return;
+        };
+        self.virtual_document_refetches.insert(buffer_id, server_id);
+        let request_timeout = ProjectSettings::get_global(cx)
+            .global_lsp_settings
+            .get_request_timeout();
+        let buffer = buffer.downgrade();
+        cx.spawn(async move |lsp_store, cx| {
+            let text = server
+                .request::<VirtualTextDocument>(
+                    VirtualTextDocumentParams {
+                        text_document: lsp::TextDocumentIdentifier::new(uri.clone()),
+                    },
+                    request_timeout,
+                )
+                .await
+                .into_response()
+                .with_context(|| format!("{} failed to load {uri}", server.name()))
+                .and_then(|text| {
+                    text.with_context(|| format!("{} has no document for {uri}", server.name()))
+                });
+            lsp_store.update(cx, |lsp_store, cx| {
+                let Some(local) = lsp_store.as_local_mut() else {
+                    return Ok(());
+                };
+                if local.virtual_document_refetches.get(&buffer_id) == Some(&server_id) {
+                    local.virtual_document_refetches.remove(&buffer_id);
+                }
+                let text = text?;
+                let Some(buffer) = buffer.upgrade() else {
+                    return Ok(());
+                };
+                let Some(file) = VirtualDocumentFile::from_dyn(buffer.read(cx).file()) else {
+                    return Ok(());
+                };
+                let file = VirtualDocumentFile {
+                    text_server: Some(server_id),
+                    ..file.clone()
+                };
+                buffer.update(cx, |buffer, cx| {
+                    if buffer.text() != text {
+                        buffer.set_text(text, cx);
+                        if let Some(entry) = buffer.peek_undo_stack() {
+                            buffer.forget_transaction(entry.transaction_id());
+                        }
+                    }
+                    buffer.file_updated(Arc::new(file), cx);
+                });
+                if local.registered_buffers.contains_key(&buffer_id) {
+                    local.register_virtual_document(&buffer, cx);
+                }
+                anyhow::Ok(())
+            })?
+        })
+        .detach_and_log_err(cx);
+    }
+
     pub(super) fn register_virtual_document(
         &mut self,
         buffer_handle: &Entity<Buffer>,
@@ -356,6 +440,11 @@ impl LocalLspStore {
         else {
             return;
         };
+        if file.text_server != Some(server_id) {
+            let server = server.clone();
+            self.refetch_virtual_document(buffer_handle, server, cx);
+            return;
+        }
         let buffer_id = buffer.remote_id();
         let uri = file.uri.clone();
         let snapshot = buffer.text_snapshot();
