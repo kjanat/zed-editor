@@ -31,8 +31,8 @@ use gpui::{
 };
 use http_client::{BlockedHttpClient, FakeHttpClient};
 use language::{
-    Buffer, FakeLspAdapter, LanguageConfig, LanguageMatcher, LanguageRegistry, LineEnding,
-    OffsetRangeExt, Point, PointUtf16,
+    Buffer, Capability, FakeLspAdapter, LanguageConfig, LanguageMatcher, LanguageRegistry,
+    LineEnding, OffsetRangeExt, Point, PointUtf16,
     language_settings::{AllLanguageSettings, ConfiguredLanguageServer, LanguageSettings},
 };
 use lsp::{
@@ -1975,6 +1975,7 @@ async fn test_remote_definition_in_deno_virtual_document(
             "// adapter\nexport function stat() {}\n"
         );
         assert_eq!(target_buffer.file().unwrap().file_name(cx), "adapter.ts");
+        assert_eq!(target_buffer.capability(), Capability::ReadOnly);
         assert_eq!(
             target.range.to_point(target_buffer),
             Point::new(1, 16)..Point::new(1, 20)

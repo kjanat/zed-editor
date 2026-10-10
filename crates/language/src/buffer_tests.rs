@@ -69,6 +69,50 @@ fn test_line_endings(cx: &mut gpui::App) {
 }
 
 #[gpui::test]
+fn test_replica_takes_the_more_restrictive_capability(cx: &mut TestAppContext) {
+    for (host, guest, expected) in [
+        (
+            Capability::ReadWrite,
+            Capability::ReadWrite,
+            Capability::ReadWrite,
+        ),
+        (Capability::Read, Capability::ReadWrite, Capability::Read),
+        (
+            Capability::ReadOnly,
+            Capability::ReadWrite,
+            Capability::ReadOnly,
+        ),
+        (
+            Capability::ReadWrite,
+            Capability::ReadOnly,
+            Capability::ReadOnly,
+        ),
+        (Capability::Read, Capability::ReadOnly, Capability::ReadOnly),
+    ] {
+        let host_buffer = cx.new(|cx| {
+            let mut buffer = Buffer::local("text", cx);
+            buffer.set_capability(host, cx);
+            buffer
+        });
+        let replica = cx.new(|cx| {
+            Buffer::from_proto(
+                ReplicaId::new(1),
+                guest,
+                host_buffer.read(cx).to_proto(cx),
+                None,
+                cx,
+            )
+            .unwrap()
+        });
+        assert_eq!(
+            replica.read_with(cx, |replica, _| replica.capability()),
+            expected,
+            "host {host:?}, guest {guest:?}"
+        );
+    }
+}
+
+#[gpui::test]
 fn test_set_line_ending(cx: &mut TestAppContext) {
     let base = cx.new(|cx| Buffer::local("one\ntwo\nthree\n", cx));
     let base_replica = cx.new(|cx| {

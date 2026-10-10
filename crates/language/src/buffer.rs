@@ -1153,6 +1153,16 @@ impl Buffer {
         cx: &mut Context<Self>,
     ) -> Result<Self> {
         let buffer_id = BufferId::new(message.id).context("Could not deserialize buffer_id")?;
+        let host_capability = proto::deserialize_capability(
+            rpc::proto::BufferCapability::try_from(message.capability)
+                .ok()
+                .context("unknown buffer capability")?,
+        );
+        let capability = match (capability, host_capability) {
+            (Capability::ReadOnly, _) | (_, Capability::ReadOnly) => Capability::ReadOnly,
+            (Capability::Read, _) | (_, Capability::Read) => Capability::Read,
+            (Capability::ReadWrite, Capability::ReadWrite) => Capability::ReadWrite,
+        };
         let buffer = TextBuffer::new(replica_id, buffer_id, message.base_text);
         let mut this = Self::build(buffer, file, capability, cx);
         this.text.set_line_ending(proto::deserialize_line_ending(
@@ -1174,6 +1184,7 @@ impl Buffer {
             line_ending: proto::serialize_line_ending(self.line_ending()) as i32,
             saved_version: proto::serialize_version(&self.saved_version),
             saved_mtime: self.saved_mtime().map(|time| time.into()),
+            capability: proto::serialize_capability(self.capability) as i32,
         }
     }
 

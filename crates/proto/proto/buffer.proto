@@ -111,9 +111,16 @@ message BufferState {
   LineEnding line_ending = 5;
   repeated VectorClockEntry saved_version = 6;
   Timestamp saved_mtime = 8;
+  BufferCapability capability = 9;
 
   reserved 7;
   reserved 4;
+}
+
+enum BufferCapability {
+  ReadWrite = 0;
+  Read = 1;
+  ReadOnly = 2;
 }
 
 message BufferChunk {
