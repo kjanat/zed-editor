@@ -11,6 +11,7 @@
 //! Most of the interesting work happens at the local layer, as bulk of the complexity is with managing the lifecycle of language servers. The actual implementation of the LSP protocol is handled by [`lsp`] crate.
 pub mod clangd_ext;
 pub mod code_lens;
+pub mod deno_ext;
 mod document_colors;
 mod document_links;
 mod document_symbols;
@@ -11274,6 +11275,9 @@ impl LspStore {
         language_server_id: LanguageServerId,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Buffer>>> {
+        if abs_path.scheme() == deno_ext::SCHEME {
+            return self.open_deno_virtual_document(abs_path, language_server_id, cx);
+        }
         let path_style = self.worktree_store.read(cx).path_style();
         cx.spawn(async move |lsp_store, cx| {
             // Escape percent-encoded string.

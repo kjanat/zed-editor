@@ -2122,6 +2122,29 @@ impl BufferStore {
         buffer
     }
 
+    pub(crate) fn create_read_only_buffer(
+        &mut self,
+        mut contents: String,
+        file: Arc<dyn language::File>,
+        cx: &mut Context<Self>,
+    ) -> Entity<Buffer> {
+        let line_ending = LineEnding::detect(&contents);
+        LineEnding::normalize(&mut contents);
+        let buffer = cx.new(|cx| {
+            let text_buffer = text::Buffer::new_normalized(
+                ReplicaId::LOCAL,
+                BufferId::from(cx.entity_id().as_non_zero_u64()),
+                line_ending,
+                contents.into(),
+            );
+            Buffer::build(text_buffer, Some(file), Capability::ReadOnly, cx)
+        });
+        self.add_buffer(buffer.clone(), cx).log_err();
+        self.non_searchable_buffers
+            .insert(buffer.read(cx).remote_id());
+        buffer
+    }
+
     pub fn deserialize_project_transaction(
         &mut self,
         message: proto::ProjectTransaction,

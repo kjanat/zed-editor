@@ -50,8 +50,9 @@ use project::{
     agent_server_store::AgentServerCommand,
     buffer_store::BufferStoreEvent,
     image_store,
-    lsp_store::log_store::{
-        GlobalLogStore, LanguageServerKind, LanguageServerLogKey, LogKind, LogStore,
+    lsp_store::{
+        deno_ext,
+        log_store::{GlobalLogStore, LanguageServerKind, LanguageServerLogKey, LogKind, LogStore},
     },
     search::{SearchQuery, SearchResult},
 };
@@ -1828,6 +1829,144 @@ async fn test_remote_call_hierarchy(cx: &mut TestAppContext, server_cx: &mut Tes
             outgoing_calls[0].to.selection_range.to_point(item_buffer),
             Point::new(1, 3)..Point::new(1, 9)
         );
+    });
+}
+
+#[gpui::test]
+async fn test_remote_definition_in_deno_virtual_document(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    fs.insert_tree(
+        path!("/code"),
+        json!({
+            "project1": {
+                "src": {
+                    "lib.rs": "fn main() { stat(); }\n"
+                }
+            },
+        }),
+    )
+    .await;
+
+    let (project, headless) = init_test(&fs, cx, server_cx).await;
+
+    fs.insert_tree(
+        path!("/code/project1/.zed"),
+        json!({
+            "settings.json": r#"
+          {
+            "languages": {"Rust":{"language_servers":["rust-analyzer"]}},
+            "lsp": {
+              "rust-analyzer": {
+                "binary": {
+                  "path": "~/.cargo/bin/rust-analyzer"
+                }
+              }
+            }
+          }"#
+        }),
+    )
+    .await;
+
+    let capabilities = lsp::ServerCapabilities {
+        definition_provider: Some(lsp::OneOf::Left(true)),
+        ..lsp::ServerCapabilities::default()
+    };
+    cx.update_entity(&project, |project, _| {
+        project.languages().register_test_language(LanguageConfig {
+            name: "Rust".into(),
+            matcher: Arc::new(LanguageMatcher {
+                path_suffixes: vec!["rs".into()],
+                ..LanguageMatcher::default()
+            }),
+            ..LanguageConfig::default()
+        });
+        project.languages().register_fake_lsp_adapter(
+            "Rust",
+            FakeLspAdapter {
+                name: "rust-analyzer",
+                capabilities: capabilities.clone(),
+                ..FakeLspAdapter::default()
+            },
+        )
+    });
+
+    let mut fake_lsp = server_cx.update(|cx| {
+        headless.read(cx).languages.register_fake_lsp_server(
+            LanguageServerName("rust-analyzer".into()),
+            capabilities,
+            None,
+        )
+    });
+
+    cx.run_until_parked();
+
+    let worktree_id = project
+        .update(cx, |project, cx| {
+            project.languages().add(rust_lang());
+            project.find_or_create_worktree(path!("/code/project1"), true, cx)
+        })
+        .await
+        .unwrap()
+        .0
+        .read_with(cx, |worktree, _| worktree.id());
+
+    cx.run_until_parked();
+
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_buffer_with_lsp((worktree_id, rel_path("src/lib.rs")), cx)
+        })
+        .await
+        .unwrap();
+
+    cx.run_until_parked();
+
+    let fake_lsp = fake_lsp.next().await.unwrap();
+    let adapter_uri: lsp::Uri =
+        "deno:/https/jsr.io/%40kjanat/dreamcli/4.1.0/src/runtime/adapter.ts"
+            .parse()
+            .unwrap();
+    fake_lsp.set_request_handler::<lsp::request::GotoDefinition, _, _>({
+        let uri = adapter_uri.clone();
+        move |_, _| {
+            let uri = uri.clone();
+            async move {
+                Ok(Some(lsp::GotoDefinitionResponse::Scalar(
+                    lsp::Location::new(
+                        uri,
+                        lsp::Range::new(lsp::Position::new(1, 16), lsp::Position::new(1, 20)),
+                    ),
+                )))
+            }
+        }
+    });
+    fake_lsp.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(|_, _| async move {
+        Ok(Some("// adapter\nexport function stat() {}\n".to_string()))
+    });
+
+    let definitions = project
+        .update(cx, |project, cx| project.definitions(&buffer, 12, cx))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(definitions.len(), 1);
+    let target = &definitions[0].target;
+    target.buffer.read_with(cx, |target_buffer, cx| {
+        assert_eq!(
+            target_buffer.text(),
+            "// adapter\nexport function stat() {}\n"
+        );
+        assert_eq!(target_buffer.file().unwrap().file_name(cx), "adapter.ts");
+        assert_eq!(
+            target.range.to_point(target_buffer),
+            Point::new(1, 16)..Point::new(1, 20)
+        );
+    });
+    project.read_with(cx, |project, cx| {
+        assert_eq!(project.worktrees(cx).count(), 1);
     });
 }
 

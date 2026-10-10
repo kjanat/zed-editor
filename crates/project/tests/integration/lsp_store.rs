@@ -10,8 +10,8 @@ use fs::{FakeFs, Fs};
 use futures::{FutureExt, StreamExt};
 use gpui::{Entity, TestAppContext, UpdateGlobal as _};
 use language::{
-    Buffer, CodeLabel, DiagnosticSourceKind, FakeLspAdapter, HighlightId, LocalFile, json_lang,
-    rust_lang,
+    Buffer, Capability, CodeLabel, DiagnosticSourceKind, FakeLspAdapter, HighlightId, Language,
+    LanguageConfig, LanguageMatcher, LocalFile, json_lang, rust_lang,
 };
 use lsp::{LanguageServerId, LanguageServerName, LanguageServerSelector, Uri};
 use parking_lot::Mutex;
@@ -287,6 +287,119 @@ async fn test_open_buffer_via_lsp_case_variant_no_duplicate(cx: &mut TestAppCont
             .map(|entry| entry.path.as_unix_str().to_string())
             .collect();
         assert_eq!(entries, vec!["", "src", "src/main.rs"]);
+    });
+}
+
+#[gpui::test]
+async fn test_open_buffer_via_lsp_loads_deno_virtual_documents(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "main.ts": "stat();" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(Arc::new(Language::new(
+        LanguageConfig {
+            name: "TypeScript".into(),
+            matcher: (LanguageMatcher {
+                path_suffixes: vec!["ts".into()],
+                ..LanguageMatcher::default()
+            })
+            .into(),
+            ..LanguageConfig::default()
+        },
+        None,
+    )));
+    let mut fake_servers =
+        language_registry.register_fake_lsp("TypeScript", FakeLspAdapter::default());
+
+    project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/root/main.ts"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.run_until_parked();
+
+    let adapter_uri: Uri = "deno:/https/jsr.io/%40kjanat/dreamcli/4.1.0/src/runtime/adapter.ts"
+        .parse()
+        .unwrap();
+    let requested_uris = Arc::new(Mutex::new(Vec::new()));
+    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>({
+        let requested_uris = requested_uris.clone();
+        let adapter_uri = adapter_uri.clone();
+        move |params, _| {
+            requested_uris.lock().push(params.text_document.uri.clone());
+            let text = (params.text_document.uri == adapter_uri)
+                .then(|| "export function stat() {}\r\n".to_string());
+            async move { Ok(text) }
+        }
+    });
+    let server_id = project.read_with(cx, |project, cx| {
+        project
+            .lsp_store()
+            .read(cx)
+            .language_server_statuses()
+            .next()
+            .unwrap()
+            .0
+    });
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(adapter_uri.clone(), server_id, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    buffer.read_with(cx, |buffer, cx| {
+        assert_eq!(buffer.text(), "export function stat() {}\n");
+        assert_eq!(buffer.capability(), Capability::ReadOnly);
+        assert_eq!(
+            buffer.language().map(|language| language.name()),
+            Some("TypeScript".into())
+        );
+        let file = buffer.file().unwrap();
+        assert_eq!(file.file_name(cx), "adapter.ts");
+        assert_eq!(
+            file.full_path(cx),
+            PathBuf::from("deno:/https/jsr.io/@kjanat/dreamcli/4.1.0/src/runtime/adapter.ts")
+        );
+        assert_eq!(
+            deno_ext::VirtualDocumentFile::from_dyn(buffer.file()).map(|file| file.uri()),
+            Some(&adapter_uri)
+        );
+    });
+    project.read_with(cx, |project, cx| {
+        assert_eq!(project.worktrees(cx).count(), 1);
+    });
+
+    let reopened = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(adapter_uri.clone(), server_id, cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(reopened, buffer);
+    assert_eq!(*requested_uris.lock(), vec![adapter_uri.clone()]);
+
+    let missing_uri: Uri = "deno:/asset/missing.d.ts".parse().unwrap();
+    let error = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(missing_uri.clone(), server_id, cx)
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("has no document for deno:/asset/missing.d.ts"),
+        "unexpected error: {error:#}"
+    );
+    project.read_with(cx, |project, cx| {
+        assert_eq!(project.worktrees(cx).count(), 1);
     });
 }
 
