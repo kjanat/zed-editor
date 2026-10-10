@@ -551,8 +551,8 @@ mod tests {
     #[test]
     fn package_manager_prompt_only_offers_a_command_for_an_update() {
         let installed = Version::new(1, 3, 7);
-        let explanation = "Zed was installed via pacman.";
-        let command = Some("pacman -Syu");
+        let explanation = "Zed was installed via pacman as zed-kjanat.";
+        let command = Some("sudo pacman -Syu zed-kjanat");
         assert_eq!(
             package_manager_prompt_detail(
                 &PackageManagerCheck::UpToDate {
@@ -581,13 +581,13 @@ mod tests {
         assert_eq!(
             package_manager_prompt_detail(&outcome, explanation, command).as_deref(),
             Some(
-                "You are running 1.3.7.\n\nZed was installed via pacman.\n\nTo update, run:\n\n```sh\npacman -Syu\n```\n"
+                "You are running 1.3.7.\n\nZed was installed via pacman as zed-kjanat.\n\nTo update, run:\n\n```sh\nsudo pacman -Syu zed-kjanat\n```\n"
             )
         );
         for command in [None, Some("   ")] {
             assert_eq!(
                 package_manager_prompt_detail(&outcome, explanation, command).as_deref(),
-                Some("You are running 1.3.7.\n\nZed was installed via pacman.")
+                Some("You are running 1.3.7.\n\nZed was installed via pacman as zed-kjanat.")
             );
         }
     }

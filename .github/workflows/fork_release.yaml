@@ -354,7 +354,7 @@ jobs:
         with: { persist-credentials: false }
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - name: Install Arch packaging tools
-        run: mise bootstrap packages apply --yes
+        run: mise bootstrap packages apply --update --yes
       - name: Download the Linux tarballs
         run: gh release download "${tag}" --pattern zed-linux-x86_64.tar.gz --pattern zed-linux-aarch64.tar.gz
       - name: Build the packages
@@ -410,19 +410,12 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     cancel-timeout-minutes: 1
-    permissions: { contents: write }
-    environment: *ReleaseSecrets
+    permissions: { actions: write, contents: write }
     env: { GH_REPO: *REPO, GH_TOKEN: *TOKEN, tag: *TAG }
     steps:
-      - *checkout
-      - name: Create the Sentry release
-        uses: getsentry/action-release@6fb9aeade7061441cf3864e34fbe11a1457ad7dc # v3.7.1
-        env:
-          SENTRY_AUTH_TOKEN: *SENTRY_TOKEN
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-        with: { release: "${{ github.sha }}", set_commits: auto }
       - name: Take the release out of draft
         run: gh release edit "${tag}" --draft=false
+      - name: Create the Sentry release
+        run: gh workflow run fork_release_published.yaml -f tag="${tag}"
       - name: Show release
         run: gh release view "${tag}"

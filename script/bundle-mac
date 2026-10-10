@@ -324,7 +324,17 @@ function sign_app_binaries() {
         ln -s /Applications ${dmg_source_directory}
 
         echo "Creating final DMG at ${dmg_file_path} using ${dmg_source_directory}"
-        hdiutil create -volname Zed -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"
+        for attempt in 1 2 3 4 5; do
+            if hdiutil create -volname Zed -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"; then
+                break
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+                echo "hdiutil create failed ${attempt} times"
+                exit 1
+            fi
+            echo "hdiutil create failed, retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+        done
 
         # If someone runs this bundle script locally, a symlink will be placed in `dmg_source_directory`.
         # This symlink causes CPU issues with Zed if the Zed codebase is the project being worked on, so we simply remove it for now.
