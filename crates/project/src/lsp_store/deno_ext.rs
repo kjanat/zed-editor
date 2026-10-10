@@ -287,11 +287,18 @@ impl LocalLspStore {
         &self,
         file: &VirtualDocumentFile,
     ) -> Vec<LanguageServerId> {
-        file.server
-            .as_ref()
-            .and_then(|seed| self.language_server_ids.get(seed))
-            .map(|server| server.id)
-            .into_iter()
+        let Some(seed) = file.server.as_ref() else {
+            return Vec::new();
+        };
+        if let Some(server) = self.language_server_ids.get(seed) {
+            return vec![server.id];
+        }
+        self.language_server_ids
+            .iter()
+            .filter(|(candidate, _)| {
+                candidate.worktree_id == seed.worktree_id && candidate.name == seed.name
+            })
+            .map(|(_, server)| server.id)
             .collect()
     }
 

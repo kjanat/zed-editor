@@ -697,8 +697,31 @@ async fn test_deno_virtual_documents_are_opened_in_their_server(cx: &mut TestApp
     };
     assert_eq!(retyped_opened.text_document.language_id, "javascript");
 
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.project.lsp.0.insert(
+                    "the-fake-language-server".into(),
+                    settings::LspSettings {
+                        initialization_options: Some(json!({ "reconfigured": true })),
+                        ..Default::default()
+                    },
+                );
+            });
+        })
+    });
+    let mut reconfigured_server = fake_servers.next().await.unwrap();
+    loop {
+        let opened = reconfigured_server
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await;
+        if opened.text_document.uri == adapter_uri {
+            break;
+        }
+    }
+
     cx.update(|_| drop(adapter_handle));
-    let adapter_closed = restarted_server
+    let adapter_closed = reconfigured_server
         .receive_notification::<lsp::notification::DidCloseTextDocument>()
         .await;
     assert_eq!(adapter_closed.text_document.uri, adapter_uri);
