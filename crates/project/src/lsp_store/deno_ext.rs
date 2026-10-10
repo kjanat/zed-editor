@@ -3,7 +3,7 @@ use std::{any::Any, path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{App, Context, Entity, Task};
 use language::{Buffer, Diagnostic, DiagnosticSourceKind, DiskState, ToPointUtf16 as _, Unclipped};
-use lsp::{LanguageServerId, Uri};
+use lsp::{LanguageServerId, LanguageServerName, Uri};
 use rpc::proto;
 use serde::{Deserialize, Serialize};
 use settings::Settings as _;
@@ -15,7 +15,7 @@ use util::{
 use worktree::WorktreeId;
 
 use crate::{
-    LspStore, ProjectSettings,
+    LspStore, ProjectPath, ProjectSettings,
     buffer_store::BufferStore,
     lsp_store::{
         DocumentDiagnosticsUpdate, LanguageServerSeed, LanguageServerState, LocalLspStore,
@@ -286,6 +286,24 @@ impl LocalLspStore {
         file: &VirtualDocumentFile,
     ) -> Option<LanguageServerId> {
         Some(self.language_server_ids.get(file.server.as_ref()?)?.id)
+    }
+
+    pub(super) fn virtual_document_roots(
+        &self,
+        file: &VirtualDocumentFile,
+    ) -> Option<(LanguageServerName, Vec<ProjectPath>)> {
+        let seed = file.server.as_ref()?;
+        let roots = self
+            .language_server_ids
+            .get(seed)?
+            .project_roots
+            .iter()
+            .map(|path| ProjectPath {
+                worktree_id: seed.worktree_id,
+                path: path.clone(),
+            })
+            .collect();
+        Some((seed.name.clone(), roots))
     }
 
     pub(super) fn rebind_virtual_documents(

@@ -6858,7 +6858,7 @@ impl LspStore {
         let mut messages_to_report = Vec::new();
         let (new_tree, to_stop, replacements) = {
             let mut rebase = local.lsp_tree.rebase();
-            let buffers = buffer_store
+            let registered_buffers = buffer_store
                 .read(cx)
                 .buffers()
                 .filter_map(|buffer| {
@@ -6869,13 +6869,59 @@ impl LspStore {
                     {
                         return None;
                     }
-                    let file = File::from_dyn(raw_buffer.file()).cloned()?;
                     let language = raw_buffer.language().cloned()?;
-                    Some((file, language, raw_buffer.remote_id()))
+                    Some((
+                        raw_buffer.file().cloned()?,
+                        language,
+                        raw_buffer.remote_id(),
+                    ))
                 })
-                .sorted_by_key(|(file, _, _)| Reverse(file.worktree.read(cx).is_visible()));
-            for (file, language, buffer_id) in buffers {
-                let worktree_id = file.worktree_id(cx);
+                .collect::<Vec<_>>();
+            let file_documents = registered_buffers
+                .iter()
+                .filter_map(|(file, language, buffer_id)| {
+                    Some((File::from_dyn(Some(file))?, language, *buffer_id))
+                })
+                .sorted_by_key(|(file, _, _)| Reverse(file.worktree.read(cx).is_visible()))
+                .map(|(file, language, buffer_id)| {
+                    let path = file
+                        .path()
+                        .parent()
+                        .map(Arc::from)
+                        .unwrap_or_else(|| file.path().clone());
+                    (
+                        ProjectPath {
+                            worktree_id: file.worktree_id(cx),
+                            path,
+                        },
+                        language.clone(),
+                        file.abs_path(cx).to_string_lossy().into_owned(),
+                        buffer_id,
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let virtual_documents = registered_buffers
+                .iter()
+                .filter_map(|(file, language, buffer_id)| {
+                    let file = VirtualDocumentFile::from_dyn(Some(file))?;
+                    let (server_name, roots) = local.virtual_document_roots(file)?;
+                    Some(roots.into_iter().map(move |root| {
+                        (
+                            root,
+                            language.clone(),
+                            file.uri().to_string(),
+                            *buffer_id,
+                            Some(server_name.clone()),
+                        )
+                    }))
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            for (worktree_path, language, buffer_label, buffer_id, only_server) in
+                file_documents.into_iter().chain(virtual_documents)
+            {
+                let worktree_id = worktree_path.worktree_id;
                 let Some(worktree) = local
                     .worktree_store
                     .read(cx)
@@ -6898,13 +6944,6 @@ impl LspStore {
                 {
                     let delegate =
                         Arc::new(ManifestQueryDelegate::new(worktree.read(cx).snapshot()));
-                    let path = file
-                        .path()
-                        .parent()
-                        .map(Arc::from)
-                        .unwrap_or_else(|| file.path().clone());
-                    let worktree_path = ProjectPath { worktree_id, path };
-                    let abs_path = file.abs_path(cx);
                     let nodes = rebase
                         .walk(
                             worktree_path,
@@ -6916,7 +6955,8 @@ impl LspStore {
                         .collect::<Vec<_>>();
                     for node in nodes {
                         if let Some(name) = node.name()
-                            && stopped_language_servers.contains(&name)
+                            && (stopped_language_servers.contains(&name)
+                                || only_server.as_ref().is_some_and(|only| *only != name))
                         {
                             continue;
                         }
@@ -6964,9 +7004,7 @@ impl LspStore {
                                 message:
                                     proto::update_language_server::Variant::RegisteredForBuffer(
                                         proto::RegisteredForBuffer {
-                                            buffer_abs_path: abs_path
-                                                .to_string_lossy()
-                                                .into_owned(),
+                                            buffer_abs_path: buffer_label.clone(),
                                             buffer_id: buffer_id.to_proto(),
                                         },
                                     ),

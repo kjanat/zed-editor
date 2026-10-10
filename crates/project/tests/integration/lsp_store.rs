@@ -999,6 +999,123 @@ async fn test_registry_reload_reopens_deno_virtual_documents(cx: &mut TestAppCon
     });
 }
 
+#[gpui::test]
+async fn test_deno_virtual_documents_keep_their_server_without_source_files(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "main.ts": "stat();" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(Arc::new(Language::new(
+        LanguageConfig {
+            name: "TypeScript".into(),
+            matcher: (LanguageMatcher {
+                path_suffixes: vec!["ts".into()],
+                ..LanguageMatcher::default()
+            })
+            .into(),
+            ..LanguageConfig::default()
+        },
+        None,
+    )));
+    let mut fake_servers =
+        language_registry.register_fake_lsp("TypeScript", FakeLspAdapter::default());
+
+    let (_main_buffer, main_handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/root/main.ts"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server = fake_servers.next().await.unwrap();
+    let server_id = fake_server.server.server_id();
+    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(|_, _| async move {
+        Ok(Some("declare namespace Deno {}\n".to_string()))
+    });
+    cx.run_until_parked();
+
+    let lib_uri: Uri = "deno:/asset/lib.deno.ns.d.ts".parse().unwrap();
+    let lib = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(lib_uri.clone(), server_id, cx)
+        })
+        .await
+        .unwrap();
+    let _lib_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&lib, cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|_| drop(main_handle));
+    let main_closed = fake_server
+        .receive_notification::<lsp::notification::DidCloseTextDocument>()
+        .await;
+    assert_eq!(
+        main_closed.text_document.uri,
+        Uri::from_file_path(path!("/root/main.ts")).unwrap()
+    );
+
+    let lib_servers = |cx: &mut TestAppContext| {
+        project.update(cx, |project, cx| {
+            project.lsp_store().update(cx, |lsp_store, cx| {
+                lib.update(cx, |lib, cx| {
+                    lsp_store
+                        .running_language_servers_for_local_buffer(lib, cx)
+                        .map(|(_, server)| server.server_id())
+                        .collect::<Vec<_>>()
+                })
+            })
+        })
+    };
+    let update_lsp_settings = |settings: settings::LspSettings, cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |user_settings| {
+                    user_settings
+                        .project
+                        .lsp
+                        .0
+                        .insert("the-fake-language-server".into(), settings);
+                });
+            })
+        });
+        cx.run_until_parked();
+    };
+
+    update_lsp_settings(
+        settings::LspSettings {
+            settings: Some(json!({ "lint": true })),
+            ..Default::default()
+        },
+        cx,
+    );
+    assert_eq!(lib_servers(cx), [server_id]);
+    assert!(fake_servers.next().now_or_never().is_none());
+
+    update_lsp_settings(
+        settings::LspSettings {
+            initialization_options: Some(json!({ "reconfigured": true })),
+            ..Default::default()
+        },
+        cx,
+    );
+    let mut replacement = fake_servers.next().await.unwrap();
+    loop {
+        let opened = replacement
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await;
+        if opened.text_document.uri == lib_uri {
+            break;
+        }
+    }
+    assert_eq!(lib_servers(cx), [replacement.server.server_id()]);
+}
+
 struct SharedRustServer {
     project: Entity<Project>,
     fake_server: lsp::FakeLanguageServer,
