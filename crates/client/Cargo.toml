@@ -41,7 +41,6 @@ serde.workspace                    = true
 serde_json.workspace               = true
 serde_urlencoded.workspace         = true
 settings.workspace                 = true
-sha2.workspace                     = true
 smol.workspace                     = true
 telemetry.workspace                = true
 telemetry_events.workspace         = true
@@ -80,7 +79,7 @@ semver.workspace = true
 windows          = { workspace = true, features = ["Wdk_System_SystemServices", "Win32_System_SystemInformation"] }
 
 [features]
-test-support = ["clock/test-support", "collections/test-support", "gpui/test-support", "rpc/test-support"]
+test-support = ["clock/test-support", "collections/test-support", "gpui/test-support", "http_client/test-support", "rpc/test-support"]
 
 [lints]
 workspace = true

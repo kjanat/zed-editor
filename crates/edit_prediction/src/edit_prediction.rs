@@ -1,12 +1,15 @@
 use anyhow::{Context as _, Result, anyhow};
 use buffer_diff::BufferDiff;
-use client::{Client, EditPredictionUsage, UserStore, global_llm_token, zed_urls};
+use client::{
+    Client, EditPredictionUsage, UserStore, global_llm_token,
+    sentry::{Attachment, SentryEvent, feedback_report},
+    zed_urls,
+};
 use cloud_api_client::LlmApiToken;
 use cloud_api_types::{
     EditPredictionRecentFile, EditPredictionSettledKeptChars,
     MAX_EDIT_PREDICTION_SETTLED_PER_REQUEST, OrganizationId, SettledEditPrediction,
     SettledEditPredictionSampleData, SubmitEditPredictionFeedbackBody,
-    SubmitEditPredictionSettledBatchBody, SubmitEditPredictionSettledResponse,
 };
 use cloud_llm_client::predict_edits_v3::{
     PREDICT_EDITS_MODE_HEADER_NAME, PREDICT_EDITS_REQUEST_ID_HEADER_NAME,
@@ -17,8 +20,7 @@ use cloud_llm_client::predict_edits_v4::{PredictEditsV4Request, PredictEditsV4Re
 use cloud_llm_client::{
     EditPredictionRejectReason, EditPredictionRejection,
     MAX_EDIT_PREDICTION_REJECTIONS_PER_REQUEST, MINIMUM_REQUIRED_VERSION_HEADER_NAME,
-    PREFERRED_EXPERIMENT_HEADER_NAME, PredictEditsRequestTrigger, RejectEditPredictionsBodyRef,
-    ZED_VERSION_HEADER_NAME,
+    PREFERRED_EXPERIMENT_HEADER_NAME, PredictEditsRequestTrigger, ZED_VERSION_HEADER_NAME,
 };
 use collections::{HashMap, HashSet};
 use copilot::{Copilot, Reinstall};
@@ -180,18 +182,13 @@ pub struct EditPredictionStore {
     available_experiments: Vec<String>,
     pub mercury: Mercury,
     legacy_data_collection_enabled: bool,
-    reject_predictions_tx: mpsc::UnboundedSender<EditPredictionRejectionPayload>,
+    reject_predictions_tx: mpsc::UnboundedSender<EditPredictionRejection>,
     settled_predictions_tx: mpsc::UnboundedSender<Instant>,
     rateable_predictions: VecDeque<EditPrediction>,
     rated_predictions: HashSet<EditPredictionId>,
     #[cfg(test)]
     settled_event_callback: Option<Box<dyn Fn(EditPredictionId, String)>>,
     credentials_provider: Arc<dyn CredentialsProvider>,
-}
-
-pub(crate) struct EditPredictionRejectionPayload {
-    rejection: EditPredictionRejection,
-    organization_id: Option<OrganizationId>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -590,7 +587,6 @@ struct PendingPredictionCapture {
     predicted_editable_region: String,
     ts_error_count_before_prediction: usize,
     ts_error_count_after_prediction: usize,
-    organization_id: Option<OrganizationId>,
     can_collect_data: bool,
     is_in_open_source_repo: bool,
     sample_data: Option<PendingPredictionCaptureSampleData>,
@@ -986,18 +982,9 @@ impl EditPredictionStore {
         let (reject_tx, reject_rx) = mpsc::unbounded();
         cx.background_spawn({
             let client = client.clone();
-            let llm_token = llm_token.clone();
-            let app_version = AppVersion::global(cx);
             let background_executor = cx.background_executor().clone();
             async move {
-                Self::handle_rejected_predictions(
-                    reject_rx,
-                    client,
-                    llm_token,
-                    app_version,
-                    background_executor,
-                )
-                .await
+                Self::handle_rejected_predictions(reject_rx, client, background_executor).await
             }
         })
         .detach();
@@ -1005,18 +992,9 @@ impl EditPredictionStore {
         let (settled_predictions_tx, settled_predictions_rx) = mpsc::unbounded();
         cx.spawn({
             let client = client.clone();
-            let llm_token = llm_token.clone();
-            let app_version = AppVersion::global(cx);
             async move |this, cx| {
-                Self::run_settled_predictions_worker(
-                    this,
-                    settled_predictions_rx,
-                    client,
-                    llm_token,
-                    app_version,
-                    cx,
-                )
-                .await;
+                Self::run_settled_predictions_worker(this, settled_predictions_rx, client, cx)
+                    .await;
             }
         })
         .detach();
@@ -1903,20 +1881,14 @@ impl EditPredictionStore {
     }
 
     async fn handle_rejected_predictions(
-        rx: UnboundedReceiver<EditPredictionRejectionPayload>,
+        rx: UnboundedReceiver<EditPredictionRejection>,
         client: Arc<Client>,
-        llm_token: LlmApiToken,
-        app_version: Version,
         background_executor: BackgroundExecutor,
     ) {
         let mut rx = std::pin::pin!(rx.peekable());
         let mut batched = Vec::new();
 
-        while let Some(EditPredictionRejectionPayload {
-            rejection,
-            organization_id,
-        }) = rx.next().await
-        {
+        while let Some(rejection) = rx.next().await {
             batched.push(rejection);
 
             if batched.len() < MAX_EDIT_PREDICTION_REJECTIONS_PER_REQUEST / 2 {
@@ -1930,33 +1902,22 @@ impl EditPredictionStore {
                 }
             }
 
-            let url = client
-                .http_client()
-                .build_zed_llm_url("/predict_edits/reject", &[])
-                .unwrap();
-
             let flush_count = batched
                 .len()
                 // in case items have accumulated after failure
                 .min(MAX_EDIT_PREDICTION_REJECTIONS_PER_REQUEST);
             let start = batched.len() - flush_count;
 
-            let body = RejectEditPredictionsBodyRef {
-                rejections: &batched[start..],
-            };
-
-            let result = Self::send_api_request::<()>(
-                |builder| {
-                    let req = builder
-                        .uri(url.as_ref())
-                        .body(serde_json::to_string(&body)?.into());
-                    anyhow::Ok(req?)
-                },
-                client.clone(),
-                llm_token.clone(),
-                organization_id,
-                app_version.clone(),
-            )
+            let result = async {
+                let items = batched[start..]
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?;
+                client
+                    .telemetry()
+                    .send_sentry_logs("Edit Prediction Rejected", items)
+                    .await
+            }
             .await;
 
             if result.log_err().is_some() {
@@ -1969,8 +1930,6 @@ impl EditPredictionStore {
         this: WeakEntity<Self>,
         mut rx: UnboundedReceiver<Instant>,
         client: Arc<Client>,
-        llm_token: LlmApiToken,
-        app_version: Version,
         cx: &mut AsyncApp,
     ) {
         let mut next_wake_time: Option<Instant> = None;
@@ -2078,36 +2037,21 @@ impl EditPredictionStore {
                 }
             });
 
-            let mut ready_predictions_by_organization_id: HashMap<_, Vec<_>> = HashMap::default();
-            for (pending_capture, settled_editable_region) in ready_predictions {
-                #[cfg(test)]
-                {
-                    let request_id = pending_capture.request_id.clone();
-                    let settled_editable_region = settled_editable_region.clone();
-                    this.update(cx, |this, _| {
-                        if let Some(callback) = &this.settled_event_callback {
-                            callback(request_id, settled_editable_region);
-                        }
-                    });
-                }
-                ready_predictions_by_organization_id
-                    .entry(pending_capture.organization_id.clone())
-                    .or_default()
-                    .push((pending_capture, settled_editable_region));
+            #[cfg(test)]
+            for (pending_capture, settled_editable_region) in &ready_predictions {
+                let request_id = pending_capture.request_id.clone();
+                let settled_editable_region = settled_editable_region.clone();
+                this.update(cx, |this, _| {
+                    if let Some(callback) = &this.settled_event_callback {
+                        callback(request_id, settled_editable_region);
+                    }
+                });
             }
 
             cx.background_spawn({
                 let client = client.clone();
-                let llm_token = llm_token.clone();
-                let app_version = app_version.clone();
                 async move {
-                    send_settled_batches(
-                        client,
-                        llm_token,
-                        app_version,
-                        ready_predictions_by_organization_id,
-                    )
-                    .await;
+                    send_settled_batches(client, ready_predictions).await;
                 }
             })
             .detach();
@@ -2139,11 +2083,6 @@ impl EditPredictionStore {
             && this.is_data_collection_enabled(cx)
             && matches!(this.edit_prediction_model, EditPredictionModel::Zeta);
 
-        let organization_id = this
-            .user_store
-            .read(cx)
-            .current_organization()
-            .map(|organization| organization.id.clone());
         let project_state = this.get_or_init_project(project, cx);
         if !project_state
             .registered_buffers
@@ -2202,7 +2141,6 @@ impl EditPredictionStore {
                 predicted_editable_region,
                 ts_error_count_before_prediction,
                 ts_error_count_after_prediction,
-                organization_id,
                 can_collect_data,
                 is_in_open_source_repo,
                 sample_data,
@@ -2290,22 +2228,13 @@ impl EditPredictionStore {
                 );
 
                 if is_cloud {
-                    let organization_id = self
-                        .user_store
-                        .read(cx)
-                        .current_organization()
-                        .map(|organization| organization.id.clone());
-
                     self.reject_predictions_tx
-                        .unbounded_send(EditPredictionRejectionPayload {
-                            rejection: EditPredictionRejection {
-                                request_id: prediction_id.to_string(),
-                                reason,
-                                was_shown,
-                                model_version,
-                                e2e_latency_ms: e2e_latency.map(|latency| latency.as_millis()),
-                            },
-                            organization_id,
+                        .unbounded_send(EditPredictionRejection {
+                            request_id: prediction_id.to_string(),
+                            reason,
+                            was_shown,
+                            model_version,
+                            e2e_latency_ms: e2e_latency.map(|latency| latency.as_millis()),
                         })
                         .log_err();
                 }
@@ -2380,131 +2309,106 @@ impl EditPredictionStore {
 
 async fn send_settled_batches(
     client: Arc<Client>,
-    llm_token: LlmApiToken,
-    app_version: Version,
-    ready_predictions_by_organization_id: hash_map::HashMap<
-        Option<OrganizationId>,
-        Vec<(PendingPredictionCapture, String)>,
-        collections::FxBuildHasher,
-    >,
+    ready_predictions: Vec<(PendingPredictionCapture, String)>,
 ) {
-    let Some(url) = client
-        .http_client()
-        .build_zed_llm_url("/predict_edits/settled", &[])
-        .context("failed to build edit predictions settled url")
-        .log_err()
-    else {
-        return;
-    };
+    let mut ready_predictions = ready_predictions.into_iter();
+    loop {
+        let done_batch = ready_predictions
+            .by_ref()
+            .take(MAX_EDIT_PREDICTION_SETTLED_PER_REQUEST);
+        let mut batch = Vec::with_capacity(MAX_EDIT_PREDICTION_SETTLED_PER_REQUEST);
+        for (pending_capture, settled_editable_region) in done_batch {
+            let PendingPredictionCapture {
+                request_id,
+                editable_region_before_prediction,
+                predicted_editable_region,
+                ts_error_count_before_prediction,
+                ts_error_count_after_prediction,
+                can_collect_data,
+                is_in_open_source_repo,
+                sample_data,
+                model_version,
+                e2e_latency,
+                ..
+            } = pending_capture;
+            let kept_rate_result = compute_kept_rate(
+                &editable_region_before_prediction,
+                &predicted_editable_region,
+                &settled_editable_region,
+            );
 
-    for (organization_id, ready_predictions) in ready_predictions_by_organization_id {
-        let mut ready_predictions = ready_predictions.into_iter();
-        loop {
-            let done_batch = ready_predictions
-                .by_ref()
-                .take(MAX_EDIT_PREDICTION_SETTLED_PER_REQUEST);
-            let mut batch = Vec::with_capacity(MAX_EDIT_PREDICTION_SETTLED_PER_REQUEST);
-            for (pending_capture, settled_editable_region) in done_batch {
-                let PendingPredictionCapture {
-                    request_id,
-                    editable_region_before_prediction,
-                    predicted_editable_region,
-                    ts_error_count_before_prediction,
-                    ts_error_count_after_prediction,
-                    can_collect_data,
-                    is_in_open_source_repo,
-                    sample_data,
-                    model_version,
-                    e2e_latency,
-                    ..
-                } = pending_capture;
-                let kept_rate_result = compute_kept_rate(
-                    &editable_region_before_prediction,
-                    &predicted_editable_region,
-                    &settled_editable_region,
-                );
+            let sample_data = if can_collect_data
+                && let Some(sample_data) = sample_data
+                && let Ok(context) = sample_data.context_task.await
+            {
+                Some(SettledEditPredictionSampleData {
+                    repository_url: context.repository_url,
+                    revision: context.revision,
+                    uncommitted_diff: context.uncommitted_diff,
+                    editable_path: sample_data.editable_path,
+                    editable_offset_range: sample_data.editable_offset_range,
+                    buffer_diagnostics: context.buffer_diagnostics,
+                    editable_context: context.editable_context,
+                    future_edit_history_events: sample_data.future_edit_history_events,
+                    navigation_history: sample_data
+                        .navigation_history
+                        .into_iter()
+                        .map(|file| EditPredictionRecentFile {
+                            path: file.path,
+                            cursor_position: file.cursor_position,
+                        })
+                        .collect(),
+                    edit_events_before_quiescence: sample_data.edit_events_before_quiescence,
+                    next_edit_cursor_offset: sample_data.next_edit_cursor_offset,
+                })
+            } else {
+                None
+            };
 
-                let sample_data = if can_collect_data
-                    && let Some(sample_data) = sample_data
-                    && let Ok(context) = sample_data.context_task.await
-                {
-                    Some(SettledEditPredictionSampleData {
-                        repository_url: context.repository_url,
-                        revision: context.revision,
-                        uncommitted_diff: context.uncommitted_diff,
-                        editable_path: sample_data.editable_path,
-                        editable_offset_range: sample_data.editable_offset_range,
-                        buffer_diagnostics: context.buffer_diagnostics,
-                        editable_context: context.editable_context,
-                        future_edit_history_events: sample_data.future_edit_history_events,
-                        navigation_history: sample_data
-                            .navigation_history
-                            .into_iter()
-                            .map(|file| EditPredictionRecentFile {
-                                path: file.path,
-                                cursor_position: file.cursor_position,
-                            })
-                            .collect(),
-                        edit_events_before_quiescence: sample_data.edit_events_before_quiescence,
-                        next_edit_cursor_offset: sample_data.next_edit_cursor_offset,
-                    })
-                } else {
-                    None
-                };
+            batch.push(SettledEditPrediction {
+                request_id: request_id.0.to_string(),
+                settled_editable_region: can_collect_data.then_some(settled_editable_region),
+                ts_error_count_before_prediction,
+                ts_error_count_after_prediction,
+                can_collect_data,
+                is_in_open_source_repo,
+                sample_data,
+                kept_chars: EditPredictionSettledKeptChars {
+                    candidate_new: kept_rate_result.candidate_new_chars,
+                    reference_new: kept_rate_result.reference_new_chars,
+                    candidate_deleted: kept_rate_result.candidate_deleted_chars,
+                    reference_deleted: kept_rate_result.reference_deleted_chars,
+                    kept: kept_rate_result.kept_chars,
+                    correctly_deleted: kept_rate_result.correctly_deleted_chars,
+                    discarded: kept_rate_result.discarded_chars,
+                    context: kept_rate_result.context_chars,
+                    kept_rate: kept_rate_result.kept_rate,
+                    recall_rate: kept_rate_result.recall_rate,
+                },
+                example: None,
+                model_version,
+                e2e_latency_ms: e2e_latency.as_millis().min(u128::from(u64::MAX)) as u64,
+            });
+        }
 
-                batch.push(SettledEditPrediction {
-                    request_id: request_id.0.to_string(),
-                    settled_editable_region: can_collect_data.then_some(settled_editable_region),
-                    ts_error_count_before_prediction,
-                    ts_error_count_after_prediction,
-                    can_collect_data,
-                    is_in_open_source_repo,
-                    sample_data,
-                    kept_chars: EditPredictionSettledKeptChars {
-                        candidate_new: kept_rate_result.candidate_new_chars,
-                        reference_new: kept_rate_result.reference_new_chars,
-                        candidate_deleted: kept_rate_result.candidate_deleted_chars,
-                        reference_deleted: kept_rate_result.reference_deleted_chars,
-                        kept: kept_rate_result.kept_chars,
-                        correctly_deleted: kept_rate_result.correctly_deleted_chars,
-                        discarded: kept_rate_result.discarded_chars,
-                        context: kept_rate_result.context_chars,
-                        kept_rate: kept_rate_result.kept_rate,
-                        recall_rate: kept_rate_result.recall_rate,
-                    },
-                    example: None,
-                    model_version,
-                    e2e_latency_ms: e2e_latency.as_millis().min(u128::from(u64::MAX)) as u64,
-                });
-            }
+        if batch.is_empty() {
+            break;
+        }
 
-            if batch.is_empty() {
-                break;
-            }
+        let result = async {
+            let items = batch
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            client
+                .telemetry()
+                .send_sentry_logs("Edit Prediction Settled", items)
+                .await
+        }
+        .await;
 
-            let result = async {
-                let body = SubmitEditPredictionSettledBatchBody { predictions: batch };
-                let compressed = zstd::encode_all(&serde_json::to_vec(&body)?[..], 3)?;
-                EditPredictionStore::send_api_request::<SubmitEditPredictionSettledResponse>(
-                    |builder| {
-                        Ok(builder
-                            .uri(url.as_ref())
-                            .header("Content-Encoding", "zstd")
-                            .body(compressed.clone().into())?)
-                    },
-                    client.clone(),
-                    llm_token.clone(),
-                    organization_id.clone(),
-                    app_version.clone(),
-                )
-                .await?;
-                anyhow::Ok(())
-            }
-            .await;
-
-            if let Err(error) = result {
-                log::error!("failed to submit edit predictions settled: {error:?}");
-            }
+        if let Err(error) = result {
+            log::error!("failed to submit edit predictions settled: {error:?}");
         }
     }
 }
@@ -3358,9 +3262,8 @@ impl EditPredictionStore {
                 .edit_preview
                 .as_unified_diff(prediction.snapshot.file(), &prediction.edits);
             async move {
-                client
-                    .cloud_client()
-                    .submit_edit_prediction_feedback(SubmitEditPredictionFeedbackBody {
+                let (event, attachment) =
+                    edit_prediction_feedback_report(&SubmitEditPredictionFeedbackBody {
                         organization_id: organization.map(|organization| organization.id.clone()),
                         request_id: prediction_id,
                         rating: match rating {
@@ -3371,16 +3274,36 @@ impl EditPredictionStore {
                         output,
                         expected_output,
                         feedback,
-                    })
-                    .await?;
-
-                anyhow::Ok(())
+                    })?;
+                client
+                    .telemetry()
+                    .submit_feedback(event, Some(attachment))
+                    .await
             }
         })
         .detach_and_log_err(cx);
 
         cx.notify();
     }
+}
+
+fn edit_prediction_feedback_report(
+    body: &SubmitEditPredictionFeedbackBody,
+) -> Result<(SentryEvent, Attachment)> {
+    let message = if body.feedback.trim().is_empty() {
+        format!("Edit prediction rated {}", body.rating)
+    } else {
+        format!("Edit prediction rated {}: {}", body.rating, body.feedback)
+    };
+    feedback_report(
+        &message,
+        [
+            ("feedback.kind", "edit_prediction".to_string()),
+            ("rating", body.rating.clone()),
+            ("request_id", body.request_id.clone()),
+        ],
+        body,
+    )
 }
 
 fn collaborator_edit_overlaps_locality_region(
