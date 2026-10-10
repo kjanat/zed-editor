@@ -16089,6 +16089,45 @@ impl LspStore {
         cleared_registration_id: SharedString,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        let affected_virtual_documents = self
+            .buffer_store
+            .read(cx)
+            .buffers()
+            .filter_map(|buffer| {
+                let buffer = buffer.read(cx);
+                let file = VirtualDocumentFile::from_dyn(buffer.file())?;
+                buffer
+                    .buffer_diagnostics(Some(server_id))
+                    .iter()
+                    .any(|entry| {
+                        entry.diagnostic.registration_id.as_ref() == Some(&cleared_registration_id)
+                    })
+                    .then(|| file.uri().clone())
+            })
+            .collect::<Vec<_>>();
+        for uri in affected_virtual_documents {
+            let merge_registration_id = cleared_registration_id.clone();
+            self.merge_virtual_document_diagnostics(
+                DiagnosticSourceKind::Pulled,
+                DocumentDiagnosticsUpdate {
+                    diagnostics: lsp::PublishDiagnosticsParams {
+                        uri,
+                        diagnostics: Vec::new(),
+                        version: None,
+                    },
+                    result_id: None,
+                    registration_id: Some(cleared_registration_id.clone()),
+                    server_id,
+                    disk_based_sources: Cow::Borrowed(&[]),
+                },
+                move |_, diagnostic, _| {
+                    diagnostic.source_kind != DiagnosticSourceKind::Pulled
+                        || diagnostic.registration_id.as_ref() != Some(&merge_registration_id)
+                },
+                cx,
+            );
+        }
+
         let mut affected_abs_paths: HashSet<PathBuf> = HashSet::default();
 
         self.buffer_store.update(cx, |buffer_store, cx| {

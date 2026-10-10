@@ -552,6 +552,104 @@ async fn test_deno_virtual_documents_are_opened_in_their_server(cx: &mut TestApp
         );
     });
 
+    let pulled_diagnostic = lsp::Diagnostic {
+        range: lsp::Range::new(lsp::Position::new(0, 7), lsp::Position::new(0, 15)),
+        severity: Some(lsp::DiagnosticSeverity::WARNING),
+        message: lsp::DiagnosticMessage::from("stat is unused"),
+        ..lsp::Diagnostic::default()
+    };
+    fake_server.set_request_handler::<lsp::request::DocumentDiagnosticRequest, _, _>({
+        let pulled_diagnostic = pulled_diagnostic.clone();
+        move |_, _| {
+            let pulled_diagnostic = pulled_diagnostic.clone();
+            async move {
+                Ok(lsp::DocumentDiagnosticReportResult::Report(
+                    lsp::DocumentDiagnosticReport::Full(lsp::RelatedFullDocumentDiagnosticReport {
+                        related_documents: None,
+                        full_document_diagnostic_report: lsp::FullDocumentDiagnosticReport {
+                            result_id: None,
+                            items: vec![pulled_diagnostic],
+                        },
+                    }),
+                ))
+            }
+        }
+    });
+    fake_server
+        .request::<lsp::request::RegisterCapability>(
+            lsp::RegistrationParams {
+                registrations: vec![lsp::Registration {
+                    id: "deno-pull".to_string(),
+                    method: "textDocument/diagnostic".to_string(),
+                    register_options: serde_json::to_value(
+                        lsp::DiagnosticServerCapabilities::Options(lsp::DiagnosticOptions {
+                            identifier: Some("deno-pull".to_string()),
+                            ..lsp::DiagnosticOptions::default()
+                        }),
+                    )
+                    .ok(),
+                }],
+            },
+            lsp::DEFAULT_LSP_REQUEST_TIMEOUT,
+        )
+        .await
+        .into_response()
+        .unwrap();
+    cx.run_until_parked();
+    project.update(cx, |project, cx| {
+        project.lsp_store().update(cx, |lsp_store, cx| {
+            lsp_store
+                .merge_lsp_diagnostics(
+                    DiagnosticSourceKind::Pulled,
+                    vec![DocumentDiagnosticsUpdate {
+                        diagnostics: lsp::PublishDiagnosticsParams {
+                            uri: adapter_uri.clone(),
+                            diagnostics: vec![pulled_diagnostic],
+                            version: None,
+                        },
+                        result_id: None,
+                        registration_id: Some("deno-pull".into()),
+                        server_id,
+                        disk_based_sources: Cow::Borrowed(&[]),
+                    }],
+                    |_, diagnostic, _| diagnostic.source_kind != DiagnosticSourceKind::Pulled,
+                    cx,
+                )
+                .unwrap();
+        })
+    });
+    cx.run_until_parked();
+    let adapter_diagnostics = |cx: &mut TestAppContext| {
+        adapter.read_with(cx, |adapter, _| {
+            let mut messages = adapter
+                .buffer_diagnostics(Some(server_id))
+                .iter()
+                .map(|entry| entry.diagnostic.message.to_string())
+                .collect::<Vec<_>>();
+            messages.sort();
+            messages
+        })
+    };
+    assert_eq!(
+        adapter_diagnostics(cx),
+        ["stat is deprecated", "stat is unused"]
+    );
+    fake_server
+        .request::<lsp::request::UnregisterCapability>(
+            lsp::UnregistrationParams {
+                unregisterations: vec![lsp::Unregistration {
+                    id: "deno-pull".to_string(),
+                    method: "textDocument/diagnostic".to_string(),
+                }],
+            },
+            lsp::DEFAULT_LSP_REQUEST_TIMEOUT,
+        )
+        .await
+        .into_response()
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(adapter_diagnostics(cx), ["stat is deprecated"]);
+
     fake_server.set_request_handler::<lsp::request::HoverRequest, _, _>({
         let adapter_uri = adapter_uri.clone();
         move |params, _| {
@@ -758,7 +856,7 @@ async fn test_deno_virtual_documents_are_scoped_to_their_server(cx: &mut TestApp
         .parse()
         .unwrap();
     let mut handles = Vec::new();
-    let mut server_ids = Vec::new();
+    let mut running_servers = Vec::new();
     for (root, text) in [
         (path!("/one/main.ts"), "export const project = 1;\n"),
         (path!("/two/main.ts"), "export const project = 2;\n"),
@@ -775,9 +873,13 @@ async fn test_deno_virtual_documents_are_scoped_to_their_server(cx: &mut TestApp
         fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(
             move |_, _| async move { Ok(Some(text.to_string())) },
         );
-        server_ids.push(fake_server.server.server_id());
+        running_servers.push(fake_server);
     }
     cx.run_until_parked();
+    let server_ids = running_servers
+        .iter()
+        .map(|fake_server| fake_server.server.server_id())
+        .collect::<Vec<_>>();
 
     let mut buffers = Vec::new();
     for server_id in &server_ids {
@@ -813,6 +915,7 @@ struct SharedRustServer {
     fake_server: lsp::FakeLanguageServer,
     main_buffer: Entity<Buffer>,
     _main_handle: OpenLspBufferHandle,
+    _external_buffer: Entity<Buffer>,
     visible_worktree_id: WorktreeId,
     invisible_worktree_id: WorktreeId,
 }
@@ -878,6 +981,7 @@ async fn project_with_shared_rust_server(cx: &mut TestAppContext) -> SharedRustS
         fake_server,
         main_buffer,
         _main_handle: main_handle,
+        _external_buffer: external_buffer,
         visible_worktree_id,
         invisible_worktree_id,
     }
@@ -891,6 +995,7 @@ async fn test_stopped_shared_server_is_inactive_in_its_own_worktree(cx: &mut Tes
         fake_server,
         main_buffer,
         _main_handle,
+        _external_buffer,
         visible_worktree_id,
         ..
     } = project_with_shared_rust_server(cx).await;
@@ -926,6 +1031,7 @@ async fn test_deno_virtual_documents_keep_their_server_across_worktree_removal(
         project,
         fake_server,
         _main_handle,
+        _external_buffer,
         visible_worktree_id,
         invisible_worktree_id,
         ..
