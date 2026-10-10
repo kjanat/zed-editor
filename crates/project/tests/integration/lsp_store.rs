@@ -808,6 +808,166 @@ async fn test_deno_virtual_documents_are_scoped_to_their_server(cx: &mut TestApp
     assert_eq!(reopened, buffers[0]);
 }
 
+struct SharedRustServer {
+    project: Entity<Project>,
+    fake_server: lsp::FakeLanguageServer,
+    main_buffer: Entity<Buffer>,
+    _main_handle: OpenLspBufferHandle,
+    visible_worktree_id: WorktreeId,
+    invisible_worktree_id: WorktreeId,
+}
+
+async fn project_with_shared_rust_server(cx: &mut TestAppContext) -> SharedRustServer {
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/the-root"), json!({ "main.rs": "fn main() {}" }))
+        .await;
+    fs.insert_tree(
+        path!("/the-registry"),
+        json!({ "dep": { "src": { "dep.rs": "pub fn dep() {}" } } }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp("Rust", FakeLspAdapter::default());
+
+    let (main_buffer, main_handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.run_until_parked();
+    let visible_worktree_id = project.read_with(cx, |project, cx| {
+        project.worktrees(cx).next().unwrap().read(cx).id()
+    });
+
+    let external_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(
+                Uri::from_file_path(path!("/the-registry/dep/src/dep.rs")).unwrap(),
+                fake_server.server.server_id(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    let invisible_worktree_id =
+        external_buffer.read_with(cx, |buffer, cx| buffer.file().unwrap().worktree_id(cx));
+    project.read_with(cx, |project, cx| {
+        assert!(
+            !project
+                .worktree_for_id(invisible_worktree_id, cx)
+                .unwrap()
+                .read(cx)
+                .is_visible()
+        );
+        assert!(
+            project
+                .lsp_store()
+                .read(cx)
+                .has_language_server_seed_for_worktree(invisible_worktree_id)
+        );
+    });
+
+    SharedRustServer {
+        project,
+        fake_server,
+        main_buffer,
+        _main_handle: main_handle,
+        visible_worktree_id,
+        invisible_worktree_id,
+    }
+}
+
+#[gpui::test]
+async fn test_stopped_shared_server_is_inactive_in_its_own_worktree(cx: &mut TestAppContext) {
+    init_test(cx);
+    let SharedRustServer {
+        project,
+        fake_server,
+        main_buffer,
+        _main_handle,
+        visible_worktree_id,
+        ..
+    } = project_with_shared_rust_server(cx).await;
+
+    project.update(cx, |project, cx| {
+        project.stop_language_servers_for_buffers(vec![main_buffer], HashSet::default(), cx)
+    });
+    cx.run_until_parked();
+
+    project.read_with(cx, |project, cx| {
+        assert_eq!(
+            project
+                .lsp_store()
+                .read(cx)
+                .inactive_language_servers()
+                .map(|(worktree_id, name, server)| (worktree_id, name.clone(), server.server_id))
+                .collect::<Vec<_>>(),
+            [(
+                visible_worktree_id,
+                fake_server.server.name(),
+                fake_server.server.server_id()
+            )]
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_deno_virtual_documents_keep_their_server_across_worktree_removal(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let SharedRustServer {
+        project,
+        fake_server,
+        _main_handle,
+        visible_worktree_id,
+        invisible_worktree_id,
+        ..
+    } = project_with_shared_rust_server(cx).await;
+    let server_id = fake_server.server.server_id();
+
+    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(|_, _| async move {
+        Ok(Some("pub fn stub() {}\n".to_string()))
+    });
+    let stub = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp("deno:/asset/stub.rs".parse().unwrap(), server_id, cx)
+        })
+        .await
+        .unwrap();
+    let _stub_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&stub, cx)
+    });
+    cx.run_until_parked();
+
+    let stub_state = |cx: &mut TestAppContext| {
+        project.update(cx, |project, cx| {
+            project.lsp_store().update(cx, |lsp_store, cx| {
+                stub.update(cx, |stub, cx| {
+                    let servers = lsp_store
+                        .running_language_servers_for_local_buffer(stub, cx)
+                        .map(|(_, server)| server.server_id())
+                        .collect::<Vec<_>>();
+                    (stub.file().unwrap().worktree_id(cx), servers)
+                })
+            })
+        })
+    };
+    assert_eq!(stub_state(cx), (visible_worktree_id, vec![server_id]));
+
+    project.update(cx, |project, cx| {
+        project.remove_worktree(visible_worktree_id, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(stub_state(cx), (invisible_worktree_id, vec![server_id]));
+}
+
 #[gpui::test]
 async fn test_open_buffer_via_lsp_preserves_external_symlink_path(cx: &mut TestAppContext) {
     init_test(cx);

@@ -1,7 +1,6 @@
 use std::{any::Any, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Context as _, Result, anyhow};
-use collections::BTreeMap;
 use gpui::{App, Context, Entity, Task};
 use language::{Buffer, Diagnostic, DiagnosticSourceKind, DiskState, ToPointUtf16 as _, Unclipped};
 use lsp::{LanguageServerId, Uri};
@@ -154,13 +153,9 @@ impl LspStore {
                 "language server {language_server_id} is not running"
             )));
         };
-        let seed = self.as_local().and_then(|local| {
-            local
-                .language_server_ids
-                .iter()
-                .find(|(_, server)| server.id == language_server_id)
-                .map(|(seed, _)| seed.clone())
-        });
+        let seed = self
+            .as_local()
+            .and_then(|local| local.server_seed(language_server_id));
         let worktree_id = seed
             .as_ref()
             .map(|seed| seed.worktree_id)
@@ -296,7 +291,7 @@ impl LocalLspStore {
     pub(super) fn rebind_virtual_documents(
         &self,
         buffer_store: &Entity<BufferStore>,
-        replacements: &BTreeMap<LanguageServerId, LanguageServerId>,
+        server_for_seed: impl Fn(&LanguageServerSeed) -> Option<LanguageServerId>,
         cx: &mut Context<LspStore>,
     ) {
         let rebound = buffer_store
@@ -304,13 +299,13 @@ impl LocalLspStore {
             .buffers()
             .filter_map(|buffer| {
                 let file = VirtualDocumentFile::from_dyn(buffer.read(cx).file())?;
-                let replacement = replacements.get(&self.virtual_document_server_id(file)?)?;
-                let seed = self
-                    .language_server_ids
-                    .iter()
-                    .find(|(_, server)| server.id == *replacement)
-                    .map(|(seed, _)| seed.clone())?;
+                let old_seed = file.server.as_ref()?;
+                let seed = self.server_seed(server_for_seed(old_seed)?)?;
+                if &seed == old_seed {
+                    return None;
+                }
                 let file = VirtualDocumentFile {
+                    worktree_id: seed.worktree_id,
                     server: Some(seed),
                     ..file.clone()
                 };

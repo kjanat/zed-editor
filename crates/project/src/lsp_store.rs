@@ -3285,6 +3285,14 @@ impl LocalLspStore {
             });
     }
 
+    fn server_seed(&self, server_id: LanguageServerId) -> Option<LanguageServerSeed> {
+        self.language_server_ids
+            .iter()
+            .filter(|(_, server)| server.id == server_id)
+            .max_by_key(|(_, server)| !server.project_roots.is_empty())
+            .map(|(seed, _)| seed.clone())
+    }
+
     fn language_server_line_length_limit_exceeded(buffer: &Buffer, cx: &App) -> Option<(u32, u32)> {
         let maximum_line_length = ProjectSettings::get_global(cx)
             .global_lsp_settings
@@ -6959,7 +6967,15 @@ impl LspStore {
             cx.emit(message);
         }
         local.lsp_tree = new_tree;
-        local.rebind_virtual_documents(&buffer_store, &replacements, cx);
+        local.rebind_virtual_documents(
+            &buffer_store,
+            |seed| {
+                replacements
+                    .get(&local.language_server_ids.get(seed)?.id)
+                    .copied()
+            },
+            cx,
+        );
         for (id, _) in to_stop {
             self.stop_local_language_server(id, cx).detach();
         }
@@ -10743,9 +10759,21 @@ impl LspStore {
 
     fn remove_worktree(&mut self, id_to_remove: WorktreeId, cx: &mut Context<Self>) {
         self.diagnostic_summaries.remove(&id_to_remove);
+        let buffer_store = self.buffer_store.clone();
         match &mut self.mode {
             LspStoreMode::Local(local) => {
+                let removed_seeds = local
+                    .language_server_ids
+                    .iter()
+                    .filter(|(seed, _)| seed.worktree_id == id_to_remove)
+                    .map(|(seed, server)| (seed.clone(), server.id))
+                    .collect::<HashMap<_, _>>();
                 let to_remove = local.remove_worktree(id_to_remove, cx);
+                local.rebind_virtual_documents(
+                    &buffer_store,
+                    |seed| removed_seeds.get(seed).copied(),
+                    cx,
+                );
                 for server in to_remove {
                     self.language_server_statuses.remove(&server);
                     self.cleanup_lsp_data(server);
@@ -13851,10 +13879,8 @@ impl LspStore {
         };
 
         let seed = local
-            .language_server_ids
-            .iter()
-            .find(|(_, state)| state.id == server_id)
-            .map(|(seed, _)| (seed.worktree_id, seed.name.clone()));
+            .server_seed(server_id)
+            .map(|seed| (seed.worktree_id, seed.name));
         if let Some(seed) = &seed {
             local.inactive_language_servers.insert(
                 seed.clone(),
