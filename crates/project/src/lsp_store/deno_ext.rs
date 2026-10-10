@@ -2,7 +2,9 @@ use std::{any::Any, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{App, Context, Entity, Task, TaskExt as _};
-use language::{Buffer, Diagnostic, DiagnosticSourceKind, DiskState, ToPointUtf16 as _, Unclipped};
+use language::{
+    Buffer, Diagnostic, DiagnosticSourceKind, DiskState, Language, ToPointUtf16 as _, Unclipped,
+};
 use lsp::{LanguageServer, LanguageServerId, LanguageServerName, Uri};
 use rpc::proto;
 use serde::{Deserialize, Serialize};
@@ -47,6 +49,7 @@ pub struct VirtualDocumentFile {
     full_path: PathBuf,
     worktree_id: WorktreeId,
     server: Option<LanguageServerSeed>,
+    roots: Vec<Arc<RelPath>>,
     text_server: Option<LanguageServerId>,
 }
 
@@ -55,6 +58,7 @@ impl VirtualDocumentFile {
         uri: Uri,
         worktree_id: WorktreeId,
         server: Option<LanguageServerSeed>,
+        roots: Vec<Arc<RelPath>>,
         text_server: Option<LanguageServerId>,
     ) -> Result<Self> {
         let path = uri
@@ -69,6 +73,7 @@ impl VirtualDocumentFile {
             full_path,
             worktree_id,
             server,
+            roots,
             text_server,
         })
     }
@@ -81,6 +86,7 @@ impl VirtualDocumentFile {
             Uri::from_str(&virtual_document.uri)?,
             WorktreeId::from_proto(file.worktree_id),
             None,
+            Vec::new(),
             None,
         )
     }
@@ -161,9 +167,12 @@ impl LspStore {
                 "language server {language_server_id} is not running"
             )));
         };
-        let seed = self
-            .as_local()
-            .and_then(|local| local.server_seed(language_server_id));
+        let local = self.as_local();
+        let seed = local.and_then(|local| local.server_seed(language_server_id));
+        let roots = local
+            .zip(seed.as_ref())
+            .map(|(local, seed)| local.server_roots(seed))
+            .unwrap_or_default();
         let worktree_id = seed
             .as_ref()
             .map(|seed| seed.worktree_id)
@@ -186,6 +195,7 @@ impl LspStore {
             uri.clone(),
             worktree_id,
             seed,
+            roots,
             Some(language_server_id),
         ) {
             Ok(file) => file,
@@ -301,19 +311,28 @@ impl LocalLspStore {
         Some(self.language_server_ids.get(file.server.as_ref()?)?.id)
     }
 
+    fn server_roots(&self, seed: &LanguageServerSeed) -> Vec<Arc<RelPath>> {
+        self.language_server_ids
+            .get(seed)
+            .map(|server| server.project_roots.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub(super) fn virtual_document_roots(
         &self,
         file: &VirtualDocumentFile,
     ) -> Option<(LanguageServerName, Vec<ProjectPath>)> {
         let seed = file.server.as_ref()?;
-        let roots = self
-            .language_server_ids
-            .get(seed)?
-            .project_roots
-            .iter()
+        let roots = if self.language_server_ids.contains_key(seed) {
+            self.server_roots(seed)
+        } else {
+            file.roots.clone()
+        };
+        let roots = roots
+            .into_iter()
             .map(|path| ProjectPath {
                 worktree_id: seed.worktree_id,
-                path: path.clone(),
+                path,
             })
             .collect();
         Some((seed.name.clone(), roots))
@@ -337,6 +356,7 @@ impl LocalLspStore {
                 }
                 let file = VirtualDocumentFile {
                     worktree_id: seed.worktree_id,
+                    roots: self.server_roots(&seed),
                     server: Some(seed),
                     ..file.clone()
                 };
@@ -390,16 +410,29 @@ impl LocalLspStore {
                 if local.virtual_document_refetches.get(&buffer_id) == Some(&server_id) {
                     local.virtual_document_refetches.remove(&buffer_id);
                 }
-                let text = text?;
                 let Some(buffer) = buffer.upgrade() else {
                     return Ok(());
                 };
-                let Some(file) = VirtualDocumentFile::from_dyn(buffer.read(cx).file()) else {
+                let Some(file) = VirtualDocumentFile::from_dyn(buffer.read(cx).file()).cloned()
+                else {
                     return Ok(());
+                };
+                if local.virtual_document_server_id(&file) != Some(server_id) {
+                    return Ok(());
+                }
+                let text = match text {
+                    Ok(text) => text,
+                    Err(error) => {
+                        cx.emit(LspStoreEvent::Notification(format!(
+                            "{error:#}. Restart {} to load it again.",
+                            server.name()
+                        )));
+                        return Err(error);
+                    }
                 };
                 let file = VirtualDocumentFile {
                     text_server: Some(server_id),
-                    ..file.clone()
+                    ..file
                 };
                 buffer.update(cx, |buffer, cx| {
                     if buffer.text() != text {
@@ -419,19 +452,76 @@ impl LocalLspStore {
         .detach_and_log_err(cx);
     }
 
+    fn start_virtual_document_server(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        file: &VirtualDocumentFile,
+        language: &Arc<Language>,
+        cx: &mut Context<LspStore>,
+    ) -> Option<LanguageServerId> {
+        let seed = file.server.as_ref()?;
+        if self.all_language_servers_stopped
+            || !self.runtime.starts_servers()
+            || self.stopped_language_servers.contains(&seed.name)
+        {
+            return None;
+        }
+        let worktree = self
+            .worktree_store
+            .read(cx)
+            .worktree_for_id(seed.worktree_id, cx)?;
+        let mut server_ids = Vec::new();
+        for root in &file.roots {
+            server_ids.extend(self.start_language_servers_for_path(
+                &worktree,
+                ProjectPath {
+                    worktree_id: seed.worktree_id,
+                    path: root.clone(),
+                },
+                language,
+                |node| node.name().as_ref() == Some(&seed.name),
+                cx,
+            ));
+        }
+        let servers = server_ids
+            .into_iter()
+            .filter_map(|server_id| Some((server_id, self.server_seed(server_id)?)))
+            .collect::<Vec<_>>();
+        let (server_id, server_seed) = servers
+            .iter()
+            .find(|(_, server_seed)| server_seed == seed)
+            .or_else(|| servers.first())
+            .cloned()?;
+        if &server_seed != seed {
+            let file = VirtualDocumentFile {
+                worktree_id: server_seed.worktree_id,
+                roots: self.server_roots(&server_seed),
+                server: Some(server_seed),
+                ..file.clone()
+            };
+            buffer.update(cx, |buffer, cx| buffer.file_updated(Arc::new(file), cx));
+        }
+        Some(server_id)
+    }
+
     pub(super) fn register_virtual_document(
         &mut self,
         buffer_handle: &Entity<Buffer>,
         cx: &mut Context<LspStore>,
     ) {
         let buffer = buffer_handle.read(cx);
-        let Some(file) = VirtualDocumentFile::from_dyn(buffer.file()) else {
+        let Some(file) = VirtualDocumentFile::from_dyn(buffer.file()).cloned() else {
             return;
         };
-        let Some(language_name) = buffer.language().map(|language| language.name()) else {
+        let Some(language) = buffer.language().cloned() else {
             return;
         };
-        let Some(server_id) = self.virtual_document_server_id(file) else {
+        let buffer_id = buffer.remote_id();
+        let snapshot = buffer.text_snapshot();
+        let Some(server_id) = self
+            .virtual_document_server_id(&file)
+            .or_else(|| self.start_virtual_document_server(buffer_handle, &file, &language, cx))
+        else {
             return;
         };
         let Some(LanguageServerState::Running {
@@ -445,9 +535,8 @@ impl LocalLspStore {
             self.refetch_virtual_document(buffer_handle, server, cx);
             return;
         }
-        let buffer_id = buffer.remote_id();
+        let language_name = language.name();
         let uri = file.uri.clone();
-        let snapshot = buffer.text_snapshot();
         let mut registered = false;
         self.buffer_snapshots
             .entry(buffer_id)

@@ -3359,82 +3359,35 @@ impl LocalLspStore {
         else {
             return;
         };
-        let language_name = language.name();
-        let (reused, delegate, servers) = self
-            .reuse_existing_language_server(&self.lsp_tree, &worktree, &language_name, cx)
-            .map(|(delegate, apply)| (true, delegate, apply(&mut self.lsp_tree)))
-            .unwrap_or_else(|| {
-                let lsp_delegate = LocalLspAdapterDelegate::from_local_lsp(self, &worktree, cx);
-                let delegate: Arc<dyn ManifestDelegate> =
-                    Arc::new(ManifestQueryDelegate::new(worktree.read(cx).snapshot()));
-
-                let servers = self
-                    .lsp_tree
-                    .walk(
-                        ProjectPath { worktree_id, path },
-                        language.name(),
-                        language.manifest(),
-                        &delegate,
-                        cx,
-                    )
-                    .collect::<Vec<_>>();
-                (false, lsp_delegate, servers)
-            });
-        let servers_and_adapters = servers
-            .into_iter()
-            .filter_map(|server_node| {
-                if reused && server_node.server_id().is_none() {
-                    return None;
-                }
-                if let Some(name) = server_node.name()
-                    && self.stopped_language_servers.contains(&name)
-                {
-                    return None;
-                }
-                if !only_register_servers.is_empty() {
+        let servers_and_adapters = self
+            .start_language_servers_for_path(
+                &worktree,
+                ProjectPath { worktree_id, path },
+                &language,
+                |server_node| {
+                    if only_register_servers.is_empty() {
+                        return true;
+                    }
                     if let Some(server_id) = server_node.server_id()
                         && !only_register_servers.contains(&LanguageServerSelector::Id(server_id))
                     {
-                        return None;
+                        return false;
                     }
                     if let Some(name) = server_node.name()
                         && !only_register_servers.contains(&LanguageServerSelector::Name(name))
                     {
-                        return None;
+                        return false;
                     }
-                }
-
-                let server_id = server_node.server_id_or_init(|disposition| {
-                    let path = &disposition.path;
-
-                    {
-                        let workspace_folder = workspace_folder_uri(worktree.read(cx), &path.path);
-
-                        let server_id = self.get_or_insert_language_server(
-                            &worktree,
-                            delegate.clone(),
-                            disposition,
-                            &language_name,
-                            cx,
-                        );
-
-                        if let Some(state) = self.language_servers.get(&server_id)
-                            && let Some(workspace_folder) = workspace_folder
-                        {
-                            state.add_workspace_folder(workspace_folder);
-                        };
-                        server_id
-                    }
-                })?;
-                let server_state = self.language_servers.get(&server_id)?;
-                if let LanguageServerState::Running {
+                    true
+                },
+                cx,
+            )
+            .into_iter()
+            .filter_map(|server_id| match self.language_servers.get(&server_id)? {
+                LanguageServerState::Running {
                     server, adapter, ..
-                } = server_state
-                {
-                    Some((server.clone(), adapter.clone()))
-                } else {
-                    None
-                }
+                } => Some((server.clone(), adapter.clone())),
+                _ => None,
             })
             .collect::<Vec<_>>();
         for (server, adapter) in servers_and_adapters {
@@ -3490,6 +3443,106 @@ impl LocalLspStore {
                 });
             }
         }
+    }
+
+    fn start_language_servers_for_path(
+        &mut self,
+        worktree: &Entity<Worktree>,
+        path: ProjectPath,
+        language: &Arc<Language>,
+        keep: impl Fn(&LanguageServerTreeNode) -> bool,
+        cx: &mut App,
+    ) -> Vec<LanguageServerId> {
+        let language_name = language.name();
+        let (reused, delegate, servers) = self
+            .reuse_existing_language_server(&self.lsp_tree, worktree, &language_name, cx)
+            .map(|(delegate, apply)| (true, delegate, apply(&mut self.lsp_tree)))
+            .unwrap_or_else(|| {
+                let lsp_delegate = LocalLspAdapterDelegate::from_local_lsp(self, worktree, cx);
+                let delegate: Arc<dyn ManifestDelegate> =
+                    Arc::new(ManifestQueryDelegate::new(worktree.read(cx).snapshot()));
+
+                let servers = self
+                    .lsp_tree
+                    .walk(path, language.name(), language.manifest(), &delegate, cx)
+                    .collect::<Vec<_>>();
+                (false, lsp_delegate, servers)
+            });
+        servers
+            .into_iter()
+            .filter_map(|server_node| {
+                if reused && server_node.server_id().is_none() {
+                    return None;
+                }
+                if let Some(name) = server_node.name()
+                    && self.stopped_language_servers.contains(&name)
+                {
+                    return None;
+                }
+                if !keep(&server_node) {
+                    return None;
+                }
+                server_node.server_id_or_init(|disposition| {
+                    let workspace_folder =
+                        workspace_folder_uri(worktree.read(cx), &disposition.path.path);
+                    let server_id = self.get_or_insert_language_server(
+                        worktree,
+                        delegate.clone(),
+                        disposition,
+                        &language_name,
+                        cx,
+                    );
+                    if let Some(state) = self.language_servers.get(&server_id)
+                        && let Some(workspace_folder) = workspace_folder
+                    {
+                        state.add_workspace_folder(workspace_folder);
+                    };
+                    server_id
+                })
+            })
+            .collect()
+    }
+
+    fn init_server_node(
+        &mut self,
+        node: &LanguageServerTreeNode,
+        worktree: &Entity<Worktree>,
+        lsp_delegate: Arc<LocalLspAdapterDelegate>,
+        language_name: &LanguageName,
+        cx: &mut App,
+    ) -> Option<LanguageServerId> {
+        node.server_id_or_init(|disposition| {
+            let path = &disposition.path;
+            let workspace_folder = workspace_folder_uri(worktree.read(cx), &path.path);
+            let key = LanguageServerSeed {
+                worktree_id: worktree.read(cx).id(),
+                name: disposition.server_name.clone(),
+                settings: LanguageServerSeedSettings {
+                    binary: disposition.settings.binary.clone(),
+                    initialization_options: disposition.settings.initialization_options.clone(),
+                },
+                toolchain: self.toolchain_store.read(cx).active_toolchain(
+                    path.worktree_id,
+                    &path.path,
+                    language_name.clone(),
+                ),
+            };
+            self.language_server_ids.remove(&key);
+
+            let server_id = self.get_or_insert_language_server(
+                worktree,
+                lsp_delegate,
+                disposition,
+                language_name,
+                cx,
+            );
+            if let Some(state) = self.language_servers.get(&server_id)
+                && let Some(workspace_folder) = workspace_folder
+            {
+                state.add_workspace_folder(workspace_folder);
+            };
+            server_id
+        })
     }
 
     fn reuse_existing_language_server<'lang_name>(
@@ -6859,6 +6912,21 @@ impl LspStore {
         };
 
         let mut messages_to_report = Vec::new();
+        let registered_for_buffer = |language_server_id: LanguageServerId,
+                                     name: Option<LanguageServerName>,
+                                     buffer_abs_path: String,
+                                     buffer_id: BufferId| {
+            LspStoreEvent::LanguageServerUpdate {
+                language_server_id,
+                name,
+                message: proto::update_language_server::Variant::RegisteredForBuffer(
+                    proto::RegisteredForBuffer {
+                        buffer_abs_path,
+                        buffer_id: buffer_id.to_proto(),
+                    },
+                ),
+            }
+        };
         let (new_tree, to_stop, replacements) = {
             let mut rebase = local.lsp_tree.rebase();
             let registered_buffers = buffer_store
@@ -6909,19 +6977,21 @@ impl LspStore {
                 .filter_map(|(file, language, buffer_id)| {
                     let file = VirtualDocumentFile::from_dyn(Some(file))?;
                     let (server_name, roots) = local.virtual_document_roots(file)?;
+                    let server_id = local.virtual_document_server_id(file);
                     Some(roots.into_iter().map(move |root| {
                         (
                             root,
                             language.clone(),
                             file.uri().to_string(),
                             *buffer_id,
-                            Some(server_name.clone()),
+                            Some((server_name.clone(), server_id)),
                         )
                     }))
                 })
                 .flatten()
                 .collect::<Vec<_>>();
-            for (worktree_path, language, buffer_label, buffer_id, only_server) in
+            let mut virtual_document_nodes = Vec::new();
+            for (worktree_path, language, buffer_label, buffer_id, virtual_document_server) in
                 file_documents.into_iter().chain(virtual_documents)
             {
                 let worktree_id = worktree_path.worktree_id;
@@ -6952,70 +7022,68 @@ impl LspStore {
                             worktree_path,
                             language.name(),
                             language.manifest(),
+                            virtual_document_server
+                                .as_ref()
+                                .map(|(server_name, _)| server_name.clone()),
                             delegate.clone(),
                             cx,
                         )
                         .collect::<Vec<_>>();
                     for node in nodes {
                         if let Some(name) = node.name()
-                            && (stopped_language_servers.contains(&name)
-                                || only_server.as_ref().is_some_and(|only| *only != name))
+                            && stopped_language_servers.contains(&name)
                         {
                             continue;
                         }
-                        let server_id = node.server_id_or_init(|disposition| {
-                            let path = &disposition.path;
-                            let workspace_folder =
-                                workspace_folder_uri(worktree.read(cx), &path.path);
-                            let key = LanguageServerSeed {
-                                worktree_id,
-                                name: disposition.server_name.clone(),
-                                settings: LanguageServerSeedSettings {
-                                    binary: disposition.settings.binary.clone(),
-                                    initialization_options: disposition
-                                        .settings
-                                        .initialization_options
-                                        .clone(),
-                                },
-                                toolchain: local.toolchain_store.read(cx).active_toolchain(
-                                    path.worktree_id,
-                                    &path.path,
-                                    language.name(),
-                                ),
-                            };
-                            local.language_server_ids.remove(&key);
-
-                            let server_id = local.get_or_insert_language_server(
-                                &worktree,
+                        if let Some((_, server_id)) = &virtual_document_server {
+                            virtual_document_nodes.push((
+                                *server_id,
+                                node,
+                                worktree.clone(),
                                 lsp_delegate.clone(),
-                                disposition,
-                                &language.name(),
-                                cx,
-                            );
-                            if let Some(state) = local.language_servers.get(&server_id)
-                                && let Some(workspace_folder) = workspace_folder
-                            {
-                                state.add_workspace_folder(workspace_folder);
-                            };
-                            server_id
-                        });
+                                language.clone(),
+                                buffer_label.clone(),
+                                buffer_id,
+                            ));
+                            continue;
+                        }
+                        let server_id = local.init_server_node(
+                            &node,
+                            &worktree,
+                            lsp_delegate.clone(),
+                            &language.name(),
+                            cx,
+                        );
 
                         if let Some(language_server_id) = server_id {
-                            messages_to_report.push(LspStoreEvent::LanguageServerUpdate {
+                            messages_to_report.push(registered_for_buffer(
                                 language_server_id,
-                                name: node.name(),
-                                message:
-                                    proto::update_language_server::Variant::RegisteredForBuffer(
-                                        proto::RegisteredForBuffer {
-                                            buffer_abs_path: buffer_label.clone(),
-                                            buffer_id: buffer_id.to_proto(),
-                                        },
-                                    ),
-                            });
+                                node.name(),
+                                buffer_label.clone(),
+                                buffer_id,
+                            ));
                         }
                     }
                 } else {
                     continue;
+                }
+            }
+            for (server_id, node, worktree, lsp_delegate, language, buffer_label, buffer_id) in
+                virtual_document_nodes
+            {
+                let language_server_id =
+                    if server_id.is_some_and(|server_id| rebase.keeps(server_id)) {
+                        node.server_id()
+                    } else {
+                        local.init_server_node(&node, &worktree, lsp_delegate, &language.name(), cx)
+                    };
+                if let Some(language_server_id) = language_server_id {
+                    messages_to_report.push(registered_for_buffer(
+                        language_server_id,
+                        node.name(),
+                        buffer_label,
+                        buffer_id,
+                    ));
                 }
             }
             rebase.finish()

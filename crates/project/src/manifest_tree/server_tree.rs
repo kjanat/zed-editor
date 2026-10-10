@@ -397,15 +397,19 @@ impl ServerTreeRebase {
         path: ProjectPath,
         language_name: LanguageName,
         manifest_name: Option<&ManifestName>,
+        only_server: Option<LanguageServerName>,
         delegate: Arc<dyn ManifestDelegate>,
         cx: &'a mut App,
     ) -> impl Iterator<Item = LanguageServerTreeNode> + 'a {
         let manifest =
             self.new_tree
                 .manifest_location_for_path(&path, manifest_name, &delegate, cx);
-        let adapters = self
+        let mut adapters = self
             .new_tree
             .adapters_for_language(&manifest, &language_name, cx);
+        if let Some(only_server) = only_server {
+            adapters.retain(|name, _| *name == only_server);
+        }
 
         self.new_tree
             .init_with_adapters(manifest, language_name, adapters, cx)
@@ -471,6 +475,10 @@ impl ServerTreeRebase {
                 .collect(),
             replacements,
         )
+    }
+
+    pub(crate) fn keeps(&self, id: LanguageServerId) -> bool {
+        self.rebased_server_ids.contains(&id)
     }
 
     pub(crate) fn server_tree(&mut self) -> &mut LanguageServerTree {
