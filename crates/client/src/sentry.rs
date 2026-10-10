@@ -746,7 +746,16 @@ mod tests {
             ),
         ])
         .unwrap();
-        assert_eq!(envelopes.len(), 3);
+        let bodies: Vec<Vec<&str>> = envelopes
+            .iter()
+            .map(|envelope| match &envelope.items[..] {
+                [Item::Logs(records)] => {
+                    records.iter().map(|record| record.body.as_str()).collect()
+                }
+                items => panic!("unexpected items {items:?}"),
+            })
+            .collect();
+        assert_eq!(bodies, [vec!["first"], vec!["second", "third"]]);
         for envelope in &envelopes {
             let bytes = envelope.to_bytes(Utc::now()).unwrap();
             let lines = split_envelope(&bytes);
@@ -756,11 +765,11 @@ mod tests {
                 "log item is {length} bytes"
             );
         }
-        let [Item::Logs(third)] = &envelopes[2].items[..] else {
+        let [Item::Logs(last)] = &envelopes[1].items[..] else {
             panic!("expected one log item");
         };
         assert_eq!(
-            third[0].attributes,
+            last[1].attributes,
             BTreeMap::from([
                 ("kept".to_string(), Attribute::from("small")),
                 (
