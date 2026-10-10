@@ -168,6 +168,8 @@ fn generate_test_function(
                             let _entity_refcounts = #cx_varname.app.borrow().ref_counts_drop_handle();
                         ));
                         cx_teardowns.extend(quote!(
+                            // Releases entities the test dropped while its own parking setting still applies.
+                            #cx_varname.update(|_| {});
                             #cx_varname.run_until_parked();
                             #cx_varname.update(|cx| { cx.background_executor().forbid_parking(); cx.quit(); });
                             #cx_varname.run_until_parked();
@@ -242,6 +244,8 @@ fn generate_test_function(
                             inner_fn_args.extend(quote!(&mut #cx_varname_lock,));
                             cx_teardowns.extend(quote!(
                                     drop(#cx_varname_lock);
+                                    // Releases entities the test dropped while its own parking setting still applies.
+                                    #cx_varname.update(|_| {});
                                     #cx_varname.run_until_parked();
                                     #cx_varname.update(|cx| { cx.background_executor().forbid_parking(); cx.quit(); });
                                     #cx_varname.run_until_parked();
@@ -259,6 +263,8 @@ fn generate_test_function(
                                 let _entity_refcounts = #cx_varname.app.borrow().ref_counts_drop_handle();
                             ));
                             cx_teardowns.extend(quote!(
+                                // Releases entities the test dropped while its own parking setting still applies.
+                                #cx_varname.update(|_| {});
                                 #cx_varname.run_until_parked();
                                 #cx_varname.update(|cx| { cx.background_executor().forbid_parking(); cx.quit(); });
                                 #cx_varname.run_until_parked();

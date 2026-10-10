@@ -1277,12 +1277,52 @@ impl AnyWindowHandle {
 #[cfg(test)]
 mod tests {
     use crate::{
-        PathPromptOptions, SystemNotification, SystemNotificationAction,
-        SystemNotificationResponse, TestAppContext,
+        AppContext as _, ForegroundExecutor, PathPromptOptions, SystemNotification,
+        SystemNotificationAction, SystemNotificationResponse, Task, TestAppContext,
     };
     use std::cell::RefCell;
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::time::Duration;
+
+    struct BlocksOnDrop {
+        executor: ForegroundExecutor,
+    }
+
+    impl Drop for BlocksOnDrop {
+        fn drop(&mut self) {
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(10));
+                sender.send(()).ok();
+            });
+            self.executor.block_on(receiver).unwrap();
+        }
+    }
+
+    struct OwnsTask {
+        _task: Task<()>,
+    }
+
+    #[gpui::test]
+    async fn test_teardown_releases_dropped_entities_while_parking_is_allowed(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let entity = cx.new(|cx| {
+            let guard = BlocksOnDrop {
+                executor: cx.foreground_executor().clone(),
+            };
+            OwnsTask {
+                _task: cx.spawn(async move |_, _| {
+                    let _guard = guard;
+                    futures::future::pending::<()>().await;
+                }),
+            }
+        });
+        cx.run_until_parked();
+        drop(entity);
+    }
 
     #[gpui::test]
     async fn test_system_notifications_require_identity_and_replace_matching_tags(
