@@ -1495,7 +1495,7 @@ impl LocalLspStore {
         cx: &mut App,
     ) -> Vec<LanguageServerId> {
         if let Some(file) = VirtualDocumentFile::from_dyn(buffer.file()) {
-            return self.virtual_document_server_ids(file);
+            return self.virtual_document_server_id(file).into_iter().collect();
         }
         if let Some((file, language)) = File::from_dyn(buffer.file()).zip(buffer.language()) {
             let worktree_id = file.worktree_id(cx);
@@ -6832,7 +6832,7 @@ impl LspStore {
         };
 
         let mut messages_to_report = Vec::new();
-        let (new_tree, to_stop) = {
+        let (new_tree, to_stop, replacements) = {
             let mut rebase = local.lsp_tree.rebase();
             let buffers = buffer_store
                 .read(cx)
@@ -6959,6 +6959,7 @@ impl LspStore {
             cx.emit(message);
         }
         local.lsp_tree = new_tree;
+        local.rebind_virtual_documents(&buffer_store, &replacements, cx);
         for (id, _) in to_stop {
             self.stop_local_language_server(id, cx).detach();
         }

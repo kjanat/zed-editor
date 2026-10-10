@@ -1539,52 +1539,52 @@ async fn test_single_file_worktree_is_not_an_lsp_workspace_folder(cx: &mut gpui:
     assert_eq!(fake_server.server.workspace_folders(), BTreeSet::new());
 }
 
+struct PyprojectTomlManifestProvider;
+
+impl ManifestProvider for PyprojectTomlManifestProvider {
+    fn name(&self) -> ManifestName {
+        SharedString::new_static("pyproject.toml").into()
+    }
+
+    fn search(
+        &self,
+        ManifestQuery {
+            path,
+            depth,
+            delegate,
+        }: ManifestQuery,
+    ) -> Option<Arc<RelPath>> {
+        const WORKSPACE_LOCKFILES: &[&str] =
+            &["uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock"];
+
+        let mut innermost_pyproject = None;
+        let mut outermost_workspace_root = None;
+
+        for path in path.ancestors().take(depth) {
+            let pyproject_path = path.join(rel_path("pyproject.toml"));
+            if delegate.exists(&pyproject_path, Some(false)) {
+                if innermost_pyproject.is_none() {
+                    innermost_pyproject = Some(Arc::from(path));
+                }
+
+                let has_lockfile = WORKSPACE_LOCKFILES.iter().any(|lockfile| {
+                    let lockfile_path = path.join(rel_path(lockfile));
+                    delegate.exists(&lockfile_path, Some(false))
+                });
+                if has_lockfile {
+                    outermost_workspace_root = Some(Arc::from(path));
+                }
+            }
+        }
+
+        outermost_workspace_root.or(innermost_pyproject)
+    }
+}
+
 #[gpui::test]
 async fn test_running_multiple_instances_of_a_single_server_in_one_worktree(
     cx: &mut gpui::TestAppContext,
 ) {
-    pub(crate) struct PyprojectTomlManifestProvider;
-
-    impl ManifestProvider for PyprojectTomlManifestProvider {
-        fn name(&self) -> ManifestName {
-            SharedString::new_static("pyproject.toml").into()
-        }
-
-        fn search(
-            &self,
-            ManifestQuery {
-                path,
-                depth,
-                delegate,
-            }: ManifestQuery,
-        ) -> Option<Arc<RelPath>> {
-            const WORKSPACE_LOCKFILES: &[&str] =
-                &["uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock"];
-
-            let mut innermost_pyproject = None;
-            let mut outermost_workspace_root = None;
-
-            for path in path.ancestors().take(depth) {
-                let pyproject_path = path.join(rel_path("pyproject.toml"));
-                if delegate.exists(&pyproject_path, Some(false)) {
-                    if innermost_pyproject.is_none() {
-                        innermost_pyproject = Some(Arc::from(path));
-                    }
-
-                    let has_lockfile = WORKSPACE_LOCKFILES.iter().any(|lockfile| {
-                        let lockfile_path = path.join(rel_path(lockfile));
-                        delegate.exists(&lockfile_path, Some(false))
-                    });
-                    if has_lockfile {
-                        outermost_workspace_root = Some(Arc::from(path));
-                    }
-                }
-            }
-
-            outermost_workspace_root.or(innermost_pyproject)
-        }
-    }
-
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
 
@@ -1755,6 +1755,170 @@ async fn test_running_multiple_instances_of_a_single_server_in_one_worktree(
     assert_eq!(adapter.name(), LanguageServerName::new_static("ty"));
     // There's a new language server in town.
     assert_eq!(server.server_id(), LanguageServerId(1));
+}
+
+#[gpui::test]
+async fn test_deno_virtual_document_follows_the_replacement_of_its_server(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            ".zed": {
+                "settings.json": r#"
+                {
+                    "languages": {
+                        "Python": {
+                            "language_servers": ["ty"]
+                        }
+                    }
+                }"#
+            },
+            "project-a": {
+                "file.py": "",
+                "pyproject.toml": ""
+            },
+            "project-b": {
+                ".venv": {},
+                "file.py": "",
+                "pyproject.toml": ""
+            }
+        }),
+    )
+    .await;
+    cx.update(|cx| {
+        ManifestProvidersStore::global(cx).register(Arc::new(PyprojectTomlManifestProvider))
+    });
+
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    let mut fake_python_servers = language_registry.register_fake_lsp(
+        "Python",
+        FakeLspAdapter {
+            name: "ty",
+            ..Default::default()
+        },
+    );
+    language_registry.add(python_lang(fs.clone()));
+    let worktree_id = project.read_with(cx, |project, cx| {
+        project.worktrees(cx).next().unwrap().read(cx).id()
+    });
+
+    let (buffer_a, _handle_a) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/project-a/file.py"), cx)
+        })
+        .await
+        .unwrap();
+    let first_server = fake_python_servers.next().await.unwrap();
+    let (_buffer_b, _handle_b) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/project-b/file.py"), cx)
+        })
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+
+    let Toolchains {
+        toolchains: toolchains_for_b,
+        root_path,
+        ..
+    } = project
+        .update(cx, |project, cx| {
+            project.available_toolchains(
+                ProjectPath {
+                    worktree_id,
+                    path: rel_path("project-b/file.py").into(),
+                },
+                LanguageName::new_static("Python"),
+                cx,
+            )
+        })
+        .await
+        .expect("A toolchain to be discovered");
+    project
+        .update(cx, |project, cx| {
+            project.activate_toolchain(
+                ProjectPath {
+                    worktree_id,
+                    path: root_path,
+                },
+                toolchains_for_b.toolchains.into_iter().next().unwrap(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    let _toolchain_server = fake_python_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    let servers_for = |buffer: &Entity<Buffer>, cx: &mut gpui::TestAppContext| {
+        project.update(cx, |project, cx| {
+            project.lsp_store().update(cx, |lsp_store, cx| {
+                buffer.update(cx, |buffer, cx| {
+                    lsp_store
+                        .running_language_servers_for_local_buffer(buffer, cx)
+                        .map(|(_, server)| server.server_id())
+                        .collect::<Vec<_>>()
+                })
+            })
+        })
+    };
+    let servers_for_a = servers_for(&buffer_a, cx);
+    assert_eq!(servers_for_a, [first_server.server.server_id()]);
+
+    let stub_uri: Uri = "deno:/asset/stub.py".parse().unwrap();
+    first_server.set_request_handler::<project::lsp_store::deno_ext::VirtualTextDocument, _, _>(
+        |_, _| async move { Ok(Some("stub = 1\n".to_string())) },
+    );
+    let stub = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(stub_uri.clone(), servers_for_a[0], cx)
+        })
+        .await
+        .unwrap();
+    let _stub_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&stub, cx)
+    });
+    cx.executor().run_until_parked();
+    assert_eq!(servers_for(&stub, cx), servers_for_a);
+
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.project.lsp.0.insert(
+                    "ty".into(),
+                    settings::LspSettings {
+                        initialization_options: Some(json!({ "reconfigured": true })),
+                        ..Default::default()
+                    },
+                );
+            });
+        })
+    });
+    let replacement_servers = [
+        fake_python_servers.next().await.unwrap(),
+        fake_python_servers.next().await.unwrap(),
+    ];
+    cx.executor().run_until_parked();
+
+    let replaced_servers_for_a = servers_for(&buffer_a, cx);
+    assert_eq!(replaced_servers_for_a.len(), 1);
+    assert_ne!(replaced_servers_for_a, servers_for_a);
+    assert_eq!(servers_for(&stub, cx), replaced_servers_for_a);
+    for mut server in replacement_servers {
+        let opened_stub = server.server.server_id() == replaced_servers_for_a[0];
+        let mut opened_uris = Vec::new();
+        while let Some(Some(opened)) = server
+            .try_receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .now_or_never()
+        {
+            opened_uris.push(opened.text_document.uri);
+        }
+        assert_eq!(opened_uris.contains(&stub_uri), opened_stub);
+    }
 }
 
 #[gpui::test]

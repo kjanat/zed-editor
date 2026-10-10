@@ -356,6 +356,8 @@ pub(crate) struct ServerTreeRebase {
     /// Server IDs we've preserved for a new iteration of the tree. `all_server_ids - rebased_server_ids` is the
     /// set of server IDs that can be shut down.
     rebased_server_ids: BTreeSet<LanguageServerId>,
+    /// Old server IDs whose root now holds a node with a different identity.
+    replaced_server_ids: BTreeMap<LanguageServerId, LanguageServerTreeNode>,
 }
 
 impl ServerTreeRebase {
@@ -386,6 +388,7 @@ impl ServerTreeRebase {
             all_server_ids,
             new_tree,
             rebased_server_ids: BTreeSet::new(),
+            replaced_server_ids: BTreeMap::new(),
         }
     }
 
@@ -421,40 +424,52 @@ impl ServerTreeRebase {
                     .get(&disposition.path.worktree_id)
                     .and_then(|worktree_nodes| worktree_nodes.roots.get(&disposition.path.path))
                     .and_then(|roots| roots.get(&disposition.server_name))
-                    .filter(|(old_node, _)| {
-                        // Only compare settings that require server restart.
-                        // Dynamic settings (settings.settings) can be updated via DidChangeConfiguration
-                        // without restarting the server.
-                        disposition.toolchain == old_node.disposition.toolchain
-                            && disposition.settings.binary == old_node.disposition.settings.binary
-                            && disposition.settings.initialization_options
-                                == old_node.disposition.settings.initialization_options
-                    })
                 else {
                     return Some(node);
                 };
-                if let Some(existing_id) = existing_node.id.get() {
-                    self.rebased_server_ids.insert(*existing_id);
-                    live_node.id.set(*existing_id).ok();
+                let Some(existing_id) = existing_node.id.get().copied() else {
+                    return Some(node);
+                };
+                // Only compare settings that require server restart.
+                // Dynamic settings (settings.settings) can be updated via DidChangeConfiguration
+                // without restarting the server.
+                if disposition.toolchain == existing_node.disposition.toolchain
+                    && disposition.settings.binary == existing_node.disposition.settings.binary
+                    && disposition.settings.initialization_options
+                        == existing_node.disposition.settings.initialization_options
+                {
+                    self.rebased_server_ids.insert(existing_id);
+                    live_node.id.set(existing_id).ok();
+                } else {
+                    self.replaced_server_ids.insert(existing_id, node.clone());
                 }
 
                 Some(node)
             })
     }
 
-    /// Returns IDs of servers that are no longer referenced (and can be shut down).
+    /// Returns IDs of servers that are no longer referenced (and can be shut down),
+    /// and the server that took over the root of each of them.
     pub(crate) fn finish(
         self,
     ) -> (
         LanguageServerTree,
         BTreeMap<LanguageServerId, LanguageServerName>,
+        BTreeMap<LanguageServerId, LanguageServerId>,
     ) {
+        let replacements = self
+            .replaced_server_ids
+            .into_iter()
+            .filter(|(id, _)| !self.rebased_server_ids.contains(id))
+            .filter_map(|(id, node)| Some((id, node.server_id()?)))
+            .collect();
         (
             self.new_tree,
             self.all_server_ids
                 .into_iter()
                 .filter(|(id, _)| !self.rebased_server_ids.contains(id))
                 .collect(),
+            replacements,
         )
     }
 
