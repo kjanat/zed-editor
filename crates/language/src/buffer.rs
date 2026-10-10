@@ -95,6 +95,15 @@ impl Capability {
     pub fn editable(self) -> bool {
         matches!(self, Capability::ReadWrite)
     }
+
+    /// Returns the more restrictive of the two capabilities.
+    pub fn intersection(self, other: Self) -> Self {
+        match (self, other) {
+            (Capability::ReadOnly, _) | (_, Capability::ReadOnly) => Capability::ReadOnly,
+            (Capability::Read, _) | (_, Capability::Read) => Capability::Read,
+            (Capability::ReadWrite, Capability::ReadWrite) => Capability::ReadWrite,
+        }
+    }
 }
 
 pub type BufferRow = u32;
@@ -138,6 +147,7 @@ pub struct Buffer {
     completion_triggers_timestamp: clock::Lamport,
     deferred_ops: OperationQueue<Operation>,
     capability: Capability,
+    capability_limit: Capability,
     has_conflict: bool,
     /// Memoize calls to has_changes_since(saved_version).
     /// The contents of a cell are (self.version, has_changes) at the time of a last call.
@@ -1158,13 +1168,9 @@ impl Buffer {
                 .ok()
                 .context("unknown buffer capability")?,
         );
-        let capability = match (capability, host_capability) {
-            (Capability::ReadOnly, _) | (_, Capability::ReadOnly) => Capability::ReadOnly,
-            (Capability::Read, _) | (_, Capability::Read) => Capability::Read,
-            (Capability::ReadWrite, Capability::ReadWrite) => Capability::ReadWrite,
-        };
         let buffer = TextBuffer::new(replica_id, buffer_id, message.base_text);
-        let mut this = Self::build(buffer, file, capability, cx);
+        let mut this = Self::build(buffer, file, capability.intersection(host_capability), cx);
+        this.capability_limit = host_capability;
         this.text.set_line_ending(proto::deserialize_line_ending(
             rpc::proto::LineEnding::try_from(message.line_ending)
                 .ok()
@@ -1289,6 +1295,7 @@ impl Buffer {
             branch_state: None,
             file,
             capability,
+            capability_limit: capability,
             syntax_map,
             reparse: None,
             non_text_state_update_count: 0,
@@ -1759,6 +1766,12 @@ impl Buffer {
     /// Returns the [`ModelineSettings`].
     pub fn modeline(&self) -> Option<&Arc<ModelineSettings>> {
         self.modeline.as_ref()
+    }
+
+    /// Assign the buffer a new [`Capability`], restricted to the one it was created with or
+    /// received from its host.
+    pub fn set_capability_within_limit(&mut self, capability: Capability, cx: &mut Context<Self>) {
+        self.set_capability(capability.intersection(self.capability_limit), cx);
     }
 
     /// Assign the buffer a new [`Capability`].

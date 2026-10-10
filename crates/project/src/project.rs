@@ -3107,7 +3107,9 @@ impl Project {
 
             *capability = new_capability;
             for buffer in self.opened_buffers(cx) {
-                buffer.update(cx, |buffer, cx| buffer.set_capability(new_capability, cx));
+                buffer.update(cx, |buffer, cx| {
+                    buffer.set_capability_within_limit(new_capability, cx)
+                });
             }
         }
     }

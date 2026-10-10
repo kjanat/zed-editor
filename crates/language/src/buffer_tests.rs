@@ -109,6 +109,14 @@ fn test_replica_takes_the_more_restrictive_capability(cx: &mut TestAppContext) {
             expected,
             "host {host:?}, guest {guest:?}"
         );
+        replica.update(cx, |replica, cx| {
+            replica.set_capability_within_limit(Capability::ReadWrite, cx)
+        });
+        assert_eq!(
+            replica.read_with(cx, |replica, _| replica.capability()),
+            host,
+            "host {host:?}, guest {guest:?} promoted"
+        );
     }
 }
 

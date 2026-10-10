@@ -23,6 +23,7 @@ use project::{
         *,
     },
 };
+use rpc::proto;
 use serde_json::json;
 use settings::{ScanSymlinksSetting, SettingsStore};
 use unindent::Unindent;
@@ -316,7 +317,7 @@ async fn test_open_buffer_via_lsp_loads_deno_virtual_documents(cx: &mut TestAppC
     let mut fake_servers =
         language_registry.register_fake_lsp("TypeScript", FakeLspAdapter::default());
 
-    project
+    let (main_buffer, _main_handle) = project
         .update(cx, |project, cx| {
             project.open_local_buffer_with_lsp(path!("/root/main.ts"), cx)
         })
@@ -402,6 +403,25 @@ async fn test_open_buffer_via_lsp_loads_deno_virtual_documents(cx: &mut TestAppC
     project.read_with(cx, |project, cx| {
         assert_eq!(project.worktrees(cx).count(), 1);
     });
+
+    let capabilities = |cx: &mut TestAppContext| {
+        [&main_buffer, &buffer].map(|buffer| buffer.read_with(cx, |buffer, _| buffer.capability()))
+    };
+    project.update(cx, |project, cx| {
+        project.mark_as_collab_for_testing();
+        project.set_role(proto::ChannelRole::Guest, cx);
+    });
+    assert_eq!(
+        capabilities(cx),
+        [Capability::ReadOnly, Capability::ReadOnly]
+    );
+    project.update(cx, |project, cx| {
+        project.set_role(proto::ChannelRole::Member, cx)
+    });
+    assert_eq!(
+        capabilities(cx),
+        [Capability::ReadWrite, Capability::ReadOnly]
+    );
 }
 
 #[gpui::test]
