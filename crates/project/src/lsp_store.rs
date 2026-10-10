@@ -5811,28 +5811,44 @@ impl LspStore {
                         this.update(cx, |this, cx| {
                             this.buffer_store.clone().update(cx, |buffer_store, cx| {
                                 for buffer in buffer_store.buffers() {
-                                    if let Some(f) = File::from_dyn(buffer.read(cx).file()).cloned()
+                                    let file = buffer.read(cx).file().cloned();
+                                    let registered = this.as_local().is_some_and(|local| {
+                                        local
+                                            .registered_buffers
+                                            .contains_key(&buffer.read(cx).remote_id())
+                                    });
+                                    let document_uri = if let Some(file) =
+                                        File::from_dyn(file.as_ref())
                                     {
-                                        // Detach before the language is unassigned: the
-                                        // detachment resolves the buffer's servers through
-                                        // its current language, and with the language gone
-                                        // it skips didClose and leaks the per-server state
-                                        // while still dropping the snapshots.
-                                        if let Some(local) = this.as_local_mut()
-                                            && local
-                                                .registered_buffers
-                                                .contains_key(&buffer.read(cx).remote_id())
-                                            && let Some(file_url) =
-                                                file_path_to_lsp_url(&f.abs_path(cx)).log_err()
-                                        {
-                                            local.unregister_buffer_from_language_servers(
-                                                &buffer, &file_url, cx,
-                                            );
-                                        }
-                                        buffer.update(cx, |buffer, cx| {
-                                            buffer.set_language_async(None, cx)
-                                        });
+                                        registered
+                                            .then(|| {
+                                                file_path_to_lsp_url(&file.abs_path(cx)).log_err()
+                                            })
+                                            .flatten()
+                                    } else if let Some(file) =
+                                        VirtualDocumentFile::from_dyn(file.as_ref())
+                                    {
+                                        registered.then(|| file.uri().clone())
+                                    } else {
+                                        continue;
+                                    };
+                                    // Detach before the language is unassigned: the
+                                    // detachment resolves the buffer's servers through
+                                    // its current language, and with the language gone
+                                    // it skips didClose and leaks the per-server state
+                                    // while still dropping the snapshots.
+                                    if let Some(document_uri) = document_uri
+                                        && let Some(local) = this.as_local_mut()
+                                    {
+                                        local.unregister_buffer_from_language_servers(
+                                            &buffer,
+                                            &document_uri,
+                                            cx,
+                                        );
                                     }
+                                    buffer.update(cx, |buffer, cx| {
+                                        buffer.set_language_async(None, cx)
+                                    });
                                 }
                             });
                         });

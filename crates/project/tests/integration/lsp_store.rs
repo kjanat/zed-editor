@@ -910,6 +910,95 @@ async fn test_deno_virtual_documents_are_scoped_to_their_server(cx: &mut TestApp
     assert_eq!(reopened, buffers[0]);
 }
 
+#[gpui::test]
+async fn test_registry_reload_reopens_deno_virtual_documents(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "main.ts": "stat();" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.register_test_language(LanguageConfig {
+        name: "TypeScript".into(),
+        matcher: Arc::new(LanguageMatcher {
+            path_suffixes: vec!["ts".into()],
+            ..LanguageMatcher::default()
+        }),
+        ..LanguageConfig::default()
+    });
+    let mut fake_servers =
+        language_registry.register_fake_lsp("TypeScript", FakeLspAdapter::default());
+
+    let (_main_buffer, _main_handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/root/main.ts"), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    let mut fake_server = fake_servers.next().await.unwrap();
+    fake_server.set_request_handler::<deno_ext::VirtualTextDocument, _, _>(|_, _| async move {
+        Ok(Some("declare namespace Deno {}\n".to_string()))
+    });
+
+    let lib_uri: Uri = "deno:/asset/lib.deno.ns.d.ts".parse().unwrap();
+    let lib = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_via_lsp(lib_uri.clone(), fake_server.server.server_id(), cx)
+        })
+        .await
+        .unwrap();
+    let _lib_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&lib, cx)
+    });
+    cx.run_until_parked();
+    loop {
+        let opened = fake_server
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await;
+        if opened.text_document.uri == lib_uri {
+            break;
+        }
+    }
+
+    language_registry.reload();
+    cx.run_until_parked();
+
+    loop {
+        let closed = fake_server
+            .receive_notification::<lsp::notification::DidCloseTextDocument>()
+            .await;
+        if closed.text_document.uri == lib_uri {
+            break;
+        }
+    }
+    let reopened = loop {
+        let opened = fake_server
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await;
+        if opened.text_document.uri == lib_uri {
+            break opened;
+        }
+    };
+    assert_eq!(
+        reopened.text_document,
+        lsp::TextDocumentItem::new(
+            lib_uri,
+            "typescript".to_string(),
+            0,
+            "declare namespace Deno {}\n".to_string(),
+        )
+    );
+    lib.read_with(cx, |lib, _| {
+        assert_eq!(
+            lib.language().map(|language| language.name()),
+            Some("TypeScript".into())
+        );
+    });
+}
+
 struct SharedRustServer {
     project: Entity<Project>,
     fake_server: lsp::FakeLanguageServer,
