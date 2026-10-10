@@ -5550,13 +5550,7 @@ impl LspCommand for GetDocumentDiagnostics {
         cx: AsyncApp,
     ) -> Result<Self::Response> {
         let url = buffer.read_with(&cx, |buffer, cx| {
-            buffer
-                .file()
-                .and_then(|file| file.as_local())
-                .map(|file| {
-                    let abs_path = file.abs_path(cx);
-                    file_path_to_lsp_url(&abs_path)
-                })
+            lsp_document_uri(buffer, cx)
                 .transpose()?
                 .with_context(|| format!("missing url on buffer {}", buffer.remote_id()))
         })?;

@@ -1872,7 +1872,6 @@ async fn test_remote_definition_in_deno_virtual_document(
 
     let capabilities = lsp::ServerCapabilities {
         definition_provider: Some(lsp::OneOf::Left(true)),
-        hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
         ..lsp::ServerCapabilities::default()
     };
     cx.update_entity(&project, |project, _| {
@@ -1992,6 +1991,22 @@ async fn test_remote_definition_in_deno_virtual_document(
         .receive_notification::<lsp::notification::DidOpenTextDocument>()
         .await;
     assert_eq!(adapter_opened.text_document.uri, adapter_uri);
+
+    fake_lsp
+        .request::<lsp::request::RegisterCapability>(
+            lsp::RegistrationParams {
+                registrations: vec![lsp::Registration {
+                    id: "deno-hover".to_string(),
+                    method: "textDocument/hover".to_string(),
+                    register_options: Some(json!({ "documentSelector": [{ "scheme": "deno" }] })),
+                }],
+            },
+            DEFAULT_LSP_REQUEST_TIMEOUT,
+        )
+        .await
+        .into_response()
+        .unwrap();
+    cx.run_until_parked();
 
     fake_lsp.set_request_handler::<lsp::request::HoverRequest, _, _>({
         let adapter_uri = adapter_uri.clone();

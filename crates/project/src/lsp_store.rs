@@ -6015,6 +6015,13 @@ impl LspStore {
                 local_store.unregister_buffer_from_language_servers(buffer_entity, &file_url, cx);
             detached_abs_path = Some(abs_path);
         }
+        if let Some(local_store) = self.as_local_mut()
+            && local_store.registered_buffers.contains_key(&buffer_id)
+            && let Some(uri) =
+                VirtualDocumentFile::from_dyn(buffer_file.as_ref()).map(|file| file.uri().clone())
+        {
+            local_store.unregister_buffer_from_language_servers(buffer_entity, &uri, cx);
+        }
         buffer_entity.update(cx, |buffer, cx| {
             if buffer
                 .language()
@@ -6378,7 +6385,12 @@ impl LspStore {
     ) -> bool {
         let registration_method = text_document_registration_method(method);
         let language = buffer.read(cx).language().map(|language| language.name());
-        let context = self.remote_document_selector_context(server_id, language.as_ref());
+        let mut context = self.remote_document_selector_context(server_id, language.as_ref());
+        if let Some(context) = context.as_mut()
+            && VirtualDocumentFile::from_dyn(buffer.read(cx).file()).is_some()
+        {
+            context.scheme = deno_ext::SCHEME;
+        }
         remote_text_document_capabilities_match(
             self.lsp_server_initial_capabilities.get(&server_id),
             self.lsp_server_capabilities.get(&server_id),
@@ -14748,9 +14760,14 @@ impl LspStore {
         cx: &mut Context<Self>,
     ) -> Result<()> {
         anyhow::ensure!(self.mode.is_local(), "called update_diagnostics on remote");
+        let mut virtual_document_updates = Vec::new();
         let updates = lsp_diagnostics
             .into_iter()
             .filter_map(|update| {
+                if update.diagnostics.uri.scheme() == deno_ext::SCHEME {
+                    virtual_document_updates.push(update);
+                    return None;
+                }
                 let abs_path = update.diagnostics.uri.to_file_path().ok()?;
                 Some(DocumentDiagnosticsUpdate {
                     diagnostics: self.lsp_to_document_diagnostics(
@@ -14768,7 +14785,10 @@ impl LspStore {
                 })
             })
             .collect();
-        self.merge_diagnostic_entries(updates, merge, cx)?;
+        self.merge_diagnostic_entries(updates, merge.clone(), cx)?;
+        for update in virtual_document_updates {
+            self.merge_virtual_document_diagnostics(source_kind, update, merge.clone(), cx);
+        }
         Ok(())
     }
 

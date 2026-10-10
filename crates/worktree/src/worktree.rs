@@ -4097,6 +4097,7 @@ impl language::File for File {
             size: self.disk_state.size(),
             inode: self.disk_state.inode(),
             device: self.disk_state.device(),
+            virtual_document: None,
         }
     }
 

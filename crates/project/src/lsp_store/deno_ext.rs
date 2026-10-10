@@ -1,13 +1,14 @@
-use std::{any::Any, path::PathBuf, sync::Arc};
+use std::{any::Any, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{App, Context, Entity, Task};
-use language::{Buffer, DiskState};
+use language::{Buffer, Diagnostic, DiagnosticSourceKind, DiskState, ToPointUtf16 as _, Unclipped};
 use lsp::{LanguageServerId, LanguageServerName, Uri};
 use rpc::proto;
 use serde::{Deserialize, Serialize};
 use settings::Settings as _;
 use util::{
+    ResultExt as _,
     paths::{PathStyle, UrlExt as _},
     rel_path::RelPath,
 };
@@ -15,7 +16,10 @@ use worktree::WorktreeId;
 
 use crate::{
     LspStore, ProjectSettings,
-    lsp_store::{LanguageServerState, LocalLspStore, LspBufferSnapshot, LspStoreEvent},
+    lsp_store::{
+        DocumentDiagnosticsUpdate, LanguageServerState, LocalLspStore, LspBufferSnapshot,
+        LspStoreEvent,
+    },
 };
 
 pub const SCHEME: &str = "deno";
@@ -58,6 +62,17 @@ impl VirtualDocumentFile {
             worktree_id,
             server_name,
         })
+    }
+
+    pub fn from_proto(file: proto::File) -> Result<Self> {
+        let virtual_document = file
+            .virtual_document
+            .context("file is not a virtual document")?;
+        Self::new(
+            Uri::from_str(&virtual_document.uri)?,
+            WorktreeId::from_proto(file.worktree_id),
+            LanguageServerName(virtual_document.server_name.into()),
+        )
     }
 
     pub fn from_dyn(file: Option<&Arc<dyn language::File>>) -> Option<&Self> {
@@ -113,6 +128,10 @@ impl language::File for VirtualDocumentFile {
             size: None,
             inode: None,
             device: None,
+            virtual_document: Some(proto::VirtualDocument {
+                uri: self.uri.to_string(),
+                server_name: self.server_name.to_string(),
+            }),
         }
     }
 
@@ -128,9 +147,6 @@ impl LspStore {
         language_server_id: LanguageServerId,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Buffer>>> {
-        if let Some(buffer) = self.open_virtual_document(&uri, cx) {
-            return Task::ready(Ok(buffer));
-        }
         let Some(server) = self.language_server_for_id(language_server_id) else {
             return Task::ready(Err(anyhow!(
                 "language server {language_server_id} is not running"
@@ -164,6 +180,9 @@ impl LspStore {
             Ok(file) => file,
             Err(error) => return Task::ready(Err(error)),
         };
+        if let Some(buffer) = self.open_virtual_document(&file, cx) {
+            return Task::ready(Ok(buffer));
+        }
         let request_timeout = ProjectSettings::get_global(cx)
             .global_lsp_settings
             .get_request_timeout();
@@ -180,7 +199,7 @@ impl LspStore {
                 .with_context(|| format!("{} failed to load {uri}", server.name()))?
                 .with_context(|| format!("{} has no document for {uri}", server.name()))?;
             lsp_store.update(cx, |lsp_store, cx| {
-                if let Some(buffer) = lsp_store.open_virtual_document(&uri, cx) {
+                if let Some(buffer) = lsp_store.open_virtual_document(&file, cx) {
                     return buffer;
                 }
                 lsp_store.buffer_store.update(cx, |buffer_store, cx| {
@@ -190,11 +209,76 @@ impl LspStore {
         })
     }
 
-    fn open_virtual_document(&self, uri: &Uri, cx: &App) -> Option<Entity<Buffer>> {
+    fn open_virtual_document(
+        &self,
+        file: &VirtualDocumentFile,
+        cx: &App,
+    ) -> Option<Entity<Buffer>> {
         self.buffer_store.read(cx).buffers().find(|buffer| {
-            VirtualDocumentFile::from_dyn(buffer.read(cx).file())
-                .is_some_and(|file| file.uri == *uri)
+            VirtualDocumentFile::from_dyn(buffer.read(cx).file()).is_some_and(|open| {
+                open.uri == file.uri
+                    && open.worktree_id == file.worktree_id
+                    && open.server_name == file.server_name
+            })
         })
+    }
+
+    pub(super) fn merge_virtual_document_diagnostics(
+        &mut self,
+        source_kind: DiagnosticSourceKind,
+        update: DocumentDiagnosticsUpdate<'_, lsp::PublishDiagnosticsParams>,
+        merge: impl Fn(&Uri, &Diagnostic, &App) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        let uri = update.diagnostics.uri.clone();
+        let server_id = update.server_id;
+        let Some(local) = self.as_local() else {
+            return;
+        };
+        let Some(buffer) = self.buffer_store.read(cx).buffers().find(|buffer| {
+            VirtualDocumentFile::from_dyn(buffer.read(cx).file()).is_some_and(|file| {
+                file.uri == uri && local.virtual_document_server_ids(file).contains(&server_id)
+            })
+        }) else {
+            log::warn!("skipping diagnostics update, no open virtual document for {uri}");
+            return;
+        };
+        let diagnostics = self.lsp_to_document_diagnostics(
+            PathBuf::new(),
+            source_kind,
+            server_id,
+            update.diagnostics,
+            &update.disk_based_sources,
+            update.registration_id.clone(),
+        );
+        let snapshot = buffer.read(cx).snapshot();
+        let reused_diagnostics = buffer
+            .read(cx)
+            .buffer_diagnostics(Some(server_id))
+            .iter()
+            .filter(|entry| merge(&uri, &entry.diagnostic, cx))
+            .map(|entry| {
+                (*entry).clone().map_coordinates(|range| {
+                    Unclipped(range.start.to_point_utf16(&snapshot))
+                        ..Unclipped(range.end.to_point_utf16(&snapshot))
+                })
+            })
+            .collect::<Vec<_>>();
+        if let Some(local) = self.as_local_mut() {
+            local
+                .update_buffer_diagnostics(
+                    &buffer,
+                    server_id,
+                    Some(update.registration_id),
+                    update.result_id,
+                    diagnostics.version,
+                    diagnostics.diagnostics,
+                    reused_diagnostics,
+                    cx,
+                )
+                .with_context(|| format!("updating diagnostics for {uri}"))
+                .log_err();
+        }
     }
 }
 

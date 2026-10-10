@@ -1,6 +1,6 @@
 use crate::{
     ProjectPath,
-    lsp_store::OpenLspBufferHandle,
+    lsp_store::{OpenLspBufferHandle, deno_ext::VirtualDocumentFile},
     worktree_store::{WorktreeStore, WorktreeStoreEvent},
 };
 use anyhow::{Context as _, Result, anyhow};
@@ -234,7 +234,10 @@ impl RemoteBufferStore {
 
                 let buffer_file_result = maybe!({
                     let mut buffer_file = None;
-                    if let Some(file) = state.file.take() {
+                    if let Some(file) = state.file.take_if(|file| file.virtual_document.is_some()) {
+                        buffer_file = Some(Arc::new(VirtualDocumentFile::from_proto(file)?)
+                            as Arc<dyn language::File>);
+                    } else if let Some(file) = state.file.take() {
                         let worktree_id = worktree::WorktreeId::from_proto(file.worktree_id);
                         let worktree = self
                             .worktree_store
