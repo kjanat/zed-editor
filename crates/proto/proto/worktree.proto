@@ -21,7 +21,6 @@ message File {
 
 message VirtualDocument {
   string uri = 1;
-  string server_name = 2;
 }
 
 message Entry {

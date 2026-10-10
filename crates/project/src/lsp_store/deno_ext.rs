@@ -3,7 +3,7 @@ use std::{any::Any, path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{App, Context, Entity, Task};
 use language::{Buffer, Diagnostic, DiagnosticSourceKind, DiskState, ToPointUtf16 as _, Unclipped};
-use lsp::{LanguageServerId, LanguageServerName, Uri};
+use lsp::{LanguageServerId, Uri};
 use rpc::proto;
 use serde::{Deserialize, Serialize};
 use settings::Settings as _;
@@ -17,8 +17,8 @@ use worktree::WorktreeId;
 use crate::{
     LspStore, ProjectSettings,
     lsp_store::{
-        DocumentDiagnosticsUpdate, LanguageServerState, LocalLspStore, LspBufferSnapshot,
-        LspStoreEvent,
+        DocumentDiagnosticsUpdate, LanguageServerSeed, LanguageServerState, LocalLspStore,
+        LspBufferSnapshot, LspStoreEvent,
     },
 };
 
@@ -44,11 +44,11 @@ pub struct VirtualDocumentFile {
     path: Arc<RelPath>,
     full_path: PathBuf,
     worktree_id: WorktreeId,
-    server_name: LanguageServerName,
+    server: Option<LanguageServerSeed>,
 }
 
 impl VirtualDocumentFile {
-    fn new(uri: Uri, worktree_id: WorktreeId, server_name: LanguageServerName) -> Result<Self> {
+    fn new(uri: Uri, worktree_id: WorktreeId, server: Option<LanguageServerSeed>) -> Result<Self> {
         let path = uri
             .to_file_path_ext(PathStyle::Unix)
             .map_err(|()| anyhow!("{uri} has no path"))?;
@@ -60,7 +60,7 @@ impl VirtualDocumentFile {
             path,
             full_path,
             worktree_id,
-            server_name,
+            server,
         })
     }
 
@@ -71,7 +71,7 @@ impl VirtualDocumentFile {
         Self::new(
             Uri::from_str(&virtual_document.uri)?,
             WorktreeId::from_proto(file.worktree_id),
-            LanguageServerName(virtual_document.server_name.into()),
+            None,
         )
     }
 
@@ -130,7 +130,6 @@ impl language::File for VirtualDocumentFile {
             device: None,
             virtual_document: Some(proto::VirtualDocument {
                 uri: self.uri.to_string(),
-                server_name: self.server_name.to_string(),
             }),
         }
     }
@@ -152,15 +151,16 @@ impl LspStore {
                 "language server {language_server_id} is not running"
             )));
         };
-        let worktree_id = self
-            .as_local()
-            .and_then(|local| {
-                local
-                    .language_server_ids
-                    .iter()
-                    .find(|(_, server)| server.id == language_server_id)
-                    .map(|(seed, _)| seed.worktree_id)
-            })
+        let seed = self.as_local().and_then(|local| {
+            local
+                .language_server_ids
+                .iter()
+                .find(|(_, server)| server.id == language_server_id)
+                .map(|(seed, _)| seed.clone())
+        });
+        let worktree_id = seed
+            .as_ref()
+            .map(|seed| seed.worktree_id)
             .or_else(|| {
                 self.language_server_statuses
                     .get(&language_server_id)
@@ -176,7 +176,7 @@ impl LspStore {
         let Some(worktree_id) = worktree_id else {
             return Task::ready(Err(anyhow!("no worktree to open {uri} in")));
         };
-        let file = match VirtualDocumentFile::new(uri.clone(), worktree_id, server.name()) {
+        let file = match VirtualDocumentFile::new(uri.clone(), worktree_id, seed) {
             Ok(file) => file,
             Err(error) => return Task::ready(Err(error)),
         };
@@ -218,7 +218,7 @@ impl LspStore {
             VirtualDocumentFile::from_dyn(buffer.read(cx).file()).is_some_and(|open| {
                 open.uri == file.uri
                     && open.worktree_id == file.worktree_id
-                    && open.server_name == file.server_name
+                    && open.server == file.server
             })
         })
     }
@@ -287,12 +287,11 @@ impl LocalLspStore {
         &self,
         file: &VirtualDocumentFile,
     ) -> Vec<LanguageServerId> {
-        self.language_server_ids
-            .iter()
-            .filter(|(seed, _)| {
-                seed.worktree_id == file.worktree_id && seed.name == file.server_name
-            })
-            .map(|(_, server)| server.id)
+        file.server
+            .as_ref()
+            .and_then(|seed| self.language_server_ids.get(seed))
+            .map(|server| server.id)
+            .into_iter()
             .collect()
     }
 
