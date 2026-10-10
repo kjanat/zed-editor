@@ -1,7 +1,7 @@
 use std::{any::Any, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Context as _, Result, anyhow};
-use gpui::{App, Context, Entity, Task};
+use gpui::{App, Context, Entity, Task, TaskExt as _};
 use language::{Buffer, Diagnostic, DiagnosticSourceKind, DiskState, ToPointUtf16 as _, Unclipped};
 use lsp::{LanguageServer, LanguageServerId, LanguageServerName, Uri};
 use rpc::proto;
