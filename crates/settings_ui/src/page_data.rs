@@ -11799,7 +11799,7 @@ mod tests {
         store
             .set_server_settings(r#"{ "tab_size": 2 }"#, cx)
             .unwrap();
-        *active_language_mut().unwrap() = Some("Rust".into());
+        let _active_language = ActiveLanguage::set(Some("Rust"));
         let items = language_settings_data();
         let server = Check {
             store: &store,
@@ -11820,14 +11820,13 @@ mod tests {
             "languages.$(language).tab_size",
             (settings::SettingsFile::User, NonZeroU32::new(8).unwrap()),
         );
-        *active_language_mut().unwrap() = None;
     }
 
     #[gpui::test]
     fn test_language_field_uses_the_defaults_when_no_file_overrides_the_language(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         store.set_user_settings(r#"{ "tab_size": 3 }"#, cx).unwrap();
-        *active_language_mut().unwrap() = Some("Rust".into());
+        let _active_language = ActiveLanguage::set(Some("Rust"));
         let items = language_settings_data();
         let check = Check {
             store: &store,
@@ -11844,7 +11843,6 @@ mod tests {
             "languages.$(language).format_on_save",
             (settings::SettingsFile::Default, settings::FormatOnSave::On),
         );
-        *active_language_mut().unwrap() = None;
     }
 
     #[gpui::test]
@@ -11857,7 +11855,7 @@ mod tests {
                 cx,
             )
             .unwrap();
-        *active_language_mut().unwrap() = Some("Rust".into());
+        let _active_language = ActiveLanguage::set(Some("Rust"));
         let items = language_settings_data();
         let field =
             setting_field::<NonZeroU32>(setting_item(&items, "languages.$(language).tab_size"));
@@ -11879,7 +11877,6 @@ mod tests {
             Some(&NonZeroU32::new(3).unwrap())
         );
         assert!(!field.is_set_in_file(&store, settings::SettingsFile::User));
-        *active_language_mut().unwrap() = None;
     }
 
     #[gpui::test]
@@ -11888,7 +11885,7 @@ mod tests {
         store
             .set_user_settings(r#"{ "semantic_tokens": "full" }"#, cx)
             .unwrap();
-        *active_language_mut().unwrap() = Some("Rust".into());
+        let _active_language = ActiveLanguage::set(Some("Rust"));
         let items = non_editor_language_settings_data();
         let field = setting_field::<SemanticTokens>(setting_item(
             &items,
@@ -11898,14 +11895,13 @@ mod tests {
 
         assert!(field.is_set_in_file(&store, settings::SettingsFile::User));
         assert_eq!((field.pick)(&user_after_reset), None);
-        *active_language_mut().unwrap() = None;
     }
 
     #[gpui::test]
     fn test_language_defaults_field_reset_removes_its_value(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
-        *active_language_mut().unwrap() = None;
+        let _active_language = ActiveLanguage::set(None);
         let items = language_settings_data();
         let field =
             setting_field::<NonZeroU32>(setting_item(&items, "languages.$(language).tab_size"));
@@ -11926,7 +11922,7 @@ mod tests {
             .set_server_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
             .unwrap();
         cx.set_global(store);
-        *active_language_mut().unwrap() = Some("Rust".into());
+        let _active_language = ActiveLanguage::set(Some("Rust"));
         let items = language_settings_data();
         let item = setting_item(&items, "languages.$(language).tab_size");
         let server = SettingsUiFile::Server("server");
@@ -11947,7 +11943,30 @@ mod tests {
                 .reset_to_default_fn(&user, &settings::SettingsFile::User, cx)
                 .is_none()
         );
-        *active_language_mut().unwrap() = None;
+    }
+
+    static ACTIVE_LANGUAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ActiveLanguage {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ActiveLanguage {
+        fn set(language: Option<&'static str>) -> Self {
+            let lock = ACTIVE_LANGUAGE_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *active_language_mut().unwrap() = language.map(Into::into);
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for ActiveLanguage {
+        fn drop(&mut self) {
+            if let Some(mut active_language) = active_language_mut() {
+                active_language.take();
+            }
+        }
     }
 
     fn reset_content<T: 'static>(
