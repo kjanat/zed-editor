@@ -199,15 +199,13 @@ impl<T: 'static> SettingField<T> {
         store: &SettingsStore,
         file: settings::SettingsFile,
     ) -> bool {
-        self.json_path
-            .is_some_and(|json_path| json_path.starts_with("languages.$(language)"))
-            && active_language().is_some()
-            && with_language_defaults(|| {
+        active_language().is_some()
+            && read_language_defaults(|| {
                 store
                     .get_content_for_file(file)
                     .and_then(self.pick)
                     .is_some()
-            })
+            }) == Some(true)
     }
 
     /// Helper for settings with types that are not yet implemented.
@@ -1045,25 +1043,39 @@ fn active_language_mut() -> Option<std::sync::RwLockWriteGuard<'static, Option<S
     ACTIVE_LANGUAGE.write().ok()
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum LanguageRead {
+    Merged,
+    DefaultsOnly,
+    DefaultsRead,
+}
+
 thread_local! {
-    static READS_LANGUAGE_DEFAULTS: Cell<bool> = const { Cell::new(false) };
+    static LANGUAGE_READ: Cell<LanguageRead> = const { Cell::new(LanguageRead::Merged) };
 }
 
 fn reads_language_defaults() -> bool {
-    READS_LANGUAGE_DEFAULTS.get()
+    match LANGUAGE_READ.get() {
+        LanguageRead::Merged => false,
+        LanguageRead::DefaultsOnly | LanguageRead::DefaultsRead => {
+            LANGUAGE_READ.set(LanguageRead::DefaultsRead);
+            true
+        }
+    }
 }
 
-fn with_language_defaults<R>(read: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
+fn read_language_defaults<R>(read: impl FnOnce() -> R) -> Option<R> {
+    struct Restore(LanguageRead);
 
     impl Drop for Restore {
         fn drop(&mut self) {
-            READS_LANGUAGE_DEFAULTS.set(self.0);
+            LANGUAGE_READ.set(self.0);
         }
     }
 
-    let _restore = Restore(READS_LANGUAGE_DEFAULTS.replace(true));
-    read()
+    let _restore = Restore(LANGUAGE_READ.replace(LanguageRead::DefaultsOnly));
+    let value = read();
+    (LANGUAGE_READ.get() == LanguageRead::DefaultsRead).then_some(value)
 }
 
 pub struct SettingsWindow {

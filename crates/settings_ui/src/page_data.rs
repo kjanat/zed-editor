@@ -11948,6 +11948,27 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_defaults_only_field_reset_removes_its_value_on_a_language_page(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store
+            .set_user_settings(r#"{ "semantic_tokens": "full" }"#, cx)
+            .unwrap();
+        *active_language_mut().unwrap() = Some("Rust".into());
+        let items = non_editor_language_settings_data();
+        let field = setting_field::<SemanticTokens>(setting_item(
+            &items,
+            "languages.$(language).semantic_tokens",
+        ));
+
+        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
+        assert_eq!(
+            field.reset_value(&store, settings::SettingsFile::User, None),
+            None
+        );
+        *active_language_mut().unwrap() = None;
+    }
+
+    #[gpui::test]
     fn test_language_defaults_field_reset_removes_its_value(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
