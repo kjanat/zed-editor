@@ -168,32 +168,13 @@ impl<T: 'static> SettingField<T> {
         file: settings::SettingsFile,
         metadata: Option<&SettingsFieldMetadata>,
     ) -> (settings::SettingsFile, Option<&'a T>) {
-        self.lookups(Self::fallback(metadata))
-            .map(|lookup| lookup.run(|pick| store.get_value_from_file(file.clone(), pick)))
-            .find(|(_, value)| value.is_some())
-            .unwrap_or((settings::SettingsFile::Default, None))
-    }
-
-    fn lookups(
-        &self,
-        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
-    ) -> impl Iterator<Item = Lookup<T>> {
-        [
-            Some(Lookup {
-                pick: self.pick,
-                in_language_defaults: false,
-            }),
-            active_language().map(|_| Lookup {
-                pick: self.pick,
-                in_language_defaults: true,
-            }),
-            fallback.map(|pick| Lookup {
-                pick,
-                in_language_defaults: false,
-            }),
-        ]
-        .into_iter()
-        .flatten()
+        match (
+            store.get_value_from_file(file.clone(), self.pick),
+            Self::fallback(metadata),
+        ) {
+            ((_, None), Some(fallback)) => store.get_value_from_file(file, fallback),
+            (found, _) => found,
+        }
     }
 
     fn fallback(
@@ -210,8 +191,23 @@ impl<T: 'static> SettingField<T> {
         fallback: Option<fn(&SettingsContent) -> Option<&T>>,
     ) -> Option<&'a T> {
         let defaults = store.raw_default_settings();
-        self.lookups(fallback)
-            .find_map(|lookup| lookup.run(|pick| pick(defaults)))
+        (self.pick)(defaults).or_else(|| fallback.and_then(|fallback| fallback(defaults)))
+    }
+
+    fn keeps_language_default_after_reset(
+        &self,
+        store: &SettingsStore,
+        file: settings::SettingsFile,
+    ) -> bool {
+        self.json_path
+            .is_some_and(|json_path| json_path.starts_with("languages.$(language)"))
+            && active_language().is_some()
+            && with_language_defaults(|| {
+                store
+                    .get_content_for_file(file)
+                    .and_then(self.pick)
+                    .is_some()
+            })
     }
 
     /// Helper for settings with types that are not yet implemented.
@@ -222,21 +218,6 @@ impl<T: 'static> SettingField<T> {
             write: |_, _, _| unreachable!(),
             organization_override: None,
             json_path: self.json_path,
-        }
-    }
-}
-
-struct Lookup<T: 'static> {
-    pick: fn(&SettingsContent) -> Option<&T>,
-    in_language_defaults: bool,
-}
-
-impl<T: 'static> Lookup<T> {
-    fn run<R>(&self, read: impl FnOnce(fn(&SettingsContent) -> Option<&T>) -> R) -> R {
-        if self.in_language_defaults {
-            with_language_defaults(|| read(self.pick))
-        } else {
-            read(self.pick)
         }
     }
 }
@@ -258,11 +239,13 @@ impl<T: PartialEq + Clone + 'static> SettingField<T> {
         file: settings::SettingsFile,
         fallback: Option<fn(&SettingsContent) -> Option<&T>>,
     ) -> Option<T> {
-        let is_set_somewhere_other_than_default = self.lookups(fallback).any(|lookup| {
-            lookup.run(|pick| {
-                store.get_value_up_to_file(file.clone(), pick).0 != settings::SettingsFile::Default
-            })
-        });
+        let is_set_somewhere_other_than_default =
+            store.get_value_up_to_file(file.clone(), self.pick).0
+                != settings::SettingsFile::Default
+                || self.keeps_language_default_after_reset(store, file.clone())
+                || fallback.is_some_and(|fallback| {
+                    store.get_value_up_to_file(file, fallback).0 != settings::SettingsFile::Default
+                });
         if is_set_somewhere_other_than_default {
             self.default_value(store, fallback).cloned()
         } else {

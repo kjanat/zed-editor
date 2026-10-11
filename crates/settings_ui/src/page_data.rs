@@ -9474,14 +9474,16 @@ fn language_settings_field<T>(
 ) -> Option<&T> {
     let all_languages = &settings_content.project.all_languages;
 
-    match active_language().filter(|_| !reads_language_defaults()) {
-        Some(current_language_name) => all_languages
-            .languages
-            .0
-            .get(current_language_name.as_ref())
-            .and_then(get_language_setting_field),
-        None => get_language_setting_field(&all_languages.defaults),
-    }
+    active_language()
+        .filter(|_| !reads_language_defaults())
+        .and_then(|current_language_name| {
+            all_languages
+                .languages
+                .0
+                .get(current_language_name.as_ref())
+        })
+        .and_then(get_language_setting_field)
+        .or_else(|| get_language_setting_field(&all_languages.defaults))
 }
 
 fn language_settings_field_mut<T>(
@@ -11835,22 +11837,34 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_language_field_prefers_a_lower_language_override_over_higher_defaults(cx: &mut App) {
+    fn test_language_field_takes_higher_defaults_over_a_lower_language_override(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         store
-            .set_user_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
+            .set_user_settings(
+                r#"{ "tab_size": 3, "languages": { "Rust": { "tab_size": 8 } } }"#,
+                cx,
+            )
             .unwrap();
         store
             .set_server_settings(r#"{ "tab_size": 2 }"#, cx)
             .unwrap();
         *active_language_mut().unwrap() = Some("Rust".into());
         let items = language_settings_data();
-        let check = Check {
+        let server = Check {
             store: &store,
             file: settings::SettingsFile::Server,
         };
+        let user = Check {
+            store: &store,
+            file: settings::SettingsFile::User,
+        };
 
-        check.resolves(
+        server.resolves(
+            &items,
+            "languages.$(language).tab_size",
+            (settings::SettingsFile::Server, NonZeroU32::new(2).unwrap()),
+        );
+        user.resolves(
             &items,
             "languages.$(language).tab_size",
             (settings::SettingsFile::User, NonZeroU32::new(8).unwrap()),
@@ -11883,7 +11897,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_language_field_resets_over_lower_defaults(cx: &mut App) {
+    fn test_language_field_resets_over_lower_and_own_defaults(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
         store
@@ -11906,8 +11920,47 @@ mod tests {
             field.reset_value(&store, settings::SettingsFile::Server, None),
             default_tab_size
         );
-        assert!(!field.can_reset(&store, settings::SettingsFile::User, None));
+        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
+        assert_eq!(
+            field.reset_value(&store, settings::SettingsFile::User, None),
+            default_tab_size
+        );
         *active_language_mut().unwrap() = None;
+    }
+
+    #[gpui::test]
+    fn test_language_field_reset_removes_a_lone_language_override(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store
+            .set_user_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
+            .unwrap();
+        *active_language_mut().unwrap() = Some("Rust".into());
+        let items = language_settings_data();
+        let field =
+            setting_field::<NonZeroU32>(setting_item(&items, "languages.$(language).tab_size"));
+
+        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
+        assert_eq!(
+            field.reset_value(&store, settings::SettingsFile::User, None),
+            None
+        );
+        *active_language_mut().unwrap() = None;
+    }
+
+    #[gpui::test]
+    fn test_language_defaults_field_reset_removes_its_value(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
+        *active_language_mut().unwrap() = None;
+        let items = language_settings_data();
+        let field =
+            setting_field::<NonZeroU32>(setting_item(&items, "languages.$(language).tab_size"));
+
+        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
+        assert_eq!(
+            field.reset_value(&store, settings::SettingsFile::User, None),
+            None
+        );
     }
 
     fn setting_item<'a>(items: &'a [SettingsPageItem], json_path: &str) -> &'a SettingItem {
