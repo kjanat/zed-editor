@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
 
 #[with_fallible_options]
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct ExtensionSettingsContent {
     /// The extensions that should be automatically installed by Zed.
     ///
@@ -24,17 +24,6 @@ pub struct ExtensionSettingsContent {
     pub suggest_extensions: Option<bool>,
     /// The capabilities granted to extensions.
     pub granted_extension_capabilities: Option<Vec<ExtensionCapabilityContent>>,
-}
-
-impl Default for ExtensionSettingsContent {
-    fn default() -> Self {
-        Self {
-            auto_install_extensions: HashMap::default(),
-            auto_update_extensions: HashMap::default(),
-            suggest_extensions: None,
-            granted_extension_capabilities: None,
-        }
-    }
 }
 
 /// A capability for an extension.
