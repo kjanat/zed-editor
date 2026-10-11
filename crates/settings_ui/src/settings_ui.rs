@@ -27,7 +27,7 @@ use settings::{
 };
 use std::{
     any::{Any, TypeId, type_name},
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     num::{NonZero, NonZeroU32},
     ops::Range,
@@ -185,13 +185,11 @@ impl<T: 'static> SettingField<T> {
             .and_then(|fallback| fallback.pick::<T>())
     }
 
-    fn default_value<'a>(
-        &self,
-        store: &'a SettingsStore,
-        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
-    ) -> Option<&'a T> {
-        let defaults = store.raw_default_settings();
-        (self.pick)(defaults).or_else(|| fallback.and_then(|fallback| fallback(defaults)))
+    fn is_set_in_file(&self, store: &SettingsStore, file: settings::SettingsFile) -> bool {
+        store.get_content_for_file(file).is_some_and(|content| {
+            read_language_override(|| (self.pick)(content).is_some())
+                .unwrap_or_else(|| (self.pick)(content).is_some())
+        })
     }
 
     /// Helper for settings with types that are not yet implemented.
@@ -202,37 +200,6 @@ impl<T: 'static> SettingField<T> {
             write: |_, _, _| unreachable!(),
             organization_override: None,
             json_path: self.json_path,
-        }
-    }
-}
-
-impl<T: PartialEq + Clone + 'static> SettingField<T> {
-    fn can_reset(
-        &self,
-        store: &SettingsStore,
-        file: settings::SettingsFile,
-        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
-    ) -> bool {
-        let value = store.get_content_for_file(file).and_then(self.pick);
-        value.is_some() && value != self.default_value(store, fallback)
-    }
-
-    fn reset_value(
-        &self,
-        store: &SettingsStore,
-        file: settings::SettingsFile,
-        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
-    ) -> Option<T> {
-        let is_set_somewhere_other_than_default =
-            store.get_value_up_to_file(file.clone(), self.pick).0
-                != settings::SettingsFile::Default
-                || fallback.is_some_and(|fallback| {
-                    store.get_value_up_to_file(file, fallback).0 != settings::SettingsFile::Default
-                });
-        if is_set_somewhere_other_than_default {
-            self.default_value(store, fallback).cloned()
-        } else {
-            None
         }
     }
 }
@@ -252,7 +219,6 @@ trait AnySettingField {
         &self,
         current_file: &SettingsUiFile,
         file_set_in: &settings::SettingsFile,
-        metadata: Option<&SettingsFieldMetadata>,
         cx: &App,
     ) -> Option<Box<dyn Fn(&mut Window, &mut App)>>;
 
@@ -289,7 +255,6 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
         &self,
         current_file: &SettingsUiFile,
         file_set_in: &settings::SettingsFile,
-        metadata: Option<&SettingsFieldMetadata>,
         cx: &App,
     ) -> Option<Box<dyn Fn(&mut Window, &mut App)>> {
         if file_set_in == &settings::SettingsFile::Default {
@@ -298,26 +263,23 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
         if file_set_in != &current_file.to_settings() {
             return None;
         }
+        if TypeId::of::<T>() == TypeId::of::<UnimplementedSettingField>() {
+            return None;
+        }
         let this = *self;
-        let fallback = Self::fallback(metadata);
-        if !this.can_reset(SettingsStore::global(cx), file_set_in.clone(), fallback) {
+        if !this.is_set_in_file(SettingsStore::global(cx), file_set_in.clone()) {
             return None;
         }
         let current_file = current_file.clone();
 
         return Some(Box::new(move |window, cx| {
-            let value_to_set = this.reset_value(
-                SettingsStore::global(cx),
-                current_file.to_settings(),
-                fallback,
-            );
             update_settings_file(
                 current_file.clone(),
                 None,
                 window,
                 cx,
                 move |settings, app| {
-                    (this.write)(settings, value_to_set, app);
+                    (this.write)(settings, None, app);
                 },
             )
             // todo(settings_ui): Don't log err
@@ -1028,6 +990,41 @@ fn active_language_mut() -> Option<std::sync::RwLockWriteGuard<'static, Option<S
     ACTIVE_LANGUAGE.write().ok()
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum LanguageRead {
+    Merged,
+    OverrideOnly,
+    OverrideRead,
+}
+
+thread_local! {
+    static LANGUAGE_READ: Cell<LanguageRead> = const { Cell::new(LanguageRead::Merged) };
+}
+
+fn reads_language_override_only() -> bool {
+    match LANGUAGE_READ.get() {
+        LanguageRead::Merged => false,
+        LanguageRead::OverrideOnly | LanguageRead::OverrideRead => {
+            LANGUAGE_READ.set(LanguageRead::OverrideRead);
+            true
+        }
+    }
+}
+
+fn read_language_override<R>(read: impl FnOnce() -> R) -> Option<R> {
+    struct Restore(LanguageRead);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LANGUAGE_READ.set(self.0);
+        }
+    }
+
+    let _restore = Restore(LANGUAGE_READ.replace(LanguageRead::OverrideOnly));
+    let value = read();
+    (LANGUAGE_READ.get() == LanguageRead::OverrideRead).then_some(value)
+}
+
 pub struct SettingsWindow {
     title_bar: Option<Entity<PlatformTitleBar>>,
     original_window: Option<WindowHandle<MultiWorkspace>>,
@@ -1575,12 +1572,9 @@ fn render_settings_item(
     let reset_fn = if sub_field {
         None
     } else {
-        setting_item.field.reset_to_default_fn(
-            &file,
-            &found_in_file,
-            setting_item.metadata.as_deref(),
-            cx,
-        )
+        setting_item
+            .field
+            .reset_to_default_fn(&file, &found_in_file, cx)
     };
 
     let modified_in = file_set_in
