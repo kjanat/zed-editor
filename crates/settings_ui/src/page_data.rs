@@ -11746,6 +11746,89 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn test_fallback_field_resets_to_the_default_of_its_fallback(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store
+            .set_user_settings(
+                r#"{ "markdown_preview": { "font_family": "User Preview" } }"#,
+                cx,
+            )
+            .unwrap();
+        store
+            .set_server_settings(
+                r#"{ "markdown_preview": { "font_family": "Server Preview" } }"#,
+                cx,
+            )
+            .unwrap();
+        let page = appearance_page();
+        let item = setting_item(&page, "markdown_preview.font_family");
+        let field = setting_field::<settings::FontFamilyName>(item);
+        let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
+        let default_ui_font = store.raw_default_settings().theme.ui_font_family.clone();
+        assert!(default_ui_font.is_some());
+        let server = settings::SettingsFile::Server;
+        let user = settings::SettingsFile::User;
+
+        assert!(field.can_reset(&store, server.clone(), fallback));
+        assert_eq!(field.reset_value(&store, server, fallback), default_ui_font);
+        assert!(field.can_reset(&store, user.clone(), fallback));
+        assert_eq!(field.reset_value(&store, user, fallback), None);
+    }
+
+    #[gpui::test]
+    fn test_fallback_field_resets_only_its_own_non_default_value(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        let page = appearance_page();
+        let item = setting_item(&page, "markdown_preview.font_family");
+        let field = setting_field::<settings::FontFamilyName>(item);
+        let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
+        let default_ui_font = store
+            .raw_default_settings()
+            .theme
+            .ui_font_family
+            .clone()
+            .unwrap();
+        let user = settings::SettingsFile::User;
+
+        store
+            .set_user_settings(r#"{ "ui_font_family": "Inter" }"#, cx)
+            .unwrap();
+        assert!(!field.can_reset(&store, user.clone(), fallback));
+
+        store
+            .set_user_settings(
+                &format!(
+                    r#"{{ "markdown_preview": {{ "font_family": "{}" }} }}"#,
+                    default_ui_font.0
+                ),
+                cx,
+            )
+            .unwrap();
+        assert!(!field.can_reset(&store, user, fallback));
+    }
+
+    fn setting_item<'a>(page: &'a SettingsPage, json_path: &str) -> &'a SettingItem {
+        page.items
+            .iter()
+            .find_map(|item| match item {
+                SettingsPageItem::SettingItem(item)
+                    if item.field.json_path() == Some(json_path) =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn setting_field<T: 'static>(item: &SettingItem) -> &SettingField<T> {
+        item.field
+            .as_any()
+            .downcast_ref::<SettingField<T>>()
+            .unwrap()
+    }
+
     struct Check<'a> {
         store: &'a settings::SettingsStore,
         file: settings::SettingsFile,
@@ -11758,25 +11841,13 @@ mod tests {
             json_path: &str,
             (expected_file, expected_value): (settings::SettingsFile, T),
         ) {
-            let item = page
-                .items
-                .iter()
-                .find_map(|item| match item {
-                    SettingsPageItem::SettingItem(item)
-                        if item.field.json_path() == Some(json_path) =>
-                    {
-                        Some(item)
-                    }
-                    _ => None,
-                })
-                .unwrap();
-            let field = item
-                .field
-                .as_any()
-                .downcast_ref::<SettingField<T>>()
-                .unwrap();
+            let item = setting_item(page, json_path);
             assert_eq!(
-                field.value_from_file(self.store, self.file.clone(), item.metadata.as_deref()),
+                setting_field::<T>(item).value_from_file(
+                    self.store,
+                    self.file.clone(),
+                    item.metadata.as_deref()
+                ),
                 (expected_file, Some(&expected_value)),
                 "{json_path}"
             );

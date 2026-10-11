@@ -168,13 +168,30 @@ impl<T: 'static> SettingField<T> {
         file: settings::SettingsFile,
         metadata: Option<&SettingsFieldMetadata>,
     ) -> (settings::SettingsFile, Option<&'a T>) {
-        let fallback = metadata
-            .and_then(|metadata| metadata.fallback.as_ref())
-            .and_then(|fallback| fallback.pick::<T>());
-        match (store.get_value_from_file(file.clone(), self.pick), fallback) {
+        match (
+            store.get_value_from_file(file.clone(), self.pick),
+            Self::fallback(metadata),
+        ) {
             ((_, None), Some(fallback)) => store.get_value_from_file(file, fallback),
             (found, _) => found,
         }
+    }
+
+    fn fallback(
+        metadata: Option<&SettingsFieldMetadata>,
+    ) -> Option<fn(&SettingsContent) -> Option<&T>> {
+        metadata
+            .and_then(|metadata| metadata.fallback.as_ref())
+            .and_then(|fallback| fallback.pick::<T>())
+    }
+
+    fn default_value<'a>(
+        &self,
+        store: &'a SettingsStore,
+        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
+    ) -> Option<&'a T> {
+        let defaults = store.raw_default_settings();
+        (self.pick)(defaults).or_else(|| fallback.and_then(|fallback| fallback(defaults)))
     }
 
     /// Helper for settings with types that are not yet implemented.
@@ -185,6 +202,33 @@ impl<T: 'static> SettingField<T> {
             write: |_, _, _| unreachable!(),
             organization_override: None,
             json_path: self.json_path,
+        }
+    }
+}
+
+impl<T: PartialEq + Clone + 'static> SettingField<T> {
+    fn can_reset(
+        &self,
+        store: &SettingsStore,
+        file: settings::SettingsFile,
+        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
+    ) -> bool {
+        let value = store.get_content_for_file(file).and_then(self.pick);
+        value.is_some() && value != self.default_value(store, fallback)
+    }
+
+    fn reset_value(
+        &self,
+        store: &SettingsStore,
+        file: settings::SettingsFile,
+        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
+    ) -> Option<T> {
+        let is_set_somewhere_other_than_default =
+            store.get_value_up_to_file(file, self.pick).0 != settings::SettingsFile::Default;
+        if is_set_somewhere_other_than_default {
+            self.default_value(store, fallback).cloned()
+        } else {
+            None
         }
     }
 }
@@ -204,6 +248,7 @@ trait AnySettingField {
         &self,
         current_file: &SettingsUiFile,
         file_set_in: &settings::SettingsFile,
+        metadata: Option<&SettingsFieldMetadata>,
         cx: &App,
     ) -> Option<Box<dyn Fn(&mut Window, &mut App)>>;
 
@@ -240,6 +285,7 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
         &self,
         current_file: &SettingsUiFile,
         file_set_in: &settings::SettingsFile,
+        metadata: Option<&SettingsFieldMetadata>,
         cx: &App,
     ) -> Option<Box<dyn Fn(&mut Window, &mut App)>> {
         if file_set_in == &settings::SettingsFile::Default {
@@ -249,29 +295,18 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
             return None;
         }
         let this = *self;
-        let store = SettingsStore::global(cx);
-        let default_value = (this.pick)(store.raw_default_settings());
-        let is_default = store
-            .get_content_for_file(file_set_in.clone())
-            .map_or(None, this.pick)
-            == default_value;
-        if is_default {
+        let fallback = Self::fallback(metadata);
+        if !this.can_reset(SettingsStore::global(cx), file_set_in.clone(), fallback) {
             return None;
         }
         let current_file = current_file.clone();
 
         return Some(Box::new(move |window, cx| {
-            let store = SettingsStore::global(cx);
-            let default_value = (this.pick)(store.raw_default_settings());
-            let is_set_somewhere_other_than_default = store
-                .get_value_up_to_file(current_file.to_settings(), this.pick)
-                .0
-                != settings::SettingsFile::Default;
-            let value_to_set = if is_set_somewhere_other_than_default {
-                default_value.cloned()
-            } else {
-                None
-            };
+            let value_to_set = this.reset_value(
+                SettingsStore::global(cx),
+                current_file.to_settings(),
+                fallback,
+            );
             update_settings_file(
                 current_file.clone(),
                 None,
@@ -1536,9 +1571,12 @@ fn render_settings_item(
     let reset_fn = if sub_field {
         None
     } else {
-        setting_item
-            .field
-            .reset_to_default_fn(&file, &found_in_file, cx)
+        setting_item.field.reset_to_default_fn(
+            &file,
+            &found_in_file,
+            setting_item.metadata.as_deref(),
+            cx,
+        )
     };
 
     let modified_in = file_set_in
