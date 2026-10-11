@@ -263,6 +263,9 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
         if file_set_in != &current_file.to_settings() {
             return None;
         }
+        if TypeId::of::<T>() == TypeId::of::<UnimplementedSettingField>() {
+            return None;
+        }
         let this = *self;
         if !this.is_set_in_file(SettingsStore::global(cx), file_set_in.clone()) {
             return None;

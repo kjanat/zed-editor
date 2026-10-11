@@ -528,9 +528,9 @@ fn general_page(cx: &App) -> SettingsPage {
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("suggest_extensions"),
-                    pick: |settings_content| Some(&settings_content.extension.suggest_extensions),
+                    pick: |settings_content| settings_content.extension.suggest_extensions.as_ref(),
                     write: |settings_content, value, _| {
-                        settings_content.extension.suggest_extensions = value.unwrap_or(true);
+                        settings_content.extension.suggest_extensions = value;
                     },
                 }),
                 metadata: None,
@@ -8717,7 +8717,6 @@ fn collaboration_page() -> SettingsPage {
                             .as_ref()?
                             .output_audio_device
                             .as_ref()
-                            .or(DEFAULT_EMPTY_AUDIO_OUTPUT)
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -8726,7 +8725,15 @@ fn collaboration_page() -> SettingsPage {
                             .output_audio_device = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content
+                            .audio
+                            .as_ref()
+                            .and(DEFAULT_EMPTY_AUDIO_OUTPUT)
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -8736,12 +8743,7 @@ fn collaboration_page() -> SettingsPage {
                     organization_override: None,
                     json_path: Some("audio.experimental.input_audio_device"),
                     pick: |settings_content| {
-                        settings_content
-                            .audio
-                            .as_ref()?
-                            .input_audio_device
-                            .as_ref()
-                            .or(DEFAULT_EMPTY_AUDIO_INPUT)
+                        settings_content.audio.as_ref()?.input_audio_device.as_ref()
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -8750,7 +8752,15 @@ fn collaboration_page() -> SettingsPage {
                             .input_audio_device = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content
+                            .audio
+                            .as_ref()
+                            .and(DEFAULT_EMPTY_AUDIO_INPUT)
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
         ]
@@ -11941,6 +11951,86 @@ mod tests {
         assert!(
             item.field
                 .reset_to_default_fn(&user, &settings::SettingsFile::User, cx)
+                .is_none()
+        );
+    }
+
+    #[gpui::test]
+    fn test_suggest_extensions_reset_needs_the_key_in_the_file(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        let items = general_page(cx).items;
+        let field = setting_field::<bool>(setting_item(&items, "suggest_extensions"));
+
+        store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
+        Check {
+            store: &store,
+            file: settings::SettingsFile::User,
+        }
+        .resolves(
+            &items,
+            "suggest_extensions",
+            (settings::SettingsFile::Default, true),
+        );
+        assert!(!field.is_set_in_file(&store, settings::SettingsFile::User));
+
+        store
+            .set_user_settings(r#"{ "suggest_extensions": false }"#, cx)
+            .unwrap();
+        assert!(field.is_set_in_file(&store, settings::SettingsFile::User));
+    }
+
+    #[gpui::test]
+    fn test_audio_device_reset_needs_the_key_in_the_file(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        let items = collaboration_page().items;
+        let output = setting_field::<AudioOutputDeviceName>(setting_item(
+            &items,
+            "audio.experimental.output_audio_device",
+        ));
+        let input = setting_field::<AudioInputDeviceName>(setting_item(
+            &items,
+            "audio.experimental.input_audio_device",
+        ));
+
+        store.set_user_settings(r#"{ "audio": {} }"#, cx).unwrap();
+        let check = Check {
+            store: &store,
+            file: settings::SettingsFile::User,
+        };
+        check.resolves(
+            &items,
+            "audio.experimental.output_audio_device",
+            (settings::SettingsFile::User, AudioOutputDeviceName(None)),
+        );
+        check.resolves(
+            &items,
+            "audio.experimental.input_audio_device",
+            (settings::SettingsFile::User, AudioInputDeviceName(None)),
+        );
+        assert!(!output.is_set_in_file(&store, settings::SettingsFile::User));
+        assert!(!input.is_set_in_file(&store, settings::SettingsFile::User));
+
+        store
+            .set_user_settings(
+                r#"{ "audio": { "experimental.output_audio_device": "Speakers", "experimental.input_audio_device": "Microphone" } }"#,
+                cx,
+            )
+            .unwrap();
+        assert!(output.is_set_in_file(&store, settings::SettingsFile::User));
+        assert!(input.is_set_in_file(&store, settings::SettingsFile::User));
+    }
+
+    #[gpui::test]
+    fn test_unimplemented_field_offers_no_reset(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
+        cx.set_global(store);
+        let items = general_page(cx).items;
+        let item = setting_item(&items, "settings_profiles");
+
+        assert!(
+            item.field
+                .reset_to_default_fn(&SettingsUiFile::User, &settings::SettingsFile::User, cx)
                 .is_none()
         );
     }
