@@ -27,7 +27,7 @@ use settings::{
 };
 use std::{
     any::{Any, TypeId, type_name},
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     num::{NonZero, NonZeroU32},
     ops::Range,
@@ -168,13 +168,32 @@ impl<T: 'static> SettingField<T> {
         file: settings::SettingsFile,
         metadata: Option<&SettingsFieldMetadata>,
     ) -> (settings::SettingsFile, Option<&'a T>) {
-        match (
-            store.get_value_from_file(file.clone(), self.pick),
-            Self::fallback(metadata),
-        ) {
-            ((_, None), Some(fallback)) => store.get_value_from_file(file, fallback),
-            (found, _) => found,
-        }
+        self.lookups(Self::fallback(metadata))
+            .map(|lookup| lookup.run(|pick| store.get_value_from_file(file.clone(), pick)))
+            .find(|(_, value)| value.is_some())
+            .unwrap_or((settings::SettingsFile::Default, None))
+    }
+
+    fn lookups(
+        &self,
+        fallback: Option<fn(&SettingsContent) -> Option<&T>>,
+    ) -> impl Iterator<Item = Lookup<T>> {
+        [
+            Some(Lookup {
+                pick: self.pick,
+                in_language_defaults: false,
+            }),
+            active_language().map(|_| Lookup {
+                pick: self.pick,
+                in_language_defaults: true,
+            }),
+            fallback.map(|pick| Lookup {
+                pick,
+                in_language_defaults: false,
+            }),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     fn fallback(
@@ -191,7 +210,8 @@ impl<T: 'static> SettingField<T> {
         fallback: Option<fn(&SettingsContent) -> Option<&T>>,
     ) -> Option<&'a T> {
         let defaults = store.raw_default_settings();
-        (self.pick)(defaults).or_else(|| fallback.and_then(|fallback| fallback(defaults)))
+        self.lookups(fallback)
+            .find_map(|lookup| lookup.run(|pick| pick(defaults)))
     }
 
     /// Helper for settings with types that are not yet implemented.
@@ -202,6 +222,21 @@ impl<T: 'static> SettingField<T> {
             write: |_, _, _| unreachable!(),
             organization_override: None,
             json_path: self.json_path,
+        }
+    }
+}
+
+struct Lookup<T: 'static> {
+    pick: fn(&SettingsContent) -> Option<&T>,
+    in_language_defaults: bool,
+}
+
+impl<T: 'static> Lookup<T> {
+    fn run<R>(&self, read: impl FnOnce(fn(&SettingsContent) -> Option<&T>) -> R) -> R {
+        if self.in_language_defaults {
+            with_language_defaults(|| read(self.pick))
+        } else {
+            read(self.pick)
         }
     }
 }
@@ -223,12 +258,11 @@ impl<T: PartialEq + Clone + 'static> SettingField<T> {
         file: settings::SettingsFile,
         fallback: Option<fn(&SettingsContent) -> Option<&T>>,
     ) -> Option<T> {
-        let is_set_somewhere_other_than_default =
-            store.get_value_up_to_file(file.clone(), self.pick).0
-                != settings::SettingsFile::Default
-                || fallback.is_some_and(|fallback| {
-                    store.get_value_up_to_file(file, fallback).0 != settings::SettingsFile::Default
-                });
+        let is_set_somewhere_other_than_default = self.lookups(fallback).any(|lookup| {
+            lookup.run(|pick| {
+                store.get_value_up_to_file(file.clone(), pick).0 != settings::SettingsFile::Default
+            })
+        });
         if is_set_somewhere_other_than_default {
             self.default_value(store, fallback).cloned()
         } else {
@@ -1026,6 +1060,27 @@ fn active_language() -> Option<SharedString> {
 
 fn active_language_mut() -> Option<std::sync::RwLockWriteGuard<'static, Option<SharedString>>> {
     ACTIVE_LANGUAGE.write().ok()
+}
+
+thread_local! {
+    static READS_LANGUAGE_DEFAULTS: Cell<bool> = const { Cell::new(false) };
+}
+
+fn reads_language_defaults() -> bool {
+    READS_LANGUAGE_DEFAULTS.get()
+}
+
+fn with_language_defaults<R>(read: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            READS_LANGUAGE_DEFAULTS.set(self.0);
+        }
+    }
+
+    let _restore = Restore(READS_LANGUAGE_DEFAULTS.replace(true));
+    read()
 }
 
 pub struct SettingsWindow {

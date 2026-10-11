@@ -18,6 +18,7 @@ use crate::{
         render_llm_providers_page, render_mcp_servers_page, render_sandbox_settings_page,
         render_skills_setup_page, render_tool_permissions_setup_page,
     },
+    reads_language_defaults,
 };
 
 const DEFAULT_STRING: String = String::new();
@@ -9473,15 +9474,14 @@ fn language_settings_field<T>(
 ) -> Option<&T> {
     let all_languages = &settings_content.project.all_languages;
 
-    active_language()
-        .and_then(|current_language_name| {
-            all_languages
-                .languages
-                .0
-                .get(current_language_name.as_ref())
-        })
-        .and_then(get_language_setting_field)
-        .or_else(|| get_language_setting_field(&all_languages.defaults))
+    match active_language().filter(|_| !reads_language_defaults()) {
+        Some(current_language_name) => all_languages
+            .languages
+            .0
+            .get(current_language_name.as_ref())
+            .and_then(get_language_setting_field),
+        None => get_language_setting_field(&all_languages.defaults),
+    }
 }
 
 fn language_settings_field_mut<T>(
@@ -11480,6 +11480,8 @@ fn write_helix_mode_inner(settings: &mut SettingsContent, value: Option<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::active_language_mut;
+    use std::num::NonZeroU32;
 
     #[test]
     fn test_write_vim_helix_mode() {
@@ -11566,10 +11568,10 @@ mod tests {
         let server = settings::SettingsFile::Server;
         let user = settings::SettingsFile::User;
         let font = |name: &str| settings::FontFamilyName(name.into());
-        let appearance = appearance_page();
-        let editor = editor_page();
-        let panels = panels_page();
-        let terminal = terminal_page();
+        let appearance = appearance_page().items;
+        let editor = editor_page().items;
+        let panels = panels_page().items;
+        let terminal = terminal_page().items;
 
         let check = Check {
             store: &store,
@@ -11665,10 +11667,10 @@ mod tests {
             .unwrap();
         let user = settings::SettingsFile::User;
         let font = |name: &str| settings::FontFamilyName(name.into());
-        let appearance = appearance_page();
-        let editor = editor_page();
-        let panels = panels_page();
-        let terminal = terminal_page();
+        let appearance = appearance_page().items;
+        let editor = editor_page().items;
+        let panels = panels_page().items;
+        let terminal = terminal_page().items;
 
         let check = Check {
             store: &store,
@@ -11762,7 +11764,7 @@ mod tests {
             )
             .unwrap();
         let page = appearance_page();
-        let item = setting_item(&page, "markdown_preview.font_family");
+        let item = setting_item(&page.items, "markdown_preview.font_family");
         let field = setting_field::<settings::FontFamilyName>(item);
         let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
         let default_ui_font = store.raw_default_settings().theme.ui_font_family.clone();
@@ -11789,7 +11791,7 @@ mod tests {
             )
             .unwrap();
         let page = appearance_page();
-        let item = setting_item(&page, "markdown_preview.font_family");
+        let item = setting_item(&page.items, "markdown_preview.font_family");
         let field = setting_field::<settings::FontFamilyName>(item);
         let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
         let default_ui_font = store.raw_default_settings().theme.ui_font_family.clone();
@@ -11804,7 +11806,7 @@ mod tests {
     fn test_fallback_field_resets_only_its_own_non_default_value(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         let page = appearance_page();
-        let item = setting_item(&page, "markdown_preview.font_family");
+        let item = setting_item(&page.items, "markdown_preview.font_family");
         let field = setting_field::<settings::FontFamilyName>(item);
         let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
         let default_ui_font = store
@@ -11832,8 +11834,84 @@ mod tests {
         assert!(!field.can_reset(&store, user, fallback));
     }
 
-    fn setting_item<'a>(page: &'a SettingsPage, json_path: &str) -> &'a SettingItem {
-        page.items
+    #[gpui::test]
+    fn test_language_field_prefers_a_lower_language_override_over_higher_defaults(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store
+            .set_user_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
+            .unwrap();
+        store
+            .set_server_settings(r#"{ "tab_size": 2 }"#, cx)
+            .unwrap();
+        *active_language_mut().unwrap() = Some("Rust".into());
+        let items = language_settings_data();
+        let check = Check {
+            store: &store,
+            file: settings::SettingsFile::Server,
+        };
+
+        check.resolves(
+            &items,
+            "languages.$(language).tab_size",
+            (settings::SettingsFile::User, NonZeroU32::new(8).unwrap()),
+        );
+        *active_language_mut().unwrap() = None;
+    }
+
+    #[gpui::test]
+    fn test_language_field_uses_the_defaults_when_no_file_overrides_the_language(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store.set_user_settings(r#"{ "tab_size": 3 }"#, cx).unwrap();
+        *active_language_mut().unwrap() = Some("Rust".into());
+        let items = language_settings_data();
+        let check = Check {
+            store: &store,
+            file: settings::SettingsFile::User,
+        };
+
+        check.resolves(
+            &items,
+            "languages.$(language).tab_size",
+            (settings::SettingsFile::User, NonZeroU32::new(3).unwrap()),
+        );
+        check.resolves(
+            &items,
+            "languages.$(language).format_on_save",
+            (settings::SettingsFile::Default, settings::FormatOnSave::On),
+        );
+        *active_language_mut().unwrap() = None;
+    }
+
+    #[gpui::test]
+    fn test_language_field_resets_over_lower_defaults(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
+        store
+            .set_server_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
+            .unwrap();
+        *active_language_mut().unwrap() = Some("Rust".into());
+        let items = language_settings_data();
+        let item = setting_item(&items, "languages.$(language).tab_size");
+        let field = setting_field::<NonZeroU32>(item);
+        let default_tab_size = store
+            .raw_default_settings()
+            .project
+            .all_languages
+            .defaults
+            .tab_size;
+        assert!(default_tab_size.is_some());
+
+        assert!(field.can_reset(&store, settings::SettingsFile::Server, None));
+        assert_eq!(
+            field.reset_value(&store, settings::SettingsFile::Server, None),
+            default_tab_size
+        );
+        assert!(!field.can_reset(&store, settings::SettingsFile::User, None));
+        *active_language_mut().unwrap() = None;
+    }
+
+    fn setting_item<'a>(items: &'a [SettingsPageItem], json_path: &str) -> &'a SettingItem {
+        items
             .iter()
             .find_map(|item| match item {
                 SettingsPageItem::SettingItem(item)
@@ -11861,11 +11939,11 @@ mod tests {
     impl Check<'_> {
         fn resolves<T: PartialEq + std::fmt::Debug + 'static>(
             &self,
-            page: &SettingsPage,
+            items: &[SettingsPageItem],
             json_path: &str,
             (expected_file, expected_value): (settings::SettingsFile, T),
         ) {
-            let item = setting_item(page, json_path);
+            let item = setting_item(items, json_path);
             assert_eq!(
                 setting_field::<T>(item).value_from_file(
                     self.store,
