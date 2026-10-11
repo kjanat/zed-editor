@@ -162,6 +162,21 @@ impl PartialEq for UnimplementedSettingField {
 }
 
 impl<T: 'static> SettingField<T> {
+    fn value_from_file<'a>(
+        &self,
+        store: &'a SettingsStore,
+        file: settings::SettingsFile,
+        metadata: Option<&SettingsFieldMetadata>,
+    ) -> (settings::SettingsFile, Option<&'a T>) {
+        let fallback = metadata
+            .and_then(|metadata| metadata.fallback.as_ref())
+            .and_then(|fallback| fallback.pick::<T>());
+        match (store.get_value_from_file(file.clone(), self.pick), fallback) {
+            ((_, None), Some(fallback)) => store.get_value_from_file(file, fallback),
+            (found, _) => found,
+        }
+    }
+
     /// Helper for settings with types that are not yet implemented.
     #[allow(unused)]
     fn unimplemented(self) -> SettingField<UnimplementedSettingField> {
@@ -179,7 +194,12 @@ trait AnySettingField {
     fn type_name(&self) -> &'static str;
     fn type_id(&self) -> TypeId;
     // Returns the file this value was set in and true, or File::Default and false to indicate it was not found in any file (missing default)
-    fn file_set_in(&self, file: SettingsUiFile, cx: &App) -> (settings::SettingsFile, bool);
+    fn file_set_in(
+        &self,
+        file: SettingsUiFile,
+        metadata: Option<&SettingsFieldMetadata>,
+        cx: &App,
+    ) -> (settings::SettingsFile, bool);
     fn reset_to_default_fn(
         &self,
         current_file: &SettingsUiFile,
@@ -205,10 +225,14 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
         TypeId::of::<T>()
     }
 
-    fn file_set_in(&self, file: SettingsUiFile, cx: &App) -> (settings::SettingsFile, bool) {
-        let (file, value) = cx
-            .global::<SettingsStore>()
-            .get_value_from_file(file.to_settings(), self.pick);
+    fn file_set_in(
+        &self,
+        file: SettingsUiFile,
+        metadata: Option<&SettingsFieldMetadata>,
+        cx: &App,
+    ) -> (settings::SettingsFile, bool) {
+        let (file, value) =
+            self.value_from_file(cx.global::<SettingsStore>(), file.to_settings(), metadata);
         return (file, value.is_some());
     }
 
@@ -446,6 +470,21 @@ struct SettingsFieldMetadata {
     display_clear_button: bool,
     confirm_on_focus_out: bool,
     treat_missing_text_as_empty: bool,
+    fallback: Option<SettingFallback>,
+}
+
+struct SettingFallback(Box<dyn Any>);
+
+impl SettingFallback {
+    fn new<T: 'static>(pick: fn(&SettingsContent) -> Option<&T>) -> Self {
+        Self(Box::new(pick))
+    }
+
+    fn pick<T: 'static>(&self) -> Option<fn(&SettingsContent) -> Option<&T>> {
+        self.0
+            .downcast_ref::<fn(&SettingsContent) -> Option<&T>>()
+            .copied()
+    }
 }
 
 pub fn init(cx: &mut App) {
@@ -1146,7 +1185,11 @@ impl SettingsPageItem {
              sub_field: bool,
              cx: &mut Context<SettingsWindow>| {
                 let renderer = cx.default_global::<SettingFieldRenderer>().clone();
-                let (_, found) = setting_item.field.file_set_in(file.clone(), cx);
+                let (_, found) = setting_item.field.file_set_in(
+                    file.clone(),
+                    setting_item.metadata.as_deref(),
+                    cx,
+                );
 
                 let renderers = renderer.renderers.borrow();
 
@@ -1484,7 +1527,10 @@ fn render_settings_item(
     sub_field: bool,
     cx: &mut Context<'_, SettingsWindow>,
 ) -> Stateful<Div> {
-    let (found_in_file, _) = setting_item.field.file_set_in(file.clone(), cx);
+    let (found_in_file, _) =
+        setting_item
+            .field
+            .file_set_in(file.clone(), setting_item.metadata.as_deref(), cx);
     let file_set_in = SettingsUiFile::from_settings(found_in_file.clone());
 
     let reset_fn = if sub_field {
@@ -4993,12 +5039,13 @@ fn get_current_value<'a, T>(
     settings_store: &'a SettingsStore,
     file: &SettingsUiFile,
     field: &'a SettingField<T>,
+    metadata: Option<&SettingsFieldMetadata>,
     cx: &'a App,
 ) -> Option<CurrentSettingsValue<'a, T>> {
     let user_store = AppState::global(cx).user_store.read(cx);
     let org_config = user_store.current_organization_configuration();
 
-    let (_file, value) = settings_store.get_value_from_file(file.to_settings(), field.pick);
+    let (_file, value) = field.value_from_file(settings_store, file.to_settings(), metadata);
     let value = value?;
 
     let org_value = org_config
@@ -5021,7 +5068,7 @@ fn render_text_field<T: From<String> + Into<String> + AsRef<str> + Clone>(
     cx: &mut App,
 ) -> AnyElement {
     let (_, initial_text) =
-        SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+        field.value_from_file(SettingsStore::global(cx), file.to_settings(), metadata);
     let initial_text = if metadata.is_some_and(|metadata| metadata.treat_missing_text_as_empty) {
         Some(
             initial_text
@@ -5079,13 +5126,13 @@ fn render_text_field<T: From<String> + Into<String> + AsRef<str> + Clone>(
 fn render_toggle_button<B: Into<bool> + From<bool> + Copy>(
     field: SettingField<B>,
     file: SettingsUiFile,
-    _metadata: Option<&SettingsFieldMetadata>,
+    metadata: Option<&SettingsFieldMetadata>,
     title: &'static str,
     description: &'static str,
     _window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let value = get_current_value(&SettingsStore::global(cx), &file, &field, cx);
+    let value = get_current_value(&SettingsStore::global(cx), &file, &field, metadata, cx);
     let (value, disabled) = value
         .map(|current_value| (*current_value.value, current_value.disabled))
         .unwrap_or((false.into(), false));
@@ -5120,13 +5167,13 @@ fn render_toggle_button<B: Into<bool> + From<bool> + Copy>(
 fn render_editable_number_field<T: NumberFieldType + Send + Sync>(
     field: SettingField<T>,
     file: SettingsUiFile,
-    _metadata: Option<&SettingsFieldMetadata>,
+    metadata: Option<&SettingsFieldMetadata>,
     title: &'static str,
     description: &'static str,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let (_, value) = SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let (_, value) = field.value_from_file(SettingsStore::global(cx), file.to_settings(), metadata);
     let value = value.copied().unwrap_or_else(T::min_value);
 
     let id = field
@@ -5177,7 +5224,7 @@ where
         .and_then(|metadata| metadata.should_do_titlecase)
         .unwrap_or(true);
 
-    let current_value = get_current_value(&SettingsStore::global(cx), &file, &field, cx);
+    let current_value = get_current_value(&SettingsStore::global(cx), &file, &field, metadata, cx);
     let (current_value, disabled) = current_value
         .map(|current_value| (*current_value.value, current_value.disabled))
         .unwrap_or((variants()[0], false));
@@ -5243,14 +5290,14 @@ fn wire_picker_trigger_a11y<M: gpui::ManagedView>(
 fn render_font_picker(
     field: SettingField<settings::FontFamilyName>,
     file: SettingsUiFile,
-    _metadata: Option<&SettingsFieldMetadata>,
+    metadata: Option<&SettingsFieldMetadata>,
     title: &'static str,
     description: &'static str,
     _window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let current_value = SettingsStore::global(cx)
-        .get_value_from_file(file.to_settings(), field.pick)
+    let current_value = field
+        .value_from_file(SettingsStore::global(cx), file.to_settings(), metadata)
         .1
         .cloned()
         .map_or_else(|| SharedString::default(), |value| value.into_gpui());

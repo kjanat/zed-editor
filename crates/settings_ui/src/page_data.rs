@@ -10,8 +10,9 @@ use theme::SystemAppearance;
 use ui::IntoElement;
 
 use crate::{
-    ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
-    SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
+    ActionLink, DynamicItem, PROJECT, SettingFallback, SettingField, SettingItem,
+    SettingsFieldMetadata, SettingsPage, SettingsPageItem, SubPageLink, USER, active_language,
+    all_language_names,
     pages::{
         open_audio_test_window, render_edit_prediction_setup_page, render_external_agents_page,
         render_llm_providers_page, render_mcp_servers_page, render_sandbox_settings_page,
@@ -1190,18 +1191,17 @@ fn appearance_page() -> SettingsPage {
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("agent_ui_font_family"),
-                    pick: |settings_content| {
-                        settings_content
-                            .theme
-                            .agent_ui_font_family
-                            .as_ref()
-                            .or(settings_content.theme.ui_font_family.as_ref())
-                    },
+                    pick: |settings_content| settings_content.theme.agent_ui_font_family.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.theme.agent_ui_font_family = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.ui_font_family.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1210,18 +1210,17 @@ fn appearance_page() -> SettingsPage {
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("agent_ui_font_size"),
-                    pick: |settings_content| {
-                        settings_content
-                            .theme
-                            .agent_ui_font_size
-                            .as_ref()
-                            .or(settings_content.theme.ui_font_size.as_ref())
-                    },
+                    pick: |settings_content| settings_content.theme.agent_ui_font_size.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.theme.agent_ui_font_size = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.ui_font_size.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1231,17 +1230,18 @@ fn appearance_page() -> SettingsPage {
                     organization_override: None,
                     json_path: Some("agent_buffer_font_family"),
                     pick: |settings_content| {
-                        settings_content
-                            .theme
-                            .agent_buffer_font_family
-                            .as_ref()
-                            .or(settings_content.theme.buffer_font_family.as_ref())
+                        settings_content.theme.agent_buffer_font_family.as_ref()
                     },
                     write: |settings_content, value, _| {
                         settings_content.theme.agent_buffer_font_family = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.buffer_font_family.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1250,18 +1250,17 @@ fn appearance_page() -> SettingsPage {
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("agent_buffer_font_size"),
-                    pick: |settings_content| {
-                        settings_content
-                            .theme
-                            .agent_buffer_font_size
-                            .as_ref()
-                            .or(settings_content.theme.buffer_font_size.as_ref())
-                    },
+                    pick: |settings_content| settings_content.theme.agent_buffer_font_size.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.theme.agent_buffer_font_size = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.buffer_font_size.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
         ]
@@ -1280,9 +1279,9 @@ fn appearance_page() -> SettingsPage {
                         settings_content
                             .project
                             .markdown_preview
+                            .as_ref()?
+                            .font_family
                             .as_ref()
-                            .and_then(|markdown_preview| markdown_preview.font_family.as_ref())
-                            .or(settings_content.theme.ui_font_family.as_ref())
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -1292,7 +1291,12 @@ fn appearance_page() -> SettingsPage {
                             .font_family = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.ui_font_family.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER | PROJECT,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1305,9 +1309,9 @@ fn appearance_page() -> SettingsPage {
                         settings_content
                             .project
                             .markdown_preview
+                            .as_ref()?
+                            .code_font_family
                             .as_ref()
-                            .and_then(|markdown_preview| markdown_preview.code_font_family.as_ref())
-                            .or(settings_content.theme.buffer_font_family.as_ref())
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -1317,7 +1321,12 @@ fn appearance_page() -> SettingsPage {
                             .code_font_family = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.buffer_font_family.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER | PROJECT,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1330,9 +1339,9 @@ fn appearance_page() -> SettingsPage {
                         settings_content
                             .project
                             .markdown_preview
+                            .as_ref()?
+                            .font_size
                             .as_ref()
-                            .and_then(|markdown_preview| markdown_preview.font_size.as_ref())
-                            .or(settings_content.theme.ui_font_size.as_ref())
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -1342,7 +1351,12 @@ fn appearance_page() -> SettingsPage {
                             .font_size = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.ui_font_size.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER | PROJECT,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1382,18 +1396,17 @@ fn appearance_page() -> SettingsPage {
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("mermaid_font_family"),
-                    pick: |settings_content| {
-                        settings_content
-                            .theme
-                            .mermaid_font_family
-                            .as_ref()
-                            .or(settings_content.theme.ui_font_family.as_ref())
-                    },
+                    pick: |settings_content| settings_content.theme.mermaid_font_family.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.theme.mermaid_font_family = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.ui_font_family.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
         ]
@@ -2923,9 +2936,9 @@ fn editor_page() -> SettingsPage {
                         settings_content
                             .editor
                             .minimap
+                            .as_ref()?
+                            .current_line_highlight
                             .as_ref()
-                            .and_then(|minimap| minimap.current_line_highlight.as_ref())
-                            .or(settings_content.editor.current_line_highlight.as_ref())
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -2935,7 +2948,12 @@ fn editor_page() -> SettingsPage {
                             .current_line_highlight = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.editor.current_line_highlight.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5827,15 +5845,13 @@ fn panels_page() -> SettingsPage {
                     organization_override: None,
                     json_path: Some("project_panel.scrollbar.show"),
                     pick: |settings_content| {
-                        show_scrollbar_or_editor(settings_content, |settings_content| {
-                            settings_content
-                                .project_panel
-                                .as_ref()?
-                                .scrollbar
-                                .as_ref()?
-                                .show
-                                .as_ref()
-                        })
+                        settings_content
+                            .project_panel
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .show
+                            .as_ref()
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -5846,7 +5862,12 @@ fn panels_page() -> SettingsPage {
                             .show = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.editor.scrollbar.as_ref()?.show.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -6853,15 +6874,13 @@ fn panels_page() -> SettingsPage {
                     organization_override: None,
                     json_path: Some("git_panel.scrollbar.show"),
                     pick: |settings_content| {
-                        show_scrollbar_or_editor(settings_content, |settings_content| {
-                            settings_content
-                                .git_panel
-                                .as_ref()?
-                                .scrollbar
-                                .as_ref()?
-                                .show
-                                .as_ref()
-                        })
+                        settings_content
+                            .git_panel
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .show
+                            .as_ref()
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -6872,7 +6891,12 @@ fn panels_page() -> SettingsPage {
                             .show = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.editor.scrollbar.as_ref()?.show.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
         ]
@@ -7618,18 +7642,17 @@ fn terminal_page() -> SettingsPage {
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("terminal.font_size"),
-                    pick: |settings_content| {
-                        settings_content
-                            .terminal
-                            .as_ref()
-                            .and_then(|terminal| terminal.font_size.as_ref())
-                            .or(settings_content.theme.buffer_font_size.as_ref())
-                    },
+                    pick: |settings_content| settings_content.terminal.as_ref()?.font_size.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.terminal.get_or_insert_default().font_size = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.buffer_font_size.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -7639,11 +7662,7 @@ fn terminal_page() -> SettingsPage {
                     organization_override: None,
                     json_path: Some("terminal.font_family"),
                     pick: |settings_content| {
-                        settings_content
-                            .terminal
-                            .as_ref()
-                            .and_then(|terminal| terminal.font_family.as_ref())
-                            .or(settings_content.theme.buffer_font_family.as_ref())
+                        settings_content.terminal.as_ref()?.font_family.as_ref()
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -7652,7 +7671,12 @@ fn terminal_page() -> SettingsPage {
                             .font_family = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.theme.buffer_font_family.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -8079,15 +8103,13 @@ fn terminal_page() -> SettingsPage {
                     organization_override: None,
                     json_path: Some("terminal.scrollbar.show"),
                     pick: |settings_content| {
-                        show_scrollbar_or_editor(settings_content, |settings_content| {
-                            settings_content
-                                .terminal
-                                .as_ref()?
-                                .scrollbar
-                                .as_ref()?
-                                .show
-                                .as_ref()
-                        })
+                        settings_content
+                            .terminal
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .show
+                            .as_ref()
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -8098,7 +8120,12 @@ fn terminal_page() -> SettingsPage {
                             .show = value;
                     },
                 }),
-                metadata: None,
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    fallback: Some(SettingFallback::new(|settings_content| {
+                        settings_content.editor.scrollbar.as_ref()?.show.as_ref()
+                    })),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
         ]
@@ -11416,17 +11443,6 @@ fn edit_prediction_language_settings_section() -> [SettingsPageItem; 5] {
     ]
 }
 
-fn show_scrollbar_or_editor(
-    settings_content: &SettingsContent,
-    show: fn(&SettingsContent) -> Option<&settings::ShowScrollbar>,
-) -> Option<&settings::ShowScrollbar> {
-    show(settings_content).or(settings_content
-        .editor
-        .scrollbar
-        .as_ref()
-        .and_then(|scrollbar| scrollbar.show.as_ref()))
-}
-
 fn dynamic_variants<T>() -> &'static [T::Discriminant]
 where
     T: strum::IntoDiscriminant,
@@ -11507,60 +11523,263 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_markdown_preview_fonts_fall_back_in_the_same_file(cx: &mut App) {
+    fn test_fallback_fields_prefer_their_own_setting_from_a_lower_file(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store
+            .set_user_settings(
+                r#"{
+                    "agent_ui_font_family": "Agent UI",
+                    "agent_ui_font_size": 11,
+                    "agent_buffer_font_family": "Agent Buffer",
+                    "agent_buffer_font_size": 13,
+                    "markdown_preview": {
+                        "font_family": "Preview",
+                        "code_font_family": "Preview Code",
+                        "font_size": 15
+                    },
+                    "mermaid_font_family": "Mermaid",
+                    "minimap": { "current_line_highlight": "line" },
+                    "terminal": {
+                        "font_size": 16,
+                        "font_family": "Terminal",
+                        "scrollbar": { "show": "always" }
+                    },
+                    "project_panel": { "scrollbar": { "show": "always" } },
+                    "git_panel": { "scrollbar": { "show": "always" } }
+                }"#,
+                cx,
+            )
+            .unwrap();
+        store
+            .set_server_settings(
+                r#"{
+                    "ui_font_family": "Server UI",
+                    "buffer_font_family": "Server Buffer",
+                    "ui_font_size": 21,
+                    "buffer_font_size": 22,
+                    "current_line_highlight": "gutter",
+                    "scrollbar": { "show": "never" }
+                }"#,
+                cx,
+            )
+            .unwrap();
+        let server = settings::SettingsFile::Server;
+        let user = settings::SettingsFile::User;
+        let font = |name: &str| settings::FontFamilyName(name.into());
+        let appearance = appearance_page();
+        let editor = editor_page();
+        let panels = panels_page();
+        let terminal = terminal_page();
+
+        let check = Check {
+            store: &store,
+            file: server,
+        };
+        check.resolves(
+            &appearance,
+            "agent_ui_font_family",
+            (user.clone(), font("Agent UI")),
+        );
+        check.resolves(
+            &appearance,
+            "agent_ui_font_size",
+            (user.clone(), settings::FontSize(11.)),
+        );
+        check.resolves(
+            &appearance,
+            "agent_buffer_font_family",
+            (user.clone(), font("Agent Buffer")),
+        );
+        check.resolves(
+            &appearance,
+            "agent_buffer_font_size",
+            (user.clone(), settings::FontSize(13.)),
+        );
+        check.resolves(
+            &appearance,
+            "markdown_preview.font_family",
+            (user.clone(), font("Preview")),
+        );
+        check.resolves(
+            &appearance,
+            "markdown_preview.code_font_family",
+            (user.clone(), font("Preview Code")),
+        );
+        check.resolves(
+            &appearance,
+            "markdown_preview.font_size",
+            (user.clone(), settings::FontSize(15.)),
+        );
+        check.resolves(
+            &appearance,
+            "mermaid_font_family",
+            (user.clone(), font("Mermaid")),
+        );
+        check.resolves(
+            &editor,
+            "minimap.current_line_highlight",
+            (user.clone(), settings::CurrentLineHighlight::Line),
+        );
+        check.resolves(
+            &terminal,
+            "terminal.font_size",
+            (user.clone(), settings::FontSize(16.)),
+        );
+        check.resolves(
+            &terminal,
+            "terminal.font_family",
+            (user.clone(), font("Terminal")),
+        );
+        check.resolves(
+            &terminal,
+            "terminal.scrollbar.show",
+            (user.clone(), settings::ShowScrollbar::Always),
+        );
+        check.resolves(
+            &panels,
+            "project_panel.scrollbar.show",
+            (user.clone(), settings::ShowScrollbar::Always),
+        );
+        check.resolves(
+            &panels,
+            "git_panel.scrollbar.show",
+            (user, settings::ShowScrollbar::Always),
+        );
+    }
+
+    #[gpui::test]
+    fn test_fallback_fields_use_the_fallback_when_no_file_sets_them(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         store
             .set_user_settings(
                 r#"{
                     "ui_font_family": "Inter",
                     "buffer_font_family": "Iosevka",
-                    "ui_font_size": 17
+                    "ui_font_size": 17,
+                    "buffer_font_size": 18,
+                    "current_line_highlight": "gutter",
+                    "scrollbar": { "show": "never" }
                 }"#,
                 cx,
             )
             .unwrap();
-        let page = appearance_page();
         let user = settings::SettingsFile::User;
+        let font = |name: &str| settings::FontFamilyName(name.into());
+        let appearance = appearance_page();
+        let editor = editor_page();
+        let panels = panels_page();
+        let terminal = terminal_page();
 
-        let font_family =
-            setting_field::<settings::FontFamilyName>(&page, "markdown_preview.font_family");
-        assert_eq!(
-            store.get_value_from_file(user.clone(), font_family.pick),
-            (
-                user.clone(),
-                Some(&settings::FontFamilyName("Inter".into()))
-            )
+        let check = Check {
+            store: &store,
+            file: user.clone(),
+        };
+        check.resolves(
+            &appearance,
+            "agent_ui_font_family",
+            (user.clone(), font("Inter")),
         );
-        let code_font_family =
-            setting_field::<settings::FontFamilyName>(&page, "markdown_preview.code_font_family");
-        assert_eq!(
-            store.get_value_from_file(user.clone(), code_font_family.pick),
-            (
-                user.clone(),
-                Some(&settings::FontFamilyName("Iosevka".into()))
-            )
+        check.resolves(
+            &appearance,
+            "agent_ui_font_size",
+            (user.clone(), settings::FontSize(17.)),
         );
-        let font_size = setting_field::<settings::FontSize>(&page, "markdown_preview.font_size");
-        assert_eq!(
-            store.get_value_from_file(user.clone(), font_size.pick),
-            (user, Some(&settings::FontSize(17.)))
+        check.resolves(
+            &appearance,
+            "agent_buffer_font_family",
+            (user.clone(), font("Iosevka")),
+        );
+        check.resolves(
+            &appearance,
+            "agent_buffer_font_size",
+            (settings::SettingsFile::Default, settings::FontSize(12.)),
+        );
+        check.resolves(
+            &appearance,
+            "markdown_preview.font_family",
+            (user.clone(), font("Inter")),
+        );
+        check.resolves(
+            &appearance,
+            "markdown_preview.code_font_family",
+            (user.clone(), font("Iosevka")),
+        );
+        check.resolves(
+            &appearance,
+            "markdown_preview.font_size",
+            (user.clone(), settings::FontSize(17.)),
+        );
+        check.resolves(
+            &appearance,
+            "mermaid_font_family",
+            (user.clone(), font("Inter")),
+        );
+        check.resolves(
+            &editor,
+            "minimap.current_line_highlight",
+            (user.clone(), settings::CurrentLineHighlight::Gutter),
+        );
+        check.resolves(
+            &terminal,
+            "terminal.font_size",
+            (user.clone(), settings::FontSize(18.)),
+        );
+        check.resolves(
+            &terminal,
+            "terminal.font_family",
+            (user.clone(), font("Iosevka")),
+        );
+        check.resolves(
+            &terminal,
+            "terminal.scrollbar.show",
+            (user.clone(), settings::ShowScrollbar::Never),
+        );
+        check.resolves(
+            &panels,
+            "project_panel.scrollbar.show",
+            (user.clone(), settings::ShowScrollbar::Never),
+        );
+        check.resolves(
+            &panels,
+            "git_panel.scrollbar.show",
+            (user, settings::ShowScrollbar::Never),
         );
     }
 
-    fn setting_field<'a, T: 'static>(
-        page: &'a SettingsPage,
-        json_path: &str,
-    ) -> &'a SettingField<T> {
-        page.items
-            .iter()
-            .find_map(|item| match item {
-                SettingsPageItem::SettingItem(item)
-                    if item.field.json_path() == Some(json_path) =>
-                {
-                    item.field.as_any().downcast_ref::<SettingField<T>>()
-                }
-                _ => None,
-            })
-            .unwrap()
+    struct Check<'a> {
+        store: &'a settings::SettingsStore,
+        file: settings::SettingsFile,
+    }
+
+    impl Check<'_> {
+        fn resolves<T: PartialEq + std::fmt::Debug + 'static>(
+            &self,
+            page: &SettingsPage,
+            json_path: &str,
+            (expected_file, expected_value): (settings::SettingsFile, T),
+        ) {
+            let item = page
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    SettingsPageItem::SettingItem(item)
+                        if item.field.json_path() == Some(json_path) =>
+                    {
+                        Some(item)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let field = item
+                .field
+                .as_any()
+                .downcast_ref::<SettingField<T>>()
+                .unwrap();
+            assert_eq!(
+                field.value_from_file(self.store, self.file.clone(), item.metadata.as_deref()),
+                (expected_file, Some(&expected_value)),
+                "{json_path}"
+            );
+        }
     }
 }
