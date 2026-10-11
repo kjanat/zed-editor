@@ -18,7 +18,7 @@ use crate::{
         render_llm_providers_page, render_mcp_servers_page, render_sandbox_settings_page,
         render_skills_setup_page, render_tool_permissions_setup_page,
     },
-    reads_language_defaults,
+    reads_language_override_only,
 };
 
 const DEFAULT_STRING: String = String::new();
@@ -9474,16 +9474,19 @@ fn language_settings_field<T>(
 ) -> Option<&T> {
     let all_languages = &settings_content.project.all_languages;
 
-    active_language()
-        .filter(|_| !reads_language_defaults())
-        .and_then(|current_language_name| {
-            all_languages
-                .languages
-                .0
-                .get(current_language_name.as_ref())
-        })
-        .and_then(get_language_setting_field)
-        .or_else(|| get_language_setting_field(&all_languages.defaults))
+    let Some(current_language_name) = active_language() else {
+        return get_language_setting_field(&all_languages.defaults);
+    };
+    let language_override = all_languages
+        .languages
+        .0
+        .get(current_language_name.as_ref())
+        .and_then(get_language_setting_field);
+    if reads_language_override_only() {
+        language_override
+    } else {
+        language_override.or_else(|| get_language_setting_field(&all_languages.defaults))
+    }
 }
 
 fn language_settings_field_mut<T>(
@@ -11482,7 +11485,7 @@ fn write_helix_mode_inner(settings: &mut SettingsContent, value: Option<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::active_language_mut;
+    use crate::{SettingsUiFile, active_language_mut};
     use std::num::NonZeroU32;
 
     #[test]
@@ -11751,81 +11754,19 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_fallback_field_resets_to_the_default_of_its_fallback(cx: &mut App) {
+    fn test_fallback_field_reset_removes_only_its_own_value(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
-        store
-            .set_user_settings(
-                r#"{ "markdown_preview": { "font_family": "User Preview" } }"#,
-                cx,
-            )
-            .unwrap();
-        store
-            .set_server_settings(
-                r#"{ "markdown_preview": { "font_family": "Server Preview" } }"#,
-                cx,
-            )
-            .unwrap();
-        let page = appearance_page();
-        let item = setting_item(&page.items, "markdown_preview.font_family");
-        let field = setting_field::<settings::FontFamilyName>(item);
-        let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
-        let default_ui_font = store.raw_default_settings().theme.ui_font_family.clone();
-        assert!(default_ui_font.is_some());
-        let server = settings::SettingsFile::Server;
-        let user = settings::SettingsFile::User;
-
-        assert!(field.can_reset(&store, server.clone(), fallback));
-        assert_eq!(field.reset_value(&store, server, fallback), default_ui_font);
-        assert!(field.can_reset(&store, user.clone(), fallback));
-        assert_eq!(field.reset_value(&store, user, fallback), None);
-    }
-
-    #[gpui::test]
-    fn test_fallback_field_reset_overrides_a_lower_fallback(cx: &mut App) {
-        let mut store = settings::SettingsStore::test(cx);
-        store
-            .set_user_settings(r#"{ "ui_font_family": "Inter" }"#, cx)
-            .unwrap();
-        store
-            .set_server_settings(
-                r#"{ "markdown_preview": { "font_family": "Server Preview" } }"#,
-                cx,
-            )
-            .unwrap();
-        let page = appearance_page();
-        let item = setting_item(&page.items, "markdown_preview.font_family");
-        let field = setting_field::<settings::FontFamilyName>(item);
-        let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
-        let default_ui_font = store.raw_default_settings().theme.ui_font_family.clone();
-        assert!(default_ui_font.is_some());
-        let server = settings::SettingsFile::Server;
-
-        assert!(field.can_reset(&store, server.clone(), fallback));
-        assert_eq!(field.reset_value(&store, server, fallback), default_ui_font);
-    }
-
-    #[gpui::test]
-    fn test_fallback_field_resets_only_its_own_non_default_value(cx: &mut App) {
-        let mut store = settings::SettingsStore::test(cx);
-        let page = appearance_page();
-        let item = setting_item(&page.items, "markdown_preview.font_family");
-        let field = setting_field::<settings::FontFamilyName>(item);
-        let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
         let default_ui_font = store
             .raw_default_settings()
             .theme
             .ui_font_family
             .clone()
             .unwrap();
-        let user = settings::SettingsFile::User;
-
         store
             .set_user_settings(r#"{ "ui_font_family": "Inter" }"#, cx)
             .unwrap();
-        assert!(!field.can_reset(&store, user.clone(), fallback));
-
         store
-            .set_user_settings(
+            .set_server_settings(
                 &format!(
                     r#"{{ "markdown_preview": {{ "font_family": "{}" }} }}"#,
                     default_ui_font.0
@@ -11833,7 +11774,17 @@ mod tests {
                 cx,
             )
             .unwrap();
-        assert!(!field.can_reset(&store, user, fallback));
+        let items = appearance_page().items;
+        let field = setting_field::<settings::FontFamilyName>(setting_item(
+            &items,
+            "markdown_preview.font_family",
+        ));
+
+        let server_after_reset = reset_content(field, &store, settings::SettingsFile::Server, cx);
+
+        assert!(field.is_set_in_file(&store, settings::SettingsFile::Server));
+        assert_eq!((field.pick)(&server_after_reset), None);
+        assert!(!field.is_set_in_file(&store, settings::SettingsFile::User));
     }
 
     #[gpui::test]
@@ -11897,53 +11848,37 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_language_field_resets_over_lower_and_own_defaults(cx: &mut App) {
+    fn test_language_field_reset_removes_only_the_language_override(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
         store
-            .set_server_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
-            .unwrap();
-        *active_language_mut().unwrap() = Some("Rust".into());
-        let items = language_settings_data();
-        let item = setting_item(&items, "languages.$(language).tab_size");
-        let field = setting_field::<NonZeroU32>(item);
-        let default_tab_size = store
-            .raw_default_settings()
-            .project
-            .all_languages
-            .defaults
-            .tab_size;
-        assert!(default_tab_size.is_some());
-
-        assert!(field.can_reset(&store, settings::SettingsFile::Server, None));
-        assert_eq!(
-            field.reset_value(&store, settings::SettingsFile::Server, None),
-            default_tab_size
-        );
-        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
-        assert_eq!(
-            field.reset_value(&store, settings::SettingsFile::User, None),
-            default_tab_size
-        );
-        *active_language_mut().unwrap() = None;
-    }
-
-    #[gpui::test]
-    fn test_language_field_reset_removes_a_lone_language_override(cx: &mut App) {
-        let mut store = settings::SettingsStore::test(cx);
-        store
-            .set_user_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
+            .set_server_settings(
+                r#"{ "tab_size": 3, "languages": { "Rust": { "tab_size": 8 } } }"#,
+                cx,
+            )
             .unwrap();
         *active_language_mut().unwrap() = Some("Rust".into());
         let items = language_settings_data();
         let field =
             setting_field::<NonZeroU32>(setting_item(&items, "languages.$(language).tab_size"));
+        let server_after_reset = reset_content(field, &store, settings::SettingsFile::Server, cx);
 
-        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
+        assert!(field.is_set_in_file(&store, settings::SettingsFile::Server));
         assert_eq!(
-            field.reset_value(&store, settings::SettingsFile::User, None),
+            server_after_reset
+                .project
+                .all_languages
+                .languages
+                .0
+                .get("Rust")
+                .and_then(|rust| rust.tab_size),
             None
         );
+        assert_eq!(
+            (field.pick)(&server_after_reset),
+            Some(&NonZeroU32::new(3).unwrap())
+        );
+        assert!(!field.is_set_in_file(&store, settings::SettingsFile::User));
         *active_language_mut().unwrap() = None;
     }
 
@@ -11959,12 +11894,10 @@ mod tests {
             &items,
             "languages.$(language).semantic_tokens",
         ));
+        let user_after_reset = reset_content(field, &store, settings::SettingsFile::User, cx);
 
-        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
-        assert_eq!(
-            field.reset_value(&store, settings::SettingsFile::User, None),
-            None
-        );
+        assert!(field.is_set_in_file(&store, settings::SettingsFile::User));
+        assert_eq!((field.pick)(&user_after_reset), None);
         *active_language_mut().unwrap() = None;
     }
 
@@ -11976,12 +11909,56 @@ mod tests {
         let items = language_settings_data();
         let field =
             setting_field::<NonZeroU32>(setting_item(&items, "languages.$(language).tab_size"));
+        let user_after_reset = reset_content(field, &store, settings::SettingsFile::User, cx);
 
-        assert!(field.can_reset(&store, settings::SettingsFile::User, None));
+        assert!(field.is_set_in_file(&store, settings::SettingsFile::User));
         assert_eq!(
-            field.reset_value(&store, settings::SettingsFile::User, None),
+            user_after_reset.project.all_languages.defaults.tab_size,
             None
         );
+    }
+
+    #[gpui::test]
+    fn test_reset_is_offered_only_for_a_value_in_the_current_file(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store.set_user_settings(r#"{ "tab_size": 2 }"#, cx).unwrap();
+        store
+            .set_server_settings(r#"{ "languages": { "Rust": { "tab_size": 8 } } }"#, cx)
+            .unwrap();
+        cx.set_global(store);
+        *active_language_mut().unwrap() = Some("Rust".into());
+        let items = language_settings_data();
+        let item = setting_item(&items, "languages.$(language).tab_size");
+        let server = SettingsUiFile::Server("server");
+        let user = SettingsUiFile::User;
+
+        assert!(
+            item.field
+                .reset_to_default_fn(&server, &settings::SettingsFile::Server, cx)
+                .is_some()
+        );
+        assert!(
+            item.field
+                .reset_to_default_fn(&server, &settings::SettingsFile::User, cx)
+                .is_none()
+        );
+        assert!(
+            item.field
+                .reset_to_default_fn(&user, &settings::SettingsFile::User, cx)
+                .is_none()
+        );
+        *active_language_mut().unwrap() = None;
+    }
+
+    fn reset_content<T: 'static>(
+        field: &SettingField<T>,
+        store: &settings::SettingsStore,
+        file: settings::SettingsFile,
+        cx: &App,
+    ) -> SettingsContent {
+        let mut content = store.get_content_for_file(file).unwrap().clone();
+        (field.write)(&mut content, None, cx);
+        content
     }
 
     fn setting_item<'a>(items: &'a [SettingsPageItem], json_path: &str) -> &'a SettingItem {
