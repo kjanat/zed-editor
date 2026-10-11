@@ -16,6 +16,11 @@ message File {
   optional uint64 size = 7;
   optional uint64 inode = 8;
   optional uint64 device = 9;
+  optional VirtualDocument virtual_document = 10;
+}
+
+message VirtualDocument {
+  string uri = 1;
 }
 
 message Entry {

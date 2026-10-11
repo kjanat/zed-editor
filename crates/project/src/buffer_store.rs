@@ -1,6 +1,6 @@
 use crate::{
     ProjectPath,
-    lsp_store::OpenLspBufferHandle,
+    lsp_store::{OpenLspBufferHandle, deno_ext::VirtualDocumentFile},
     worktree_store::{WorktreeStore, WorktreeStoreEvent},
 };
 use anyhow::{Context as _, Result, anyhow};
@@ -234,7 +234,10 @@ impl RemoteBufferStore {
 
                 let buffer_file_result = maybe!({
                     let mut buffer_file = None;
-                    if let Some(file) = state.file.take() {
+                    if let Some(file) = state.file.take_if(|file| file.virtual_document.is_some()) {
+                        buffer_file = Some(Arc::new(VirtualDocumentFile::from_proto(file)?)
+                            as Arc<dyn language::File>);
+                    } else if let Some(file) = state.file.take() {
                         let worktree_id = worktree::WorktreeId::from_proto(file.worktree_id);
                         let worktree = self
                             .worktree_store
@@ -2119,6 +2122,29 @@ impl BufferStore {
                     .insert(entry_id, buffer_id);
             }
         }
+        buffer
+    }
+
+    pub(crate) fn create_read_only_buffer(
+        &mut self,
+        mut contents: String,
+        file: Arc<dyn language::File>,
+        cx: &mut Context<Self>,
+    ) -> Entity<Buffer> {
+        let line_ending = LineEnding::detect(&contents);
+        LineEnding::normalize(&mut contents);
+        let buffer = cx.new(|cx| {
+            let text_buffer = text::Buffer::new_normalized(
+                ReplicaId::LOCAL,
+                BufferId::from(cx.entity_id().as_non_zero_u64()),
+                line_ending,
+                contents.into(),
+            );
+            Buffer::build(text_buffer, Some(file), Capability::ReadOnly, cx)
+        });
+        self.add_buffer(buffer.clone(), cx).log_err();
+        self.non_searchable_buffers
+            .insert(buffer.read(cx).remote_id());
         buffer
     }
 

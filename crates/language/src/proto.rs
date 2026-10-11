@@ -33,6 +33,24 @@ pub fn serialize_line_ending(message: text::LineEnding) -> proto::LineEnding {
     }
 }
 
+/// Deserializes a [`crate::Capability`] from the RPC representation.
+pub fn deserialize_capability(message: proto::BufferCapability) -> crate::Capability {
+    match message {
+        proto::BufferCapability::ReadWrite => crate::Capability::ReadWrite,
+        proto::BufferCapability::Read => crate::Capability::Read,
+        proto::BufferCapability::ReadOnly => crate::Capability::ReadOnly,
+    }
+}
+
+/// Serializes a [`crate::Capability`] to be sent over RPC.
+pub fn serialize_capability(capability: crate::Capability) -> proto::BufferCapability {
+    match capability {
+        crate::Capability::ReadWrite => proto::BufferCapability::ReadWrite,
+        crate::Capability::Read => proto::BufferCapability::Read,
+        crate::Capability::ReadOnly => proto::BufferCapability::ReadOnly,
+    }
+}
+
 /// Serializes a [`crate::Operation`] to be sent over RPC.
 pub fn serialize_operation(operation: &crate::Operation) -> proto::Operation {
     proto::Operation {

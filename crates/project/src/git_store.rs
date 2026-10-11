@@ -447,6 +447,7 @@ impl language::File for IndexTextFile {
             size: None,
             inode: None,
             device: None,
+            virtual_document: None,
         }
     }
 
