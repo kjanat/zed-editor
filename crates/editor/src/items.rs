@@ -28,7 +28,7 @@ use multi_buffer::{BufferOffset, MultiBufferOffset, MultiBufferRow, PathKey};
 use project::{
     File, Project, ProjectItem as _, ProjectPath,
     git_store::GitStore,
-    lsp_store::{FormatTrigger, LanguageServerShowDocumentRequest},
+    lsp_store::{FormatTrigger, LanguageServerShowDocumentRequest, deno_ext::VirtualDocumentFile},
     project_settings::ProjectSettings,
     search::SearchQuery,
 };
@@ -1504,6 +1504,9 @@ impl SerializableItem for Editor {
         let workspace_id = workspace.database_id()?;
 
         let buffer = self.buffer().read(cx).as_singleton()?;
+        if VirtualDocumentFile::from_dyn(buffer.read(cx).file()).is_some() {
+            return None;
+        }
 
         let abs_path = buffer.read(cx).file().and_then(|file| {
             let worktree_id = file.worktree_id(cx);
@@ -3373,6 +3376,62 @@ mod tests {
             pane_items_before, pane_items_after,
             "Editor::deserialize should not add items to panes as a side effect"
         );
+    }
+
+    #[gpui::test]
+    async fn test_deno_virtual_documents_are_not_serialized(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "asset": { "lib.deno.ns.d.ts": "declare const real: true;\n" } }),
+        )
+        .await;
+        let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        workspace.update(cx, |workspace, _| workspace.set_random_database_id());
+        let worktree_id = project.read_with(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+
+        let real_buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/root/asset/lib.deno.ns.d.ts"), cx)
+            })
+            .await
+            .unwrap();
+        let virtual_file = VirtualDocumentFile::from_proto(proto::File {
+            worktree_id: worktree_id.to_proto(),
+            path: "asset/lib.deno.ns.d.ts".to_string(),
+            is_historic: true,
+            virtual_document: Some(proto::VirtualDocument {
+                uri: "deno:/asset/lib.deno.ns.d.ts".to_string(),
+            }),
+            ..proto::File::default()
+        })
+        .unwrap();
+        let virtual_buffer = cx.update(|_, cx| {
+            cx.new(|cx| {
+                let mut buffer = Buffer::local("declare namespace Deno {}\n", cx);
+                buffer.file_updated(Arc::new(virtual_file), cx);
+                buffer
+            })
+        });
+
+        let serializes = |buffer: Entity<Buffer>, cx: &mut VisualTestContext| {
+            workspace.update_in(cx, |workspace, window, cx| {
+                let editor =
+                    cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+                editor
+                    .update(cx, |editor, cx| editor.serialize(workspace, 1, false, cx))
+                    .is_some()
+            })
+        };
+        assert!(serializes(real_buffer, cx));
+        assert!(!serializes(virtual_buffer, cx));
     }
 
     #[gpui::test]
