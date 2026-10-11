@@ -605,8 +605,9 @@ impl DebugPanel {
                 session = parent;
             }
             let binary = session.read(cx).binary()?;
-            let content = serde_json::to_string_pretty(&binary).ok()?;
-            Some(content)
+            let mut binary = serde_json::to_value(binary).ok()?;
+            util::redact::redact_json_environment(&mut binary);
+            serde_json::to_string_pretty(&binary).ok()
         });
         if let Some(content) = content {
             cx.write_to_clipboard(ClipboardItem::new_string(content));

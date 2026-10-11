@@ -2771,3 +2771,116 @@ async fn test_debugger_terminal_pane_has_search_bar(
         })
         .unwrap();
 }
+
+#[gpui::test]
+async fn test_copy_debug_adapter_arguments_hides_the_environment(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(path!("/project"), json!({ "main.rs": "" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    start_debug_session_with(
+        &workspace,
+        cx,
+        DebugTaskDefinition {
+            adapter: "fake-adapter".into(),
+            label: "test".into(),
+            config: json!({
+                "request": "launch",
+                "env": { "DATABASE_URL": "postgres://user:hunter2@db/app" }
+            }),
+            tcp_connection: None,
+        },
+        |_| {},
+    )
+    .unwrap();
+
+    cx.dispatch_action(CopyDebugAdapterArguments);
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .expect("the debug adapter arguments should be on the clipboard");
+    assert!(copied.contains("DATABASE_URL"), "{copied}");
+    assert!(!copied.contains("hunter2"), "{copied}");
+}
+
+#[gpui::test]
+async fn test_failed_launch_console_message_hides_the_environment(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let sessions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        let sessions = sessions.clone();
+        cx.observe_new::<project::debugger::session::Session>(move |_, _, cx| {
+            sessions.borrow_mut().push(cx.entity());
+        })
+        .detach();
+    });
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(path!("/project"), json!({ "main.rs": "" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    start_debug_session_with(
+        &workspace,
+        cx,
+        DebugTaskDefinition {
+            adapter: "fake-adapter".into(),
+            label: "test".into(),
+            config: json!({
+                "request": "launch",
+                "env": { "DATABASE_URL": "postgres://user:hunter2@db/app" }
+            }),
+            tcp_connection: None,
+        },
+        |client| {
+            client.on_request::<Launch, _>(|_, _| {
+                Err(ErrorResponse {
+                    error: Some(Message {
+                        format: "failed to launch".to_string(),
+                        id: 1,
+                        variables: None,
+                        send_telemetry: None,
+                        show_user: None,
+                        url: None,
+                        url_label: None,
+                    }),
+                })
+            });
+        },
+    )
+    .ok();
+    cx.run_until_parked();
+
+    let session = sessions
+        .borrow()
+        .first()
+        .cloned()
+        .expect("a debug session should have been created");
+    let output = session.read_with(cx, |session, _| {
+        session
+            .output(project::debugger::session::OutputToken(0))
+            .0
+            .map(|event| event.output.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    assert!(output.contains("Tried to launch debugger with"), "{output}");
+    assert!(output.contains("DATABASE_URL"), "{output}");
+    assert!(!output.contains("hunter2"), "{output}");
+}

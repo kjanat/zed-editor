@@ -986,12 +986,14 @@ impl Session {
 
             if result.is_err() {
                 let mut console = this.update(cx, |session, cx| session.console_output(cx))?;
+                let mut configuration =
+                    serde_json::to_value(&binary.request_args.configuration).unwrap_or_default();
+                util::redact::redact_json_environment(&mut configuration);
 
                 console
                     .send(format!(
                         "Tried to launch debugger with: {}",
-                        serde_json::to_string_pretty(&binary.request_args.configuration)
-                            .unwrap_or_default(),
+                        serde_json::to_string_pretty(&configuration).unwrap_or_default(),
                     ))
                     .await
                     .ok();

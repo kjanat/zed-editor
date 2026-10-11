@@ -561,9 +561,13 @@ impl LanguageServer {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut server = command
-            .spawn()
-            .with_context(|| format!("failed to spawn command {command:?}",))?;
+        let mut server = command.spawn().with_context(|| {
+            format!(
+                "failed to spawn command {:?} with arguments {:?} in {working_dir:?}",
+                command.get_program(),
+                binary.arguments
+            )
+        })?;
 
         let stdin = server.stdin.take().unwrap();
         let stdout = server.stdout.take().unwrap();
@@ -2441,6 +2445,37 @@ mod tests {
                 "no shutdown request should be sent to a disconnected server, got: {written}"
             );
         }
+    }
+
+    #[gpui::test]
+    async fn test_spawn_error_omits_the_environment(cx: &mut TestAppContext) {
+        let result = LanguageServer::new(
+            Arc::new(Mutex::new(None)),
+            LanguageServerId(0),
+            LanguageServerName::from("missing"),
+            LanguageServerBinary {
+                path: PathBuf::from("zed-test-missing-language-server"),
+                arguments: vec!["--stdio".into()],
+                env: Some(HashMap::from_iter([(
+                    "DATABASE_URL".to_string(),
+                    "postgres://user:hunter2@db/app".to_string(),
+                )])),
+            },
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            None,
+            None,
+            &mut cx.to_async(),
+        );
+        let Err(error) = result else {
+            panic!("starting a missing language server should fail");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("zed-test-missing-language-server"),
+            "{message}"
+        );
+        assert!(!message.contains("DATABASE_URL"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
     }
 
     #[cfg(unix)]

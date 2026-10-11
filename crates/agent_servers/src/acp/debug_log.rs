@@ -64,7 +64,11 @@ impl AcpDebugMessage {
         }
     }
 
-    fn parse_value(direction: AcpDebugMessageDirection, value: serde_json::Value) -> Option<Self> {
+    fn parse_value(
+        direction: AcpDebugMessageDirection,
+        mut value: serde_json::Value,
+    ) -> Option<Self> {
+        util::redact::redact_json_environment(&mut value);
         let object = value.as_object()?;
 
         let parsed_id = object
@@ -258,6 +262,32 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"next","method":"session/new","params":{}}"#,
         );
         assert_eq!(debug_log.trailing_stderr().as_deref(), Some("recent error"));
+    }
+
+    #[test]
+    fn debug_log_hides_mcp_server_environment_and_headers() {
+        let debug_log = AcpDebugLog::default();
+        debug_log.record_line(
+            AcpDebugMessageDirection::Outgoing,
+            r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/project","mcpServers":[{"name":"db","command":"db-mcp","args":[],"env":[{"name":"DATABASE_URL","value":"postgres://user:hunter2@db/app"}]},{"type":"http","name":"api","url":"https://mcp.example.com","headers":[{"name":"Authorization","value":"Bearer hunter2"}]}]}}"#,
+        );
+
+        let (messages, _receiver) = debug_log.subscribe();
+        let Some(AcpDebugMessage {
+            message:
+                AcpDebugMessageContent::Request {
+                    params: Some(params),
+                    ..
+                },
+            ..
+        }) = messages.first()
+        else {
+            panic!("session/new should be recorded as a request with params");
+        };
+        let params = params.to_string();
+        assert!(params.contains("DATABASE_URL"), "{params}");
+        assert!(params.contains("Authorization"), "{params}");
+        assert!(!params.contains("hunter2"), "{params}");
     }
 
     #[test]

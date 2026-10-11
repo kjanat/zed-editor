@@ -285,7 +285,7 @@ impl LogStore {
         let entry = Self::get_debug_adapter_entry(
             &mut rpc_messages.messages,
             id.to_owned(),
-            message,
+            redact_rpc_message(message),
             LogKind::Rpc,
             cx,
         );
@@ -919,6 +919,19 @@ impl DapLogView {
     }
 }
 
+fn redact_rpc_message(message: SharedString) -> SharedString {
+    let Ok(original) = serde_json::from_str::<serde_json::Value>(&message) else {
+        return message;
+    };
+    let mut redacted = original.clone();
+    util::redact::redact_json_environment(&mut redacted);
+    if redacted == original {
+        message
+    } else {
+        redacted.to_string().into()
+    }
+}
+
 fn log_contents(lines: impl Iterator<Item = SharedString>) -> String {
     lines.fold(String::new(), |mut acc, el| {
         acc.push_str(&el);
@@ -1157,5 +1170,26 @@ impl LogStore {
                 .clone()
                 .into()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redact_rpc_message_hides_launch_environment() {
+        let launch = SharedString::from(
+            r#"{"seq":1,"type":"request","command":"launch","arguments":{"env":{"DATABASE_URL":"postgres://user:hunter2@db/app"}}}"#,
+        );
+        let redacted = redact_rpc_message(launch);
+        assert!(redacted.contains("DATABASE_URL"), "{redacted}");
+        assert!(!redacted.contains("hunter2"), "{redacted}");
+
+        let next = SharedString::from(r#"{"seq":2,"type":"request","command":"next"}"#);
+        assert_eq!(redact_rpc_message(next.clone()), next);
+
+        let text = SharedString::from("adapter started");
+        assert_eq!(redact_rpc_message(text.clone()), text);
     }
 }

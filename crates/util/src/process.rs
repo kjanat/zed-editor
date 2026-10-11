@@ -37,18 +37,13 @@ impl Child {
         stderr: Stdio,
     ) -> Result<Self> {
         crate::set_pre_exec_to_start_new_session(&mut command);
-        let mut command = smol::process::Command::from(command);
-        let process = command
+        let description = describe_command(&command);
+        let process = smol::process::Command::from(command)
             .stdin(stdin)
             .stdout(stdout)
             .stderr(stderr)
             .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to spawn command {}",
-                    crate::redact::redact_command(&format!("{command:?}"))
-                )
-            })?;
+            .with_context(|| format!("failed to spawn command {description}"))?;
         Ok(Self { process })
     }
 
@@ -59,18 +54,13 @@ impl Child {
         stdout: Stdio,
         stderr: Stdio,
     ) -> Result<Self> {
-        let mut command = smol::process::Command::from(command);
-        let process = command
+        let description = describe_command(&command);
+        let process = smol::process::Command::from(command)
             .stdin(stdin)
             .stdout(stdout)
             .stderr(stderr)
             .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to spawn command {}",
-                    crate::redact::redact_command(&format!("{command:?}"))
-                )
-            })?;
+            .with_context(|| format!("failed to spawn command {description}"))?;
 
         // Assign the child to a job object configured to kill the entire
         // process tree when the last job handle is closed, so descendants
@@ -142,6 +132,41 @@ impl Child {
             .as_ref()
             .map(windows_job::JobObject::has_running_processes)
             .transpose()
+    }
+}
+
+fn describe_command(command: &std::process::Command) -> String {
+    let mut description = format!("{:?}", command.get_program());
+    for argument in command.get_args() {
+        description.push_str(&format!(" {argument:?}"));
+    }
+    if let Some(directory) = command.get_current_dir() {
+        description.push_str(&format!(" in {directory:?}"));
+    }
+    description
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_spawn_error_names_the_command_without_its_environment() {
+        let mut command = std::process::Command::new("zed-test-missing-program");
+        command
+            .arg("--stdio")
+            .current_dir(std::env::temp_dir())
+            .env("DATABASE_URL", "postgres://user:hunter2@db/app");
+        let Err(error) = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null()) else {
+            panic!("spawning a missing program should fail");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("\"zed-test-missing-program\" \"--stdio\" in "),
+            "{message}"
+        );
+        assert!(!message.contains("DATABASE_URL"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
     }
 }
 
