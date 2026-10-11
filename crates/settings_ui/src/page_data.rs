@@ -11777,6 +11777,30 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_fallback_field_reset_overrides_a_lower_fallback(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store
+            .set_user_settings(r#"{ "ui_font_family": "Inter" }"#, cx)
+            .unwrap();
+        store
+            .set_server_settings(
+                r#"{ "markdown_preview": { "font_family": "Server Preview" } }"#,
+                cx,
+            )
+            .unwrap();
+        let page = appearance_page();
+        let item = setting_item(&page, "markdown_preview.font_family");
+        let field = setting_field::<settings::FontFamilyName>(item);
+        let fallback = SettingField::<settings::FontFamilyName>::fallback(item.metadata.as_deref());
+        let default_ui_font = store.raw_default_settings().theme.ui_font_family.clone();
+        assert!(default_ui_font.is_some());
+        let server = settings::SettingsFile::Server;
+
+        assert!(field.can_reset(&store, server.clone(), fallback));
+        assert_eq!(field.reset_value(&store, server, fallback), default_ui_font);
+    }
+
+    #[gpui::test]
     fn test_fallback_field_resets_only_its_own_non_default_value(cx: &mut App) {
         let mut store = settings::SettingsStore::test(cx);
         let page = appearance_page();

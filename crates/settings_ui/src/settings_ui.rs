@@ -224,7 +224,11 @@ impl<T: PartialEq + Clone + 'static> SettingField<T> {
         fallback: Option<fn(&SettingsContent) -> Option<&T>>,
     ) -> Option<T> {
         let is_set_somewhere_other_than_default =
-            store.get_value_up_to_file(file, self.pick).0 != settings::SettingsFile::Default;
+            store.get_value_up_to_file(file.clone(), self.pick).0
+                != settings::SettingsFile::Default
+                || fallback.is_some_and(|fallback| {
+                    store.get_value_up_to_file(file, fallback).0 != settings::SettingsFile::Default
+                });
         if is_set_somewhere_other_than_default {
             self.default_value(store, fallback).cloned()
         } else {
