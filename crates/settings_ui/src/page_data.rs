@@ -1280,9 +1280,8 @@ fn appearance_page() -> SettingsPage {
                         settings_content
                             .project
                             .markdown_preview
-                            .as_ref()?
-                            .font_family
                             .as_ref()
+                            .and_then(|markdown_preview| markdown_preview.font_family.as_ref())
                             .or(settings_content.theme.ui_font_family.as_ref())
                     },
                     write: |settings_content, value, _| {
@@ -1306,9 +1305,8 @@ fn appearance_page() -> SettingsPage {
                         settings_content
                             .project
                             .markdown_preview
-                            .as_ref()?
-                            .code_font_family
                             .as_ref()
+                            .and_then(|markdown_preview| markdown_preview.code_font_family.as_ref())
                             .or(settings_content.theme.buffer_font_family.as_ref())
                     },
                     write: |settings_content, value, _| {
@@ -1332,9 +1330,9 @@ fn appearance_page() -> SettingsPage {
                         settings_content
                             .project
                             .markdown_preview
-                            .as_ref()?
-                            .font_size
                             .as_ref()
+                            .and_then(|markdown_preview| markdown_preview.font_size.as_ref())
+                            .or(settings_content.theme.ui_font_size.as_ref())
                     },
                     write: |settings_content, value, _| {
                         settings_content
@@ -11506,5 +11504,63 @@ mod tests {
         write_vim_mode_inner(&mut settings, Some(true));
         assert_eq!(settings.vim_mode, Some(true));
         assert_eq!(settings.helix_mode, Some(false));
+    }
+
+    #[gpui::test]
+    fn test_markdown_preview_fonts_fall_back_in_the_same_file(cx: &mut App) {
+        let mut store = settings::SettingsStore::test(cx);
+        store
+            .set_user_settings(
+                r#"{
+                    "ui_font_family": "Inter",
+                    "buffer_font_family": "Iosevka",
+                    "ui_font_size": 17
+                }"#,
+                cx,
+            )
+            .unwrap();
+        let page = appearance_page();
+        let user = settings::SettingsFile::User;
+
+        let font_family =
+            setting_field::<settings::FontFamilyName>(&page, "markdown_preview.font_family");
+        assert_eq!(
+            store.get_value_from_file(user.clone(), font_family.pick),
+            (
+                user.clone(),
+                Some(&settings::FontFamilyName("Inter".into()))
+            )
+        );
+        let code_font_family =
+            setting_field::<settings::FontFamilyName>(&page, "markdown_preview.code_font_family");
+        assert_eq!(
+            store.get_value_from_file(user.clone(), code_font_family.pick),
+            (
+                user.clone(),
+                Some(&settings::FontFamilyName("Iosevka".into()))
+            )
+        );
+        let font_size = setting_field::<settings::FontSize>(&page, "markdown_preview.font_size");
+        assert_eq!(
+            store.get_value_from_file(user.clone(), font_size.pick),
+            (user, Some(&settings::FontSize(17.)))
+        );
+    }
+
+    fn setting_field<'a, T: 'static>(
+        page: &'a SettingsPage,
+        json_path: &str,
+    ) -> &'a SettingField<T> {
+        page.items
+            .iter()
+            .find_map(|item| match item {
+                SettingsPageItem::SettingItem(item)
+                    if item.field.json_path() == Some(json_path) =>
+                {
+                    item.field.as_any().downcast_ref::<SettingField<T>>()
+                }
+                _ => None,
+            })
+            .unwrap()
     }
 }
