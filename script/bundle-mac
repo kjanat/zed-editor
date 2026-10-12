@@ -85,6 +85,12 @@ else
     exit 1
 fi
 
+if [[ "$local_install" != true && -n "${SENTRY_AUTH_TOKEN:-}" ]] \
+    && [[ -z "${SENTRY_ORG:-}" || -z "${SENTRY_PROJECT:-}" ]]; then
+    echo "Sentry upload requires SENTRY_ORG and SENTRY_PROJECT." >&2
+    exit 1
+fi
+
 # Generate the licenses first, so they can be baked into the binaries
 script/generate-licenses.bash
 
@@ -128,7 +134,7 @@ function upload_debug_symbols() {
         # Try uploading up to 3 times
         for attempt in 1 2 3; do
             echo "Sentry upload attempt $attempt..."
-            if sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev \
+            if sentry-cli debug-files upload --include-sources --wait \
                 "target/${target_triple}/${target_dir}/zed.dwarf" \
                 "target/${target_triple}/${target_dir}/remote_server.dwarf"; then
                 break

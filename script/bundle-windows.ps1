@@ -78,6 +78,15 @@ function CheckEnvironmentVariables {
 		}
 	}
 
+	if (-not [string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
+		foreach ($var in @('SENTRY_ORG', 'SENTRY_PROJECT')) {
+			if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($var))) {
+				Write-Error "Sentry upload requires $var"
+				exit 1
+			}
+		}
+	}
+
 	# On PRs from forks the signing secrets are not populated,
 	# so skip code signing instead of failing, like bundle-mac does.
 	$signingVars = @(
@@ -183,7 +192,7 @@ function UploadToSentry {
 	Write-Output "Uploading zed debug symbols to sentry..."
 	for ($i = 1; $i -le 3; $i++) {
 		try {
-			sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev $CargoOutDir
+			sentry-cli debug-files upload --include-sources --wait $CargoOutDir
 			break
 		}
 		catch {

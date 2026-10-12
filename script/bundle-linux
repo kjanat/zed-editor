@@ -83,6 +83,9 @@ elif [[ -z "${SENTRY_AUTH_TOKEN:+set}" ]]; then
     fi
     echo "missing SENTRY_AUTH_TOKEN. skipping sentry upload."
     skip_sentry=true
+elif [[ -z "${SENTRY_ORG:+set}" || -z "${SENTRY_PROJECT:+set}" ]]; then
+    echo "Sentry upload requires SENTRY_ORG and SENTRY_PROJECT." >&2
+    exit 1
 fi
 
 export ZED_BUNDLE=true
@@ -142,7 +145,7 @@ if ! "$skip_sentry"; then
     # companion. See https://github.com/getsentry/symbolic/issues/783.
     for attempt in 1 2 3; do
         echo "Attempting sentry upload (attempt $attempt/3)..."
-        if sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev \
+        if sentry-cli debug-files upload --include-sources --wait \
             "${target_dir}/${target_triple}"/release/zed \
             "${target_dir}/${remote_server_triple}"/release/remote_server; then
             echo "Sentry upload successful on attempt $attempt"

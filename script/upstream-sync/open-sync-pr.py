@@ -4,6 +4,7 @@ import html
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -54,16 +55,24 @@ def is_repeatable(arguments: tuple[str, ...]) -> bool:
 
 
 def run(*arguments: str, cwd: Path | None = None) -> str:
-    for attempt in range(1, 3 if is_repeatable(arguments) else 1):
+    attempts = 3 if is_repeatable(arguments) else 1
+    attempt = 1
+    while True:
         try:
             return subprocess.check_output(
                 arguments, cwd=cwd, text=True, stderr=subprocess.PIPE
             ).strip()
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as error:
+            print(
+                f"{shlex.join(arguments)} exited with {error.returncode} "
+                + f"(attempt {attempt}/{attempts}):\n{error.stderr}",
+                file=sys.stderr,
+                flush=True,
+            )
+            if attempt == attempts:
+                raise
             time.sleep(10 * attempt)
-    return subprocess.check_output(
-        arguments, cwd=cwd, text=True, stderr=subprocess.PIPE
-    ).strip()
+            attempt += 1
 
 
 def git(*arguments: str) -> str:
