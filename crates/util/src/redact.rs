@@ -164,13 +164,13 @@ fn redact_assignments(text: &str) -> String {
         if value_end == value_start {
             continue;
         }
-        position = value_end;
         if long_option || should_redact(key) {
             output.push_str(&text[copied..value_start]);
             output.push('"');
             output.push_str(REDACTED);
             output.push('"');
             copied = value_end;
+            position = value_end;
         }
     }
     output.push_str(&text[copied..]);
@@ -650,6 +650,10 @@ mod tests {
                 "1API_KEY=digit-secret API_KEY=$(cat<<<hunter2) TOKEN=$(printf '%s' \"sub (secret)\") next"
             ),
             "1API_KEY=\"[REDACTED]\" API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" next"
+        );
+        assert_eq!(
+            redact_command("PATH=/bin;API_KEY=chained-secret HOME=/tmp&&TOKEN=and-secret next"),
+            "PATH=/bin;API_KEY=\"[REDACTED]\" HOME=/tmp&&TOKEN=\"[REDACTED]\" next"
         );
         assert_eq!(
             redact_command("\"API_KEY=secret\" --log-level=debug -Dprop=value"),
