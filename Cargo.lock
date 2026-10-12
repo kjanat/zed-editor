@@ -15206,6 +15206,7 @@ dependencies = [
  "clock",
  "collections",
  "crashes",
+ "dap",
  "dap_adapters",
  "debug_adapter_extension",
  "editor",

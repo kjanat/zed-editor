@@ -2348,17 +2348,55 @@ mod tests {
     }
 
     #[cfg(not(windows))]
-    #[gpui::test]
-    fn test_build_remote_command_stages_the_environment(cx: &mut gpui::TestAppContext) {
-        use crate::remote_client::{ChannelClient, build_remote_command};
-        use futures::channel::mpsc;
-        use rpc::{AnyProtoClient, proto};
+    struct StagingChannel {
+        client: rpc::AnyProtoClient,
+        incoming_tx: futures::channel::mpsc::UnboundedSender<rpc::proto::Envelope>,
+        outgoing_rx: futures::channel::mpsc::UnboundedReceiver<rpc::proto::Envelope>,
+    }
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded::<proto::Envelope>();
-        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<proto::Envelope>();
-        let client: AnyProtoClient = cx
-            .update(|cx| ChannelClient::new(incoming_rx, outgoing_tx, cx, "test-client", false))
-            .into();
+    #[cfg(not(windows))]
+    impl StagingChannel {
+        fn new(cx: &mut gpui::TestAppContext) -> Self {
+            use crate::remote_client::ChannelClient;
+            use futures::channel::mpsc;
+
+            let (incoming_tx, incoming_rx) = mpsc::unbounded();
+            let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
+            let client = cx
+                .update(|cx| ChannelClient::new(incoming_rx, outgoing_tx, cx, "test-client", false))
+                .into();
+            Self {
+                client,
+                incoming_tx,
+                outgoing_rx,
+            }
+        }
+
+        fn next_staged(&mut self) -> Option<(u32, rpc::proto::StageRemoteCommand)> {
+            while let Ok(envelope) = self.outgoing_rx.try_recv() {
+                if let Some(rpc::proto::envelope::Payload::StageRemoteCommand(staged)) =
+                    envelope.payload
+                {
+                    return Some((envelope.id, staged));
+                }
+            }
+            None
+        }
+
+        fn respond(&self, request_id: u32, response: impl rpc::proto::EnvelopedMessage) {
+            self.incoming_tx
+                .unbounded_send(response.into_envelope(request_id, Some(request_id), None))
+                .unwrap();
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[gpui::test]
+    async fn test_build_remote_command_stages_the_environment(cx: &mut gpui::TestAppContext) {
+        use crate::remote_client::build_remote_command;
+        use rpc::proto;
+
+        let mut channel = StagingChannel::new(cx);
         let mut connection = test_connection().unwrap();
         connection.ssh_home_dir = Some(String::from("/home/user"));
         connection.remote_binary_path = Some(Arc::from(
@@ -2369,20 +2407,19 @@ mod tests {
 
         let template = build_remote_command(
             &connection,
-            &client,
+            &channel.client,
             Some(String::from("agent")),
             &args,
             &env,
             Some(String::from("/srv/project")),
             None,
             Interactive::Yes,
-        )
-        .unwrap();
-        let Some(proto::envelope::Payload::StageRemoteCommand(staged)) =
-            outgoing_rx.try_recv().unwrap().payload
-        else {
-            panic!("expected a staged remote command");
-        };
+        );
+        let (request_id, staged) = channel
+            .next_staged()
+            .expect("expected a staged remote command");
+        channel.respond(request_id, proto::Ack {});
+        let template = template.await.unwrap();
         assert_eq!(staged.project_id, proto::REMOTE_SERVER_PROJECT_ID);
         assert_eq!(template.program, "ssh");
         let expected_exec = format!(
@@ -2422,20 +2459,19 @@ mod tests {
 
         let template = build_remote_command(
             &connection,
-            &client,
+            &channel.client,
             None,
             &[],
             &env,
             None,
             None,
             Interactive::No,
-        )
-        .unwrap();
-        let Some(proto::envelope::Payload::StageRemoteCommand(staged)) =
-            outgoing_rx.try_recv().unwrap().payload
-        else {
-            panic!("expected a staged remote command");
-        };
+        );
+        let (request_id, staged) = channel
+            .next_staged()
+            .expect("expected a staged remote command");
+        channel.respond(request_id, proto::Ack {});
+        let template = template.await.unwrap();
         assert_eq!(
             template.args.last().map(String::as_str),
             Some(
@@ -2454,7 +2490,7 @@ mod tests {
         connection.ssh_path_style = PathStyle::Windows;
         let template = build_remote_command(
             &connection,
-            &client,
+            &channel.client,
             Some(String::from("agent")),
             &args,
             &HashMap::default(),
@@ -2462,9 +2498,52 @@ mod tests {
             None,
             Interactive::No,
         )
+        .await
         .unwrap();
-        assert!(outgoing_rx.try_recv().is_err());
+        assert!(channel.next_staged().is_none());
         assert_eq!(template.program, "ssh");
+    }
+
+    #[cfg(not(windows))]
+    #[gpui::test]
+    async fn test_build_remote_command_reports_staging_errors(cx: &mut gpui::TestAppContext) {
+        use crate::remote_client::build_remote_command;
+        use rpc::proto;
+
+        let mut channel = StagingChannel::new(cx);
+        let mut connection = test_connection().unwrap();
+        connection.ssh_home_dir = Some(String::from("/home/user"));
+        connection.remote_binary_path = Some(Arc::from(
+            RelPath::from_unix_str(".zed_server/server").unwrap(),
+        ));
+
+        let template = build_remote_command(
+            &connection,
+            &channel.client,
+            Some(String::from("agent")),
+            &[],
+            &HashMap::default(),
+            None,
+            None,
+            Interactive::No,
+        );
+        let (request_id, _) = channel
+            .next_staged()
+            .expect("expected a staged remote command");
+        channel.respond(
+            request_id,
+            proto::Error {
+                message: String::from("Failed to create staged command: Disk quota exceeded"),
+                code: proto::ErrorCode::Internal as i32,
+                tags: Vec::new(),
+            },
+        );
+        let error = template.await.unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "Failed to stage the remote command: RPC request StageRemoteCommand failed: \
+             Failed to create staged command: Disk quota exceeded"
+        );
     }
 
     #[cfg(not(windows))]

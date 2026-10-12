@@ -978,20 +978,20 @@ impl RemoteClient {
         working_dir: Option<String>,
         port_forward: Option<(u16, String, u16)>,
         interactive: Interactive,
-    ) -> Result<CommandTemplate> {
-        let Some(connection) = self.remote_connection() else {
-            return Err(anyhow!("no remote connection"));
-        };
-        build_remote_command(
-            connection.as_ref(),
-            &self.proto_client(),
-            program,
-            args,
-            env,
-            working_dir,
-            port_forward,
-            interactive,
-        )
+    ) -> impl Future<Output = Result<CommandTemplate>> + use<> {
+        let command = self.remote_connection().map(|connection| {
+            build_remote_command(
+                connection.as_ref(),
+                &self.proto_client(),
+                program,
+                args,
+                env,
+                working_dir,
+                port_forward,
+                interactive,
+            )
+        });
+        async move { command.context("no remote connection")?.await }
     }
 
     pub fn build_stdio_command(
@@ -1652,7 +1652,7 @@ pub(crate) fn build_remote_command(
     working_dir: Option<String>,
     port_forward: Option<(u16, String, u16)>,
     interactive: Interactive,
-) -> Result<CommandTemplate> {
+) -> impl Future<Output = Result<CommandTemplate>> + use<> {
     let mut command = RemoteCommand {
         program: program.clone().unwrap_or_else(|| connection.shell()),
         args: match &program {
@@ -1663,19 +1663,29 @@ pub(crate) fn build_remote_command(
         working_dir: working_dir.clone(),
     };
     let id = crate::command::new_staged_command_id();
-    match connection.build_staged_command(&mut command, &id, port_forward.clone(), interactive) {
-        Some(template) => {
-            let template = template?;
-            client.send(proto::StageRemoteCommand {
-                project_id: proto::REMOTE_SERVER_PROJECT_ID,
-                id,
-                command: command.encode()?,
-            })?;
-            Ok(template)
+    let staged =
+        match connection.build_staged_command(&mut command, &id, port_forward.clone(), interactive)
+        {
+            Some(template) => template.and_then(|template| {
+                let staging = client.request(proto::StageRemoteCommand {
+                    project_id: proto::REMOTE_SERVER_PROJECT_ID,
+                    id,
+                    command: command.encode()?,
+                });
+                Ok((template, Some(staging)))
+            }),
+            None => connection
+                .build_command(program, args, env, working_dir, port_forward, interactive)
+                .map(|template| (template, None)),
+        };
+    async move {
+        let (template, staging) = staged?;
+        if let Some(staging) = staging {
+            staging
+                .await
+                .context("Failed to stage the remote command")?;
         }
-        None => {
-            connection.build_command(program, args, env, working_dir, port_forward, interactive)
-        }
+        Ok(template)
     }
 }
 

@@ -327,7 +327,7 @@ impl HeadlessProject {
         session.add_entity_request_handler(Self::handle_get_directory_environment);
         session.add_entity_request_handler(Self::handle_get_terminal_shell);
         session.add_entity_message_handler(Self::handle_toggle_lsp_logs);
-        session.add_entity_message_handler(Self::handle_stage_remote_command);
+        session.add_entity_request_handler(Self::handle_stage_remote_command);
         session.add_entity_request_handler(Self::handle_open_image_by_path);
         session.add_entity_request_handler(Self::handle_trust_worktrees);
         session.add_entity_request_handler(Self::handle_restrict_worktrees);
@@ -1483,7 +1483,7 @@ impl HeadlessProject {
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::StageRemoteCommand>,
         cx: AsyncApp,
-    ) -> Result<()> {
+    ) -> Result<proto::Ack> {
         let directory = this
             .read_with(&cx, |this, _| this.staged_command_directory.clone())
             .context("The staged command directory is unavailable")?;
@@ -1491,7 +1491,8 @@ impl HeadlessProject {
         cx.background_spawn(async move {
             remote::command::write_staged_command(&directory, &id, &command)
         })
-        .await
+        .await?;
+        Ok(proto::Ack {})
     }
 
     #[cfg(not(unix))]
@@ -1499,7 +1500,7 @@ impl HeadlessProject {
         _: Entity<Self>,
         _: TypedEnvelope<proto::StageRemoteCommand>,
         _: AsyncApp,
-    ) -> Result<()> {
+    ) -> Result<proto::Ack> {
         Err(anyhow!("Staged remote commands require a Unix host"))
     }
 
