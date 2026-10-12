@@ -214,6 +214,8 @@ const SECRET_OPTION_WORDS: &[&str] = &[
     "token",
 ];
 
+const SECRET_OPTION_SUFFIXES: &[&str] = &["key", "license", "pass"];
+
 fn is_secret_option_name(option: &str) -> bool {
     let name = option
         .chars()
@@ -221,6 +223,9 @@ fn is_secret_option_name(option: &str) -> bool {
         .map(|character| character.to_ascii_lowercase())
         .collect::<String>();
     SECRET_OPTION_WORDS.iter().any(|word| name.contains(word))
+        || SECRET_OPTION_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
 }
 
 fn awaits_secret_value(token: &str) -> bool {
@@ -849,6 +854,12 @@ mod tests {
             ),
             "--API_KEY=\"[REDACTED]\" --TOKEN=\"[REDACTED]\" --password [REDACTED] -token [REDACTED] \
              --api-key [REDACTED] --token-file [REDACTED] --log-level=debug"
+        );
+        assert_eq!(
+            redact_command(
+                "--DB_PASS=hunter2 --SIGNING_KEY=hunter2 --LICENSE=hunter2 --keymap=vim --passthrough=1"
+            ),
+            "--DB_PASS=\"[REDACTED]\" --SIGNING_KEY=\"[REDACTED]\" --LICENSE=\"[REDACTED]\" --keymap=vim --passthrough=1"
         );
         assert_eq!(
             redact_command("--password -hunter2 --api-key --token chained-secret plain"),
