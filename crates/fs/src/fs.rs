@@ -2308,6 +2308,11 @@ impl FakeFs {
         self.state.lock().watches.watch_calls.clone()
     }
 
+    /// The paths the watcher backend is watching right now.
+    pub fn registered_watch_paths(&self) -> Vec<PathBuf> {
+        self.state.lock().watches.registered_paths.clone()
+    }
+
     /// Deliver events only for a watched path itself and its direct children,
     /// matching inotify on Linux.
     pub fn set_non_recursive_watches(&self) {

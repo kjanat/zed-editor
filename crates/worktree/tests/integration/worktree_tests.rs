@@ -7193,7 +7193,9 @@ async fn test_single_file_worktree_deleted(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn test_deleted_single_file_worktree_stops_watching(cx: &mut TestAppContext) {
+async fn test_deleted_single_file_worktree_reports_once_and_sees_the_file_return(
+    cx: &mut TestAppContext,
+) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
     fs.insert_tree("/root", json!({ "test.txt": "content" }))
@@ -7212,7 +7214,19 @@ async fn test_deleted_single_file_worktree_stops_watching(cx: &mut TestAppContex
     .unwrap();
     cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
         .await;
-    assert_eq!(fs.watched_paths(), [PathBuf::from("/root/test.txt")]);
+
+    let watches_parent = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    let parent_watched = |fs: &FakeFs| {
+        fs.registered_watch_paths()
+            .contains(&PathBuf::from("/root"))
+    };
+    assert_eq!(parent_watched(&fs), watches_parent);
+    let root_inode = |cx: &mut TestAppContext| {
+        tree.read_with(cx, |tree, _| {
+            tree.entry_for_path(rel_path("")).map(|entry| entry.inode)
+        })
+    };
+    let original_inode = root_inode(cx);
 
     let deleted_events = Rc::new(Cell::new(0));
     let _subscription = cx.update({
@@ -7239,7 +7253,26 @@ async fn test_deleted_single_file_worktree_stops_watching(cx: &mut TestAppContex
     cx.background_executor.run_until_parked();
 
     assert_eq!(deleted_events.get(), 1);
-    assert_eq!(fs.watched_paths(), Vec::<PathBuf>::new());
+    assert!(!parent_watched(&fs));
+
+    fs.insert_file("/root/test.txt", b"back".to_vec()).await;
+    cx.background_executor
+        .advance_clock(worktree::ROOT_PATH_CHECK_INTERVAL);
+    cx.background_executor.run_until_parked();
+
+    let returned_inode = root_inode(cx);
+    assert!(returned_inode.is_some());
+    assert_ne!(returned_inode, original_inode);
+    assert_eq!(parent_watched(&fs), watches_parent);
+
+    fs.remove_file(Path::new("/root/test.txt"), Default::default())
+        .await
+        .unwrap();
+    cx.background_executor
+        .advance_clock(worktree::ROOT_PATH_CHECK_INTERVAL);
+    cx.background_executor.run_until_parked();
+
+    assert_eq!(deleted_events.get(), 2);
 }
 
 #[gpui::test]

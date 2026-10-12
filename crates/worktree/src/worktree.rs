@@ -1524,7 +1524,7 @@ impl LocalWorktree {
                     watcher,
                     track_git_repositories,
                     is_single_file,
-                    root_deleted: AtomicBool::new(false),
+                    root_missing: AtomicBool::new(false),
                     defer_watch,
                     hot_directories,
                 };
@@ -4624,7 +4624,7 @@ struct BackgroundScanner {
     /// Whether this is a single-file worktree (root is a file, not a directory).
     /// Used to determine if we should give up after repeated canonicalization failures.
     is_single_file: bool,
-    root_deleted: AtomicBool,
+    root_missing: AtomicBool,
     defer_watch: bool,
     hot_directories: Arc<Mutex<HashSet<ProjectEntryId>>>,
 }
@@ -4864,9 +4864,8 @@ impl BackgroundScanner {
         };
         let root_path_check_timer = self.executor.timer(ROOT_PATH_CHECK_INTERVAL).fuse();
         futures::pin_mut!(root_path_check_timer);
-        let mut root_path_missing = false;
 
-        while !self.root_deleted.load(SeqCst) {
+        loop {
             select_biased! {
                 // A tick is bounded to one batch, and a busy event stream would
                 // otherwise keep the timer from ever being polled.
@@ -4934,15 +4933,7 @@ impl BackgroundScanner {
 
                 _ = root_path_check_timer => {
                     let root_path = self.state.lock().await.snapshot.abs_path.clone();
-                    match self.fs.canonicalize(root_path.as_path()).await {
-                        Ok(_) => root_path_missing = false,
-                        Err(error) => {
-                            if !root_path_missing {
-                                root_path_missing = true;
-                                self.report_root_moved_or_deleted(&root_path, &error).await;
-                            }
-                        }
-                    }
+                    self.canonicalize_root(&root_path).await;
                     root_path_check_timer.set(self.executor.timer(ROOT_PATH_CHECK_INTERVAL).fuse());
                 }
             }
@@ -5079,6 +5070,26 @@ impl BackgroundScanner {
         events
     }
 
+    async fn canonicalize_root(&self, root_path: &Arc<SanitizedPath>) -> Option<PathBuf> {
+        match self.fs.canonicalize(root_path.as_path()).await {
+            Ok(path) => {
+                if self.root_missing.swap(false, SeqCst) && self.is_single_file {
+                    self.fs
+                        .add_file_parent_watch(self.watcher.clone(), root_path.as_path().into())
+                        .await
+                        .log_err();
+                }
+                Some(path)
+            }
+            Err(error) => {
+                if !self.root_missing.swap(true, SeqCst) {
+                    self.report_root_moved_or_deleted(root_path, &error).await;
+                }
+                None
+            }
+        }
+    }
+
     /// Called when the worktree root can no longer be canonicalized. Uses the
     /// open handle on the root to find where it moved to, and reports the new
     /// location (or, for single-file worktrees, the deletion) to the worktree.
@@ -5123,7 +5134,11 @@ impl BackgroundScanner {
                     "single-file worktree root {:?} no longer exists, marking as deleted",
                     root_path.as_path()
                 );
-                self.root_deleted.store(true, SeqCst);
+                if let Some(parent) = root_path.as_path().parent()
+                    && self.watcher.file_watch_follows_inode(root_path.as_path())
+                {
+                    self.watcher.remove(parent).log_err();
+                }
                 self.status_updates_tx
                     .unbounded_send(ScanState::RootDeleted)
                     .ok();
@@ -5133,12 +5148,8 @@ impl BackgroundScanner {
 
     async fn process_events(&self, mut events: Vec<PathEvent>) {
         let root_path = self.state.lock().await.snapshot.abs_path.clone();
-        let root_canonical_path = match self.fs.canonicalize(root_path.as_path()).await {
-            Ok(path) => path,
-            Err(error) => {
-                self.report_root_moved_or_deleted(&root_path, &error).await;
-                return;
-            }
+        let Some(root_canonical_path) = self.canonicalize_root(&root_path).await else {
+            return;
         };
         let root_canonical_path = SanitizedPath::new(&root_canonical_path);
 
@@ -8143,7 +8154,7 @@ mod tests {
                     share_private_files: tree.share_private_files,
                     track_git_repositories: true,
                     is_single_file: false,
-                    root_deleted: AtomicBool::new(false),
+                    root_missing: AtomicBool::new(false),
                     defer_watch: false,
                     hot_directories: Arc::default(),
                 }
