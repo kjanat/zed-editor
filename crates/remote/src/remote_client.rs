@@ -982,7 +982,16 @@ impl RemoteClient {
         let Some(connection) = self.remote_connection() else {
             return Err(anyhow!("no remote connection"));
         };
-        connection.build_command(program, args, env, working_dir, port_forward, interactive)
+        build_remote_command(
+            connection.as_ref(),
+            &self.proto_client(),
+            program,
+            args,
+            env,
+            working_dir,
+            port_forward,
+            interactive,
+        )
     }
 
     pub fn build_stdio_command(
@@ -1634,6 +1643,42 @@ pub struct OpenWslPath {
     pub paths: Vec<PathBuf>,
 }
 
+pub(crate) fn build_remote_command(
+    connection: &dyn RemoteConnection,
+    client: &AnyProtoClient,
+    program: Option<String>,
+    args: &[String],
+    env: &HashMap<String, String>,
+    working_dir: Option<String>,
+    port_forward: Option<(u16, String, u16)>,
+    interactive: Interactive,
+) -> Result<CommandTemplate> {
+    let mut command = RemoteCommand {
+        program: program.clone().unwrap_or_else(|| connection.shell()),
+        args: match &program {
+            Some(_) => args.to_vec(),
+            None => vec![String::from("-l")],
+        },
+        env: env.clone(),
+        working_dir: working_dir.clone(),
+    };
+    let id = crate::command::new_staged_command_id();
+    match connection.build_staged_command(&mut command, &id, port_forward.clone(), interactive) {
+        Some(template) => {
+            let template = template?;
+            client.send(proto::StageRemoteCommand {
+                project_id: proto::REMOTE_SERVER_PROJECT_ID,
+                id,
+                command: command.encode()?,
+            })?;
+            Ok(template)
+        }
+        None => {
+            connection.build_command(program, args, env, working_dir, port_forward, interactive)
+        }
+    }
+}
+
 #[async_trait(?Send)]
 pub trait RemoteConnection: Send + Sync {
     fn start_proxy(
@@ -1670,6 +1715,15 @@ pub trait RemoteConnection: Send + Sync {
         Err(anyhow!(
             "stdio commands are not supported by this remote connection"
         ))
+    }
+    fn build_staged_command(
+        &self,
+        _command: &mut RemoteCommand,
+        _id: &str,
+        _port_forward: Option<(u16, String, u16)>,
+        _interactive: Interactive,
+    ) -> Option<Result<CommandTemplate>> {
+        None
     }
     fn build_forward_ports_command(
         &self,

@@ -297,6 +297,7 @@ messages!(
     (ShowContacts, Foreground),
     (ShutdownRemoteServer, Foreground),
     (Stage, Background),
+    (StageRemoteCommand, Background),
     (StartLanguageServer, Foreground),
     (SubscribeToChannels, Foreground),
     (SyncExtensions, Background),
@@ -861,6 +862,7 @@ entity_messages!(
     SetIndexText,
     ToggleLspLogs,
     GetDirectoryEnvironment,
+    StageRemoteCommand,
     GetTerminalShell,
 
     Push,

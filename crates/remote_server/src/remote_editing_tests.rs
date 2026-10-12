@@ -6629,6 +6629,58 @@ async fn test_log_store_keys_remote_events_by_primary_kind_on_supplementary_id_c
     });
 }
 
+#[cfg(unix)]
+#[gpui::test]
+async fn test_stage_remote_command_writes_private_descriptor(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, headless) = init_test(&fs, cx, server_cx).await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().join("commands");
+    let directory = root.join("4242");
+    headless.update(server_cx, |headless, _| {
+        headless.staged_command_directory = directory.clone();
+    });
+    let command = RemoteCommand {
+        program: String::from("agent"),
+        args: vec![String::from("--acp")],
+        env: HashMap::from_iter([(String::from("API_KEY"), String::from("agent-secret"))]),
+        working_dir: None,
+    };
+    let id = remote::command::new_staged_command_id();
+    let client = project.read_with(cx, |project, cx| {
+        project.remote_client().unwrap().read(cx).proto_client()
+    });
+    client
+        .send(proto::StageRemoteCommand {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+            id: id.clone(),
+            command: command.encode().unwrap(),
+        })
+        .unwrap();
+    cx.run_until_parked();
+    server_cx.run_until_parked();
+
+    let path = directory.join(&id);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let staged =
+        remote::command::read_staged_command(&root, &id, std::time::Duration::ZERO).unwrap();
+    assert_eq!(staged.program, command.program);
+    assert_eq!(staged.args, command.args);
+    assert_eq!(staged.env, command.env);
+}
+
 pub async fn init_test(
     server_fs: &Arc<FakeFs>,
     cx: &mut TestAppContext,

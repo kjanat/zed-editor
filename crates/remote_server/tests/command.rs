@@ -4,7 +4,8 @@ use anyhow::{Context as _, Result};
 use collections::HashMap;
 use futures::{AsyncReadExt as _, AsyncWriteExt as _};
 use remote::command::{
-    RemoteCommand, home_relative_path, home_stdio_launcher_command, stdio_launcher_command,
+    RemoteCommand, STAGED_COMMAND_DIRECTORY, home_relative_path, home_stdio_launcher_command,
+    new_staged_command_id, stdio_launcher_command, write_staged_command,
 };
 use smol::process::{Command, Stdio};
 use std::borrow::Cow;
@@ -743,6 +744,67 @@ fn test_remote_command_launcher_survives_local_nushell() -> Result<()> {
             assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{exec}");
             assert_eq!(output.stderr, b"");
         }
+        Ok(())
+    })
+}
+
+#[test]
+fn test_remote_command_runs_staged_descriptor() -> Result<()> {
+    smol::block_on(async {
+        let home = tempfile::tempdir()?;
+        let data_home = home.path().join("data");
+        let commands = if cfg!(target_os = "macos") {
+            home.path()
+                .join("Library/Application Support")
+                .join(paths::APP_NAME)
+        } else {
+            data_home.join(paths::APP_NAME_LOWERCASE)
+        }
+        .join("server_state")
+        .join(STAGED_COMMAND_DIRECTORY);
+        let working_dir = home.path().display().to_string();
+        let descriptor = RemoteCommand {
+            program: String::from("/bin/sh"),
+            args: vec![
+                String::from("-c"),
+                String::from("printf '%s|%s' \"$TOKEN\" \"$PWD\""),
+            ],
+            env: HashMap::from_iter([(String::from("TOKEN"), String::from("'\"$(secret)\n"))]),
+            working_dir: Some(working_dir.clone()),
+        };
+        let id = new_staged_command_id();
+        write_staged_command(&commands.join("4242"), &id, &descriptor.encode()?)?;
+        let staged_exec = |id: &str| {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_remote_server"));
+            command
+                .args(["exec", "--descriptor", id])
+                .env_clear()
+                .env("HOME", home.path())
+                .env("XDG_DATA_HOME", &data_home)
+                .env("PATH", "/usr/bin:/bin")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command
+        };
+
+        for _ in 0..2 {
+            let output = staged_exec(&id).output().await?;
+            assert!(output.status.success(), "{:?}", output.stderr);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("'\"$(secret)\n|{working_dir}")
+            );
+            assert_eq!(output.stderr, b"");
+        }
+
+        let output = staged_exec("../escape").output().await?;
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Invalid staged remote command id"),
+            "{:?}",
+            output.stderr
+        );
         Ok(())
     })
 }

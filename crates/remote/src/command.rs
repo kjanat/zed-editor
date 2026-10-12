@@ -1,7 +1,15 @@
 use anyhow::{Context as _, Result, ensure};
 use collections::HashMap;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::{io::Read, time::Duration};
+#[cfg(unix)]
+use std::{
+    io::{ErrorKind, Write as _},
+    path::Path,
+    time::Instant,
+};
+#[cfg(unix)]
+use util::ResultExt as _;
 use util::shell::ShellKind;
 
 #[derive(Serialize, Deserialize)]
@@ -45,6 +53,102 @@ impl RemoteCommand {
             .context("Failed to read remote command")?;
         serde_json::from_slice(&buffer).map_err(|_| anyhow::anyhow!("Invalid remote command"))
     }
+}
+
+pub const STAGED_COMMAND_DIRECTORY: &str = "commands";
+
+pub fn new_staged_command_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+pub fn is_valid_staged_command_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+}
+
+pub fn staged_launcher_command(launcher: &str, id: &str) -> Result<String> {
+    ensure!(
+        is_valid_staged_command_id(id),
+        "Invalid staged remote command id"
+    );
+    Ok(format!("{launcher} --descriptor {id}"))
+}
+
+pub const STAGED_COMMAND_WAIT: Duration = Duration::from_secs(10);
+
+#[cfg(unix)]
+pub fn write_staged_command(directory: &Path, id: &str, frame: &[u8]) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+
+    ensure!(
+        is_valid_staged_command_id(id),
+        "Invalid staged remote command id"
+    );
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(directory)
+        .context("Failed to create staged command directory")?;
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+        .context("Failed to restrict staged command directory")?;
+
+    let partial = directory.join(format!("{id}.partial"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&partial)
+        .context("Failed to create staged command")?;
+    let written = file.write_all(frame).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written.and_then(|()| std::fs::rename(&partial, directory.join(id))) {
+        std::fs::remove_file(&partial).log_err();
+        return Err(error).context("Failed to write staged command");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn read_staged_command(root: &Path, id: &str, wait: Duration) -> Result<RemoteCommand> {
+    ensure!(
+        is_valid_staged_command_id(id),
+        "Invalid staged remote command id"
+    );
+    let deadline = Instant::now() + wait;
+    loop {
+        if let Some(mut file) = open_staged_command(root, id)? {
+            return RemoteCommand::read(&mut file);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("Staged remote command not found");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+fn open_staged_command(root: &Path, id: &str) -> Result<Option<std::fs::File>> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("Failed to read staged command directory"),
+    };
+    for entry in entries {
+        let path = entry
+            .context("Failed to read staged command directory")?
+            .path()
+            .join(id);
+        match std::fs::File::open(&path) {
+            Ok(file) => return Ok(Some(file)),
+            Err(error)
+                if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {}
+            Err(error) => return Err(error).context("Failed to open staged command"),
+        }
+    }
+    Ok(None)
 }
 
 pub fn stdio_launcher_command(shell_kind: ShellKind, remote_binary_path: &str) -> Result<String> {
@@ -209,6 +313,93 @@ mod tests {
             home_stdio_launcher_command(ShellKind::Posix, None, "x y")?,
             "exec \"$HOME\"/'x y' exec"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_staged_command_ids() -> Result<()> {
+        let id = new_staged_command_id();
+        assert!(is_valid_staged_command_id(&id), "{id}");
+        for invalid in ["", "../etc/passwd", "id with space", "a/b", &"a".repeat(65)] {
+            assert!(!is_valid_staged_command_id(invalid), "{invalid}");
+        }
+        assert_eq!(
+            staged_launcher_command("exec '/home/u/x y' exec", &id)?,
+            format!("exec '/home/u/x y' exec --descriptor {id}")
+        );
+        assert!(staged_launcher_command("exec helper exec", "; rm -rf ~").is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_staged_command_round_trip() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = temp_dir.path().join("server_state/commands");
+        let directory = root.join("4242");
+        let command = RemoteCommand {
+            program: String::from("agent"),
+            args: vec![String::from("--acp")],
+            env: HashMap::from_iter([(String::from("API_KEY"), String::from("agent-secret"))]),
+            working_dir: Some(String::from("~/project")),
+        };
+        let id = new_staged_command_id();
+        assert_eq!(
+            read_staged_command(&root, &id, Duration::ZERO)
+                .err()
+                .map(|error| error.to_string()),
+            Some(String::from("Staged remote command not found"))
+        );
+        std::fs::create_dir_all(&root)?;
+        std::fs::write(root.join("stray-file"), b"")?;
+        write_staged_command(&directory, &id, &command.encode()?)?;
+        let mode = |path: &Path| -> Result<u32> {
+            Ok(std::fs::metadata(path)?.permissions().mode() & 0o777)
+        };
+        assert_eq!(mode(&directory)?, 0o700);
+        assert_eq!(mode(&directory.join(&id))?, 0o600);
+        assert!(!directory.join(format!("{id}.partial")).exists());
+
+        for _ in 0..2 {
+            let staged = read_staged_command(&root, &id, Duration::ZERO)?;
+            assert_eq!(staged.program, command.program);
+            assert_eq!(staged.args, command.args);
+            assert_eq!(staged.env, command.env);
+            assert_eq!(staged.working_dir, command.working_dir);
+        }
+        assert!(write_staged_command(&directory, "../escape", b"").is_err());
+        assert!(read_staged_command(&root, "../escape", Duration::ZERO).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_read_staged_command_waits_for_the_file() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = temp_dir.path().join("commands");
+        let directory = root.join("4242");
+        let id = new_staged_command_id();
+        let frame = RemoteCommand {
+            program: String::from("late"),
+            args: Vec::new(),
+            env: HashMap::default(),
+            working_dir: None,
+        }
+        .encode()?;
+        let writer = std::thread::spawn({
+            let id = id.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(50));
+                write_staged_command(&directory, &id, &frame)
+            }
+        });
+        let staged = read_staged_command(&root, &id, STAGED_COMMAND_WAIT)?;
+        assert_eq!(staged.program, "late");
+        writer
+            .join()
+            .map_err(|_| anyhow::anyhow!("writer panicked"))??;
         Ok(())
     }
 

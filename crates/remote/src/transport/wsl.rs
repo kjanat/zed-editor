@@ -1,6 +1,6 @@
 use crate::{
     RemoteArch, RemoteClientDelegate, RemoteOs, RemotePlatform,
-    command::{RemoteCommand, home_stdio_launcher_command},
+    command::{RemoteCommand, home_stdio_launcher_command, staged_launcher_command},
     remote_client::{CommandTemplate, Interactive, RemoteConnection, RemoteConnectionOptions},
     transport::{HOME_DIR_ARGS, HOME_DIR_PROGRAM, parse_home_dir, parse_platform, parse_shell},
 };
@@ -63,6 +63,48 @@ pub(crate) struct WslRemoteConnection {
 }
 
 impl WslRemoteConnection {
+    fn build_launcher_command(
+        &self,
+        command: &mut RemoteCommand,
+        staged_id: Option<&str>,
+    ) -> Result<CommandTemplate> {
+        let remote_binary_path = self
+            .remote_binary_path
+            .as_ref()
+            .context("Remote binary path not set")?;
+        command.retain_valid_env();
+        let startup_dir = command
+            .working_dir
+            .take()
+            .map(|working_dir| RemotePathBuf::new(working_dir, PathStyle::Unix).to_string())
+            .unwrap_or_else(|| String::from("~"));
+        let mut exec = home_stdio_launcher_command(
+            self.shell_kind,
+            self.home_dir.as_deref(),
+            &remote_binary_path.display(PathStyle::Unix),
+        )?;
+        if let Some(id) = staged_id {
+            exec = staged_launcher_command(&exec, id)?;
+        }
+        let (shell, shell_args) =
+            ShellBuilder::new(&Shell::Program(self.shell.clone()), false).build(Some(exec), &[]);
+        let mut args = vec![
+            String::from("--distribution"),
+            self.connection_options.distro_name.clone(),
+        ];
+        if let Some(user) = &self.connection_options.user {
+            args.push(String::from("--user"));
+            args.push(user.clone());
+        }
+        args.extend([String::from("--cd"), startup_dir, String::from("--"), shell]);
+        args.extend(shell_args);
+        Ok(CommandTemplate {
+            program: String::from("wsl.exe"),
+            args,
+            env: HashMap::default(),
+        })
+    }
+
     pub(crate) async fn new(
         connection_options: WslConnectionOptions,
         delegate: Arc<dyn RemoteClientDelegate>,
@@ -627,41 +669,23 @@ impl RemoteConnection for WslRemoteConnection {
         &self,
         mut command: RemoteCommand,
     ) -> Result<(CommandTemplate, Vec<u8>)> {
-        let remote_binary_path = self
-            .remote_binary_path
-            .as_ref()
-            .context("Remote binary path not set")?;
-        command.retain_valid_env();
-        let startup_dir = command
-            .working_dir
-            .take()
-            .map(|working_dir| RemotePathBuf::new(working_dir, PathStyle::Unix).to_string())
-            .unwrap_or_else(|| String::from("~"));
-        let exec = home_stdio_launcher_command(
-            self.shell_kind,
-            self.home_dir.as_deref(),
-            &remote_binary_path.display(PathStyle::Unix),
-        )?;
-        let (shell, shell_args) =
-            ShellBuilder::new(&Shell::Program(self.shell.clone()), false).build(Some(exec), &[]);
-        let mut args = vec![
-            String::from("--distribution"),
-            self.connection_options.distro_name.clone(),
-        ];
-        if let Some(user) = &self.connection_options.user {
-            args.push(String::from("--user"));
-            args.push(user.clone());
+        let template = self.build_launcher_command(&mut command, None)?;
+        Ok((template, command.encode()?))
+    }
+
+    fn build_staged_command(
+        &self,
+        command: &mut RemoteCommand,
+        id: &str,
+        port_forward: Option<(u16, String, u16)>,
+        _interactive: Interactive,
+    ) -> Option<Result<CommandTemplate>> {
+        if port_forward.is_some() {
+            return Some(Err(anyhow!(
+                "WSL shares the network interface with the host system"
+            )));
         }
-        args.extend([String::from("--cd"), startup_dir, String::from("--"), shell]);
-        args.extend(shell_args);
-        Ok((
-            CommandTemplate {
-                program: String::from("wsl.exe"),
-                args,
-                env: HashMap::default(),
-            },
-            command.encode()?,
-        ))
+        Some(self.build_launcher_command(command, Some(id)))
     }
 
     fn build_forward_ports_command(
@@ -826,9 +850,8 @@ fn wsl_command_impl(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_build_stdio_command() -> Result<()> {
-        let mut connection = WslRemoteConnection {
+    fn test_connection() -> WslRemoteConnection {
+        WslRemoteConnection {
             remote_binary_path: None,
             platform: RemotePlatform {
                 os: RemoteOs::Linux,
@@ -844,7 +867,63 @@ mod tests {
                 distro_name: String::from("Ubuntu"),
                 user: None,
             },
+        }
+    }
+
+    #[test]
+    fn test_build_staged_command() -> Result<()> {
+        let mut connection = test_connection();
+        connection.home_dir = Some(String::from("/home/user"));
+        connection.shell = String::from("/bin/bash");
+        connection.shell_kind = ShellKind::Posix;
+        connection.remote_binary_path =
+            Some(Arc::from(RelPath::from_unix_str(".zed_server/server")?));
+        let env = HashMap::from_iter([(String::from("API_KEY"), String::from("agent-secret"))]);
+        let mut command = RemoteCommand {
+            program: String::from("agent"),
+            args: vec![String::from("--acp")],
+            env: env.clone(),
+            working_dir: Some(String::from("~/project")),
         };
+        let id = crate::command::new_staged_command_id();
+        let template = connection
+            .build_staged_command(&mut command, &id, None, Interactive::Yes)
+            .context("staged command")??;
+        assert_eq!(template.program, "wsl.exe");
+        let expected_exec = format!("exec /home/user/.zed_server/server exec --descriptor {id}");
+        assert_eq!(
+            template.args,
+            [
+                "--distribution",
+                "Ubuntu",
+                "--cd",
+                "~/project",
+                "--",
+                "/bin/bash",
+                "-i",
+                "-c",
+                expected_exec.as_str(),
+            ]
+        );
+        assert_eq!(template.env, HashMap::default());
+        assert_eq!(command.env, env);
+        assert_eq!(command.working_dir, None);
+
+        let port_forward = Some((8080, String::from("localhost"), 80));
+        let error = connection
+            .build_staged_command(&mut command, &id, port_forward, Interactive::No)
+            .context("staged command")?
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "WSL shares the network interface with the host system"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_stdio_command() -> Result<()> {
+        let mut connection = test_connection();
         let command = |env: HashMap<String, String>, working_dir: Option<&str>| RemoteCommand {
             program: String::from("agent"),
             args: vec![String::from("--token=argument-secret")],

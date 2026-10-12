@@ -92,7 +92,10 @@ pub enum Commands {
     },
     Version,
     #[cfg(unix)]
-    Exec,
+    Exec {
+        #[arg(long)]
+        descriptor: Option<String>,
+    },
 }
 
 pub fn run(command: Commands) -> anyhow::Result<()> {
@@ -118,7 +121,7 @@ pub fn run(command: Commands) -> anyhow::Result<()> {
             reconnect,
         } => execute_proxy(identifier, reconnect).context("running proxy on the remote server"),
         #[cfg(unix)]
-        Commands::Exec => execute_command(),
+        Commands::Exec { descriptor } => execute_command(descriptor.as_deref()),
         Commands::Version => {
             let release_channel = *RELEASE_CHANNEL;
             match release_channel {
@@ -155,10 +158,64 @@ pub static VERSION: LazyLock<String> = LazyLock::new(|| match *RELEASE_CHANNEL {
 });
 
 #[cfg(unix)]
-fn execute_command() -> Result<()> {
-    let mut stdin = File::from(std::io::stdin().as_fd().try_clone_to_owned()?);
-    let descriptor = RemoteCommand::read(&mut stdin)?;
-    drop(stdin);
+fn staged_command_root() -> PathBuf {
+    paths::remote_server_state_dir().join(remote::command::STAGED_COMMAND_DIRECTORY)
+}
+
+#[cfg(unix)]
+pub(crate) fn staged_command_directory() -> PathBuf {
+    staged_command_root().join(std::process::id().to_string())
+}
+
+#[cfg(unix)]
+fn remove_orphaned_staged_commands(root: &Path) -> Result<()> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("Failed to read staged command directory"),
+    };
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    for entry in entries {
+        let entry = entry.context("Failed to read staged command directory")?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if system.process(sysinfo::Pid::from_u32(pid)).is_none() {
+            std::fs::remove_dir_all(entry.path())
+                .with_context(|| format!("Failed to remove staged commands of process {pid}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_staged_command_directory(directory: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("Failed to remove staged commands"),
+    }
+}
+
+#[cfg(unix)]
+fn execute_command(staged_id: Option<&str>) -> Result<()> {
+    let descriptor = match staged_id {
+        Some(id) => remote::command::read_staged_command(
+            &staged_command_root(),
+            id,
+            remote::command::STAGED_COMMAND_WAIT,
+        )?,
+        None => {
+            let mut stdin = File::from(std::io::stdin().as_fd().try_clone_to_owned()?);
+            RemoteCommand::read(&mut stdin)?
+        }
+    };
 
     let working_dir = descriptor
         .working_dir
@@ -841,6 +898,11 @@ pub fn execute_run(
             cleanup_old_binaries()
         })
         .detach();
+        #[cfg(unix)]
+        cx.background_spawn(async move {
+            remove_orphaned_staged_commands(&staged_command_root()).log_err();
+        })
+        .detach();
 
         mem::forget(project);
     };
@@ -848,6 +910,8 @@ pub fn execute_run(
     let app = std::panic::AssertUnwindSafe(app);
     let run = std::panic::AssertUnwindSafe(run);
     let res = std::panic::catch_unwind(move || { app }.0.run({ run }.0));
+    #[cfg(unix)]
+    remove_staged_command_directory(&staged_command_directory()).log_err();
     if let Err(_) = res {
         log::error!("app panicked. quitting.");
         Err(anyhow::anyhow!("panicked"))
@@ -1496,6 +1560,30 @@ mod tests {
         use super::*;
         use gpui::TestAppContext;
         use proto::EnvelopedMessage as _;
+
+        #[test]
+        fn staged_commands_of_exited_servers_are_removed() -> Result<()> {
+            let temp_dir = tempfile::tempdir()?;
+            let root = temp_dir.path().join("commands");
+            let running = root.join(std::process::id().to_string());
+            let exited = root.join(u32::MAX.to_string());
+            let unrelated = root.join("not-a-pid");
+            for directory in [&running, &exited, &unrelated] {
+                std::fs::create_dir_all(directory)?;
+                std::fs::write(directory.join("descriptor"), b"secret")?;
+            }
+
+            remove_orphaned_staged_commands(&root)?;
+            assert!(running.join("descriptor").exists());
+            assert!(!exited.exists());
+            assert!(unrelated.join("descriptor").exists());
+
+            remove_staged_command_directory(&running)?;
+            assert!(!running.exists());
+            remove_staged_command_directory(&running)?;
+            remove_orphaned_staged_commands(&temp_dir.path().join("missing"))?;
+            Ok(())
+        }
 
         // Windows did not reproduce socket backpressure.
         #[gpui::test]
