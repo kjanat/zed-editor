@@ -158,13 +158,17 @@ pub static VERSION: LazyLock<String> = LazyLock::new(|| match *RELEASE_CHANNEL {
 });
 
 #[cfg(unix)]
-fn staged_command_root() -> PathBuf {
-    paths::remote_server_state_dir().join(remote::command::STAGED_COMMAND_DIRECTORY)
+fn staged_command_root() -> Result<PathBuf> {
+    let executable = std::env::current_exe().context("Failed to locate the remote server")?;
+    let directory = executable
+        .parent()
+        .context("The remote server has no parent directory")?;
+    Ok(directory.join(remote::command::STAGED_COMMAND_DIRECTORY))
 }
 
 #[cfg(unix)]
-pub(crate) fn staged_command_directory() -> PathBuf {
-    staged_command_root().join(std::process::id().to_string())
+pub(crate) fn staged_command_directory() -> Result<PathBuf> {
+    Ok(staged_command_root()?.join(std::process::id().to_string()))
 }
 
 #[cfg(unix)]
@@ -207,7 +211,7 @@ fn remove_staged_command_directory(directory: &Path) -> Result<()> {
 fn execute_command(staged_id: Option<&str>) -> Result<()> {
     let descriptor = match staged_id {
         Some(id) => remote::command::read_staged_command(
-            &staged_command_root(),
+            &staged_command_root()?,
             id,
             remote::command::STAGED_COMMAND_WAIT,
         )?,
@@ -900,7 +904,9 @@ pub fn execute_run(
         .detach();
         #[cfg(unix)]
         cx.background_spawn(async move {
-            remove_orphaned_staged_commands(&staged_command_root()).log_err();
+            staged_command_root()
+                .and_then(|root| remove_orphaned_staged_commands(&root))
+                .log_err();
         })
         .detach();
 
@@ -911,7 +917,9 @@ pub fn execute_run(
     let run = std::panic::AssertUnwindSafe(run);
     let res = std::panic::catch_unwind(move || { app }.0.run({ run }.0));
     #[cfg(unix)]
-    remove_staged_command_directory(&staged_command_directory()).log_err();
+    staged_command_directory()
+        .and_then(|directory| remove_staged_command_directory(&directory))
+        .log_err();
     if let Err(_) = res {
         log::error!("app panicked. quitting.");
         Err(anyhow::anyhow!("panicked"))
@@ -1582,6 +1590,22 @@ mod tests {
             assert!(!running.exists());
             remove_staged_command_directory(&running)?;
             remove_orphaned_staged_commands(&temp_dir.path().join("missing"))?;
+            Ok(())
+        }
+
+        #[test]
+        fn staged_commands_live_next_to_the_server_binary() -> Result<()> {
+            let binary_directory = std::env::current_exe()?
+                .parent()
+                .context("the test binary has a directory")?
+                .to_path_buf();
+            assert_eq!(staged_command_root()?, binary_directory.join("commands"));
+            assert_eq!(
+                staged_command_directory()?,
+                binary_directory
+                    .join("commands")
+                    .join(std::process::id().to_string())
+            );
             Ok(())
         }
 

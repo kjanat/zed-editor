@@ -6643,7 +6643,7 @@ async fn test_stage_remote_command_writes_private_descriptor(
     let root = temp_dir.path().join("commands");
     let directory = root.join("4242");
     headless.update(server_cx, |headless, _| {
-        headless.staged_command_directory = directory.clone();
+        headless.staged_command_directory = Some(directory.clone());
     });
     let command = RemoteCommand {
         program: String::from("agent"),

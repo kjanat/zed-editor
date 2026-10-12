@@ -751,17 +751,13 @@ fn test_remote_command_launcher_survives_local_nushell() -> Result<()> {
 #[test]
 fn test_remote_command_runs_staged_descriptor() -> Result<()> {
     smol::block_on(async {
+        let binary = std::path::Path::new(env!("CARGO_BIN_EXE_remote_server"));
+        let install = tempfile::tempdir_in(binary.parent().context("the binary has a directory")?)?;
+        let installed_binary = install.path().join("remote_server");
+        std::fs::hard_link(binary, &installed_binary)?;
+        let commands = install.path().join(STAGED_COMMAND_DIRECTORY);
         let home = tempfile::tempdir()?;
         let data_home = home.path().join("data");
-        let commands = if cfg!(target_os = "macos") {
-            home.path()
-                .join("Library/Application Support")
-                .join(paths::APP_NAME)
-        } else {
-            data_home.join(paths::APP_NAME_LOWERCASE)
-        }
-        .join("server_state")
-        .join(STAGED_COMMAND_DIRECTORY);
         let working_dir = home.path().display().to_string();
         let descriptor = RemoteCommand {
             program: String::from("/bin/sh"),
@@ -775,7 +771,7 @@ fn test_remote_command_runs_staged_descriptor() -> Result<()> {
         let id = new_staged_command_id();
         write_staged_command(&commands.join("4242"), &id, &descriptor.encode()?)?;
         let staged_exec = |id: &str| {
-            let mut command = Command::new(env!("CARGO_BIN_EXE_remote_server"));
+            let mut command = Command::new(&installed_binary);
             command
                 .args(["exec", "--descriptor", id])
                 .env_clear()

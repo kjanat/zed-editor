@@ -77,7 +77,7 @@ pub struct HeadlessProject {
     pub _toolchain_store: Entity<ToolchainStore>,
     pub kernels: HashMap<String, Child>,
     #[cfg(unix)]
-    pub(crate) staged_command_directory: PathBuf,
+    pub(crate) staged_command_directory: Option<PathBuf>,
     search_buffer_batches: async_channel::Sender<SearchBufferBatch>,
     _search_buffer_sender: Task<()>,
 }
@@ -436,7 +436,7 @@ impl HeadlessProject {
             _toolchain_store: toolchain_store,
             kernels: Default::default(),
             #[cfg(unix)]
-            staged_command_directory: crate::staged_command_directory(),
+            staged_command_directory: crate::staged_command_directory().log_err(),
             search_buffer_batches,
             _search_buffer_sender: search_buffer_sender,
         }
@@ -1484,7 +1484,9 @@ impl HeadlessProject {
         envelope: TypedEnvelope<proto::StageRemoteCommand>,
         cx: AsyncApp,
     ) -> Result<()> {
-        let directory = this.read_with(&cx, |this, _| this.staged_command_directory.clone());
+        let directory = this
+            .read_with(&cx, |this, _| this.staged_command_directory.clone())
+            .context("The staged command directory is unavailable")?;
         let proto::StageRemoteCommand { id, command, .. } = envelope.payload;
         cx.background_spawn(async move {
             remote::command::write_staged_command(&directory, &id, &command)
