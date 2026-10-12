@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::ensure;
 use async_trait::async_trait;
 use collections::HashMap;
 use parking_lot::Mutex;
@@ -30,7 +31,7 @@ use rpc::proto::Envelope;
 use crate::{
     RemoteArch, RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions, RemoteOs,
     RemotePlatform,
-    command::RemoteCommand,
+    command::{RemoteCommand, is_valid_staged_command_id},
     remote_client::{CommandTemplate, Interactive},
     transport::parse_platform,
 };
@@ -76,6 +77,73 @@ pub(crate) struct DockerExecConnection {
 }
 
 impl DockerExecConnection {
+    fn build_launcher_command(
+        &self,
+        command: &mut RemoteCommand,
+        staged_id: Option<&str>,
+        interactive: Interactive,
+    ) -> Result<CommandTemplate> {
+        let remote_binary_relpath = self
+            .remote_binary_relpath
+            .as_ref()
+            .context("Remote binary path not set")?;
+        let mut env = self
+            .connection_options
+            .remote_env
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<HashMap<_, _>>();
+        env.extend(std::mem::take(&mut command.env));
+        command.env = env;
+        command.retain_valid_env();
+        if let Some(working_dir) = command.working_dir.take() {
+            let working_dir = RemotePathBuf::new(working_dir, self.path_style()).to_string();
+            command.working_dir = Some(match working_dir.strip_prefix("~/") {
+                Some(remainder) => format!(
+                    "{}/{}",
+                    self.remote_dir_for_server.trim_end_matches('/'),
+                    remainder.trim_start_matches('/')
+                ),
+                None => working_dir,
+            });
+        }
+        let remote_binary_path = format!(
+            "{}/{}",
+            self.remote_dir_for_server.trim_end_matches('/'),
+            remote_binary_relpath.display(PathStyle::Unix),
+        );
+        let mut args = vec![
+            String::from("exec"),
+            String::from("-u"),
+            self.connection_options.remote_user.clone(),
+        ];
+        if let Some(working_dir) = &command.working_dir {
+            args.push(String::from("-w"));
+            args.push(working_dir.clone());
+        }
+        args.extend([
+            String::from(match interactive {
+                Interactive::Yes => "-it",
+                Interactive::No => "-i",
+            }),
+            self.connection_options.container_id.clone(),
+            remote_binary_path,
+            String::from("exec"),
+        ]);
+        if let Some(id) = staged_id {
+            ensure!(
+                is_valid_staged_command_id(id),
+                "Invalid staged remote command id"
+            );
+            args.extend([String::from("--descriptor"), id.to_owned()]);
+        }
+        Ok(CommandTemplate {
+            program: self.docker_cli().to_string(),
+            args,
+            env: HashMap::default(),
+        })
+    }
+
     pub async fn new(
         connection_options: DockerConnectionOptions,
         delegate: Arc<dyn RemoteClientDelegate>,
@@ -928,58 +996,21 @@ impl RemoteConnection for DockerExecConnection {
         &self,
         mut command: RemoteCommand,
     ) -> Result<(CommandTemplate, Vec<u8>)> {
-        let remote_binary_relpath = self
-            .remote_binary_relpath
-            .as_ref()
-            .context("Remote binary path not set")?;
-        let mut env = self
-            .connection_options
-            .remote_env
-            .iter()
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect::<HashMap<_, _>>();
-        env.extend(command.env);
-        command.env = env;
-        command.retain_valid_env();
-        if let Some(working_dir) = command.working_dir.take() {
-            let working_dir = RemotePathBuf::new(working_dir, self.path_style()).to_string();
-            command.working_dir = Some(match working_dir.strip_prefix("~/") {
-                Some(remainder) => format!(
-                    "{}/{}",
-                    self.remote_dir_for_server.trim_end_matches('/'),
-                    remainder.trim_start_matches('/')
-                ),
-                None => working_dir,
-            });
+        let template = self.build_launcher_command(&mut command, None, Interactive::No)?;
+        Ok((template, command.encode()?))
+    }
+
+    fn build_staged_command(
+        &self,
+        command: &mut RemoteCommand,
+        id: &str,
+        _port_forward: Option<(u16, String, u16)>,
+        interactive: Interactive,
+    ) -> Option<Result<CommandTemplate>> {
+        if self.path_style() == PathStyle::Windows {
+            return None;
         }
-        let remote_binary_path = format!(
-            "{}/{}",
-            self.remote_dir_for_server.trim_end_matches('/'),
-            remote_binary_relpath.display(PathStyle::Unix),
-        );
-        let mut args = vec![
-            String::from("exec"),
-            String::from("-u"),
-            self.connection_options.remote_user.clone(),
-        ];
-        if let Some(working_dir) = &command.working_dir {
-            args.push(String::from("-w"));
-            args.push(working_dir.clone());
-        }
-        args.extend([
-            String::from("-i"),
-            self.connection_options.container_id.clone(),
-            remote_binary_path,
-            String::from("exec"),
-        ]);
-        Ok((
-            CommandTemplate {
-                program: self.docker_cli().to_string(),
-                args,
-                env: HashMap::default(),
-            },
-            command.encode()?,
-        ))
+        Some(self.build_launcher_command(command, Some(id), interactive))
     }
 
     fn build_forward_ports_command(
@@ -1423,6 +1454,64 @@ mod tests {
             assert_eq!(template.env, HashMap::default());
             assert_eq!(payload, expected_payload);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_staged_command() -> Result<()> {
+        let mut connection = connection(&[("API_KEY", "remote-secret")]);
+        connection.remote_binary_relpath = Some(Arc::from(RelPath::from_unix_str(
+            ".local/share/zed/remote server",
+        )?));
+        let mut command = RemoteCommand {
+            program: String::from("/bin/sh"),
+            args: vec![String::from("-l")],
+            env: HashMap::from_iter([(String::from("GH_TOKEN"), String::from("ghp_secret"))]),
+            working_dir: Some(String::from("~/project")),
+        };
+        let id = crate::command::new_staged_command_id();
+        let template = connection
+            .build_staged_command(&mut command, &id, None, Interactive::Yes)
+            .context("staged command")??;
+        assert_eq!(template.program, "docker");
+        assert_eq!(
+            template.args,
+            [
+                "exec",
+                "-u",
+                "user",
+                "-w",
+                "/tmp/zed/project",
+                "-it",
+                "container_id",
+                "/tmp/zed/.local/share/zed/remote server",
+                "exec",
+                "--descriptor",
+                id.as_str(),
+            ]
+        );
+        assert_eq!(template.env, HashMap::default());
+        assert_eq!(
+            command.env,
+            HashMap::from_iter([
+                (String::from("API_KEY"), String::from("remote-secret")),
+                (String::from("GH_TOKEN"), String::from("ghp_secret")),
+            ])
+        );
+        assert_eq!(command.working_dir.as_deref(), Some("/tmp/zed/project"));
+        assert!(
+            connection
+                .build_staged_command(&mut command, "../escape", None, Interactive::No)
+                .context("staged command")?
+                .is_err()
+        );
+
+        connection.path_style = Some(PathStyle::Windows);
+        assert!(
+            connection
+                .build_staged_command(&mut command, &id, None, Interactive::No)
+                .is_none()
+        );
         Ok(())
     }
 

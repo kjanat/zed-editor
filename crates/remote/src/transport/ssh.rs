@@ -1,6 +1,8 @@
 use crate::{
     RemoteArch, RemoteClientDelegate, RemoteOs, RemotePlatform,
-    command::{RemoteCommand, home_relative_path, home_stdio_launcher_command},
+    command::{
+        RemoteCommand, home_relative_path, home_stdio_launcher_command, staged_launcher_command,
+    },
     remote_client::{CommandTemplate, Interactive, RemoteConnection, RemoteConnectionOptions},
     transport::{HOME_DIR_ARGS, HOME_DIR_PROGRAM, parse_home_dir, parse_platform, parse_shell},
 };
@@ -558,6 +560,19 @@ impl RemoteConnection for SshRemoteConnection {
         Ok((template, command.encode()?))
     }
 
+    fn build_staged_command(
+        &self,
+        command: &mut RemoteCommand,
+        id: &str,
+        port_forward: Option<(u16, String, u16)>,
+        interactive: Interactive,
+    ) -> Option<Result<CommandTemplate>> {
+        if self.ssh_platform.os.is_windows() {
+            return None;
+        }
+        Some(self.build_posix_staged_command(command, id, port_forward, interactive))
+    }
+
     fn build_forward_ports_command(
         &self,
         forwards: Vec<(u16, String, u16)>,
@@ -811,6 +826,39 @@ async fn find_existing_control_master(
 }
 
 impl SshRemoteConnection {
+    fn build_posix_staged_command(
+        &self,
+        command: &mut RemoteCommand,
+        id: &str,
+        port_forward: Option<(u16, String, u16)>,
+        interactive: Interactive,
+    ) -> Result<CommandTemplate> {
+        let remote_binary_path = self
+            .remote_binary_path
+            .as_ref()
+            .context("Remote binary path not set")?;
+        command.retain_valid_env();
+        let mut exec = posix_working_dir_prefix(
+            command.working_dir.take(),
+            self.ssh_path_style,
+            self.ssh_shell_kind,
+        )?;
+        let launcher = home_stdio_launcher_command(
+            self.ssh_shell_kind,
+            self.ssh_home_dir.as_deref(),
+            &remote_binary_path.display(PathStyle::Unix),
+        )?;
+        exec.push_str(&staged_launcher_command(&launcher, id)?);
+        Ok(ssh_command_template(
+            self.socket.ssh_command_options(),
+            port_forward,
+            interactive,
+            &self.socket.connection_options.ssh_destination(),
+            exec,
+            self.socket.envs.clone(),
+        ))
+    }
+
     pub(crate) async fn new(
         connection_options: SshConnectionOptions,
         known_os: Option<RemoteOs>,
@@ -2283,9 +2331,8 @@ mod tests {
     use super::*;
 
     #[cfg(not(windows))]
-    #[test]
-    fn test_build_stdio_command() -> Result<()> {
-        let mut connection = SshRemoteConnection {
+    fn test_connection() -> Result<SshRemoteConnection> {
+        Ok(SshRemoteConnection {
             socket: SshSocket {
                 connection_options: SshConnectionOptions {
                     host: SshConnectionHost::from("host"),
@@ -2313,7 +2360,212 @@ mod tests {
             ssh_default_system_shell: String::from("/bin/sh"),
             ssh_home_dir: None,
             _temp_dir: TempDir::new()?,
-        };
+        })
+    }
+
+    #[cfg(not(windows))]
+    struct StagingChannel {
+        client: rpc::AnyProtoClient,
+        incoming_tx: futures::channel::mpsc::UnboundedSender<rpc::proto::Envelope>,
+        outgoing_rx: futures::channel::mpsc::UnboundedReceiver<rpc::proto::Envelope>,
+    }
+
+    #[cfg(not(windows))]
+    impl StagingChannel {
+        fn new(cx: &mut gpui::TestAppContext) -> Self {
+            use crate::remote_client::ChannelClient;
+            use futures::channel::mpsc;
+
+            let (incoming_tx, incoming_rx) = mpsc::unbounded();
+            let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
+            let client = cx
+                .update(|cx| ChannelClient::new(incoming_rx, outgoing_tx, cx, "test-client", false))
+                .into();
+            Self {
+                client,
+                incoming_tx,
+                outgoing_rx,
+            }
+        }
+
+        fn next_staged(&mut self) -> Option<(u32, rpc::proto::StageRemoteCommand)> {
+            while let Ok(envelope) = self.outgoing_rx.try_recv() {
+                if let Some(rpc::proto::envelope::Payload::StageRemoteCommand(staged)) =
+                    envelope.payload
+                {
+                    return Some((envelope.id, staged));
+                }
+            }
+            None
+        }
+
+        fn respond(&self, request_id: u32, response: impl rpc::proto::EnvelopedMessage) {
+            self.incoming_tx
+                .unbounded_send(response.into_envelope(request_id, Some(request_id), None))
+                .unwrap();
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[gpui::test]
+    async fn test_build_remote_command_stages_the_environment(cx: &mut gpui::TestAppContext) {
+        use crate::remote_client::build_remote_command;
+        use rpc::proto;
+
+        let mut channel = StagingChannel::new(cx);
+        let mut connection = test_connection().unwrap();
+        connection.ssh_home_dir = Some(String::from("/home/user"));
+        connection.remote_binary_path = Some(Arc::from(
+            RelPath::from_unix_str(".zed_server/server").unwrap(),
+        ));
+        let env = HashMap::from_iter([(String::from("API_KEY"), String::from("agent-secret"))]);
+        let args = [String::from("--token=argument")];
+
+        let template = build_remote_command(
+            &connection,
+            &channel.client,
+            Some(String::from("agent")),
+            &args,
+            &env,
+            Some(String::from("/srv/project")),
+            None,
+            Interactive::Yes,
+        );
+        let (request_id, staged) = channel
+            .next_staged()
+            .expect("expected a staged remote command");
+        channel.respond(request_id, proto::Ack {});
+        let template = template.await.unwrap();
+        assert_eq!(staged.project_id, proto::REMOTE_SERVER_PROJECT_ID);
+        assert_eq!(template.program, "ssh");
+        let expected_exec = format!(
+            "cd /srv/project && exec /home/user/.zed_server/server exec --descriptor {}",
+            staged.id
+        );
+        assert_eq!(
+            template.args,
+            [
+                "-p",
+                "2222",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=/tmp/zed-test.sock",
+                "-o",
+                "LogLevel=ERROR",
+                "-t",
+                "user@host",
+                expected_exec.as_str(),
+            ]
+        );
+        assert!(
+            template
+                .args
+                .iter()
+                .all(|arg| !arg.contains("agent-secret") && !arg.contains("API_KEY")),
+            "{:?}",
+            template.args
+        );
+        assert_eq!(template.env, connection.socket.envs);
+        let command = RemoteCommand::read(&mut &staged.command[..]).unwrap();
+        assert_eq!(command.program, "agent");
+        assert_eq!(command.args, args);
+        assert_eq!(command.env, env);
+        assert_eq!(command.working_dir, None);
+
+        let template = build_remote_command(
+            &connection,
+            &channel.client,
+            None,
+            &[],
+            &env,
+            None,
+            None,
+            Interactive::No,
+        );
+        let (request_id, staged) = channel
+            .next_staged()
+            .expect("expected a staged remote command");
+        channel.respond(request_id, proto::Ack {});
+        let template = template.await.unwrap();
+        assert_eq!(
+            template.args.last().map(String::as_str),
+            Some(
+                format!(
+                    "cd && exec /home/user/.zed_server/server exec --descriptor {}",
+                    staged.id
+                )
+                .as_str()
+            )
+        );
+        let command = RemoteCommand::read(&mut &staged.command[..]).unwrap();
+        assert_eq!(command.program, "/bin/bash");
+        assert_eq!(command.args, ["-l"]);
+
+        connection.ssh_platform.os = RemoteOs::Windows;
+        connection.ssh_path_style = PathStyle::Windows;
+        let template = build_remote_command(
+            &connection,
+            &channel.client,
+            Some(String::from("agent")),
+            &args,
+            &HashMap::default(),
+            None,
+            None,
+            Interactive::No,
+        )
+        .await
+        .unwrap();
+        assert!(channel.next_staged().is_none());
+        assert_eq!(template.program, "ssh");
+    }
+
+    #[cfg(not(windows))]
+    #[gpui::test]
+    async fn test_build_remote_command_reports_staging_errors(cx: &mut gpui::TestAppContext) {
+        use crate::remote_client::build_remote_command;
+        use rpc::proto;
+
+        let mut channel = StagingChannel::new(cx);
+        let mut connection = test_connection().unwrap();
+        connection.ssh_home_dir = Some(String::from("/home/user"));
+        connection.remote_binary_path = Some(Arc::from(
+            RelPath::from_unix_str(".zed_server/server").unwrap(),
+        ));
+
+        let template = build_remote_command(
+            &connection,
+            &channel.client,
+            Some(String::from("agent")),
+            &[],
+            &HashMap::default(),
+            None,
+            None,
+            Interactive::No,
+        );
+        let (request_id, _) = channel
+            .next_staged()
+            .expect("expected a staged remote command");
+        channel.respond(
+            request_id,
+            proto::Error {
+                message: String::from("Failed to create staged command: Disk quota exceeded"),
+                code: proto::ErrorCode::Internal as i32,
+                tags: Vec::new(),
+            },
+        );
+        let error = template.await.unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "Failed to stage the remote command: RPC request StageRemoteCommand failed: \
+             Failed to create staged command: Disk quota exceeded"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_stdio_command() -> Result<()> {
+        let mut connection = test_connection()?;
         let command = |env: HashMap<String, String>, working_dir: Option<&str>| RemoteCommand {
             program: String::from("agent"),
             args: vec![String::from("--token=argument-secret")],

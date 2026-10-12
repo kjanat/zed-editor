@@ -6629,6 +6629,196 @@ async fn test_log_store_keys_remote_events_by_primary_kind_on_supplementary_id_c
     });
 }
 
+#[cfg(unix)]
+#[gpui::test]
+async fn test_stage_remote_command_writes_private_descriptor(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, headless) = init_test(&fs, cx, server_cx).await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().join("commands");
+    let directory = root.join("4242");
+    headless.update(server_cx, |headless, _| {
+        headless.staged_command_directory = Some(directory.clone());
+    });
+    let command = RemoteCommand {
+        program: String::from("agent"),
+        args: vec![String::from("--acp")],
+        env: HashMap::from_iter([(String::from("API_KEY"), String::from("agent-secret"))]),
+        working_dir: None,
+    };
+    let id = remote::command::new_staged_command_id();
+    let client = project.read_with(cx, |project, cx| {
+        project.remote_client().unwrap().read(cx).proto_client()
+    });
+    client
+        .request(proto::StageRemoteCommand {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+            id: id.clone(),
+            command: command.encode().unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let path = directory.join(&id);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let staged =
+        remote::command::read_staged_command(&root, &id, std::time::Duration::ZERO).unwrap();
+    assert_eq!(staged.program, command.program);
+    assert_eq!(staged.args, command.args);
+    assert_eq!(staged.env, command.env);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+async fn test_stage_remote_command_reports_write_errors(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, headless) = init_test(&fs, cx, server_cx).await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let blocker = temp_dir.path().join("commands");
+    std::fs::write(&blocker, b"").unwrap();
+    headless.update(server_cx, |headless, _| {
+        headless.staged_command_directory = Some(blocker.join("4242"));
+    });
+    let command = RemoteCommand {
+        program: String::from("agent"),
+        args: Vec::new(),
+        env: HashMap::default(),
+        working_dir: None,
+    };
+    let client = project.read_with(cx, |project, cx| {
+        project.remote_client().unwrap().read(cx).proto_client()
+    });
+
+    let error = client
+        .request(proto::StageRemoteCommand {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+            id: remote::command::new_staged_command_id(),
+            command: command.encode().unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Failed to create staged command directory"),
+        "{error:#}"
+    );
+}
+
+#[gpui::test]
+async fn test_exec_in_shell_builds_the_remote_command(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, _headless) = init_test(&fs, cx, server_cx).await;
+
+    let command = project
+        .update(cx, |project, cx| {
+            project.exec_in_shell(String::from("echo staged"), cx)
+        })
+        .await
+        .unwrap();
+    let command = format!("{command:?}");
+    assert!(command.contains("\"mock\""), "{command}");
+    assert!(command.contains("echo staged"), "{command}");
+}
+
+#[gpui::test]
+async fn test_remote_debug_adapter_builds_the_remote_command(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    fs.insert_tree(path!("/code"), json!({ "main.rs": "" }))
+        .await;
+    let (project, _headless) = init_test(&fs, cx, server_cx).await;
+    server_cx.update(|cx| {
+        dap::DapRegistry::global(cx).add_adapter(Arc::new(dap::FakeAdapter::new()));
+    });
+    let (worktree, _) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/code"), true, cx)
+        })
+        .await
+        .unwrap();
+    let (console, _console_rx) = futures::channel::mpsc::unbounded();
+
+    let binary = project
+        .update(cx, |project, cx| {
+            project.dap_store().update(cx, |dap_store, cx| {
+                dap_store.get_debug_adapter_binary(
+                    dap::adapters::DebugTaskDefinition {
+                        label: SharedString::from("remote"),
+                        adapter: dap::adapters::DebugAdapterName(SharedString::from(
+                            dap::FakeAdapter::ADAPTER_NAME,
+                        )),
+                        config: json!({ "request": "launch" }),
+                        tcp_connection: None,
+                    },
+                    dap::client::SessionId(1),
+                    &worktree,
+                    console,
+                    cx,
+                )
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(binary.command.as_deref(), Some("mock"));
+    assert_eq!(binary.arguments, ["command"]);
+}
+
+#[cfg(not(windows))]
+#[gpui::test]
+async fn test_remote_terminals_build_commands_through_the_connection(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, _headless) = init_test(&fs, cx, server_cx).await;
+
+    let error = project
+        .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Shell command: `mock sh"),
+        "{error:#}"
+    );
+
+    let error = project
+        .update(cx, |project, cx| {
+            project.create_terminal_task(
+                task::SpawnInTerminal {
+                    command: Some(String::from("echo")),
+                    args: vec![String::from("staged")],
+                    ..task::SpawnInTerminal::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Shell command: `mock echo staged"),
+        "{error:#}"
+    );
+}
+
 pub async fn init_test(
     server_fs: &Arc<FakeFs>,
     cx: &mut TestAppContext,

@@ -342,16 +342,18 @@ impl DapStore {
                         connection = None;
                     }
 
-                    let command = remote.read_with(cx, |remote, _cx| {
-                        remote.build_command(
-                            binary.command,
-                            &binary.arguments,
-                            &binary.envs,
-                            binary.cwd.map(|path| path.display().to_string()),
-                            port_forwarding,
-                            Interactive::No,
-                        )
-                    })?;
+                    let command = remote
+                        .read_with(cx, |remote, _cx| {
+                            remote.build_command(
+                                binary.command,
+                                &binary.arguments,
+                                &binary.envs,
+                                binary.cwd.map(|path| path.display().to_string()),
+                                port_forwarding,
+                                Interactive::No,
+                            )
+                        })
+                        .await?;
 
                     Ok(DebugAdapterBinary {
                         command: Some(command.program),

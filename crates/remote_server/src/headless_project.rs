@@ -76,6 +76,8 @@ pub struct HeadlessProject {
     // Local variant is used within LSP store, but that's a separate entity.
     pub _toolchain_store: Entity<ToolchainStore>,
     pub kernels: HashMap<String, Child>,
+    #[cfg(unix)]
+    pub(crate) staged_command_directory: Option<PathBuf>,
     search_buffer_batches: async_channel::Sender<SearchBufferBatch>,
     _search_buffer_sender: Task<()>,
 }
@@ -325,6 +327,7 @@ impl HeadlessProject {
         session.add_entity_request_handler(Self::handle_get_directory_environment);
         session.add_entity_request_handler(Self::handle_get_terminal_shell);
         session.add_entity_message_handler(Self::handle_toggle_lsp_logs);
+        session.add_entity_request_handler(Self::handle_stage_remote_command);
         session.add_entity_request_handler(Self::handle_open_image_by_path);
         session.add_entity_request_handler(Self::handle_trust_worktrees);
         session.add_entity_request_handler(Self::handle_restrict_worktrees);
@@ -432,6 +435,8 @@ impl HeadlessProject {
             profiling_collector: gpui::ProfilingCollector::new(startup_time),
             _toolchain_store: toolchain_store,
             kernels: Default::default(),
+            #[cfg(unix)]
+            staged_command_directory: crate::staged_command_directory().log_err(),
             search_buffer_batches,
             _search_buffer_sender: search_buffer_sender,
         }
@@ -1471,6 +1476,32 @@ impl HeadlessProject {
             .collect();
 
         Ok(proto::GetRemoteProfilingDataResponse { threads, now_nanos })
+    }
+
+    #[cfg(unix)]
+    async fn handle_stage_remote_command(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::StageRemoteCommand>,
+        cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let directory = this
+            .read_with(&cx, |this, _| this.staged_command_directory.clone())
+            .context("The staged command directory is unavailable")?;
+        let proto::StageRemoteCommand { id, command, .. } = envelope.payload;
+        cx.background_spawn(async move {
+            remote::command::write_staged_command(&directory, &id, &command)
+        })
+        .await?;
+        Ok(proto::Ack {})
+    }
+
+    #[cfg(not(unix))]
+    async fn handle_stage_remote_command(
+        _: Entity<Self>,
+        _: TypedEnvelope<proto::StageRemoteCommand>,
+        _: AsyncApp,
+    ) -> Result<proto::Ack> {
+        Err(anyhow!("Staged remote commands require a Unix host"))
     }
 
     async fn handle_get_directory_environment(

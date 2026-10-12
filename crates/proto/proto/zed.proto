@@ -526,7 +526,8 @@ message Envelope {
     GetTerminalShell get_terminal_shell = 494;
     GetTerminalShellResponse get_terminal_shell_response = 495;
     WaitForLanguageServers wait_for_language_servers = 496;
-    UpdateInactiveLanguageServers update_inactive_language_servers = 497; // current max
+    UpdateInactiveLanguageServers update_inactive_language_servers = 497;
+    StageRemoteCommand stage_remote_command = 498; // current max
   }
 
   reserved 87 to 88;

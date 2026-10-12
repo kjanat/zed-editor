@@ -15162,6 +15162,7 @@ dependencies = [
  "thiserror 2.0.20",
  "urlencoding",
  "util",
+ "uuid",
  "which",
 ]
 
@@ -15206,6 +15207,7 @@ dependencies = [
  "clock",
  "collections",
  "crashes",
+ "dap",
  "dap_adapters",
  "debug_adapter_extension",
  "editor",

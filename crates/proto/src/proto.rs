@@ -297,6 +297,7 @@ messages!(
     (ShowContacts, Foreground),
     (ShutdownRemoteServer, Foreground),
     (Stage, Background),
+    (StageRemoteCommand, Background),
     (StartLanguageServer, Foreground),
     (SubscribeToChannels, Foreground),
     (SyncExtensions, Background),
@@ -556,6 +557,7 @@ request_messages!(
     (RespondToContactRequest, Ack),
     (SaveBuffer, BufferSaved),
     (Stage, Ack),
+    (StageRemoteCommand, Ack),
     (FindSearchCandidates, Ack),
     (SendChannelMessage, SendChannelMessageResponse),
     (SetChannelMemberRole, Ack),
@@ -861,6 +863,7 @@ entity_messages!(
     SetIndexText,
     ToggleLspLogs,
     GetDirectoryEnvironment,
+    StageRemoteCommand,
     GetTerminalShell,
 
     Push,
