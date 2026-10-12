@@ -2,6 +2,7 @@ use std::{ffi::OsStr, path::Path};
 
 const REDACTED: &str = "[REDACTED]";
 const ESCAPE: u8 = 0x1b;
+const BELL: u8 = 0x07;
 
 const SHOWN_ENVIRONMENT_VARIABLES: &[&str] = &[
     "COLORTERM",
@@ -91,31 +92,48 @@ fn is_text_delimiter(byte: u8) -> bool {
     byte.is_ascii_whitespace() || byte.is_ascii_control() || b",;'\"()[]{}<>`|&".contains(&byte)
 }
 
-// ECMA-48 CSI: ESC [, parameter and intermediate bytes 0x20..=0x3F, one final byte 0x40..=0x7E.
-fn ansi_sequence_end(bytes: &[u8], start: usize) -> Option<usize> {
-    if bytes.get(start) != Some(&ESCAPE) || bytes.get(start + 1) != Some(&b'[') {
+// ECMA-48: CSI is ESC [ with bytes 0x20..=0x3F and a final byte 0x40..=0x7E, OSC is ESC ] ended by BEL or ESC \.
+fn escape_sequence_end(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&ESCAPE) {
         return None;
     }
     let mut index = start + 2;
-    while bytes
-        .get(index)
-        .is_some_and(|byte| (0x20..=0x3f).contains(byte))
-    {
-        index += 1;
+    match bytes.get(start + 1) {
+        Some(b'[') => {
+            while bytes
+                .get(index)
+                .is_some_and(|byte| (0x20..=0x3f).contains(byte))
+            {
+                index += 1;
+            }
+            bytes
+                .get(index)
+                .is_some_and(|byte| (0x40..=0x7e).contains(byte))
+                .then_some(index + 1)
+        }
+        Some(b']') => {
+            while let Some(&byte) = bytes.get(index) {
+                if byte == BELL {
+                    return Some(index + 1);
+                }
+                if byte == ESCAPE && bytes.get(index + 1) == Some(&b'\\') {
+                    return Some(index + 2);
+                }
+                index += 1;
+            }
+            None
+        }
+        _ => None,
     }
-    bytes
-        .get(index)
-        .is_some_and(|byte| (0x40..=0x7e).contains(byte))
-        .then_some(index + 1)
 }
 
-fn without_ansi_sequences(text: &str) -> String {
+fn without_escape_sequences(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut output = String::with_capacity(text.len());
     let mut copied = 0;
     let mut index = 0;
     while index < bytes.len() {
-        if let Some(end) = ansi_sequence_end(bytes, index) {
+        if let Some(end) = escape_sequence_end(bytes, index) {
             output.push_str(&text[copied..index]);
             copied = end;
             index = end;
@@ -266,7 +284,7 @@ fn is_secret_option_name(option: &str) -> bool {
 }
 
 fn awaits_secret_value(token: &str) -> bool {
-    let token = without_ansi_sequences(token);
+    let token = without_escape_sequences(token);
     let option = token
         .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '-');
     option.starts_with('-') && !token.contains('=') && is_secret_option_name(option)
@@ -283,11 +301,14 @@ fn redact_secret_option_values(text: &str) -> String {
             continue;
         }
         let token_start = position;
-        while bytes
-            .get(position)
-            .is_some_and(|byte| !is_value_delimiter(*byte))
-        {
-            position += 1;
+        while let Some(&byte) = bytes.get(position) {
+            if let Some(end) = escape_sequence_end(bytes, position) {
+                position = end;
+            } else if is_value_delimiter(byte) {
+                break;
+            } else {
+                position += 1;
+            }
         }
         let mut option_start = token_start;
         while awaits_secret_value(&text[option_start..position]) {
@@ -324,6 +345,10 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
             }
             b'\\' => {
                 index = (index + 2).min(bytes.len());
+                continue;
+            }
+            ESCAPE => {
+                index = escape_sequence_end(bytes, index).unwrap_or(index + 1);
                 continue;
             }
             _ if is_value_delimiter(byte) => break,
@@ -403,7 +428,7 @@ fn redact_secret_tokens(text: &str) -> String {
     let mut credential_minimum = None;
     let mut follows_authorization = false;
     while position < bytes.len() {
-        if let Some(end) = ansi_sequence_end(bytes, position) {
+        if let Some(end) = escape_sequence_end(bytes, position) {
             position = end;
             continue;
         }
@@ -412,17 +437,24 @@ fn redact_secret_tokens(text: &str) -> String {
             continue;
         }
         let start = position;
-        while position < bytes.len()
-            && ((bytes[position] == b'=' && credential_minimum.is_some())
-                || !is_delimiter(bytes[position]))
-        {
-            position += 1;
-        }
         let mut end = position;
+        while position < bytes.len() {
+            if let Some(sequence_end) = escape_sequence_end(bytes, position) {
+                position = sequence_end;
+            } else if (bytes[position] == b'=' && credential_minimum.is_some())
+                || !is_delimiter(bytes[position])
+            {
+                position += 1;
+                end = position;
+            } else {
+                break;
+            }
+        }
         while end > start && matches!(bytes[end - 1], b'.' | b':') {
             end -= 1;
         }
-        let token = &text[start..end];
+        let token = without_escape_sequences(&text[start..end]);
+        let token = token.as_str();
         let secret = (credential_minimum.is_some_and(|minimum| is_credential_body(token, minimum))
             || is_secret_token(token))
         .then_some(start..end);
@@ -777,6 +809,16 @@ mod tests {
                 "\x1b[1m--token\x1b[0m hunter2 clone \x1b[32mghp_16C7e42F292c6912E7710c838347Ae178B4a\x1b[0m"
             ),
             "\x1b[1m--token\x1b[0m [REDACTED] clone \x1b[32m[REDACTED]\x1b[0m"
+        );
+        assert_eq!(
+            redact_command(
+                "API_KEY=\x1b]8;;https://example\x07hunter2 --token \x1b]8;;https://example\x1b\\hunter2 next"
+            ),
+            "API_KEY=\"[REDACTED]\" --token [REDACTED] next"
+        );
+        assert_eq!(
+            redact_command("clone ghp_\x1b[31m16C7e42F292c6912E7710c838347Ae178B4a\x1b[0m done"),
+            "clone [REDACTED]\x1b[0m done"
         );
         assert_eq!(
             redact_command("API_KEY=:: PASSWORD=... --token=. next"),
