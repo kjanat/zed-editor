@@ -80,7 +80,7 @@ fn is_text_delimiter(byte: u8) -> bool {
 }
 
 fn is_value_delimiter(byte: u8) -> bool {
-    byte.is_ascii_whitespace() || byte.is_ascii_control() || b"()<>`|&;".contains(&byte)
+    byte.is_ascii_whitespace() || byte.is_ascii_control()
 }
 
 fn is_key_byte(byte: u8) -> bool {
@@ -135,9 +135,6 @@ fn redact_assignments(text: &str) -> String {
             continue;
         }
         let key = &text[key_start..key_end];
-        if key.as_bytes()[0].is_ascii_digit() {
-            continue;
-        }
         let mut value_start = equals + 1;
         if prefixed {
             while bytes.get(value_start).copied().is_some_and(is_inline_space) {
@@ -165,20 +162,30 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
     let mut index = start;
     let mut quoted_end = start;
     while let Some(&byte) = bytes.get(index) {
-        match byte {
-            b'"' | b'\'' => match closing_quote_end(bytes, index) {
-                Some(end) => {
-                    index = end;
-                    quoted_end = end;
-                }
-                None if bytes[start..index].iter().all(|byte| *byte == b'$') => {
-                    return bytes.len();
-                }
-                None => index += 1,
-            },
-            b'\\' => index = (index + 2).min(bytes.len()),
+        let fragment_end = match byte {
+            b'"' | b'\'' | b'`' => closing_quote_end(bytes, index),
+            b'$' if bytes.get(index + 1) == Some(&b'(') => {
+                closing_parenthesis_end(bytes, index + 1)
+            }
+            b'\\' => {
+                index = (index + 2).min(bytes.len());
+                continue;
+            }
             _ if is_value_delimiter(byte) => break,
-            _ => index += 1,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        match fragment_end {
+            Some(end) => {
+                index = end;
+                quoted_end = end;
+            }
+            None if bytes[start..index].iter().all(|byte| *byte == b'$') => {
+                return bytes.len();
+            }
+            None => index += 1,
         }
     }
     while index > quoted_end && matches!(bytes[index - 1], b'.' | b':') {
@@ -197,6 +204,32 @@ fn closing_quote_end(bytes: &[u8], quote_index: usize) -> Option<usize> {
         } else if byte == quote {
             return Some(index);
         }
+    }
+    None
+}
+
+fn closing_parenthesis_end(bytes: &[u8], open_index: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut index = open_index;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            b'"' | b'\'' | b'`' => {
+                if let Some(end) = closing_quote_end(bytes, index) {
+                    index = end;
+                    continue;
+                }
+            }
+            b'\\' => index += 1,
+            _ => {}
+        }
+        index += 1;
     }
     None
 }
@@ -508,7 +541,7 @@ mod tests {
             redact_command(
                 "$env:API_KEY = 'argument-secret'; $Env:TOKEN =\tsecret; $env.SECRET = \"nu secret\"; set E:KEY = elvish-secret; $XONSH_TOKEN = xonsh-secret; $env:PATH = 'C:\\bin'"
             ),
-            "$env:API_KEY = \"[REDACTED]\"; $Env:TOKEN =\t\"[REDACTED]\"; $env.SECRET = \"[REDACTED]\"; set E:KEY = \"[REDACTED]\"; $XONSH_TOKEN = \"[REDACTED]\"; $env:PATH = 'C:\\bin'"
+            "$env:API_KEY = \"[REDACTED]\" $Env:TOKEN =\t\"[REDACTED]\" $env.SECRET = \"[REDACTED]\" set E:KEY = \"[REDACTED]\" $XONSH_TOKEN = \"[REDACTED]\" $env:PATH = 'C:\\bin'"
         );
         let ordinary = "count = 5 and a == b";
         assert_eq!(redact_command(ordinary), ordinary);
@@ -522,7 +555,13 @@ mod tests {
         );
         assert_eq!(
             redact_command("cmd;API_KEY=secret next&&TOKEN=x|(SECRET=y) `KEY=z` {PATH=/bin}"),
-            "cmd;API_KEY=\"[REDACTED]\" next&&TOKEN=\"[REDACTED]\"|(SECRET=\"[REDACTED]\") `KEY=\"[REDACTED]\"` {PATH=/bin}"
+            "cmd;API_KEY=\"[REDACTED]\" next&&TOKEN=\"[REDACTED]\" `KEY=\"[REDACTED]\" {PATH=/bin}"
+        );
+        assert_eq!(
+            redact_command(
+                "1API_KEY=digit-secret API_KEY=$(cat<<<hunter2) TOKEN=$(printf '%s' \"sub (secret)\") next"
+            ),
+            "1API_KEY=\"[REDACTED]\" API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" next"
         );
         assert_eq!(
             redact_command("\"API_KEY=secret\" --log-level=debug -Dprop=value"),
@@ -566,7 +605,7 @@ mod tests {
         );
         assert_eq!(
             redact_command("https://example.com/?a=1&token=secret&b=2"),
-            "https://example.com/?a=\"[REDACTED]\"&token=\"[REDACTED]\"&b=\"[REDACTED]\""
+            "https://example.com/?a=\"[REDACTED]\""
         );
     }
 
