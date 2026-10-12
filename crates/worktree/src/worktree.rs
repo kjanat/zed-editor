@@ -69,7 +69,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -1524,6 +1524,7 @@ impl LocalWorktree {
                     watcher,
                     track_git_repositories,
                     is_single_file,
+                    root_deleted: AtomicBool::new(false),
                     defer_watch,
                     hot_directories,
                 };
@@ -4623,6 +4624,7 @@ struct BackgroundScanner {
     /// Whether this is a single-file worktree (root is a file, not a directory).
     /// Used to determine if we should give up after repeated canonicalization failures.
     is_single_file: bool,
+    root_deleted: AtomicBool,
     defer_watch: bool,
     hot_directories: Arc<Mutex<HashSet<ProjectEntryId>>>,
 }
@@ -4864,7 +4866,7 @@ impl BackgroundScanner {
         futures::pin_mut!(root_path_check_timer);
         let mut root_path_missing = false;
 
-        loop {
+        while !self.root_deleted.load(SeqCst) {
             select_biased! {
                 // A tick is bounded to one batch, and a busy event stream would
                 // otherwise keep the timer from ever being polled.
@@ -5121,6 +5123,7 @@ impl BackgroundScanner {
                     "single-file worktree root {:?} no longer exists, marking as deleted",
                     root_path.as_path()
                 );
+                self.root_deleted.store(true, SeqCst);
                 self.status_updates_tx
                     .unbounded_send(ScanState::RootDeleted)
                     .ok();
@@ -7972,7 +7975,7 @@ mod tests {
     use smallvec::SmallVec;
     use std::{
         path::{Path, PathBuf},
-        sync::Arc,
+        sync::{Arc, atomic::AtomicBool},
     };
     use text::LineEnding;
     use util::{path, rel_path::rel_path};
@@ -8140,6 +8143,7 @@ mod tests {
                     share_private_files: tree.share_private_files,
                     track_git_repositories: true,
                     is_single_file: false,
+                    root_deleted: AtomicBool::new(false),
                     defer_watch: false,
                     hot_directories: Arc::default(),
                 }

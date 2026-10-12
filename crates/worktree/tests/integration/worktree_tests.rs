@@ -7193,6 +7193,56 @@ async fn test_single_file_worktree_deleted(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_deleted_single_file_worktree_stops_watching(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree("/root", json!({ "test.txt": "content" }))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root/test.txt"),
+        false,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    assert_eq!(fs.watched_paths(), [PathBuf::from("/root/test.txt")]);
+
+    let deleted_events = Rc::new(Cell::new(0));
+    let _subscription = cx.update({
+        let deleted_events = deleted_events.clone();
+        |cx| {
+            cx.subscribe(&tree, move |_, event, _| {
+                if matches!(event, Event::Deleted) {
+                    deleted_events.set(deleted_events.get() + 1);
+                }
+            })
+        }
+    });
+
+    fs.remove_file(Path::new("/root/test.txt"), Default::default())
+        .await
+        .unwrap();
+    cx.background_executor.run_until_parked();
+    for sibling in ["/root/a.txt", "/root/b.txt", "/root/c.txt"] {
+        fs.insert_file(sibling, b"sibling".to_vec()).await;
+        cx.background_executor.run_until_parked();
+    }
+    cx.background_executor
+        .advance_clock(worktree::ROOT_PATH_CHECK_INTERVAL * 3);
+    cx.background_executor.run_until_parked();
+
+    assert_eq!(deleted_events.get(), 1);
+    assert_eq!(fs.watched_paths(), Vec::<PathBuf>::new());
+}
+
+#[gpui::test]
 async fn test_root_ancestor_rename_is_detected_without_fs_events(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
