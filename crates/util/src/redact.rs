@@ -435,17 +435,22 @@ mod tests {
 
     #[test]
     fn test_redact_command_masks_secret_shapes_without_a_name() {
-        let github = format!("ghp_{}", "a".repeat(36));
-        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl";
-        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----";
-        let input = format!(
-            "clone with {github}, header Authorization: Bearer abcdef123456 jwt {jwt}. \
-             url postgres://user:hunter2@db/app and https://{github}@github.com/x \
-             key {pem} done"
-        );
+        let input = "clone with ghp_16C7e42F292c6912E7710c838347Ae178B4a, \
+             header Authorization: Bearer abcdef123456 \
+             jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c. \
+             aws AKIAIOSFODNN7EXAMPLE slack xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx \
+             anthropic sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 \
+             url postgres://user:hunter2@db/app and https://ghp_16C7e42F292c6912E7710c838347Ae178B4a@github.com/x \
+             key -----BEGIN OPENSSH PRIVATE KEY-----\n\
+             b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
+             -----END OPENSSH PRIVATE KEY----- done";
         assert_eq!(
-            redact_command(&input),
-            "clone with [REDACTED], header Authorization: Bearer [REDACTED] jwt [REDACTED]. \
+            redact_command(input),
+            "clone with [REDACTED], \
+             header Authorization: Bearer [REDACTED] \
+             jwt [REDACTED]. \
+             aws [REDACTED] slack [REDACTED] \
+             anthropic [REDACTED] \
              url postgres://[REDACTED]@db/app and https://[REDACTED]@github.com/x \
              key [REDACTED] done"
         );
