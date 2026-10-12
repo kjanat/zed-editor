@@ -138,6 +138,7 @@ impl Child {
 fn describe_command(command: &std::process::Command) -> String {
     let mut description = format!("{:?}", command.get_program());
     for argument in command.get_args() {
+        let argument = crate::redact::redact_command(&argument.to_string_lossy());
         description.push_str(&format!(" {argument:?}"));
     }
     if let Some(directory) = command.get_current_dir() {
@@ -154,7 +155,7 @@ mod tests {
     fn test_spawn_error_names_the_command_without_its_environment() {
         let mut command = std::process::Command::new("zed-test-missing-program");
         command
-            .arg("--stdio")
+            .args(["--stdio", "-c", "API_KEY=argument-secret run"])
             .current_dir(std::env::temp_dir())
             .env("DATABASE_URL", "postgres://user:hunter2@db/app");
         let Err(error) = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null()) else {
@@ -162,9 +163,12 @@ mod tests {
         };
         let message = format!("{error:#}");
         assert!(
-            message.contains("\"zed-test-missing-program\" \"--stdio\" in "),
+            message.contains(
+                r#""zed-test-missing-program" "--stdio" "-c" "API_KEY=\"[REDACTED]\" run" in "#
+            ),
             "{message}"
         );
+        assert!(!message.contains("argument-secret"), "{message}");
         assert!(!message.contains("DATABASE_URL"), "{message}");
         assert!(!message.contains("hunter2"), "{message}");
     }

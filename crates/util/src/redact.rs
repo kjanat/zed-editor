@@ -1,8 +1,10 @@
 use std::sync::LazyLock;
 
 static REDACT_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r#"(^|\s)([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)"#)
-        .unwrap()
+    regex::Regex::new(
+        r#"(^|[\s'"`;&|(){}])([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)"#,
+    )
+    .unwrap()
 });
 
 const SHOWN_ENVIRONMENT_VARIABLES: &[&str] = &[
@@ -63,14 +65,16 @@ pub fn redact_command(command: &str) -> String {
         .to_string()
 }
 
-const JSON_VARIABLE_KEYS: &[&str] = &["env", "envs", "environment", "headers"];
+const JSON_ENVIRONMENT_KEYS: &[&str] = &["env", "envs", "environment"];
 
 pub fn redact_json_environment(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
             for (key, child) in object.iter_mut() {
-                if JSON_VARIABLE_KEYS.contains(&key.as_str()) {
-                    redact_json_variables(child);
+                if JSON_ENVIRONMENT_KEYS.contains(&key.as_str()) {
+                    redact_json_variables(child, should_redact);
+                } else if key == "headers" {
+                    redact_json_variables(child, |_| true);
                 } else {
                     redact_json_environment(child);
                 }
@@ -81,7 +85,7 @@ pub fn redact_json_environment(value: &mut serde_json::Value) {
     }
 }
 
-fn redact_json_variables(variables: &mut serde_json::Value) {
+fn redact_json_variables(variables: &mut serde_json::Value, should_redact: fn(&str) -> bool) {
     let redacted = || serde_json::Value::String("[REDACTED]".to_string());
     match variables {
         serde_json::Value::Object(object) => {
@@ -184,6 +188,40 @@ mod tests {
         for name in ["PATH", "HOME", "SHELL", "LANG", "TERM"] {
             assert!(!should_redact(name), "{name}");
         }
+    }
+
+    #[test]
+    fn test_redact_command_covers_quoted_and_chained_assignments() {
+        assert_eq!(
+            redact_command("+ export 'API_KEY=secret'"),
+            "+ export 'API_KEY=\"[REDACTED]\""
+        );
+        assert_eq!(
+            redact_command("cmd;API_KEY=secret next&&TOKEN=x |(SECRET=y) `KEY=z` {PATH=/bin}"),
+            "cmd;API_KEY=\"[REDACTED]\" next&&TOKEN=\"[REDACTED]\" |(SECRET=\"[REDACTED]\" `KEY=\"[REDACTED]\" {PATH=/bin}"
+        );
+        assert_eq!(
+            redact_command("\"API_KEY=secret\" --log-level=debug -Dprop=value"),
+            "\"API_KEY=\"[REDACTED]\" --log-level=debug -Dprop=value"
+        );
+    }
+
+    #[test]
+    fn test_redact_json_environment_redacts_every_header() {
+        let mut value = serde_json::json!({
+            "headers": { "PATH": "Bearer hunter2", "USER": "hunter2" },
+            "env": { "PATH": "/usr/bin" },
+            "server": { "headers": [{ "name": "HOME", "value": "hunter2" }, "TERM=hunter2"] }
+        });
+        redact_json_environment(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "headers": { "PATH": "[REDACTED]", "USER": "[REDACTED]" },
+                "env": { "PATH": "/usr/bin" },
+                "server": { "headers": [{ "name": "HOME", "value": "[REDACTED]" }, "TERM=[REDACTED]"] }
+            })
+        );
     }
 
     #[test]
