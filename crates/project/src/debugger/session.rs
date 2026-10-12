@@ -1153,7 +1153,10 @@ impl Session {
         } else {
             log::error!(
                 "Failed to parse launch request arguments: {:?}",
-                request.arguments
+                request
+                    .arguments
+                    .as_ref()
+                    .map(super::dap_command::redacted_configuration)
             );
             success = false;
         }

@@ -625,7 +625,7 @@ impl std::fmt::Debug for ContextServerCommand {
 
         f.debug_struct("ContextServerCommand")
             .field("path", &self.path)
-            .field("args", &self.args)
+            .field("args", &util::redact::redact_arguments(&self.args))
             .field("env", &filtered_env)
             .finish()
     }
@@ -1054,6 +1054,26 @@ mod tests {
             )),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_context_server_command_debug_redacts_arguments_and_environment() {
+        let command = ContextServerCommand {
+            path: PathBuf::from("server"),
+            args: vec!["--token=ghp_16C7e42F292c6912E7710c838347Ae178B4a".to_string()],
+            env: Some(HashMap::from_iter([(
+                "DATABASE_URL".to_string(),
+                "postgres://user:hunter2@db/app".to_string(),
+            )])),
+            timeout: None,
+        };
+        let description = format!("{command:?}");
+        assert!(
+            description.contains(r#"args: ["--token=[REDACTED]"]"#),
+            "{description}"
+        );
+        assert!(!description.contains("ghp_"), "{description}");
+        assert!(!description.contains("hunter2"), "{description}");
     }
 
     #[test]

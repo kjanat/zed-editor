@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ffi::OsStr, ops::Range, path::Path};
 
 const REDACTED: &str = "[REDACTED]";
 
@@ -51,8 +51,35 @@ pub fn redact_command(command: &str) -> String {
     redact_secret_tokens(&command)
 }
 
+pub fn redact_arguments<S: AsRef<OsStr>>(arguments: impl IntoIterator<Item = S>) -> Vec<String> {
+    arguments
+        .into_iter()
+        .map(|argument| redact_command(&argument.as_ref().to_string_lossy()))
+        .collect()
+}
+
+pub fn describe_command<'a>(
+    program: &OsStr,
+    arguments: impl IntoIterator<Item = &'a OsStr>,
+    directory: Option<&Path>,
+) -> String {
+    let redact = |part: &OsStr| redact_command(&part.to_string_lossy());
+    let mut description = format!("{:?}", redact(program));
+    for argument in arguments {
+        description.push_str(&format!(" {:?}", redact(argument)));
+    }
+    if let Some(directory) = directory {
+        description.push_str(&format!(" in {:?}", redact(directory.as_os_str())));
+    }
+    description
+}
+
 fn is_text_delimiter(byte: u8) -> bool {
     byte.is_ascii_whitespace() || byte.is_ascii_control() || b",;'\"()[]{}<>`|&".contains(&byte)
+}
+
+fn is_value_delimiter(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || byte.is_ascii_control() || b"'\"()<>`|&;".contains(&byte)
 }
 
 fn is_key_byte(byte: u8) -> bool {
@@ -104,9 +131,15 @@ fn redact_assignments(text: &str) -> String {
 }
 
 fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
-    match bytes.get(start) {
-        Some(&quote @ (b'"' | b'\'')) => {
-            let mut index = start + 1;
+    let quote_start = match (bytes.get(start), bytes.get(start + 1)) {
+        (Some(b'"' | b'\''), _) => Some(start),
+        (Some(b'$'), Some(b'"' | b'\'')) => Some(start + 1),
+        _ => None,
+    };
+    match quote_start {
+        Some(quote_start) => {
+            let quote = bytes[quote_start];
+            let mut index = quote_start + 1;
             while let Some(&byte) = bytes.get(index) {
                 index += 1;
                 if byte == b'\\' {
@@ -117,10 +150,10 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
             }
             bytes.len()
         }
-        _ => {
+        None => {
             let mut end = bytes[start..]
                 .iter()
-                .position(|byte| is_text_delimiter(*byte))
+                .position(|byte| is_value_delimiter(*byte))
                 .map_or(bytes.len(), |offset| start + offset);
             while end > start && matches!(bytes[end - 1], b'.' | b':') {
                 end -= 1;
@@ -301,6 +334,7 @@ pub fn redact_json_environment(value: &mut serde_json::Value) {
             }
         }
         serde_json::Value::Array(items) => items.iter_mut().for_each(redact_json_environment),
+        serde_json::Value::String(text) => *text = redact_command(text),
         _ => {}
     }
 }
@@ -353,6 +387,7 @@ mod tests {
             "envs": { "PATH": "/usr/bin", "DATABASE_URL": "postgres://user:hunter2@db/app" },
             "configuration": {
                 "program": "./app",
+                "args": ["--verbose", "--token=ghp_16C7e42F292c6912E7710c838347Ae178B4a", "API_KEY=argument-secret"],
                 "env": { "GH_TOKEN": "ghp_hunter2" },
                 "environment": [
                     { "name": "HOME", "value": "/home/user" },
@@ -372,6 +407,7 @@ mod tests {
                 "envs": { "PATH": "/usr/bin", "DATABASE_URL": "[REDACTED]" },
                 "configuration": {
                     "program": "./app",
+                    "args": ["--verbose", "--token=[REDACTED]", "API_KEY=\"[REDACTED]\""],
                     "env": { "GH_TOKEN": "[REDACTED]" },
                     "environment": [
                         { "name": "HOME", "value": "/home/user" },
@@ -437,6 +473,14 @@ mod tests {
             "API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" KEY=\"[REDACTED]\". SECRET= done"
         );
         assert_eq!(
+            redact_command("API_KEY=$'argument secret' TOKEN=$\"locale secret\" PRICE=$5 next"),
+            "API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" PRICE=\"[REDACTED]\" next"
+        );
+        assert_eq!(
+            redact_command("API_KEY=prefix,secret-suffix HOSTS=[a,b]{c} next"),
+            "API_KEY=\"[REDACTED]\" HOSTS=\"[REDACTED]\" next"
+        );
+        assert_eq!(
             redact_command("https://example.com/?a=1&token=secret&b=2"),
             "https://example.com/?a=\"[REDACTED]\"&token=\"[REDACTED]\"&b=\"[REDACTED]\""
         );
@@ -494,5 +538,39 @@ mod tests {
             redact_command(input),
             "DATABASE_URL=\"[REDACTED]\"\nhttp_proxy=\"[REDACTED]\" --log-level=debug PATH=/usr/bin"
         );
+    }
+
+    #[test]
+    fn test_redact_arguments_redacts_each_argument() {
+        assert_eq!(
+            redact_arguments([
+                "--stdio",
+                "-eTOKEN=option-secret",
+                "xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"
+            ]),
+            ["--stdio", "-eTOKEN=\"[REDACTED]\"", "[REDACTED]"]
+        );
+    }
+
+    #[test]
+    fn test_command_debug_omits_the_environment() {
+        let mut command = crate::command::new_command("ssh");
+        command
+            .args(["-T", "host", "API_KEY=argument-secret run"])
+            .current_dir(std::env::temp_dir().join("API_KEY=directory-secret"))
+            .env("DATABASE_URL", "postgres://user:hunter2@db/app");
+        let description = format!("{command:?}");
+        assert!(
+            description.starts_with(r#""ssh" "-T" "host" "API_KEY=\"[REDACTED]\" run" in "#),
+            "{description}"
+        );
+        for secret in [
+            "argument-secret",
+            "directory-secret",
+            "DATABASE_URL",
+            "hunter2",
+        ] {
+            assert!(!description.contains(secret), "{description}");
+        }
     }
 }

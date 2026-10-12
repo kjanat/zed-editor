@@ -5,7 +5,7 @@ mod slash_command;
 
 use std::{ops::Range, path::PathBuf};
 
-use util::redact::should_redact;
+use util::redact::{redact_arguments, should_redact};
 
 pub use context_server::*;
 pub use dap::*;
@@ -35,9 +35,32 @@ impl std::fmt::Debug for Command {
 
         f.debug_struct("Command")
             .field("command", &self.command)
-            .field("args", &self.args)
+            .field("args", &redact_arguments(&self.args))
             .field("env", &filtered_env)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_debug_redacts_arguments_and_environment() {
+        let command = Command {
+            command: PathBuf::from("server"),
+            args: vec!["Authorization: Bearer hunter2-bearer-token".to_string()],
+            env: vec![(
+                "DATABASE_URL".to_string(),
+                "postgres://user:hunter2@db/app".to_string(),
+            )],
+        };
+        let description = format!("{command:?}");
+        assert!(
+            description.contains(r#"args: ["Authorization: Bearer [REDACTED]"]"#),
+            "{description}"
+        );
+        assert!(!description.contains("hunter2"), "{description}");
     }
 }
 

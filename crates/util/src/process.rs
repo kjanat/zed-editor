@@ -136,15 +136,11 @@ impl Child {
 }
 
 fn describe_command(command: &std::process::Command) -> String {
-    let redact = |part: &std::ffi::OsStr| crate::redact::redact_command(&part.to_string_lossy());
-    let mut description = format!("{:?}", redact(command.get_program()));
-    for argument in command.get_args() {
-        description.push_str(&format!(" {:?}", redact(argument)));
-    }
-    if let Some(directory) = command.get_current_dir() {
-        description.push_str(&format!(" in {:?}", redact(directory.as_os_str())));
-    }
-    description
+    crate::redact::describe_command(
+        command.get_program(),
+        command.get_args(),
+        command.get_current_dir(),
+    )
 }
 
 #[cfg(test)]

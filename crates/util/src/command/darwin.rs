@@ -61,7 +61,6 @@ unsafe extern "C" {
     static environ: *const *mut libc::c_char;
 }
 
-#[derive(Debug)]
 pub struct Command {
     program: OsString,
     args: Vec<OsString>,
@@ -72,6 +71,16 @@ pub struct Command {
     stdout_cfg: Option<Stdio>,
     stderr_cfg: Option<Stdio>,
     kill_on_drop: bool,
+}
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&crate::redact::describe_command(
+            &self.program,
+            self.get_args(),
+            self.current_dir.as_deref(),
+        ))
+    }
 }
 
 impl Command {

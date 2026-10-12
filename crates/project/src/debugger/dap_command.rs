@@ -1595,9 +1595,24 @@ impl LocalDapCommand for ConfigurationDone {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq)]
+#[derive(Clone, Hash, PartialEq)]
 pub(super) struct Launch {
     pub(super) raw: Value,
+}
+
+impl std::fmt::Debug for Launch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Launch")
+            .field("raw", &redacted_configuration(&self.raw))
+            .finish()
+    }
+}
+
+pub(super) fn redacted_configuration(raw: &Value) -> Value {
+    let mut raw = raw.clone();
+    util::redact::redact_json_environment(&mut raw);
+    raw
 }
 
 impl LocalDapCommand for Launch {
@@ -1618,9 +1633,18 @@ impl LocalDapCommand for Launch {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq)]
+#[derive(Clone, Hash, PartialEq)]
 pub(super) struct Attach {
     pub(super) raw: Value,
+}
+
+impl std::fmt::Debug for Attach {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Attach")
+            .field("raw", &redacted_configuration(&self.raw))
+            .finish()
+    }
 }
 
 impl LocalDapCommand for Attach {
@@ -1971,5 +1995,29 @@ impl LocalDapCommand for dap::WriteMemoryArguments {
         message: <Self::DapRequest as dap::requests::Request>::Response,
     ) -> Result<Self::Response> {
         Ok(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_launch_and_attach_debug_redact_the_configuration() {
+        let raw = serde_json::json!({
+            "program": "./app",
+            "args": ["--token=ghp_16C7e42F292c6912E7710c838347Ae178B4a"],
+            "env": { "DATABASE_URL": "postgres://user:hunter2@db/app" }
+        });
+        let descriptions = [
+            format!("{:?}", Launch { raw: raw.clone() }),
+            format!("{:?}", Attach { raw }),
+        ];
+        for description in descriptions {
+            assert!(description.contains("./app"), "{description}");
+            assert!(description.contains("--token=[REDACTED]"), "{description}");
+            assert!(!description.contains("ghp_"), "{description}");
+            assert!(!description.contains("hunter2"), "{description}");
+        }
     }
 }

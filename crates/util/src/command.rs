@@ -138,8 +138,18 @@ pub type Child = smol::process::Child;
 pub use std::process::Stdio;
 
 #[cfg(not(target_os = "macos"))]
-#[derive(Debug)]
 pub struct Command(smol::process::Command);
+
+#[cfg(not(target_os = "macos"))]
+impl std::fmt::Debug for Command {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&crate::redact::describe_command(
+            self.0.get_program(),
+            self.0.get_args(),
+            self.0.get_current_dir(),
+        ))
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 impl Command {

@@ -830,7 +830,7 @@ fn normalize_terminal_bounds(mut bounds: TerminalBounds) -> TerminalBounds {
     bounds
 }
 
-#[derive(Error, Debug)]
+#[derive(Error)]
 pub struct TerminalError {
     pub directory: Option<PathBuf>,
     pub program: Option<String>,
@@ -839,7 +839,24 @@ pub struct TerminalError {
     pub source: std::io::Error,
 }
 
+impl std::fmt::Debug for TerminalError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalError")
+            .field("directory", &self.directory)
+            .field("program", &self.program)
+            .field("args", &self.redacted_args())
+            .field("title_override", &self.title_override)
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
 impl TerminalError {
+    fn redacted_args(&self) -> Option<Vec<String>> {
+        self.args.as_ref().map(util::redact::redact_arguments)
+    }
+
     fn fmt_directory(&self) -> String {
         self.directory
             .clone()
@@ -857,18 +874,19 @@ impl TerminalError {
     }
 
     fn fmt_shell(&self) -> String {
+        let args = self.redacted_args();
         if let Some(title_override) = &self.title_override {
             format!(
                 "{} {} ({})",
                 self.program.as_deref().unwrap_or("<system defined shell>"),
-                self.args.as_ref().into_iter().flatten().format(" "),
+                args.iter().flatten().format(" "),
                 title_override
             )
         } else {
             format!(
                 "{} {}",
                 self.program.as_deref().unwrap_or("<system defined shell>"),
-                self.args.as_ref().into_iter().flatten().format(" ")
+                args.iter().flatten().format(" ")
             )
         }
     }
@@ -3679,6 +3697,28 @@ mod tests {
     use parking_lot::Mutex;
     use rand::{Rng, distr, rngs::StdRng};
     use task::{Shell, ShellBuilder};
+
+    #[test]
+    fn test_terminal_error_redacts_the_shell_arguments() {
+        let error = TerminalError {
+            directory: Some(PathBuf::from("/code")),
+            program: Some("ssh".to_string()),
+            args: Some(vec![
+                "host".to_string(),
+                "exec env API_KEY=argument-secret bash".to_string(),
+            ]),
+            title_override: None,
+            source: std::io::Error::other("spawn failed"),
+        };
+        let display = error.to_string();
+        assert!(
+            display.contains(r#"Shell command: `ssh host exec env API_KEY="[REDACTED]" bash`"#),
+            "{display}"
+        );
+        let debug = format!("{error:?}");
+        assert!(!debug.contains("argument-secret"), "{debug}");
+        assert!(debug.contains("[REDACTED]"), "{debug}");
+    }
 
     #[test]
     fn test_init_command_startup_marker_commands_do_not_contain_marker() {

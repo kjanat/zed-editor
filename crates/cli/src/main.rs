@@ -1437,9 +1437,16 @@ mod mac_os {
                         .stdout(subprocess_stdin_file)
                         .arg(url);
 
-                    command
-                        .spawn()
-                        .with_context(|| format!("Spawning {command:?}"))?;
+                    command.spawn().with_context(|| {
+                        format!(
+                            "Spawning {}",
+                            util::redact::describe_command(
+                                command.get_program(),
+                                command.get_args(),
+                                command.get_current_dir(),
+                            )
+                        )
+                    })?;
                 }
             }
 
