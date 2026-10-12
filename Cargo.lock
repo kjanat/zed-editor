@@ -4221,6 +4221,7 @@ dependencies = [
  "libc",
  "log",
  "mach2",
+ "minidump-writer",
  "minidumper",
  "parking_lot",
  "serde",
