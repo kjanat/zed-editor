@@ -407,18 +407,33 @@ in
   sandbox-no-bwrap = mkTest {
     name = "sandbox-no-bwrap";
     machine = machineConfigs.no-bwrap;
-    checks = [ { canCreate = false; error = "bwrap_not_found"; } ];
+    checks = [
+      {
+        canCreate = false;
+        error = "bwrap_not_found";
+      }
+    ];
   };
 
   sandbox-setuid-bwrap = mkTest {
     name = "sandbox-setuid-bwrap";
     machine = machineConfigs.setuid-bwrap;
-    checks = [ { canCreate = false; error = "setuid_rejected"; } ];
+    checks = [
+      {
+        canCreate = false;
+        error = "setuid_rejected";
+      }
+    ];
   };
 
   sandbox-userns-disabled = mkTest {
     name = "sandbox-userns-disabled";
     machine = machineConfigs.userns-disabled;
-    checks = [ { canCreate = false; error = "probe_failed"; } ];
+    checks = [
+      {
+        canCreate = false;
+        error = "probe_failed";
+      }
+    ];
   };
 }
