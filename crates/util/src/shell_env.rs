@@ -171,7 +171,7 @@ async fn capture_unix(
             format!(
                 "login shell exited with {}. stdout: {}, stderr: {stderr}",
                 process_output.status,
-                describe_shell_stream(&process_output.stdout, true),
+                describe_shell_stream(&process_output.stdout, fd_num == FD_STDOUT),
             )
         },
     )
@@ -181,7 +181,10 @@ fn describe_shell_stream(output: &[u8], may_hold_environment: bool) -> String {
     if may_hold_environment {
         format!("{} bytes", output.len())
     } else {
-        format!("{:?}", String::from_utf8_lossy(output))
+        format!(
+            "{:?}",
+            crate::redact::redact_command(&String::from_utf8_lossy(output))
+        )
     }
 }
 
@@ -387,6 +390,10 @@ mod tests {
         assert_eq!(
             describe_shell_stream(b"zsh: command not found: foo\n", false),
             r#""zsh: command not found: foo\n""#
+        );
+        assert_eq!(
+            describe_shell_stream(b"+ export 'API_KEY=hunter2'\n", false),
+            r#""+ export 'API_KEY=\"[REDACTED]\"'\n""#
         );
     }
 }

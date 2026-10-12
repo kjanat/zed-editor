@@ -1,11 +1,6 @@
-use std::sync::LazyLock;
+use std::ops::Range;
 
-static REDACT_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(
-        r#"(^|[\s'"`;&|(){}])([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)"#,
-    )
-    .unwrap()
-});
+const REDACTED: &str = "[REDACTED]";
 
 const SHOWN_ENVIRONMENT_VARIABLES: &[&str] = &[
     "COLORTERM",
@@ -51,18 +46,238 @@ pub fn is_valid_environment_name(name: &str) -> bool {
 
 /// Redact a string which could include a command with environment variables
 pub fn redact_command(command: &str) -> String {
-    REDACT_REGEX
-        .replace_all(command, |caps: &regex::Captures| {
-            let separator = &caps[1];
-            let var_name = &caps[2];
-            let value = &caps[3];
-            if should_redact(var_name) {
-                format!(r#"{separator}{var_name}="[REDACTED]""#)
-            } else {
-                format!("{separator}{var_name}={value}")
+    let command = redact_private_keys(command);
+    let command = redact_assignments(&command);
+    redact_secret_tokens(&command)
+}
+
+fn is_text_delimiter(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || byte.is_ascii_control() || b",;'\"()[]{}<>`|&".contains(&byte)
+}
+
+fn is_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn redact_assignments(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut output = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut position = 0;
+    while let Some(offset) = bytes[position..].iter().position(|byte| *byte == b'=') {
+        let equals = position + offset;
+        position = equals + 1;
+        let key_start = bytes[..equals]
+            .iter()
+            .rposition(|byte| !is_key_byte(*byte))
+            .map_or(0, |index| index + 1);
+        let key = &text[key_start..equals];
+        let follows_flag = key_start > 0 && bytes[key_start - 1] == b'-';
+        if key.is_empty()
+            || key.as_bytes()[0].is_ascii_digit()
+            || follows_flag
+            || key_start < copied
+        {
+            continue;
+        }
+        let value_start = equals + 1;
+        let value_end = assignment_value_end(bytes, value_start);
+        if value_end == value_start {
+            continue;
+        }
+        position = value_end;
+        if should_redact(key) {
+            output.push_str(&text[copied..value_start]);
+            output.push('"');
+            output.push_str(REDACTED);
+            output.push('"');
+            copied = value_end;
+        }
+    }
+    output.push_str(&text[copied..]);
+    output
+}
+
+fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
+    match bytes.get(start) {
+        Some(&quote @ (b'"' | b'\'')) => {
+            let mut index = start + 1;
+            while let Some(&byte) = bytes.get(index) {
+                index += 1;
+                if byte == b'\\' {
+                    index += 1;
+                } else if byte == quote {
+                    return index;
+                }
             }
+            bytes.len()
+        }
+        _ => {
+            let mut end = bytes[start..]
+                .iter()
+                .position(|byte| is_text_delimiter(*byte))
+                .map_or(bytes.len(), |offset| start + offset);
+            while end > start && matches!(bytes[end - 1], b'.' | b':') {
+                end -= 1;
+            }
+            end
+        }
+    }
+}
+
+fn redact_secret_tokens(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let is_delimiter = |byte: u8| is_text_delimiter(byte) || byte == b'=';
+    let mut output = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut position = 0;
+    let mut follows_scheme = false;
+    while position < bytes.len() {
+        if is_delimiter(bytes[position]) {
+            position += 1;
+            continue;
+        }
+        let start = position;
+        while position < bytes.len() && !is_delimiter(bytes[position]) {
+            position += 1;
+        }
+        let mut end = position;
+        while end > start && matches!(bytes[end - 1], b'.' | b':') {
+            end -= 1;
+        }
+        let token = &text[start..end];
+        let secret = if (follows_scheme && is_credential_body(token)) || is_secret_token(token) {
+            Some(start..end)
+        } else {
+            credentialed_userinfo(token).map(|range| start + range.start..start + range.end)
+        };
+        follows_scheme = secret.is_none()
+            && (token.eq_ignore_ascii_case("Bearer") || token.eq_ignore_ascii_case("Basic"));
+        if let Some(secret) = secret {
+            output.push_str(&text[copied..secret.start]);
+            output.push_str(REDACTED);
+            copied = secret.end;
+        }
+    }
+    output.push_str(&text[copied..]);
+    output
+}
+
+fn is_credential_body(token: &str) -> bool {
+    token.len() >= 8
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"+/._-~".contains(&byte))
+}
+
+fn is_secret_token(token: &str) -> bool {
+    known_token_prefix(token) || is_jwt(token)
+}
+
+// Vendor token markers and the shortest body each vendor issues after it, from envctl's `known_token_prefix`.
+const TOKEN_MARKERS: &[(&str, usize, &[u8])] = &[
+    ("github_pat_", 20, b"_"),
+    ("ghp_", 20, b""),
+    ("gho_", 20, b""),
+    ("ghu_", 20, b""),
+    ("ghs_", 20, b""),
+    ("ghr_", 20, b""),
+    ("glpat-", 16, b"-_"),
+    ("sk-ant-", 16, b"-_"),
+    ("sk-proj-", 16, b"-_"),
+    ("sk_live_", 16, b""),
+    ("sk_test_", 16, b""),
+    ("rk_live_", 16, b""),
+    ("rk_test_", 16, b""),
+    ("xoxb-", 16, b"-"),
+    ("xoxp-", 16, b"-"),
+    ("xoxa-", 16, b"-"),
+    ("xoxr-", 16, b"-"),
+    ("xoxs-", 16, b"-"),
+    ("npm_", 24, b""),
+    ("pypi-", 16, b"-_"),
+    ("dop_v1_", 32, b""),
+    ("whsec_", 16, b""),
+    ("AIza", 24, b"-_"),
+    ("SG.", 24, b"-_."),
+    ("sk-", 17, b"-_"),
+];
+
+fn known_token_prefix(token: &str) -> bool {
+    let aws_key = ["AKIA", "ASIA", "ABIA", "ACCA"].iter().any(|prefix| {
+        token.strip_prefix(prefix).is_some_and(|body| {
+            body.len() >= 16
+                && body
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
         })
-        .to_string()
+    });
+    aws_key
+        || TOKEN_MARKERS.iter().any(|(prefix, shortest, extra)| {
+            token.strip_prefix(prefix).is_some_and(|body| {
+                body.bytes()
+                    .take_while(|byte| byte.is_ascii_alphanumeric() || extra.contains(byte))
+                    .count()
+                    >= *shortest
+            })
+        })
+}
+
+fn is_jwt(token: &str) -> bool {
+    let segments = token.split('.').collect::<Vec<_>>();
+    token.len() >= 20
+        && segments.len() == 3
+        && segments.iter().all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
+        && segments[..2]
+            .iter()
+            .all(|segment| segment.starts_with("ey"))
+}
+
+fn credentialed_userinfo(token: &str) -> Option<Range<usize>> {
+    let start = token.find("://")? + 3;
+    let rest = &token[start..];
+    let end = start + rest.find(['/', '@'])?;
+    if token.as_bytes().get(end) != Some(&b'@') || end == start {
+        return None;
+    }
+    let userinfo = &token[start..end];
+    (userinfo.contains(':') || userinfo.len() >= 8).then_some(start..end)
+}
+
+fn redact_private_keys(text: &str) -> String {
+    const BEGIN: &str = "-----BEGIN ";
+    const DASHES: &str = "-----";
+    let mut output = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut position = 0;
+    while let Some(offset) = text[position..].find(BEGIN) {
+        let begin = position + offset;
+        let label_start = begin + BEGIN.len();
+        let Some(label_length) = text[label_start..].find(DASHES) else {
+            break;
+        };
+        let label = &text[label_start..label_start + label_length];
+        let header_end = label_start + label_length + DASHES.len();
+        position = header_end;
+        if label.contains('\n') || !label.ends_with("PRIVATE KEY") {
+            continue;
+        }
+        let footer = format!("-----END {label}-----");
+        let block_end = text[header_end..]
+            .find(&footer)
+            .map_or(text.len(), |offset| header_end + offset + footer.len());
+        output.push_str(&text[copied..begin]);
+        output.push_str(REDACTED);
+        copied = block_end;
+        position = block_end;
+    }
+    output.push_str(&text[copied..]);
+    output
 }
 
 const JSON_ENVIRONMENT_KEYS: &[&str] = &["env", "envs", "environment"];
@@ -194,16 +409,50 @@ mod tests {
     fn test_redact_command_covers_quoted_and_chained_assignments() {
         assert_eq!(
             redact_command("+ export 'API_KEY=secret'"),
-            "+ export 'API_KEY=\"[REDACTED]\""
+            "+ export 'API_KEY=\"[REDACTED]\"'"
         );
         assert_eq!(
-            redact_command("cmd;API_KEY=secret next&&TOKEN=x |(SECRET=y) `KEY=z` {PATH=/bin}"),
-            "cmd;API_KEY=\"[REDACTED]\" next&&TOKEN=\"[REDACTED]\" |(SECRET=\"[REDACTED]\" `KEY=\"[REDACTED]\" {PATH=/bin}"
+            redact_command("cmd;API_KEY=secret next&&TOKEN=x|(SECRET=y) `KEY=z` {PATH=/bin}"),
+            "cmd;API_KEY=\"[REDACTED]\" next&&TOKEN=\"[REDACTED]\"|(SECRET=\"[REDACTED]\") `KEY=\"[REDACTED]\"` {PATH=/bin}"
         );
         assert_eq!(
             redact_command("\"API_KEY=secret\" --log-level=debug -Dprop=value"),
-            "\"API_KEY=\"[REDACTED]\" --log-level=debug -Dprop=value"
+            "\"API_KEY=\"[REDACTED]\"\" --log-level=debug -Dprop=value"
         );
+        assert_eq!(
+            redact_command("--env=API_KEY=secret --env=PATH=/usr/bin --level=debug"),
+            "--env=API_KEY=\"[REDACTED]\" --env=PATH=/usr/bin --level=debug"
+        );
+        assert_eq!(
+            redact_command("API_KEY='quoted value' TOKEN=\"a \\\" b\" KEY=plain. SECRET= done"),
+            "API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" KEY=\"[REDACTED]\". SECRET= done"
+        );
+        assert_eq!(
+            redact_command("https://example.com/?a=1&token=secret&b=2"),
+            "https://example.com/?a=\"[REDACTED]\"&token=\"[REDACTED]\"&b=\"[REDACTED]\""
+        );
+    }
+
+    #[test]
+    fn test_redact_command_masks_secret_shapes_without_a_name() {
+        let github = format!("ghp_{}", "a".repeat(36));
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl";
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----";
+        let input = format!(
+            "clone with {github}, header Authorization: Bearer abcdef123456 jwt {jwt}. \
+             url postgres://user:hunter2@db/app and https://{github}@github.com/x \
+             key {pem} done"
+        );
+        assert_eq!(
+            redact_command(&input),
+            "clone with [REDACTED], header Authorization: Bearer [REDACTED] jwt [REDACTED]. \
+             url postgres://[REDACTED]@db/app and https://[REDACTED]@github.com/x \
+             key [REDACTED] done"
+        );
+
+        let ordinary = "ghp_short Bearer token sk-learn steps.publish.outputs https://example.com/@user AKIA1234 \
+             -----BEGIN PUBLIC KEY-----";
+        assert_eq!(redact_command(ordinary), ordinary);
     }
 
     #[test]
