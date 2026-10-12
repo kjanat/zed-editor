@@ -536,21 +536,21 @@ impl LanguageServer {
         };
         let root_uri = Uri::from_file_path(&working_dir)
             .map_err(|()| anyhow!("{working_dir:?} is not a valid URI"))?;
+        let redact = |part: &std::ffi::OsStr| util::redact::redact_command(&part.to_string_lossy());
+        let arguments = util::redact::redact_arguments(&binary.arguments);
+        let directory = redact(working_dir.as_os_str());
         let mut command = util::command::new_command_with_env(
             &binary.path,
             working_dir,
             &binary.env.clone().unwrap_or_default(),
         )
         .with_context(|| {
+            let program = redact(binary.path.as_os_str());
             format!(
-                "failed to resolve language server command {:?}",
-                binary.path
+                "failed to resolve command {program:?} with arguments {arguments:?} in {directory:?}"
             )
         })?;
-        let redact = |part: &std::ffi::OsStr| util::redact::redact_command(&part.to_string_lossy());
         let program = redact(command.get_program());
-        let arguments = util::redact::redact_arguments(&binary.arguments);
-        let directory = redact(working_dir.as_os_str());
         log::info!(
             "starting language server process. binary path: \
             {program:?}, working directory: {directory:?}, args: {arguments:?}",
@@ -2475,7 +2475,12 @@ mod tests {
             panic!("starting a missing language server should fail");
         };
         let message = format!("{error:#}");
-        assert!(message.contains("failed to spawn command"), "{message}");
+        let failure = if cfg!(windows) {
+            "failed to resolve command"
+        } else {
+            "failed to spawn command"
+        };
+        assert!(message.contains(failure), "{message}");
         assert!(
             message.contains("zed-test-missing-language-server"),
             "{message}"
