@@ -240,6 +240,16 @@ pub struct CrashPanic {
 /// back to filling in itself when a session never reported one.
 pub const SENTRY_USER_ID: &str = "sentry[user][id]";
 
+pub const SCRUB_FAILURE: &str = "Failed to scrub the minidump";
+
+impl CrashInfo {
+    pub fn scrub_failed(&self) -> bool {
+        self.minidump_error
+            .as_deref()
+            .is_some_and(|error| error.starts_with(SCRUB_FAILURE))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UserInfo {
     pub metrics_id: Option<String>,
@@ -452,9 +462,12 @@ impl minidumper::ServerHandler for CrashServer {
                     Ok(()) => None,
                     Err(error) => {
                         if let Err(remove_error) = fs::remove_file(&path) {
-                            log::error!("Failed to remove an unscrubbed minidump: {remove_error}");
+                            log::error!(
+                                "Failed to remove an unscrubbed minidump, skipping its crash report: {remove_error}"
+                            );
+                            return LoopAction::Exit;
                         }
-                        Some(format!("Failed to scrub the minidump: {error}"))
+                        Some(format!("{SCRUB_FAILURE}: {error}"))
                     }
                 }
             }
@@ -1214,12 +1227,53 @@ mod tests {
             &fs::read(dir.join("session.json")).expect("the crash data must be written"),
         )
         .expect("the crash data must parse");
-        assert!(
-            crash_info
-                .minidump_error
-                .is_some_and(|error| error.starts_with("Failed to scrub the minidump")),
-        );
+        assert!(crash_info.scrub_failed());
+        assert!(!crash_info_for(None).scrub_failed());
+        assert!(!crash_info_for(Some(String::from("Writer error"))).scrub_failed());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_minidump_that_cannot_be_scrubbed_or_removed_gets_no_crash_report() {
+        use minidumper::ServerHandler as _;
+
+        let dir = log_tail_test_dir("unremovable-minidump");
+        let mut server = test_crash_server();
+        server.logs_dir = dir.clone();
+        server.receive(CrashServerMessage::Init(crash_info_for(None).init));
+
+        let readable = dir.join("readable.dmp");
+        fs::write(&readable, b"MDMP").expect("the file must be writable");
+        let directory = dir.join("session.dmp");
+        fs::create_dir_all(&directory).expect("the directory must be creatable");
+        let action = server.on_minidump_created(Ok(MinidumpBinary {
+            file: File::open(&readable).expect("the file must be readable"),
+            path: directory.clone(),
+            contents: None,
+        }));
+
+        assert!(action == LoopAction::Exit);
+        assert!(directory.exists());
+        assert!(!dir.join("session.json").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn crash_info_for(minidump_error: Option<String>) -> CrashInfo {
+        CrashInfo {
+            init: InitCrashHandler {
+                session_id: String::from("session"),
+                zed_version: String::from("1.2.3"),
+                binary: String::from("zed"),
+                release_channel: String::from("stable"),
+                commit_sha: String::from("abc123"),
+            },
+            panic: None,
+            minidump_error,
+            abort_message: None,
+            gpus: Vec::new(),
+            active_gpu: None,
+            tags: BTreeMap::new(),
+        }
     }
 
     fn log_tail_test_dir(name: &str) -> PathBuf {

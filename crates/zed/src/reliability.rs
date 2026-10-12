@@ -330,6 +330,10 @@ async fn upload_minidump(
         log::warn!("No commit sha set, skipping minidump upload");
         return Ok(());
     }
+    if metadata.scrub_failed() {
+        log::warn!("Skipping the upload of a minidump that failed to scrub");
+        return Ok(());
+    }
     let mut form = Form::new().part(
         "upload_file_minidump",
         Part::bytes(minidump)
@@ -570,5 +574,66 @@ impl FormExt for Form {
             Some(value) => self.text(label.into(), value.into()),
             None => self,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use client::sentry::recording_http_client;
+    use gpui::TestAppContext;
+    use settings::SettingsStore;
+
+    fn crash_info(minidump_error: Option<String>) -> crashes::CrashInfo {
+        crashes::CrashInfo {
+            init: crashes::InitCrashHandler {
+                session_id: String::from("session"),
+                zed_version: String::from("1.2.3"),
+                binary: String::from("zed"),
+                release_channel: String::from("stable"),
+                commit_sha: String::from("abc123"),
+            },
+            panic: None,
+            minidump_error,
+            abort_message: None,
+            gpus: Vec::new(),
+            active_gpu: None,
+            tags: Default::default(),
+        }
+    }
+
+    #[gpui::test]
+    async fn minidumps_that_failed_to_scrub_are_never_uploaded(cx: &mut TestAppContext) {
+        let (http, requests) = recording_http_client();
+        let client = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            Client::new(Arc::new(clock::FakeSystemClock::new()), http, cx)
+        });
+        let endpoint = "https://sentry.example/api/1/minidump/";
+
+        upload_minidump(
+            client.clone(),
+            endpoint,
+            b"API_KEY=secret".to_vec(),
+            None,
+            &crash_info(Some(format!("{}: disk full", crashes::SCRUB_FAILURE))),
+        )
+        .await
+        .unwrap();
+        assert!(requests.lock().is_empty());
+
+        upload_minidump(
+            client,
+            endpoint,
+            b"scrubbed".to_vec(),
+            None,
+            &crash_info(None),
+        )
+        .await
+        .unwrap();
+        let requests = requests.lock();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].uri, endpoint);
     }
 }
