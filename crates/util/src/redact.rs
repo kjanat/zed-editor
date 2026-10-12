@@ -80,7 +80,7 @@ fn is_text_delimiter(byte: u8) -> bool {
 }
 
 fn is_value_delimiter(byte: u8) -> bool {
-    byte.is_ascii_whitespace() || byte.is_ascii_control() || b"'\"()<>`|&;".contains(&byte)
+    byte.is_ascii_whitespace() || byte.is_ascii_control() || b"()<>`|&;".contains(&byte)
 }
 
 fn is_key_byte(byte: u8) -> bool {
@@ -162,36 +162,43 @@ fn redact_assignments(text: &str) -> String {
 }
 
 fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
-    let quote_start = match (bytes.get(start), bytes.get(start + 1)) {
-        (Some(b'"' | b'\''), _) => Some(start),
-        (Some(b'$'), Some(b'"' | b'\'')) => Some(start + 1),
-        _ => None,
-    };
-    match quote_start {
-        Some(quote_start) => {
-            let quote = bytes[quote_start];
-            let mut index = quote_start + 1;
-            while let Some(&byte) = bytes.get(index) {
-                index += 1;
-                if byte == b'\\' {
-                    index += 1;
-                } else if byte == quote {
-                    return index;
+    let mut index = start;
+    let mut quoted_end = start;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'"' | b'\'' => match closing_quote_end(bytes, index) {
+                Some(end) => {
+                    index = end;
+                    quoted_end = end;
                 }
-            }
-            bytes.len()
-        }
-        None => {
-            let mut end = bytes[start..]
-                .iter()
-                .position(|byte| is_value_delimiter(*byte))
-                .map_or(bytes.len(), |offset| start + offset);
-            while end > start && matches!(bytes[end - 1], b'.' | b':') {
-                end -= 1;
-            }
-            end
+                None if bytes[start..index].iter().all(|byte| *byte == b'$') => {
+                    return bytes.len();
+                }
+                None => break,
+            },
+            b'\\' => index = (index + 2).min(bytes.len()),
+            _ if is_value_delimiter(byte) => break,
+            _ => index += 1,
         }
     }
+    while index > quoted_end && matches!(bytes[index - 1], b'.' | b':') {
+        index -= 1;
+    }
+    index
+}
+
+fn closing_quote_end(bytes: &[u8], quote_index: usize) -> Option<usize> {
+    let quote = *bytes.get(quote_index)?;
+    let mut index = quote_index + 1;
+    while let Some(&byte) = bytes.get(index) {
+        index += 1;
+        if byte == b'\\' {
+            index += 1;
+        } else if byte == quote {
+            return Some(index);
+        }
+    }
+    None
 }
 
 fn redact_secret_tokens(text: &str) -> String {
@@ -330,7 +337,7 @@ fn redact_credentialed_urls(text: &str) -> String {
             output.push_str(REDACTED);
             copied = userinfo_end;
         }
-        position = authority_end;
+        position = userinfo_end;
     }
     output.push_str(&text[copied..]);
     output
@@ -548,6 +555,12 @@ mod tests {
             "API_KEY=\"[REDACTED]\" HOSTS=\"[REDACTED]\" next"
         );
         assert_eq!(
+            redact_command(
+                "API_KEY=prefix\"secret-suffix\" TOKEN=a'b c'd SECRET=\"unterminated next"
+            ),
+            "API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" SECRET=\"[REDACTED]\""
+        );
+        assert_eq!(
             redact_command("https://example.com/?a=1&token=secret&b=2"),
             "https://example.com/?a=\"[REDACTED]\"&token=\"[REDACTED]\"&b=\"[REDACTED]\""
         );
@@ -562,6 +575,7 @@ mod tests {
              anthropic sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 \
              url postgres://user:hunter2@db/app and https://ghp_16C7e42F292c6912E7710c838347Ae178B4a@github.com/x \
              comma postgres://user:hunter2,tail@db/app at mysql://admin:p@ss;word@db:3306/app \
+             list postgres://u:first-secret@db,postgres://u:second-secret@backup/x \
              key -----BEGIN OPENSSH PRIVATE KEY-----\n\
              b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
              -----END OPENSSH PRIVATE KEY----- done";
@@ -574,6 +588,7 @@ mod tests {
              anthropic [REDACTED] \
              url postgres://[REDACTED]@db/app and https://[REDACTED]@github.com/x \
              comma postgres://[REDACTED]@db/app at mysql://[REDACTED]@db:3306/app \
+             list postgres://[REDACTED]@db,postgres://[REDACTED]@backup/x \
              key [REDACTED] done"
         );
 
