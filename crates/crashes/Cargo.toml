@@ -25,6 +25,9 @@ async-process.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+minidump-writer.workspace = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2.workspace = true
 

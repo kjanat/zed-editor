@@ -8,10 +8,11 @@ use std::{panic::Location, pin::Pin};
 use system_specs::GpuSpecs;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     env,
     fs::{self, File},
     io::{self, Read as _, Seek as _, SeekFrom},
+    ops::Range,
     panic,
     path::{Path, PathBuf},
     process::{self},
@@ -196,6 +197,8 @@ pub struct CrashInfo {
     pub init: InitCrashHandler,
     pub panic: Option<CrashPanic>,
     pub minidump_error: Option<String>,
+    #[serde(default)]
+    pub environment_scrubbed: bool,
     /// The diagnostic the C runtime recorded before aborting the process, e.g.
     /// glibc's "free(): invalid pointer". Only present when the crash was a
     /// runtime-initiated abort rather than a signal like SIGSEGV or a panic.
@@ -238,6 +241,8 @@ pub struct CrashPanic {
 /// The Sentry field identifying the crashing user, which the uploader falls
 /// back to filling in itself when a session never reported one.
 pub const SENTRY_USER_ID: &str = "sentry[user][id]";
+
+pub const SCRUB_FAILURE: &str = "Failed to scrub the minidump";
 
 #[derive(Debug, Clone)]
 pub struct UserInfo {
@@ -441,20 +446,26 @@ impl minidumper::ServerHandler for CrashServer {
     }
 
     fn on_minidump_created(&self, result: Result<MinidumpBinary, minidumper::Error>) -> LoopAction {
-        let minidump_error = match result {
+        let (minidump_error, environment_scrubbed) = match result {
             Ok(MinidumpBinary { mut file, path, .. }) => {
                 use io::Write;
                 file.flush().ok();
                 // TODO: clean this up once https://github.com/EmbarkStudios/crash-handling/issues/101 is addressed
                 drop(file);
-                let original_file = File::open(&path).unwrap();
-                let compressed_path = path.with_extension("zstd");
-                let compressed_file = File::create(&compressed_path).unwrap();
-                zstd::stream::copy_encode(original_file, compressed_file, 0).ok();
-                fs::rename(&compressed_path, path).unwrap();
-                None
+                match finish_minidump(&path) {
+                    Ok(()) => (None, true),
+                    Err(error) => {
+                        if let Err(remove_error) = fs::remove_file(&path) {
+                            log::error!(
+                                "Failed to remove an unscrubbed minidump, skipping its crash report: {remove_error}"
+                            );
+                            return LoopAction::Exit;
+                        }
+                        (Some(format!("{SCRUB_FAILURE}: {error}")), false)
+                    }
+                }
             }
-            Err(e) => Some(format!("{e:?}")),
+            Err(e) => (Some(format!("{e:?}")), false),
         };
 
         #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
@@ -485,6 +496,7 @@ impl minidumper::ServerHandler for CrashServer {
                 .expect("not initialized"),
             panic: self.panic_info.lock().clone(),
             minidump_error,
+            environment_scrubbed,
             abort_message,
             active_gpu: self.active_gpu.lock().clone(),
             gpus,
@@ -550,6 +562,105 @@ impl minidumper::ServerHandler for CrashServer {
         self.has_connection.store(true, Ordering::SeqCst);
         LoopAction::Continue
     }
+}
+
+fn finish_minidump(path: &Path) -> io::Result<()> {
+    let mut dump = fs::read(path)?;
+    if cfg!(target_os = "linux") && environ_streams(&dump).is_empty() {
+        return Err(io::Error::other(
+            "the minidump has no readable environment stream",
+        ));
+    }
+    scrub_environment(&mut dump, own_environment());
+    let compressed_path = path.with_extension("zstd");
+    fs::write(
+        &compressed_path,
+        zstd::stream::encode_all(dump.as_slice(), 0)?,
+    )?;
+    fs::rename(&compressed_path, path)
+}
+
+const MINIDUMP_SIGNATURE: &[u8] = b"MDMP";
+const MINIDUMP_DIRECTORY_ENTRY_SIZE: usize = 12;
+const LINUX_ENVIRON_STREAM: u32 = 0x4767_0007;
+
+fn scrub_environment(dump: &mut [u8], environment: Vec<Vec<u8>>) {
+    let mut entries = environment
+        .into_iter()
+        .filter(|entry| entry.contains(&b'='))
+        .collect::<HashSet<_>>();
+    for stream in environ_streams(dump) {
+        entries.extend(
+            dump[stream.clone()]
+                .split(|byte| *byte == 0)
+                .filter(|entry| !entry.is_empty())
+                .map(<[u8]>::to_vec),
+        );
+        dump[stream].fill(0);
+    }
+    if entries.is_empty() {
+        return;
+    }
+    let mut start = 0;
+    while start < dump.len() {
+        let end = dump[start..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .map_or(dump.len(), |offset| start + offset);
+        if entries.contains(&dump[start..end]) {
+            dump[start..end].fill(0);
+        }
+        start = end + 1;
+    }
+}
+
+fn environ_streams(dump: &[u8]) -> Vec<Range<usize>> {
+    let read_u32 = |offset: usize| {
+        let bytes = dump.get(offset..offset.checked_add(size_of::<u32>())?)?;
+        Some(u32::from_le_bytes(<[u8; 4]>::try_from(bytes).ok()?))
+    };
+    let mut streams = Vec::new();
+    if dump.get(..MINIDUMP_SIGNATURE.len()) != Some(MINIDUMP_SIGNATURE) {
+        return streams;
+    }
+    let (Some(stream_count), Some(directory)) = (read_u32(8), read_u32(12)) else {
+        return streams;
+    };
+    for index in 0..stream_count as usize {
+        let Some(entry) = index
+            .checked_mul(MINIDUMP_DIRECTORY_ENTRY_SIZE)
+            .and_then(|offset| offset.checked_add(directory as usize))
+        else {
+            break;
+        };
+        let (Some(stream_type), Some(size), Some(location)) =
+            (read_u32(entry), read_u32(entry + 4), read_u32(entry + 8))
+        else {
+            break;
+        };
+        let start = location as usize;
+        if stream_type == LINUX_ENVIRON_STREAM
+            && let Some(end) = start.checked_add(size as usize)
+            && end <= dump.len()
+        {
+            streams.push(start..end);
+        }
+    }
+    streams
+}
+
+#[cfg(unix)]
+fn own_environment() -> Vec<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    env::vars_os()
+        .map(|(name, value)| [name.as_bytes(), b"=", value.as_bytes()].concat())
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn own_environment() -> Vec<Vec<u8>> {
+    Vec::new()
 }
 
 fn write_log_tail(log_file: &Path, destination: &Path) -> io::Result<()> {
@@ -839,6 +950,7 @@ mod tests {
 
         assert_eq!(crash_info.init.session_id, "session-1");
         assert!(crash_info.tags.is_empty());
+        assert!(!crash_info.environment_scrubbed);
     }
 
     #[test]
@@ -953,6 +1065,235 @@ mod tests {
             has_connection: Arc::default(),
             logs_dir: PathBuf::new(),
             log_file: None,
+        }
+    }
+
+    fn synthetic_minidump(environ: &[u8], stack: &[u8]) -> Vec<u8> {
+        let header_size = 32;
+        let directory = header_size;
+        let stack_location = directory + 2 * MINIDUMP_DIRECTORY_ENTRY_SIZE;
+        let environ_location = stack_location + stack.len();
+        let mut dump = Vec::new();
+        for value in [
+            u32::from_le_bytes(*b"MDMP"),
+            0xa793,
+            2,
+            directory as u32,
+            0,
+            0,
+            0,
+            0,
+        ] {
+            dump.extend_from_slice(&value.to_le_bytes());
+        }
+        for (stream_type, size, location) in [
+            (3, stack.len(), stack_location),
+            (LINUX_ENVIRON_STREAM, environ.len(), environ_location),
+        ] {
+            for value in [stream_type, size as u32, location as u32] {
+                dump.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        dump.extend_from_slice(stack);
+        dump.extend_from_slice(environ);
+        dump
+    }
+
+    #[test]
+    fn scrub_environment_clears_the_environ_stream_and_its_copies() {
+        let environ = b"API_KEY=secret\0SHORT=1\0BARE_TOKEN\0";
+        let stack = b"\0/usr/bin/zed\0API_KEY=secret\0SHORT=1\0HOME=/home/u\0BARE_TOKEN\0notAPI_KEY=secret\0";
+        let mut dump = synthetic_minidump(environ, stack);
+        let original = dump.clone();
+
+        scrub_environment(
+            &mut dump,
+            vec![b"HOME=/home/u".to_vec(), b"NOEQUALS".to_vec()],
+        );
+
+        let header_end = 32 + 2 * MINIDUMP_DIRECTORY_ENTRY_SIZE;
+        assert_eq!(dump[..header_end], original[..header_end]);
+        let stack_end = header_end + stack.len();
+        let cleared = "API_KEY=secret\0SHORT=1\0HOME=/home/u\0BARE_TOKEN\0".len();
+        assert_eq!(
+            dump[header_end..stack_end],
+            [
+                b"\0/usr/bin/zed\0".as_slice(),
+                &vec![0; cleared],
+                b"notAPI_KEY=secret\0",
+            ]
+            .concat()
+        );
+        assert!(dump[stack_end..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn scrub_environment_ignores_malformed_dumps() {
+        let stack = b"\0API_KEY=secret\0";
+        let valid = synthetic_minidump(b"API_KEY=secret\0", stack);
+        let mut out_of_range = valid.clone();
+        out_of_range[32 + MINIDUMP_DIRECTORY_ENTRY_SIZE + 8..][..4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut huge_count = valid.clone();
+        huge_count[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut wrong_signature = valid;
+        wrong_signature[..4].copy_from_slice(b"XXXX");
+
+        for dump in [Vec::new(), b"MDMP".to_vec(), out_of_range, wrong_signature] {
+            let mut scrubbed = dump.clone();
+            scrub_environment(&mut scrubbed, Vec::new());
+            assert_eq!(scrubbed, dump);
+        }
+
+        scrub_environment(&mut huge_count, Vec::new());
+        assert!(!huge_count.windows(6).any(|window| window == b"secret"));
+        assert_eq!(&huge_count[8..12], &u32::MAX.to_le_bytes());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scrub_environment_clears_the_environment_from_a_real_minidump() {
+        let secret = format!("zed-scrub-test-{}", process::id());
+        let mut child = async_process::Command::new("sleep")
+            .arg("30")
+            .env("ZED_SCRUB_TEST_TOKEN", &secret)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("sleep must start");
+        let pid = child.id() as libc::pid_t;
+        let mut dump = io::Cursor::new(Vec::new());
+        let written =
+            minidump_writer::minidump_writer::MinidumpWriterConfig::new(pid, pid).write(&mut dump);
+        child.kill().expect("sleep must stop");
+        written.expect("the minidump must be written");
+        let mut dump = dump.into_inner();
+        let count = |dump: &[u8]| {
+            dump.windows(secret.len())
+                .filter(|window| *window == secret.as_bytes())
+                .count()
+        };
+        assert!(
+            count(&dump) >= 2,
+            "the environ stream and the stack must both hold the value"
+        );
+
+        scrub_environment(&mut dump, Vec::new());
+        assert_eq!(count(&dump), 0);
+    }
+
+    #[test]
+    fn minidumps_are_scrubbed_before_they_are_kept() {
+        use minidumper::ServerHandler as _;
+
+        let dir = log_tail_test_dir("scrubbed-minidump");
+        let mut server = test_crash_server();
+        server.logs_dir = dir.clone();
+        server.receive(CrashServerMessage::Init(InitCrashHandler {
+            session_id: String::from("session"),
+            zed_version: String::from("1.2.3"),
+            binary: String::from("zed"),
+            release_channel: String::from("stable"),
+            commit_sha: String::from("abc123"),
+        }));
+
+        let path = dir.join("session.dmp");
+        let dump = synthetic_minidump(b"API_KEY=secret\0", b"\0API_KEY=secret\0");
+        fs::write(&path, &dump).expect("the minidump must be writable");
+        let file = File::open(&path).expect("the minidump must be readable");
+        server.on_minidump_created(Ok(MinidumpBinary {
+            file,
+            path: path.clone(),
+            contents: None,
+        }));
+        let kept = zstd::stream::decode_all(
+            fs::read(&path)
+                .expect("the minidump must be kept")
+                .as_slice(),
+        )
+        .expect("the minidump must be compressed");
+        assert_eq!(kept.len(), dump.len());
+        assert!(!kept.windows(6).any(|window| window == b"secret"));
+        assert!(!dir.join("session.zstd").exists());
+        let crash_info: CrashInfo = serde_json::from_slice(
+            &fs::read(dir.join("session.json")).expect("the crash data must be written"),
+        )
+        .expect("the crash data must parse");
+        assert!(crash_info.environment_scrubbed);
+        assert_eq!(crash_info.minidump_error, None);
+
+        fs::write(&path, &dump).expect("the minidump must be writable");
+        fs::create_dir_all(dir.join("session.zstd")).expect("the directory must be creatable");
+        let file = File::open(&path).expect("the minidump must be readable");
+        server.on_minidump_created(Ok(MinidumpBinary {
+            file,
+            path: path.clone(),
+            contents: None,
+        }));
+        assert!(!path.exists(), "an unscrubbed minidump must not be kept");
+        let crash_info: CrashInfo = serde_json::from_slice(
+            &fs::read(dir.join("session.json")).expect("the crash data must be written"),
+        )
+        .expect("the crash data must parse");
+        assert!(!crash_info.environment_scrubbed);
+        assert!(
+            crash_info
+                .minidump_error
+                .is_some_and(|error| error.starts_with(SCRUB_FAILURE))
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linux_minidump_without_an_environment_stream_fails_to_scrub() {
+        let dir = log_tail_test_dir("missing-environ");
+        let stack = b"\0API_KEY=secret\0";
+        let mut wrong_signature = synthetic_minidump(b"API_KEY=secret\0", stack);
+        wrong_signature[..4].copy_from_slice(b"XXXX");
+        let mut out_of_range = synthetic_minidump(b"API_KEY=secret\0", stack);
+        out_of_range[32 + MINIDUMP_DIRECTORY_ENTRY_SIZE + 8..][..4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        for dump in [b"MDMP".to_vec(), wrong_signature, out_of_range] {
+            let path = dir.join("session.dmp");
+            fs::write(&path, &dump).expect("the minidump must be writable");
+            assert!(finish_minidump(&path).is_err());
+            assert_eq!(fs::read(&path).expect("the minidump must remain"), dump);
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_minidump_that_cannot_be_scrubbed_or_removed_gets_no_crash_report() {
+        use minidumper::ServerHandler as _;
+
+        let dir = log_tail_test_dir("unremovable-minidump");
+        let mut server = test_crash_server();
+        server.logs_dir = dir.clone();
+        server.receive(CrashServerMessage::Init(test_init()));
+
+        let readable = dir.join("readable.dmp");
+        fs::write(&readable, b"MDMP").expect("the file must be writable");
+        let directory = dir.join("session.dmp");
+        fs::create_dir_all(&directory).expect("the directory must be creatable");
+        let action = server.on_minidump_created(Ok(MinidumpBinary {
+            file: File::open(&readable).expect("the file must be readable"),
+            path: directory.clone(),
+            contents: None,
+        }));
+
+        assert!(action == LoopAction::Exit);
+        assert!(directory.exists());
+        assert!(!dir.join("session.json").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn test_init() -> InitCrashHandler {
+        InitCrashHandler {
+            session_id: String::from("session"),
+            zed_version: String::from("1.2.3"),
+            binary: String::from("zed"),
+            release_channel: String::from("stable"),
+            commit_sha: String::from("abc123"),
         }
     }
 
