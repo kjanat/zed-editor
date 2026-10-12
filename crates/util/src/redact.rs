@@ -59,7 +59,7 @@ pub fn redact_arguments<S: AsRef<OsStr>>(arguments: impl IntoIterator<Item = S>)
         .into_iter()
         .map(|argument| {
             let argument = argument.as_ref().to_string_lossy();
-            let redacted = if follows_secret_option && !argument.starts_with('-') {
+            let redacted = if follows_secret_option {
                 REDACTED.to_string()
             } else {
                 redact_command(&argument)
@@ -115,6 +115,23 @@ fn has_environment_prefix(before_key: &[u8]) -> bool {
         || opens_elvish_variable
 }
 
+fn follows_authorization_scheme(before_key: &[u8]) -> bool {
+    let Some(scheme_end) = before_key
+        .iter()
+        .rposition(|byte| !is_inline_space(*byte))
+        .map(|index| index + 1)
+    else {
+        return false;
+    };
+    let scheme_start = before_key[..scheme_end]
+        .iter()
+        .rposition(|byte| !byte.is_ascii_alphabetic())
+        .map_or(0, |index| index + 1);
+    let scheme = &before_key[scheme_start..scheme_end];
+    scheme_end < before_key.len()
+        && (scheme.eq_ignore_ascii_case(b"Basic") || scheme.eq_ignore_ascii_case(b"Bearer"))
+}
+
 fn redact_assignments(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut output = String::with_capacity(text.len());
@@ -162,6 +179,12 @@ fn redact_assignments(text: &str) -> String {
         }
         let value_end = assignment_value_end(bytes, value_start);
         if value_end == value_start {
+            continue;
+        }
+        let base64_padding = bytes[value_start..value_end]
+            .iter()
+            .all(|byte| *byte == b'=');
+        if base64_padding && follows_authorization_scheme(&bytes[..key_start]) {
             continue;
         }
         if long_option || should_redact(key) {
@@ -223,24 +246,25 @@ fn redact_secret_option_values(text: &str) -> String {
         {
             position += 1;
         }
-        if !awaits_secret_value(&text[token_start..position]) {
-            continue;
+        let mut option_start = token_start;
+        while awaits_secret_value(&text[option_start..position]) {
+            let mut value_start = position;
+            while bytes.get(value_start).copied().is_some_and(is_inline_space) {
+                value_start += 1;
+            }
+            if bytes
+                .get(value_start)
+                .is_none_or(|byte| is_value_delimiter(*byte))
+            {
+                break;
+            }
+            let value_end = assignment_value_end(bytes, value_start);
+            output.push_str(&text[copied..value_start]);
+            output.push_str(REDACTED);
+            copied = value_end;
+            option_start = value_start;
+            position = value_end;
         }
-        let mut value_start = position;
-        while bytes.get(value_start).copied().is_some_and(is_inline_space) {
-            value_start += 1;
-        }
-        if bytes
-            .get(value_start)
-            .is_none_or(|byte| *byte == b'-' || is_value_delimiter(*byte))
-        {
-            continue;
-        }
-        let value_end = assignment_value_end(bytes, value_start);
-        output.push_str(&text[copied..value_start]);
-        output.push_str(REDACTED);
-        copied = value_end;
-        position = value_end;
     }
     output.push_str(&text[copied..]);
     output
@@ -270,7 +294,7 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
                 index = end;
                 quoted_end = end;
             }
-            None if bytes[start..index].iter().all(|byte| *byte == b'$') => {
+            None if byte == b'$' || bytes[start..index].iter().all(|byte| *byte == b'$') => {
                 return bytes.len();
             }
             None => index += 1,
@@ -328,14 +352,18 @@ fn redact_secret_tokens(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut copied = 0;
     let mut position = 0;
-    let mut follows_scheme = false;
+    let mut credential_minimum = None;
+    let mut follows_authorization = false;
     while position < bytes.len() {
         if is_delimiter(bytes[position]) {
             position += 1;
             continue;
         }
         let start = position;
-        while position < bytes.len() && !is_delimiter(bytes[position]) {
+        while position < bytes.len()
+            && ((bytes[position] == b'=' && credential_minimum.is_some())
+                || !is_delimiter(bytes[position]))
+        {
             position += 1;
         }
         let mut end = position;
@@ -343,10 +371,19 @@ fn redact_secret_tokens(text: &str) -> String {
             end -= 1;
         }
         let token = &text[start..end];
-        let secret = ((follows_scheme && is_credential_body(token)) || is_secret_token(token))
-            .then_some(start..end);
-        follows_scheme = secret.is_none()
-            && (token.eq_ignore_ascii_case("Bearer") || token.eq_ignore_ascii_case("Basic"));
+        let secret = (credential_minimum.is_some_and(|minimum| is_credential_body(token, minimum))
+            || is_secret_token(token))
+        .then_some(start..end);
+        credential_minimum = if secret.is_some() {
+            None
+        } else if token.eq_ignore_ascii_case("Basic") && follows_authorization {
+            Some(4)
+        } else if token.eq_ignore_ascii_case("Bearer") || token.eq_ignore_ascii_case("Basic") {
+            Some(8)
+        } else {
+            None
+        };
+        follows_authorization = token.eq_ignore_ascii_case("Authorization");
         if let Some(secret) = secret {
             output.push_str(&text[copied..secret.start]);
             output.push_str(REDACTED);
@@ -357,11 +394,11 @@ fn redact_secret_tokens(text: &str) -> String {
     output
 }
 
-fn is_credential_body(token: &str) -> bool {
-    token.len() >= 8
+fn is_credential_body(token: &str, minimum: usize) -> bool {
+    token.len() >= minimum
         && token
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"+/._-~".contains(&byte))
+            .all(|byte| byte.is_ascii_alphanumeric() || b"+/=._-~".contains(&byte))
 }
 
 fn is_secret_token(token: &str) -> bool {
@@ -696,6 +733,10 @@ mod tests {
             "KEY=\"[REDACTED]\" next"
         );
         assert_eq!(
+            redact_command("API_KEY=prefix$(printf hunter2"),
+            "API_KEY=\"[REDACTED]\""
+        );
+        assert_eq!(
             redact_command("https://example.com/?a=1&token=secret&b=2"),
             "https://example.com/?a=\"[REDACTED]\""
         );
@@ -705,6 +746,7 @@ mod tests {
     fn test_redact_command_masks_secret_shapes_without_a_name() {
         let input = "clone with ghp_16C7e42F292c6912E7710c838347Ae178B4a, \
              header Authorization: Bearer abcdef123456 \
+             short Authorization: Basic YTpi padded Authorization: Basic YQ== \
              jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c. \
              aws AKIAIOSFODNN7EXAMPLE slack xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx \
              anthropic sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 \
@@ -718,6 +760,7 @@ mod tests {
             redact_command(input),
             "clone with [REDACTED], \
              header Authorization: Bearer [REDACTED] \
+             short Authorization: Basic [REDACTED] padded Authorization: Basic [REDACTED] \
              jwt [REDACTED]. \
              aws [REDACTED] slack [REDACTED] \
              anthropic [REDACTED] \
@@ -727,7 +770,7 @@ mod tests {
              key [REDACTED] done"
         );
 
-        let ordinary = "ghp_short Bearer token sk-learn steps.publish.outputs https://example.com/@user AKIA1234 \
+        let ordinary = "ghp_short Bearer token Basic auth sk-learn steps.publish.outputs https://example.com/@user AKIA1234 \
              -----BEGIN PUBLIC KEY-----";
         assert_eq!(redact_command(ordinary), ordinary);
     }
@@ -775,7 +818,11 @@ mod tests {
                 "separate-secret",
                 "--verbose",
                 "--password",
+                "-hunter2",
                 "--next",
+                "--api-key",
+                "--token",
+                "chained-secret",
                 "plain"
             ]),
             [
@@ -783,7 +830,11 @@ mod tests {
                 "[REDACTED]",
                 "--verbose",
                 "--password",
+                "[REDACTED]",
                 "--next",
+                "--api-key",
+                "[REDACTED]",
+                "[REDACTED]",
                 "plain"
             ]
         );
@@ -797,7 +848,11 @@ mod tests {
                  --api-key \"quoted secret\" --token-file --verbose --log-level=debug"
             ),
             "--API_KEY=\"[REDACTED]\" --TOKEN=\"[REDACTED]\" --password [REDACTED] -token [REDACTED] \
-             --api-key [REDACTED] --token-file --verbose --log-level=debug"
+             --api-key [REDACTED] --token-file [REDACTED] --log-level=debug"
+        );
+        assert_eq!(
+            redact_command("--password -hunter2 --api-key --token chained-secret plain"),
+            "--password [REDACTED] --api-key [REDACTED] [REDACTED] plain"
         );
         assert_eq!(
             redact_command(r#"["--token", "debug-secret"]"#),
