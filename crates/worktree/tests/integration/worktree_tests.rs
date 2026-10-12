@@ -7193,6 +7193,89 @@ async fn test_single_file_worktree_deleted(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_deleted_single_file_worktree_reports_once_and_sees_the_file_return(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree("/root", json!({ "test.txt": "content" }))
+        .await;
+
+    let tree = Worktree::local(
+        Path::new("/root/test.txt"),
+        false,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+
+    let watches_parent = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    let parent_watched = |fs: &FakeFs| {
+        fs.registered_watch_paths()
+            .contains(&PathBuf::from("/root"))
+    };
+    assert_eq!(parent_watched(&fs), watches_parent);
+    let root_inode = |cx: &mut TestAppContext| {
+        tree.read_with(cx, |tree, _| {
+            tree.entry_for_path(rel_path("")).map(|entry| entry.inode)
+        })
+    };
+    let original_inode = root_inode(cx);
+
+    let deleted_events = Rc::new(Cell::new(0));
+    let _subscription = cx.update({
+        let deleted_events = deleted_events.clone();
+        |cx| {
+            cx.subscribe(&tree, move |_, event, _| {
+                if matches!(event, Event::Deleted) {
+                    deleted_events.set(deleted_events.get() + 1);
+                }
+            })
+        }
+    });
+
+    fs.remove_file(Path::new("/root/test.txt"), Default::default())
+        .await
+        .unwrap();
+    cx.background_executor.run_until_parked();
+    for sibling in ["/root/a.txt", "/root/b.txt", "/root/c.txt"] {
+        fs.insert_file(sibling, b"sibling".to_vec()).await;
+        cx.background_executor.run_until_parked();
+    }
+    cx.background_executor
+        .advance_clock(worktree::ROOT_PATH_CHECK_INTERVAL * 3);
+    cx.background_executor.run_until_parked();
+
+    assert_eq!(deleted_events.get(), 1);
+    assert!(!parent_watched(&fs));
+
+    fs.insert_file("/root/test.txt", b"back".to_vec()).await;
+    cx.background_executor
+        .advance_clock(worktree::ROOT_PATH_CHECK_INTERVAL);
+    cx.background_executor.run_until_parked();
+
+    let returned_inode = root_inode(cx);
+    assert!(returned_inode.is_some());
+    assert_ne!(returned_inode, original_inode);
+    assert_eq!(parent_watched(&fs), watches_parent);
+
+    fs.remove_file(Path::new("/root/test.txt"), Default::default())
+        .await
+        .unwrap();
+    cx.background_executor
+        .advance_clock(worktree::ROOT_PATH_CHECK_INTERVAL);
+    cx.background_executor.run_until_parked();
+
+    assert_eq!(deleted_events.get(), 2);
+}
+
+#[gpui::test]
 async fn test_root_ancestor_rename_is_detected_without_fs_events(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
