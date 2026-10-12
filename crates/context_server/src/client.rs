@@ -188,7 +188,7 @@ impl Client {
         log::debug!(
             "starting context server (executable={:?}, args={:?})",
             binary.executable,
-            binary.args
+            util::redact::redact_arguments(&binary.args)
         );
 
         let server_name = binary

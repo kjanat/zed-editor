@@ -5,7 +5,7 @@ use std::{borrow::Cow, fmt, path::Path};
 use std::{path::PathBuf, sync::LazyLock};
 
 /// Shell configuration to open the terminal with.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, Hash)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Shell {
     /// Use the system's default terminal configuration in /etc/passwd
@@ -22,6 +22,25 @@ pub enum Shell {
         /// An optional string to override the title of the terminal tab
         title_override: Option<String>,
     },
+}
+
+impl fmt::Debug for Shell {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Shell::System => formatter.write_str("System"),
+            Shell::Program(program) => formatter.debug_tuple("Program").field(program).finish(),
+            Shell::WithArguments {
+                program,
+                args,
+                title_override,
+            } => formatter
+                .debug_struct("WithArguments")
+                .field("program", program)
+                .field("args", &crate::redact::redact_arguments(args))
+                .field("title_override", title_override)
+                .finish(),
+        }
+    }
 }
 
 impl Shell {
@@ -777,6 +796,28 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use crate::shell_builder::ShellBuilder;
+
+    #[test]
+    fn test_shell_debug_redacts_arguments() {
+        let shell = Shell::WithArguments {
+            program: "bash".to_string(),
+            args: vec![
+                "-l".to_string(),
+                "-c".to_string(),
+                "exec env API_KEY=argument-secret bash".to_string(),
+            ],
+            title_override: None,
+        };
+        assert_eq!(
+            format!("{shell:?}"),
+            r#"WithArguments { program: "bash", args: ["-l", "-c", "exec env API_KEY=\"[REDACTED]\" bash"], title_override: None }"#
+        );
+        assert_eq!(
+            format!("{:?}", Shell::Program("zsh".to_string())),
+            r#"Program("zsh")"#
+        );
+        assert_eq!(format!("{:?}", Shell::System), "System");
+    }
 
     // Examples
     // WSL

@@ -136,7 +136,7 @@ fn sftp_put_command(source_path: &str, destination_path: &str) -> String {
     format!("put {source} {destination}\n")
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SshConnectionOptions {
     pub host: SshConnectionHost,
     pub username: Option<String>,
@@ -148,6 +148,22 @@ pub struct SshConnectionOptions {
 
     pub nickname: Option<String>,
     pub upload_binary_over_ssh: bool,
+}
+
+impl std::fmt::Debug for SshConnectionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshConnectionOptions")
+            .field("host", &self.host)
+            .field("username", &self.username)
+            .field("port", &self.port)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("args", &self.args)
+            .field("port_forwards", &self.port_forwards)
+            .field("connection_timeout", &self.connection_timeout)
+            .field("nickname", &self.nickname)
+            .field("upload_binary_over_ssh", &self.upload_binary_over_ssh)
+            .finish()
+    }
 }
 
 impl From<settings_content::SshConnection> for SshConnectionOptions {
@@ -2888,6 +2904,18 @@ mod tests {
             ),
             "put \"C:\\\\Users\\\\Smit\\\\Zed Repro\\\\remote_server\" \".zed_server/remote_server\"\n"
         );
+    }
+
+    #[test]
+    fn debug_output_hides_the_password() {
+        let options = SshConnectionOptions {
+            host: "example.com".into(),
+            password: Some("hunter2".to_string()),
+            ..Default::default()
+        };
+        let debug = format!("{options:?}");
+        assert!(debug.contains("example.com"), "{debug}");
+        assert!(!debug.contains("hunter2"), "{debug}");
     }
 
     #[test]

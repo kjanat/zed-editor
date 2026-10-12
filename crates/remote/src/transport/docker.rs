@@ -35,16 +35,7 @@ use crate::{
 };
 
 #[derive(
-    Debug,
-    Default,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
+    Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct DockerConnectionOptions {
     pub name: String,
@@ -53,6 +44,22 @@ pub struct DockerConnectionOptions {
     pub upload_binary_over_docker_exec: bool,
     pub use_podman: bool,
     pub remote_env: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for DockerConnectionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerConnectionOptions")
+            .field("name", &self.name)
+            .field("container_id", &self.container_id)
+            .field("remote_user", &self.remote_user)
+            .field(
+                "upload_binary_over_docker_exec",
+                &self.upload_binary_over_docker_exec,
+            )
+            .field("use_podman", &self.use_podman)
+            .field("remote_env", &self.remote_env.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 pub(crate) struct DockerExecConnection {
@@ -1095,6 +1102,14 @@ mod tests {
                 "sh"
             ]
         );
+    }
+
+    #[test]
+    fn debug_output_lists_remote_env_names_without_values() {
+        let connection = connection(&[("DATABASE_URL", "postgres://user:hunter2@db/app")]);
+        let debug = format!("{:?}", connection.connection_options);
+        assert!(debug.contains("DATABASE_URL"), "{debug}");
+        assert!(!debug.contains("hunter2"), "{debug}");
     }
 
     #[test]

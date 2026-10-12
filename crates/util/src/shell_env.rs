@@ -14,7 +14,10 @@ fn parse_env_map_from_noisy_output(output: &str) -> Result<collections::HashMap<
             return Ok(env_map);
         }
     }
-    anyhow::bail!("Failed to find JSON in shell output: {output}")
+    anyhow::bail!(
+        "Failed to find JSON in {} bytes of shell output",
+        output.len()
+    )
 }
 
 pub fn print_env() {
@@ -59,14 +62,12 @@ fn parse_env_output(
         Err(parse_error) => {
             if !status.success() {
                 anyhow::bail!(
-                    "{}. Failed to deserialize environment variables from json: {parse_error}. output: {env_output}",
+                    "{}. Failed to deserialize environment variables from json: {parse_error}",
                     failed_capture_error(),
                 );
             }
 
-            anyhow::bail!(
-                "Failed to deserialize environment variables from json: {parse_error}. output: {env_output}"
-            );
+            anyhow::bail!("Failed to deserialize environment variables from json: {parse_error}");
         }
     }
 }
@@ -155,26 +156,36 @@ async fn capture_unix(
 
     let (env_output, process_output) = spawn_and_read_fd(command, fd_num).await?;
     let env_output = String::from_utf8_lossy(&env_output);
+    let stderr = describe_shell_stream(&process_output.stderr, fd_num == FD_STDERR);
 
     parse_env_output(
         &env_output,
         &process_output.status,
         || {
             format!(
-                "login shell exited with {} but environment was captured successfully. stderr: {:?}",
+                "login shell exited with {} but environment was captured successfully. stderr: {stderr}",
                 process_output.status,
-                String::from_utf8_lossy(&process_output.stderr),
             )
         },
         || {
             format!(
-                "login shell exited with {}. stdout: {:?}, stderr: {:?}",
+                "login shell exited with {}. stdout: {}, stderr: {stderr}",
                 process_output.status,
-                String::from_utf8_lossy(&process_output.stdout),
-                String::from_utf8_lossy(&process_output.stderr),
+                describe_shell_stream(&process_output.stdout, fd_num == FD_STDOUT),
             )
         },
     )
+}
+
+fn describe_shell_stream(output: &[u8], may_hold_environment: bool) -> String {
+    if may_hold_environment {
+        format!("{} bytes", output.len())
+    } else {
+        format!(
+            "{:?}",
+            crate::redact::redact_command(&String::from_utf8_lossy(output))
+        )
+    }
 }
 
 #[cfg(unix)]
@@ -287,17 +298,17 @@ async fn capture_windows(
         &output.status,
         || {
             format!(
-                "Command {cmd:?} exited with {} but environment was captured successfully. stderr: {:?}",
+                "Command {cmd:?} exited with {} but environment was captured successfully. stderr: {}",
                 output.status,
-                String::from_utf8_lossy(&output.stderr),
+                describe_shell_stream(&output.stderr, false),
             )
         },
         || {
             format!(
-                "Command {cmd:?} failed with {}. stdout: {:?}, stderr: {:?}",
+                "Command {cmd:?} failed with {}. stdout: {}, stderr: {}",
                 output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
+                describe_shell_stream(&output.stdout, true),
+                describe_shell_stream(&output.stderr, false),
             )
         },
     )
@@ -346,6 +357,43 @@ mod tests {
         assert_eq!(
             env_map.get("SHELL").map(String::as_str),
             Some(path!("/bin/zsh"))
+        );
+    }
+
+    #[test]
+    fn parse_env_output_error_omits_the_output() {
+        let env_output = r#"noise {"DATABASE_URL": "postgres://user:hunter2@db/app""#;
+        for status in [exit_status(0), exit_status(1)] {
+            let error = parse_env_output(
+                env_output,
+                &status,
+                || panic!("successful capture warning should not be evaluated for invalid output"),
+                || "login shell exited with 1".to_string(),
+            )
+            .expect_err("truncated environment output should fail to parse");
+            let message = format!("{error:#}");
+            assert!(!message.contains("hunter2"), "{message}");
+            assert!(
+                message.contains(&format!("{} bytes", env_output.len())),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn describe_shell_stream_hides_streams_that_may_hold_the_environment() {
+        let environment = br#"{"DATABASE_URL": "postgres://user:hunter2@db/app"}"#;
+        assert_eq!(
+            describe_shell_stream(environment, true),
+            format!("{} bytes", environment.len())
+        );
+        assert_eq!(
+            describe_shell_stream(b"zsh: command not found: foo\n", false),
+            r#""zsh: command not found: foo\n""#
+        );
+        assert_eq!(
+            describe_shell_stream(b"+ export 'API_KEY=hunter2'\n", false),
+            r#""+ export 'API_KEY=\"[REDACTED]\"\n""#
         );
     }
 }

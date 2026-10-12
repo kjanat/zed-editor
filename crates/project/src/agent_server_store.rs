@@ -59,7 +59,7 @@ impl std::fmt::Debug for AgentServerCommand {
 
         f.debug_struct("AgentServerCommand")
             .field("path", &self.path)
-            .field("args", &self.args)
+            .field("args", &util::redact::redact_arguments(&self.args))
             .field("env", &filtered_env)
             .finish()
     }
@@ -1753,6 +1753,25 @@ mod tests {
                 loading_status_tx: None,
             }
         })
+    }
+
+    #[test]
+    fn test_agent_server_command_debug_redacts_arguments_and_environment() {
+        let command = AgentServerCommand {
+            path: PathBuf::from("agent"),
+            args: vec!["--api-key=sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789".to_string()],
+            env: Some(HashMap::from_iter([(
+                "DATABASE_URL".to_string(),
+                "postgres://user:hunter2@db/app".to_string(),
+            )])),
+        };
+        let description = format!("{command:?}");
+        assert!(
+            description.contains(r#"args: ["--api-key=\"[REDACTED]\""]"#),
+            "{description}"
+        );
+        assert!(!description.contains("sk-ant-"), "{description}");
+        assert!(!description.contains("hunter2"), "{description}");
     }
 
     fn make_npx_agent(id: &str, version: &str) -> RegistryAgent {

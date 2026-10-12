@@ -841,7 +841,7 @@ where
                     "found user-installed language server for {}. path: {:?}, arguments: {:?}",
                     self.name().0,
                     binary.path,
-                    binary.arguments
+                    util::redact::redact_arguments(&binary.arguments)
                 );
                 return (Ok(binary), None);
             }

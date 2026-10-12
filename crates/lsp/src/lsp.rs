@@ -536,23 +536,24 @@ impl LanguageServer {
         };
         let root_uri = Uri::from_file_path(&working_dir)
             .map_err(|()| anyhow!("{working_dir:?} is not a valid URI"))?;
+        let redact = |part: &std::ffi::OsStr| util::redact::redact_command(&part.to_string_lossy());
+        let arguments = util::redact::redact_arguments(&binary.arguments);
+        let directory = redact(working_dir.as_os_str());
         let mut command = util::command::new_command_with_env(
             &binary.path,
             working_dir,
             &binary.env.clone().unwrap_or_default(),
         )
         .with_context(|| {
+            let program = redact(binary.path.as_os_str());
             format!(
-                "failed to resolve language server command {:?}",
-                binary.path
+                "failed to resolve command {program:?} with arguments {arguments:?} in {directory:?}"
             )
         })?;
+        let program = redact(command.get_program());
         log::info!(
             "starting language server process. binary path: \
-            {:?}, working directory: {:?}, args: {:?}",
-            command.get_program(),
-            working_dir,
-            binary.arguments
+            {program:?}, working directory: {directory:?}, args: {arguments:?}",
         );
         command
             .args(&binary.arguments)
@@ -561,9 +562,11 @@ impl LanguageServer {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut server = command
-            .spawn()
-            .with_context(|| format!("failed to spawn command {command:?}",))?;
+        let mut server = command.spawn().with_context(|| {
+            format!(
+                "failed to spawn command {program:?} with arguments {arguments:?} in {directory:?}"
+            )
+        })?;
 
         let stdin = server.stdin.take().unwrap();
         let stdout = server.stdout.take().unwrap();
@@ -1949,7 +1952,7 @@ impl fmt::Debug for LanguageServerBinary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = f.debug_struct("LanguageServerBinary");
         debug.field("path", &self.path);
-        debug.field("arguments", &self.arguments);
+        debug.field("arguments", &redact::redact_arguments(&self.arguments));
 
         if let Some(env) = &self.env {
             let redacted_env: BTreeMap<String, String> = env
@@ -2441,6 +2444,74 @@ mod tests {
                 "no shutdown request should be sent to a disconnected server, got: {written}"
             );
         }
+    }
+
+    #[gpui::test]
+    async fn test_spawn_error_omits_the_environment(cx: &mut TestAppContext) {
+        let result = LanguageServer::new(
+            Arc::new(Mutex::new(None)),
+            LanguageServerId(0),
+            LanguageServerName::from("missing"),
+            LanguageServerBinary {
+                path: std::env::temp_dir().join("zed-test-missing-language-server"),
+                arguments: vec![
+                    "--stdio".into(),
+                    "-c".into(),
+                    "API_KEY=argument-secret run".into(),
+                ],
+                env: Some(HashMap::from_iter([(
+                    "DATABASE_URL".to_string(),
+                    "postgres://user:hunter2@db/app".to_string(),
+                )])),
+            },
+            &std::env::temp_dir()
+                .join("API_KEY=directory-secret")
+                .join("main.rs"),
+            None,
+            None,
+            &mut cx.to_async(),
+        );
+        let Err(error) = result else {
+            panic!("starting a missing language server should fail");
+        };
+        let message = format!("{error:#}");
+        let failure = if cfg!(windows) {
+            "failed to resolve command"
+        } else {
+            "failed to spawn command"
+        };
+        assert!(message.contains(failure), "{message}");
+        assert!(
+            message.contains("zed-test-missing-language-server"),
+            "{message}"
+        );
+        assert!(
+            message.contains(r#"["--stdio", "-c", "API_KEY=\"[REDACTED]\" run"]"#),
+            "{message}"
+        );
+        assert!(!message.contains("argument-secret"), "{message}");
+        assert!(!message.contains("directory-secret"), "{message}");
+        assert!(!message.contains("DATABASE_URL"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
+    }
+
+    #[test]
+    fn test_binary_debug_redacts_arguments_and_environment() {
+        let binary = LanguageServerBinary {
+            path: PathBuf::from("server"),
+            arguments: vec!["--stdio".into(), "API_KEY=argument-secret".into()],
+            env: Some(HashMap::from_iter([(
+                "DATABASE_URL".to_string(),
+                "postgres://user:hunter2@db/app".to_string(),
+            )])),
+        };
+        let description = format!("{binary:?}");
+        assert!(
+            description.contains(r#"["--stdio", "API_KEY=\"[REDACTED]\""]"#),
+            "{description}"
+        );
+        assert!(!description.contains("argument-secret"), "{description}");
+        assert!(!description.contains("hunter2"), "{description}");
     }
 
     #[cfg(unix)]

@@ -77,7 +77,7 @@ pub(super) fn spawn_stdio(
     log::debug!(
         "Spawning external agent server: {:?}, {:?}",
         path,
-        arguments
+        util::redact::redact_arguments(&arguments)
     );
     log::trace!("Spawned (pid: {})", child.id());
 

@@ -120,7 +120,17 @@ impl DebugAdapterClient {
             R::COMMAND,
             sequence_id
         );
-        log::debug!("  request: {request:?}");
+        if log::log_enabled!(log::Level::Debug) {
+            let mut arguments = request.arguments.clone();
+            if let Some(arguments) = &mut arguments {
+                util::redact::redact_json_environment(arguments);
+            }
+            log::debug!(
+                "  request: seq {} command {} arguments {arguments:?}",
+                request.seq,
+                request.command
+            );
+        }
 
         self.send_message(Message::Request(request)).await?;
 
