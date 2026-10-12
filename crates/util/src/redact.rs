@@ -305,10 +305,15 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
             None => index += 1,
         }
     }
-    while index > quoted_end && matches!(bytes[index - 1], b'.' | b':') {
-        index -= 1;
+    let mut trimmed_end = index;
+    while trimmed_end > quoted_end && matches!(bytes[trimmed_end - 1], b'.' | b':') {
+        trimmed_end -= 1;
     }
-    index
+    if trimmed_end > start {
+        trimmed_end
+    } else {
+        index
+    }
 }
 
 fn closing_quote_end(bytes: &[u8], quote_index: usize) -> Option<usize> {
@@ -718,6 +723,10 @@ mod tests {
         assert_eq!(
             redact_command("API_KEY='quoted value' TOKEN=\"a \\\" b\" KEY=plain. SECRET= done"),
             "API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" KEY=\"[REDACTED]\". SECRET= done"
+        );
+        assert_eq!(
+            redact_command("API_KEY=:: PASSWORD=... --token=. next"),
+            "API_KEY=\"[REDACTED]\" PASSWORD=\"[REDACTED]\" --token=\"[REDACTED]\" next"
         );
         assert_eq!(
             redact_command("API_KEY=$'argument secret' TOKEN=$\"locale secret\" PRICE=$5 next"),
