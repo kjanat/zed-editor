@@ -197,6 +197,8 @@ pub struct CrashInfo {
     pub init: InitCrashHandler,
     pub panic: Option<CrashPanic>,
     pub minidump_error: Option<String>,
+    #[serde(default)]
+    pub environment_scrubbed: bool,
     /// The diagnostic the C runtime recorded before aborting the process, e.g.
     /// glibc's "free(): invalid pointer". Only present when the crash was a
     /// runtime-initiated abort rather than a signal like SIGSEGV or a panic.
@@ -241,14 +243,6 @@ pub struct CrashPanic {
 pub const SENTRY_USER_ID: &str = "sentry[user][id]";
 
 pub const SCRUB_FAILURE: &str = "Failed to scrub the minidump";
-
-impl CrashInfo {
-    pub fn scrub_failed(&self) -> bool {
-        self.minidump_error
-            .as_deref()
-            .is_some_and(|error| error.starts_with(SCRUB_FAILURE))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct UserInfo {
@@ -452,14 +446,14 @@ impl minidumper::ServerHandler for CrashServer {
     }
 
     fn on_minidump_created(&self, result: Result<MinidumpBinary, minidumper::Error>) -> LoopAction {
-        let minidump_error = match result {
+        let (minidump_error, environment_scrubbed) = match result {
             Ok(MinidumpBinary { mut file, path, .. }) => {
                 use io::Write;
                 file.flush().ok();
                 // TODO: clean this up once https://github.com/EmbarkStudios/crash-handling/issues/101 is addressed
                 drop(file);
                 match finish_minidump(&path) {
-                    Ok(()) => None,
+                    Ok(()) => (None, true),
                     Err(error) => {
                         if let Err(remove_error) = fs::remove_file(&path) {
                             log::error!(
@@ -467,11 +461,11 @@ impl minidumper::ServerHandler for CrashServer {
                             );
                             return LoopAction::Exit;
                         }
-                        Some(format!("{SCRUB_FAILURE}: {error}"))
+                        (Some(format!("{SCRUB_FAILURE}: {error}")), false)
                     }
                 }
             }
-            Err(e) => Some(format!("{e:?}")),
+            Err(e) => (Some(format!("{e:?}")), false),
         };
 
         #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
@@ -502,6 +496,7 @@ impl minidumper::ServerHandler for CrashServer {
                 .expect("not initialized"),
             panic: self.panic_info.lock().clone(),
             minidump_error,
+            environment_scrubbed,
             abort_message,
             active_gpu: self.active_gpu.lock().clone(),
             gpus,
@@ -955,6 +950,7 @@ mod tests {
 
         assert_eq!(crash_info.init.session_id, "session-1");
         assert!(crash_info.tags.is_empty());
+        assert!(!crash_info.environment_scrubbed);
     }
 
     #[test]
@@ -1218,6 +1214,12 @@ mod tests {
         assert_eq!(kept.len(), dump.len());
         assert!(!kept.windows(6).any(|window| window == b"secret"));
         assert!(!dir.join("session.zstd").exists());
+        let crash_info: CrashInfo = serde_json::from_slice(
+            &fs::read(dir.join("session.json")).expect("the crash data must be written"),
+        )
+        .expect("the crash data must parse");
+        assert!(crash_info.environment_scrubbed);
+        assert_eq!(crash_info.minidump_error, None);
 
         fs::write(&path, &dump).expect("the minidump must be writable");
         fs::create_dir_all(dir.join("session.zstd")).expect("the directory must be creatable");
@@ -1232,9 +1234,12 @@ mod tests {
             &fs::read(dir.join("session.json")).expect("the crash data must be written"),
         )
         .expect("the crash data must parse");
-        assert!(crash_info.scrub_failed());
-        assert!(!crash_info_for(None).scrub_failed());
-        assert!(!crash_info_for(Some(String::from("Writer error"))).scrub_failed());
+        assert!(!crash_info.environment_scrubbed);
+        assert!(
+            crash_info
+                .minidump_error
+                .is_some_and(|error| error.starts_with(SCRUB_FAILURE))
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1264,7 +1269,7 @@ mod tests {
         let dir = log_tail_test_dir("unremovable-minidump");
         let mut server = test_crash_server();
         server.logs_dir = dir.clone();
-        server.receive(CrashServerMessage::Init(crash_info_for(None).init));
+        server.receive(CrashServerMessage::Init(test_init()));
 
         let readable = dir.join("readable.dmp");
         fs::write(&readable, b"MDMP").expect("the file must be writable");
@@ -1282,21 +1287,13 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    fn crash_info_for(minidump_error: Option<String>) -> CrashInfo {
-        CrashInfo {
-            init: InitCrashHandler {
-                session_id: String::from("session"),
-                zed_version: String::from("1.2.3"),
-                binary: String::from("zed"),
-                release_channel: String::from("stable"),
-                commit_sha: String::from("abc123"),
-            },
-            panic: None,
-            minidump_error,
-            abort_message: None,
-            gpus: Vec::new(),
-            active_gpu: None,
-            tags: BTreeMap::new(),
+    fn test_init() -> InitCrashHandler {
+        InitCrashHandler {
+            session_id: String::from("session"),
+            zed_version: String::from("1.2.3"),
+            binary: String::from("zed"),
+            release_channel: String::from("stable"),
+            commit_sha: String::from("abc123"),
         }
     }
 

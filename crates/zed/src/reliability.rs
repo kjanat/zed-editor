@@ -330,8 +330,8 @@ async fn upload_minidump(
         log::warn!("No commit sha set, skipping minidump upload");
         return Ok(());
     }
-    if metadata.scrub_failed() {
-        log::warn!("Skipping the upload of a minidump that failed to scrub");
+    if !metadata.environment_scrubbed {
+        log::warn!("Skipping the upload of a minidump without a scrubbed environment");
         return Ok(());
     }
     let mut form = Form::new().part(
@@ -584,7 +584,10 @@ mod tests {
     use gpui::TestAppContext;
     use settings::SettingsStore;
 
-    fn crash_info(minidump_error: Option<String>) -> crashes::CrashInfo {
+    fn crash_info(
+        minidump_error: Option<String>,
+        environment_scrubbed: bool,
+    ) -> crashes::CrashInfo {
         crashes::CrashInfo {
             init: crashes::InitCrashHandler {
                 session_id: String::from("session"),
@@ -595,6 +598,7 @@ mod tests {
             },
             panic: None,
             minidump_error,
+            environment_scrubbed,
             abort_message: None,
             gpus: Vec::new(),
             active_gpu: None,
@@ -603,7 +607,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn minidumps_that_failed_to_scrub_are_never_uploaded(cx: &mut TestAppContext) {
+    async fn only_scrubbed_minidumps_are_uploaded(cx: &mut TestAppContext) {
         let (http, requests) = recording_http_client();
         let client = cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
@@ -612,15 +616,23 @@ mod tests {
         });
         let endpoint = "https://sentry.example/api/1/minidump/";
 
-        upload_minidump(
-            client.clone(),
-            endpoint,
-            b"API_KEY=secret".to_vec(),
-            None,
-            &crash_info(Some(format!("{}: disk full", crashes::SCRUB_FAILURE))),
-        )
-        .await
-        .unwrap();
+        for unscrubbed in [
+            crash_info(
+                Some(format!("{}: disk full", crashes::SCRUB_FAILURE)),
+                false,
+            ),
+            crash_info(None, false),
+        ] {
+            upload_minidump(
+                client.clone(),
+                endpoint,
+                b"API_KEY=secret".to_vec(),
+                None,
+                &unscrubbed,
+            )
+            .await
+            .unwrap();
+        }
         assert!(requests.lock().is_empty());
 
         upload_minidump(
@@ -628,7 +640,7 @@ mod tests {
             endpoint,
             b"scrubbed".to_vec(),
             None,
-            &crash_info(None),
+            &crash_info(None, true),
         )
         .await
         .unwrap();
