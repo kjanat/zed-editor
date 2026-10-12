@@ -136,13 +136,13 @@ impl Child {
 }
 
 fn describe_command(command: &std::process::Command) -> String {
-    let mut description = format!("{:?}", command.get_program());
+    let redact = |part: &std::ffi::OsStr| crate::redact::redact_command(&part.to_string_lossy());
+    let mut description = format!("{:?}", redact(command.get_program()));
     for argument in command.get_args() {
-        let argument = crate::redact::redact_command(&argument.to_string_lossy());
-        description.push_str(&format!(" {argument:?}"));
+        description.push_str(&format!(" {:?}", redact(argument)));
     }
     if let Some(directory) = command.get_current_dir() {
-        description.push_str(&format!(" in {directory:?}"));
+        description.push_str(&format!(" in {:?}", redact(directory.as_os_str())));
     }
     description
 }
@@ -155,8 +155,13 @@ mod tests {
     fn test_spawn_error_names_the_command_without_its_environment() {
         let mut command = std::process::Command::new("zed-test-missing-program");
         command
-            .args(["--stdio", "-c", "API_KEY=argument-secret run"])
-            .current_dir(std::env::temp_dir())
+            .args([
+                "--stdio",
+                "-eTOKEN=option-secret",
+                "-c",
+                "API_KEY=argument-secret run",
+            ])
+            .current_dir(std::env::temp_dir().join("API_KEY=directory-secret"))
             .env("DATABASE_URL", "postgres://user:hunter2@db/app");
         let Err(error) = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null()) else {
             panic!("spawning a missing program should fail");
@@ -164,11 +169,14 @@ mod tests {
         let message = format!("{error:#}");
         assert!(
             message.contains(
-                r#""zed-test-missing-program" "--stdio" "-c" "API_KEY=\"[REDACTED]\" run" in "#
+                r#""zed-test-missing-program" "--stdio" "-eTOKEN=\"[REDACTED]\"" "-c" "API_KEY=\"[REDACTED]\" run" in "#
             ),
             "{message}"
         );
-        assert!(!message.contains("argument-secret"), "{message}");
+        assert!(message.contains(r#"API_KEY=\"[REDACTED]\""#), "{message}");
+        for secret in ["option-secret", "argument-secret", "directory-secret"] {
+            assert!(!message.contains(secret), "{message}");
+        }
         assert!(!message.contains("DATABASE_URL"), "{message}");
         assert!(!message.contains("hunter2"), "{message}");
     }

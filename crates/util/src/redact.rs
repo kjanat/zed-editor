@@ -67,17 +67,22 @@ fn redact_assignments(text: &str) -> String {
     while let Some(offset) = bytes[position..].iter().position(|byte| *byte == b'=') {
         let equals = position + offset;
         position = equals + 1;
-        let key_start = bytes[..equals]
+        let mut key_start = bytes[..equals]
             .iter()
             .rposition(|byte| !is_key_byte(*byte))
             .map_or(0, |index| index + 1);
+        if key_start > 0 && bytes[key_start - 1] == b'-' {
+            let opens_token = key_start < 2 || is_text_delimiter(bytes[key_start - 2]);
+            if !opens_token {
+                continue;
+            }
+            key_start += 1;
+        }
+        if key_start >= equals || key_start < copied {
+            continue;
+        }
         let key = &text[key_start..equals];
-        let follows_flag = key_start > 0 && bytes[key_start - 1] == b'-';
-        if key.is_empty()
-            || key.as_bytes()[0].is_ascii_digit()
-            || follows_flag
-            || key_start < copied
-        {
+        if key.as_bytes()[0].is_ascii_digit() {
             continue;
         }
         let value_start = equals + 1;
@@ -417,7 +422,11 @@ mod tests {
         );
         assert_eq!(
             redact_command("\"API_KEY=secret\" --log-level=debug -Dprop=value"),
-            "\"API_KEY=\"[REDACTED]\"\" --log-level=debug -Dprop=value"
+            "\"API_KEY=\"[REDACTED]\"\" --log-level=debug -Dprop=\"[REDACTED]\""
+        );
+        assert_eq!(
+            redact_command("docker exec -eAPI_KEY=argument-secret -ePATH=/usr/bin -e=x"),
+            "docker exec -eAPI_KEY=\"[REDACTED]\" -ePATH=/usr/bin -e=x"
         );
         assert_eq!(
             redact_command("--env=API_KEY=secret --env=PATH=/usr/bin --level=debug"),
