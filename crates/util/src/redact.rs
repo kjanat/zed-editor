@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, ops::Range, path::Path};
+use std::{ffi::OsStr, path::Path};
 
 const REDACTED: &str = "[REDACTED]";
 
@@ -48,6 +48,7 @@ pub fn is_valid_environment_name(name: &str) -> bool {
 pub fn redact_command(command: &str) -> String {
     let command = redact_private_keys(command);
     let command = redact_assignments(&command);
+    let command = redact_credentialed_urls(&command);
     redact_secret_tokens(&command)
 }
 
@@ -86,6 +87,23 @@ fn is_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+fn is_inline_space(byte: u8) -> bool {
+    byte == b' ' || byte == b'\t'
+}
+
+fn has_environment_prefix(before_key: &[u8]) -> bool {
+    let ends_with_ignore_case = |suffix: &[u8]| {
+        before_key.len() >= suffix.len()
+            && before_key[before_key.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    };
+    let opens_elvish_variable = before_key.ends_with(b"E:")
+        && (before_key.len() == 2 || is_text_delimiter(before_key[before_key.len() - 3]));
+    ends_with_ignore_case(b"$env:")
+        || ends_with_ignore_case(b"$env.")
+        || before_key.ends_with(b"$")
+        || opens_elvish_variable
+}
+
 fn redact_assignments(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut output = String::with_capacity(text.len());
@@ -94,25 +112,38 @@ fn redact_assignments(text: &str) -> String {
     while let Some(offset) = bytes[position..].iter().position(|byte| *byte == b'=') {
         let equals = position + offset;
         position = equals + 1;
-        let mut key_start = bytes[..equals]
+        let key_end = bytes[..equals]
+            .iter()
+            .rposition(|byte| !is_inline_space(*byte))
+            .map_or(0, |index| index + 1);
+        let mut key_start = bytes[..key_end]
             .iter()
             .rposition(|byte| !is_key_byte(*byte))
             .map_or(0, |index| index + 1);
-        if key_start > 0 && bytes[key_start - 1] == b'-' {
+        let prefixed = has_environment_prefix(&bytes[..key_start]);
+        if key_end < equals && !prefixed {
+            continue;
+        }
+        if !prefixed && key_start > 0 && bytes[key_start - 1] == b'-' {
             let opens_token = key_start < 2 || is_text_delimiter(bytes[key_start - 2]);
             if !opens_token {
                 continue;
             }
             key_start += 1;
         }
-        if key_start >= equals || key_start < copied {
+        if key_start >= key_end || key_start < copied {
             continue;
         }
-        let key = &text[key_start..equals];
+        let key = &text[key_start..key_end];
         if key.as_bytes()[0].is_ascii_digit() {
             continue;
         }
-        let value_start = equals + 1;
+        let mut value_start = equals + 1;
+        if prefixed {
+            while bytes.get(value_start).copied().is_some_and(is_inline_space) {
+                value_start += 1;
+            }
+        }
         let value_end = assignment_value_end(bytes, value_start);
         if value_end == value_start {
             continue;
@@ -184,11 +215,8 @@ fn redact_secret_tokens(text: &str) -> String {
             end -= 1;
         }
         let token = &text[start..end];
-        let secret = if (follows_scheme && is_credential_body(token)) || is_secret_token(token) {
-            Some(start..end)
-        } else {
-            credentialed_userinfo(token).map(|range| start + range.start..start + range.end)
-        };
+        let secret = ((follows_scheme && is_credential_body(token)) || is_secret_token(token))
+            .then_some(start..end);
         follows_scheme = secret.is_none()
             && (token.eq_ignore_ascii_case("Bearer") || token.eq_ignore_ascii_case("Basic"));
         if let Some(secret) = secret {
@@ -276,15 +304,36 @@ fn is_jwt(token: &str) -> bool {
             .all(|segment| segment.starts_with("ey"))
 }
 
-fn credentialed_userinfo(token: &str) -> Option<Range<usize>> {
-    let start = token.find("://")? + 3;
-    let rest = &token[start..];
-    let end = start + rest.find(['/', '@'])?;
-    if token.as_bytes().get(end) != Some(&b'@') || end == start {
-        return None;
+fn redact_credentialed_urls(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut position = 0;
+    while let Some(offset) = text[position..].find("://") {
+        let start = position + offset + 3;
+        position = start;
+        let authority_end = text[start..]
+            .find(|character: char| {
+                character.is_whitespace()
+                    || character.is_control()
+                    || "/?#\"`<>[]{}|\\^".contains(character)
+            })
+            .map_or(text.len(), |offset| start + offset);
+        let Some(userinfo_end) = text[start..authority_end]
+            .rfind('@')
+            .map(|offset| start + offset)
+        else {
+            continue;
+        };
+        let userinfo = &text[start..userinfo_end];
+        if userinfo.contains(':') || userinfo.len() >= 8 {
+            output.push_str(&text[copied..start]);
+            output.push_str(REDACTED);
+            copied = userinfo_end;
+        }
+        position = authority_end;
     }
-    let userinfo = &token[start..end];
-    (userinfo.contains(':') || userinfo.len() >= 8).then_some(start..end)
+    output.push_str(&text[copied..]);
+    output
 }
 
 fn redact_private_keys(text: &str) -> String {
@@ -447,6 +496,18 @@ mod tests {
     }
 
     #[test]
+    fn test_redact_command_covers_spaced_shell_environment_assignments() {
+        assert_eq!(
+            redact_command(
+                "$env:API_KEY = 'argument-secret'; $Env:TOKEN =\tsecret; $env.SECRET = \"nu secret\"; set E:KEY = elvish-secret; $XONSH_TOKEN = xonsh-secret; $env:PATH = 'C:\\bin'"
+            ),
+            "$env:API_KEY = \"[REDACTED]\"; $Env:TOKEN =\t\"[REDACTED]\"; $env.SECRET = \"[REDACTED]\"; set E:KEY = \"[REDACTED]\"; $XONSH_TOKEN = \"[REDACTED]\"; $env:PATH = 'C:\\bin'"
+        );
+        let ordinary = "count = 5 and a == b";
+        assert_eq!(redact_command(ordinary), ordinary);
+    }
+
+    #[test]
     fn test_redact_command_covers_quoted_and_chained_assignments() {
         assert_eq!(
             redact_command("+ export 'API_KEY=secret'"),
@@ -494,6 +555,7 @@ mod tests {
              aws AKIAIOSFODNN7EXAMPLE slack xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx \
              anthropic sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 \
              url postgres://user:hunter2@db/app and https://ghp_16C7e42F292c6912E7710c838347Ae178B4a@github.com/x \
+             comma postgres://user:hunter2,tail@db/app at mysql://admin:p@ss;word@db:3306/app \
              key -----BEGIN OPENSSH PRIVATE KEY-----\n\
              b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
              -----END OPENSSH PRIVATE KEY----- done";
@@ -505,6 +567,7 @@ mod tests {
              aws [REDACTED] slack [REDACTED] \
              anthropic [REDACTED] \
              url postgres://[REDACTED]@db/app and https://[REDACTED]@github.com/x \
+             comma postgres://[REDACTED]@db/app at mysql://[REDACTED]@db:3306/app \
              key [REDACTED] done"
         );
 
