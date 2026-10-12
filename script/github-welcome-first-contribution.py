@@ -96,9 +96,7 @@ def welcome_first_time_contributor(pr_number, dry_run):
         ]
         welcomed_pull_request = find_welcomed_pull_request(other_pull_requests)
     if welcomed_pull_request is not None:
-        print(
-            f"{author} was already welcomed on PR #{welcomed_pull_request['number']}"
-        )
+        print(f"{author} was already welcomed on PR #{welcomed_pull_request['number']}")
         return
 
     if dry_run:
