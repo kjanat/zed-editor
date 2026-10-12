@@ -508,12 +508,14 @@ impl DockerExecConnection {
         &self,
         subcommand: &str,
         args: &[impl AsRef<str>],
+        env: &HashMap<String, String>,
     ) -> Result<String> {
         let mut command = util::command::new_command(self.docker_cli());
         command.arg(subcommand);
         for arg in args {
             command.arg(arg.as_ref());
         }
+        command.envs(env);
         let output = command.output().await?;
         log::debug!(
             "{}: {:?}",
@@ -531,13 +533,13 @@ impl DockerExecConnection {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    fn docker_exec_arguments(
+    fn docker_exec(
         &self,
         inner_program: &str,
         working_directory: Option<&str>,
         env: &HashMap<String, String>,
         program_args: &[impl AsRef<str>],
-    ) -> Vec<String> {
+    ) -> DockerExec {
         let mut args = match working_directory {
             Some(dir) => vec!["-w".to_string(), dir.to_string()],
             None => vec![],
@@ -546,8 +548,9 @@ impl DockerExecConnection {
         args.push("-u".to_string());
         args.push(self.connection_options.remote_user.clone());
 
-        push_environment(&mut args, &self.connection_options.remote_env);
-        push_environment(&mut args, env);
+        let mut values = HashMap::default();
+        push_environment(&mut args, &mut values, &self.connection_options.remote_env);
+        push_environment(&mut args, &mut values, env);
 
         args.push(self.connection_options.container_id.clone());
         args.push(inner_program.to_string());
@@ -555,7 +558,38 @@ impl DockerExecConnection {
         for arg in program_args {
             args.push(arg.as_ref().to_owned());
         }
-        args
+        DockerExec { args, env: values }
+    }
+
+    fn proxy_exec(
+        &self,
+        remote_binary_relpath: &RelPath,
+        unique_identifier: String,
+        reconnect: bool,
+        forwarded: &HashMap<String, String>,
+    ) -> DockerExec {
+        let mut args = vec!["exec".to_string()];
+        let mut env = HashMap::default();
+        push_environment(&mut args, &mut env, &self.connection_options.remote_env);
+        push_environment(&mut args, &mut env, forwarded);
+        args.extend([
+            "-u".to_string(),
+            self.connection_options.remote_user.to_string(),
+            "-w".to_string(),
+            self.remote_dir_for_server.clone(),
+            "-i".to_string(),
+            self.connection_options.container_id.to_string(),
+            remote_binary_relpath
+                .display(self.path_style())
+                .into_owned(),
+            "proxy".to_string(),
+            "--identifier".to_string(),
+            unique_identifier,
+        ]);
+        if reconnect {
+            args.push("--reconnect".to_string());
+        }
+        DockerExec { args, env }
     }
 
     async fn run_docker_exec(
@@ -565,8 +599,8 @@ impl DockerExecConnection {
         env: &HashMap<String, String>,
         program_args: &[impl AsRef<str>],
     ) -> Result<String> {
-        let args = self.docker_exec_arguments(inner_program, working_directory, env, program_args);
-        self.run_docker_command("exec", args.as_ref()).await
+        let exec = self.docker_exec(inner_program, working_directory, env, program_args);
+        self.run_docker_command("exec", &exec.args, &exec.env).await
     }
 
     async fn download_binary_on_server(
@@ -686,42 +720,24 @@ impl RemoteConnection for DockerExecConnection {
             return Task::ready(Err(anyhow!("Remote binary path not set")));
         };
 
-        let mut docker_args = vec!["exec".to_string()];
-
-        push_environment(&mut docker_args, &self.connection_options.remote_env);
-        for env_var in ["RUST_LOG", "RUST_BACKTRACE", "ZED_GENERATE_MINIDUMPS"] {
-            if let Some(value) = std::env::var(env_var).ok() {
-                docker_args.push("-e".to_string());
-                docker_args.push(format!("{env_var}={value}"));
-            }
-        }
-
-        docker_args.extend([
-            "-u".to_string(),
-            self.connection_options.remote_user.to_string(),
-            "-w".to_string(),
-            self.remote_dir_for_server.clone(),
-            "-i".to_string(),
-            self.connection_options.container_id.to_string(),
-        ]);
-
-        let val = remote_binary_relpath
-            .display(self.path_style())
-            .into_owned();
-        docker_args.push(val);
-        docker_args.push("proxy".to_string());
-        docker_args.push("--identifier".to_string());
-        docker_args.push(unique_identifier);
-        if reconnect {
-            docker_args.push("--reconnect".to_string());
-        }
+        let forwarded = ["RUST_LOG", "RUST_BACKTRACE", "ZED_GENERATE_MINIDUMPS"]
+            .into_iter()
+            .filter_map(|name| Some((name.to_string(), std::env::var(name).ok()?)))
+            .collect::<HashMap<_, _>>();
+        let exec = self.proxy_exec(
+            &remote_binary_relpath,
+            unique_identifier,
+            reconnect,
+            &forwarded,
+        );
         let mut command = util::command::new_command(self.docker_cli());
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .args(docker_args);
+            .args(exec.args)
+            .envs(exec.env);
 
         let Ok(child) = command.spawn() else {
             return Task::ready(Err(anyhow::anyhow!(
@@ -826,8 +842,13 @@ impl RemoteConnection for DockerExecConnection {
             docker_args.push(parsed_working_dir);
         }
 
-        push_environment(&mut docker_args, &self.connection_options.remote_env);
-        push_environment(&mut docker_args, env);
+        let mut docker_env = HashMap::default();
+        push_environment(
+            &mut docker_args,
+            &mut docker_env,
+            &self.connection_options.remote_env,
+        );
+        push_environment(&mut docker_args, &mut docker_env, env);
 
         match interactive {
             Interactive::Yes => docker_args.push("-it".to_string()),
@@ -840,8 +861,7 @@ impl RemoteConnection for DockerExecConnection {
         Ok(CommandTemplate {
             program: self.docker_cli().to_string(),
             args: docker_args,
-            // Docker-exec pipes in environment via the "-e" argument
-            env: Default::default(),
+            env: docker_env,
         })
     }
 
@@ -940,8 +960,15 @@ impl RemoteConnection for DockerExecConnection {
     }
 }
 
+struct DockerExec {
+    args: Vec<String>,
+    env: HashMap<String, String>,
+}
+
+// `docker exec -e NAME` without a value copies NAME from the environment of the docker CLI.
 fn push_environment<'a>(
     args: &mut Vec<String>,
+    values: &mut HashMap<String, String>,
     environment: impl IntoIterator<Item = (&'a String, &'a String)>,
 ) {
     for (name, value) in environment {
@@ -949,8 +976,10 @@ fn push_environment<'a>(
             log::warn!("Skipping environment variable with invalid name");
             continue;
         }
-        args.push("-e".to_string());
-        args.push(format!("{name}={value}"));
+        if values.insert(name.clone(), value.clone()).is_none() {
+            args.push("-e".to_string());
+            args.push(name.clone());
+        }
     }
 }
 
@@ -1012,8 +1041,8 @@ mod tests {
             redacted_docker_exec(&connection, &[], &["-c", "echo hi"]),
             concat!(
                 "\"docker\" \"exec\" \"-w\" \"/workspace\" \"-u\" \"user\"",
-                " \"-e\" \"DATABASE_URL=<redacted>\" \"-e\" \"GH_TOKEN=<redacted>\"",
-                " \"-e\" \"PATH=<redacted>\" \"-e\" \"lowercase_token=<redacted>\"",
+                " \"-e\" \"DATABASE_URL\" \"-e\" \"GH_TOKEN\"",
+                " \"-e\" \"PATH\" \"-e\" \"lowercase_token\"",
                 " \"container_id\" \"sh\" \"-c\" \"echo hi\""
             )
         );
@@ -1053,18 +1082,18 @@ mod tests {
         let env = [("COMMAND_SECRET".to_string(), "command-secret".to_string())]
             .into_iter()
             .collect::<HashMap<_, _>>();
-        let args = connection.docker_exec_arguments("sh", None, &env, &["-c", "echo hi"]);
+        let exec = connection.docker_exec("sh", None, &env, &["-c", "echo hi"]);
 
         assert_eq!(
             docker_command_error(
                 connection.docker_cli(),
                 "exec",
-                &args,
+                &exec.args,
                 "sh: 1: /usr/local/cargo/bin/zed-remote-server: not found\nGH_TOKEN=ghp_supersecret run",
             ),
             concat!(
                 "failed to run command \"docker\" \"exec\" \"-u\" \"user\"",
-                " \"-e\" \"API_KEY=<redacted>\" \"-e\" \"COMMAND_SECRET=<redacted>\"",
+                " \"-e\" \"API_KEY\" \"-e\" \"COMMAND_SECRET\"",
                 " \"container_id\" \"sh\" \"-c\" \"echo hi\"",
                 ": sh: 1: /usr/local/cargo/bin/zed-remote-server: not found\nGH_TOKEN=\"[REDACTED]\" run"
             )
@@ -1082,19 +1111,107 @@ mod tests {
         ]);
         let env = HashMap::default();
         let program_args = Vec::<&str>::new();
-        let args = connection.docker_exec_arguments("sh", None, &env, &program_args);
+        let exec = connection.docker_exec("sh", None, &env, &program_args);
 
         assert_eq!(
-            args,
-            vec![
+            exec.args,
+            vec!["-u", "user", "-e", "GH_TOKEN", "container_id", "sh"]
+        );
+        assert_eq!(
+            exec.env,
+            HashMap::from_iter([(String::from("GH_TOKEN"), String::from("ghp_supersecret"))])
+        );
+    }
+
+    #[test]
+    fn environment_values_stay_off_the_command_line() -> Result<()> {
+        let connection = connection(&[("API_KEY", "remote-secret"), ("SHARED", "remote")]);
+        let env = HashMap::from_iter([
+            (String::from("GH_TOKEN"), String::from("command-secret")),
+            (String::from("SHARED"), String::from("command")),
+        ]);
+        let expected_env = HashMap::from_iter([
+            (String::from("API_KEY"), String::from("remote-secret")),
+            (String::from("GH_TOKEN"), String::from("command-secret")),
+            (String::from("SHARED"), String::from("command")),
+        ]);
+        let names = |args: &[String]| {
+            args.iter()
+                .zip(args.iter().skip(1))
+                .filter(|(flag, _)| *flag == "-e")
+                .map(|(_, name)| name.clone())
+                .collect::<Vec<_>>()
+        };
+        let assert_values_absent = |args: &[String]| {
+            assert!(
+                args.iter()
+                    .all(|arg| !arg.contains("secret") && !arg.contains('=')),
+                "{args:?}"
+            );
+        };
+
+        let exec = connection.docker_exec("sh", None, &env, &["-c", "echo hi"]);
+        assert_values_absent(&exec.args);
+        assert_eq!(exec.env, expected_env);
+        assert_eq!(names(&exec.args), ["API_KEY", "SHARED", "GH_TOKEN"]);
+
+        let template = connection.build_command(
+            Some(String::from("sh")),
+            &[],
+            &env,
+            None,
+            None,
+            Interactive::Yes,
+        )?;
+        assert_values_absent(&template.args);
+        assert_eq!(template.env, expected_env);
+        assert_eq!(names(&template.args), ["API_KEY", "SHARED", "GH_TOKEN"]);
+
+        let forwarded = HashMap::from_iter([(
+            String::from("RUST_LOG"),
+            String::from("remote_server=debug"),
+        )]);
+        let exec = connection.proxy_exec(
+            RelPath::from_unix_str("server")?,
+            String::from("identifier"),
+            true,
+            &forwarded,
+        );
+        assert_eq!(
+            exec.args,
+            [
+                "exec",
+                "-e",
+                "API_KEY",
+                "-e",
+                "SHARED",
+                "-e",
+                "RUST_LOG",
                 "-u",
                 "user",
-                "-e",
-                "GH_TOKEN=ghp_supersecret",
+                "-w",
+                "/tmp/zed",
+                "-i",
                 "container_id",
-                "sh"
+                "server",
+                "proxy",
+                "--identifier",
+                "identifier",
+                "--reconnect",
             ]
         );
+        assert_eq!(
+            exec.env,
+            HashMap::from_iter([
+                (String::from("API_KEY"), String::from("remote-secret")),
+                (String::from("SHARED"), String::from("remote")),
+                (
+                    String::from("RUST_LOG"),
+                    String::from("remote_server=debug")
+                ),
+            ])
+        );
+        Ok(())
     }
 
     #[test]
@@ -1106,7 +1223,7 @@ mod tests {
             redacted_docker_exec(&connection, &[], &[]),
             concat!(
                 "\"podman\" \"exec\" \"-w\" \"/workspace\" \"-u\" \"user\"",
-                " \"-e\" \"GH_TOKEN=<redacted>\" \"container_id\" \"sh\""
+                " \"-e\" \"GH_TOKEN\" \"container_id\" \"sh\""
             )
         );
     }
@@ -1210,7 +1327,7 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect::<HashMap<_, _>>();
-        let args = connection.docker_exec_arguments("sh", Some("/workspace"), &env, program_args);
-        redact_arguments(connection.docker_cli(), "exec", &args)
+        let exec = connection.docker_exec("sh", Some("/workspace"), &env, program_args);
+        redact_arguments(connection.docker_cli(), "exec", &exec.args)
     }
 }
