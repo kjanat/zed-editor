@@ -593,7 +593,7 @@ fn scrub_environment(dump: &mut [u8], environment: Vec<Vec<u8>>) {
         entries.extend(
             dump[stream.clone()]
                 .split(|byte| *byte == 0)
-                .filter(|entry| entry.contains(&b'='))
+                .filter(|entry| !entry.is_empty())
                 .map(<[u8]>::to_vec),
         );
         dump[stream].fill(0);
@@ -1101,8 +1101,8 @@ mod tests {
 
     #[test]
     fn scrub_environment_clears_the_environ_stream_and_its_copies() {
-        let environ = b"API_KEY=secret\0SHORT=1\0";
-        let stack = b"\0/usr/bin/zed\0API_KEY=secret\0SHORT=1\0HOME=/home/u\0notAPI_KEY=secret\0";
+        let environ = b"API_KEY=secret\0SHORT=1\0BARE_TOKEN\0";
+        let stack = b"\0/usr/bin/zed\0API_KEY=secret\0SHORT=1\0HOME=/home/u\0BARE_TOKEN\0notAPI_KEY=secret\0";
         let mut dump = synthetic_minidump(environ, stack);
         let original = dump.clone();
 
@@ -1114,7 +1114,7 @@ mod tests {
         let header_end = 32 + 2 * MINIDUMP_DIRECTORY_ENTRY_SIZE;
         assert_eq!(dump[..header_end], original[..header_end]);
         let stack_end = header_end + stack.len();
-        let cleared = "API_KEY=secret\0SHORT=1\0HOME=/home/u\0".len();
+        let cleared = "API_KEY=secret\0SHORT=1\0HOME=/home/u\0BARE_TOKEN\0".len();
         assert_eq!(
             dump[header_end..stack_end],
             [
