@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use tempfile::{TempDir, TempPath};
 use util::ResultExt;
 use util::command::Stdio;
 use util::redact::{is_valid_environment_name, redact_command};
@@ -57,6 +58,7 @@ pub struct DockerConnectionOptions {
 
 pub(crate) struct DockerExecConnection {
     proxy_process: Mutex<Option<u32>>,
+    env_files: TempDir,
     remote_dir_for_server: String,
     remote_binary_relpath: Option<Arc<RelPath>>,
     connection_options: DockerConnectionOptions,
@@ -74,6 +76,7 @@ impl DockerExecConnection {
     ) -> Result<Self> {
         let mut this = Self {
             proxy_process: Mutex::new(None),
+            env_files: env_files_directory()?,
             remote_dir_for_server: "/".to_string(),
             remote_binary_relpath: None,
             connection_options,
@@ -539,7 +542,7 @@ impl DockerExecConnection {
         working_directory: Option<&str>,
         env: &HashMap<String, String>,
         program_args: &[impl AsRef<str>],
-    ) -> DockerExec {
+    ) -> Result<DockerExec> {
         let mut args = match working_directory {
             Some(dir) => vec!["-w".to_string(), dir.to_string()],
             None => vec![],
@@ -548,9 +551,7 @@ impl DockerExecConnection {
         args.push("-u".to_string());
         args.push(self.connection_options.remote_user.clone());
 
-        let mut values = HashMap::default();
-        push_environment(&mut args, &mut values, &self.connection_options.remote_env);
-        push_environment(&mut args, &mut values, env);
+        let (values, env_file) = self.push_environment(&mut args, env)?;
 
         args.push(self.connection_options.container_id.clone());
         args.push(inner_program.to_string());
@@ -558,7 +559,11 @@ impl DockerExecConnection {
         for arg in program_args {
             args.push(arg.as_ref().to_owned());
         }
-        DockerExec { args, env: values }
+        Ok(DockerExec {
+            args,
+            env: values,
+            env_file,
+        })
     }
 
     fn proxy_exec(
@@ -567,11 +572,9 @@ impl DockerExecConnection {
         unique_identifier: String,
         reconnect: bool,
         forwarded: &HashMap<String, String>,
-    ) -> DockerExec {
+    ) -> Result<DockerExec> {
         let mut args = vec!["exec".to_string()];
-        let mut env = HashMap::default();
-        push_environment(&mut args, &mut env, &self.connection_options.remote_env);
-        push_environment(&mut args, &mut env, forwarded);
+        let (env, env_file) = self.push_environment(&mut args, forwarded)?;
         args.extend([
             "-u".to_string(),
             self.connection_options.remote_user.to_string(),
@@ -589,7 +592,55 @@ impl DockerExecConnection {
         if reconnect {
             args.push("--reconnect".to_string());
         }
-        DockerExec { args, env }
+        Ok(DockerExec {
+            args,
+            env,
+            env_file,
+        })
+    }
+
+    fn push_environment(
+        &self,
+        args: &mut Vec<String>,
+        overrides: &HashMap<String, String>,
+    ) -> Result<(HashMap<String, String>, Option<TempPath>)> {
+        use std::io::Write as _;
+
+        let mut environment = BTreeMap::new();
+        for (name, value) in self.connection_options.remote_env.iter().chain(overrides) {
+            if is_valid_environment_name(name) {
+                environment.insert(name.clone(), value.clone());
+            } else {
+                log::warn!("Skipping environment variable with invalid name");
+            }
+        }
+        let (file_entries, inherited): (BTreeMap<_, _>, BTreeMap<_, _>) = environment
+            .into_iter()
+            .partition(|(name, value)| fits_env_file(name, value));
+
+        let env_file = if file_entries.is_empty() {
+            None
+        } else {
+            let mut file = tempfile::Builder::new()
+                .prefix("env-")
+                .tempfile_in(self.env_files.path())
+                .context("Failed to create a Docker environment file")?;
+            for (name, value) in &file_entries {
+                writeln!(file, "{name}={value}")
+                    .context("Failed to write a Docker environment file")?;
+            }
+            file.flush()
+                .context("Failed to write a Docker environment file")?;
+            let path = file.into_temp_path();
+            args.push("--env-file".to_string());
+            args.push(path.display().to_string());
+            Some(path)
+        };
+        for name in inherited.keys() {
+            args.push("-e".to_string());
+            args.push(name.clone());
+        }
+        Ok((inherited.into_iter().collect(), env_file))
     }
 
     async fn run_docker_exec(
@@ -599,7 +650,7 @@ impl DockerExecConnection {
         env: &HashMap<String, String>,
         program_args: &[impl AsRef<str>],
     ) -> Result<String> {
-        let exec = self.docker_exec(inner_program, working_directory, env, program_args);
+        let exec = self.docker_exec(inner_program, working_directory, env, program_args)?;
         self.run_docker_command("exec", &exec.args, &exec.env).await
     }
 
@@ -724,12 +775,18 @@ impl RemoteConnection for DockerExecConnection {
             .into_iter()
             .filter_map(|name| Some((name.to_string(), std::env::var(name).ok()?)))
             .collect::<HashMap<_, _>>();
-        let exec = self.proxy_exec(
+        let exec = match self.proxy_exec(
             &remote_binary_relpath,
             unique_identifier,
             reconnect,
             &forwarded,
-        );
+        ) {
+            Ok(mut exec) => match keep_env_file(exec.env_file.take()) {
+                Ok(()) => exec,
+                Err(error) => return Task::ready(Err(error)),
+            },
+            Err(error) => return Task::ready(Err(error)),
+        };
         let mut command = util::command::new_command(self.docker_cli());
         command
             .kill_on_drop(true)
@@ -842,13 +899,8 @@ impl RemoteConnection for DockerExecConnection {
             docker_args.push(parsed_working_dir);
         }
 
-        let mut docker_env = HashMap::default();
-        push_environment(
-            &mut docker_args,
-            &mut docker_env,
-            &self.connection_options.remote_env,
-        );
-        push_environment(&mut docker_args, &mut docker_env, env);
+        let (docker_env, env_file) = self.push_environment(&mut docker_args, env)?;
+        keep_env_file(env_file)?;
 
         match interactive {
             Interactive::Yes => docker_args.push("-it".to_string()),
@@ -963,24 +1015,38 @@ impl RemoteConnection for DockerExecConnection {
 struct DockerExec {
     args: Vec<String>,
     env: HashMap<String, String>,
+    env_file: Option<TempPath>,
 }
 
-// `docker exec -e NAME` without a value copies NAME from the environment of the docker CLI.
-fn push_environment<'a>(
-    args: &mut Vec<String>,
-    values: &mut HashMap<String, String>,
-    environment: impl IntoIterator<Item = (&'a String, &'a String)>,
-) {
-    for (name, value) in environment {
-        if !is_valid_environment_name(name) {
-            log::warn!("Skipping environment variable with invalid name");
-            continue;
-        }
-        if values.insert(name.clone(), value.clone()).is_none() {
-            args.push("-e".to_string());
-            args.push(name.clone());
-        }
+fn env_files_directory() -> Result<TempDir> {
+    let directory = tempfile::Builder::new()
+        .prefix("zed-docker-env-")
+        .tempdir()
+        .context("Failed to create the Docker environment directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .context("Failed to restrict the Docker environment directory")?;
     }
+    Ok(directory)
+}
+
+fn keep_env_file(env_file: Option<TempPath>) -> Result<()> {
+    if let Some(env_file) = env_file {
+        env_file
+            .keep()
+            .context("Failed to keep a Docker environment file")?;
+    }
+    Ok(())
+}
+
+// Docker and Podman read `--env-file` line by line with Go's default 64 KiB scanner, skip `#` lines and reject names holding whitespace; a value-less `-e NAME` copies NAME from the CLI's own environment.
+fn fits_env_file(name: &str, value: &str) -> bool {
+    !name.starts_with('#')
+        && !name.contains(char::is_whitespace)
+        && !value.contains(['\n', '\r'])
+        && name.len() + value.len() + 2 <= 64 * 1024
 }
 
 fn redact_arguments(docker_cli: &str, subcommand: &str, args: &[impl AsRef<str>]) -> String {
@@ -1041,8 +1107,7 @@ mod tests {
             redacted_docker_exec(&connection, &[], &["-c", "echo hi"]),
             concat!(
                 "\"docker\" \"exec\" \"-w\" \"/workspace\" \"-u\" \"user\"",
-                " \"-e\" \"DATABASE_URL\" \"-e\" \"GH_TOKEN\"",
-                " \"-e\" \"PATH\" \"-e\" \"lowercase_token\"",
+                " \"--env-file\" \"<env-file>\"",
                 " \"container_id\" \"sh\" \"-c\" \"echo hi\""
             )
         );
@@ -1082,18 +1147,20 @@ mod tests {
         let env = [("COMMAND_SECRET".to_string(), "command-secret".to_string())]
             .into_iter()
             .collect::<HashMap<_, _>>();
-        let exec = connection.docker_exec("sh", None, &env, &["-c", "echo hi"]);
+        let exec = connection
+            .docker_exec("sh", None, &env, &["-c", "echo hi"])
+            .expect("the environment file must be written");
 
         assert_eq!(
             docker_command_error(
                 connection.docker_cli(),
                 "exec",
-                &exec.args,
+                &normalized(&exec.args),
                 "sh: 1: /usr/local/cargo/bin/zed-remote-server: not found\nGH_TOKEN=ghp_supersecret run",
             ),
             concat!(
                 "failed to run command \"docker\" \"exec\" \"-u\" \"user\"",
-                " \"-e\" \"API_KEY\" \"-e\" \"COMMAND_SECRET\"",
+                " \"--env-file\" \"<env-file>\"",
                 " \"container_id\" \"sh\" \"-c\" \"echo hi\"",
                 ": sh: 1: /usr/local/cargo/bin/zed-remote-server: not found\nGH_TOKEN=\"[REDACTED]\" run"
             )
@@ -1111,37 +1178,44 @@ mod tests {
         ]);
         let env = HashMap::default();
         let program_args = Vec::<&str>::new();
-        let exec = connection.docker_exec("sh", None, &env, &program_args);
+        let exec = connection
+            .docker_exec("sh", None, &env, &program_args)
+            .expect("the environment file must be written");
 
         assert_eq!(
-            exec.args,
-            vec!["-u", "user", "-e", "GH_TOKEN", "container_id", "sh"]
+            normalized(&exec.args),
+            [
+                "-u",
+                "user",
+                "--env-file",
+                "<env-file>",
+                "container_id",
+                "sh"
+            ]
         );
-        assert_eq!(
-            exec.env,
-            HashMap::from_iter([(String::from("GH_TOKEN"), String::from("ghp_supersecret"))])
-        );
+        assert_eq!(env_file_contents(&exec.args), "GH_TOKEN=ghp_supersecret\n");
+        assert_eq!(exec.env, HashMap::default());
     }
 
     #[test]
     fn environment_values_stay_off_the_command_line() -> Result<()> {
-        let connection = connection(&[("API_KEY", "remote-secret"), ("SHARED", "remote")]);
+        let connection = connection(&[
+            ("API_KEY", "remote-secret"),
+            ("PATH", "/container/bin"),
+            ("SHARED", "remote"),
+        ]);
         let env = HashMap::from_iter([
             (String::from("GH_TOKEN"), String::from("command-secret")),
             (String::from("SHARED"), String::from("command")),
+            (String::from("CERT"), String::from("line one\nline two")),
+            (String::from("SPACED NAME"), String::from("spaced")),
         ]);
+        let expected_file =
+            "API_KEY=remote-secret\nGH_TOKEN=command-secret\nPATH=/container/bin\nSHARED=command\n";
         let expected_env = HashMap::from_iter([
-            (String::from("API_KEY"), String::from("remote-secret")),
-            (String::from("GH_TOKEN"), String::from("command-secret")),
-            (String::from("SHARED"), String::from("command")),
+            (String::from("CERT"), String::from("line one\nline two")),
+            (String::from("SPACED NAME"), String::from("spaced")),
         ]);
-        let names = |args: &[String]| {
-            args.iter()
-                .zip(args.iter().skip(1))
-                .filter(|(flag, _)| *flag == "-e")
-                .map(|(_, name)| name.clone())
-                .collect::<Vec<_>>()
-        };
         let assert_values_absent = |args: &[String]| {
             assert!(
                 args.iter()
@@ -1150,10 +1224,45 @@ mod tests {
             );
         };
 
-        let exec = connection.docker_exec("sh", None, &env, &["-c", "echo hi"]);
+        let exec = connection.docker_exec("sh", None, &env, &["-c", "echo hi"])?;
         assert_values_absent(&exec.args);
+        assert_eq!(
+            normalized(&exec.args),
+            [
+                "-u",
+                "user",
+                "--env-file",
+                "<env-file>",
+                "-e",
+                "CERT",
+                "-e",
+                "SPACED NAME",
+                "container_id",
+                "sh",
+                "-c",
+                "echo hi",
+            ]
+        );
+        assert_eq!(env_file_contents(&exec.args), expected_file);
         assert_eq!(exec.env, expected_env);
-        assert_eq!(names(&exec.args), ["API_KEY", "SHARED", "GH_TOKEN"]);
+        let exec_file = env_file_path(&exec.args);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&exec_file)?.permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(connection.env_files.path())?
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        drop(exec);
+        assert!(!exec_file.exists(), "an awaited exec removes its file");
 
         let template = connection.build_command(
             Some(String::from("sh")),
@@ -1164,8 +1273,8 @@ mod tests {
             Interactive::Yes,
         )?;
         assert_values_absent(&template.args);
+        assert_eq!(env_file_contents(&template.args), expected_file);
         assert_eq!(template.env, expected_env);
-        assert_eq!(names(&template.args), ["API_KEY", "SHARED", "GH_TOKEN"]);
 
         let forwarded = HashMap::from_iter([(
             String::from("RUST_LOG"),
@@ -1176,17 +1285,13 @@ mod tests {
             String::from("identifier"),
             true,
             &forwarded,
-        );
+        )?;
         assert_eq!(
-            exec.args,
+            normalized(&exec.args),
             [
                 "exec",
-                "-e",
-                "API_KEY",
-                "-e",
-                "SHARED",
-                "-e",
-                "RUST_LOG",
+                "--env-file",
+                "<env-file>",
                 "-u",
                 "user",
                 "-w",
@@ -1201,17 +1306,28 @@ mod tests {
             ]
         );
         assert_eq!(
-            exec.env,
-            HashMap::from_iter([
-                (String::from("API_KEY"), String::from("remote-secret")),
-                (String::from("SHARED"), String::from("remote")),
-                (
-                    String::from("RUST_LOG"),
-                    String::from("remote_server=debug")
-                ),
-            ])
+            env_file_contents(&exec.args),
+            "API_KEY=remote-secret\nPATH=/container/bin\nRUST_LOG=remote_server=debug\nSHARED=remote\n"
         );
+        assert_eq!(exec.env, HashMap::default());
+
+        let env_files = connection.env_files.path().to_path_buf();
+        drop(connection);
+        assert!(!env_files.exists(), "kept files leave with the connection");
         Ok(())
+    }
+
+    #[test]
+    fn env_file_only_takes_lines_docker_parses() {
+        assert!(fits_env_file("NAME", "value with spaces = and #"));
+        assert!(fits_env_file("NAME", ""));
+        assert!(!fits_env_file("#NAME", "value"));
+        assert!(!fits_env_file("SPACED NAME", "value"));
+        assert!(!fits_env_file("NAME", "line\nbreak"));
+        assert!(!fits_env_file("NAME", "carriage\r"));
+        let longest = "v".repeat(64 * 1024 - "NAME".len() - 2);
+        assert!(fits_env_file("NAME", &longest));
+        assert!(!fits_env_file("NAME", &format!("{longest}v")));
     }
 
     #[test]
@@ -1223,7 +1339,7 @@ mod tests {
             redacted_docker_exec(&connection, &[], &[]),
             concat!(
                 "\"podman\" \"exec\" \"-w\" \"/workspace\" \"-u\" \"user\"",
-                " \"-e\" \"GH_TOKEN\" \"container_id\" \"sh\""
+                " \"--env-file\" \"<env-file>\" \"container_id\" \"sh\""
             )
         );
     }
@@ -1298,6 +1414,7 @@ mod tests {
     fn connection(remote_env: &[(&str, &str)]) -> DockerExecConnection {
         DockerExecConnection {
             proxy_process: Mutex::new(None),
+            env_files: env_files_directory().expect("the environment directory must be creatable"),
             remote_dir_for_server: "/tmp/zed".to_string(),
             remote_binary_relpath: None,
             connection_options: DockerConnectionOptions {
@@ -1327,7 +1444,29 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect::<HashMap<_, _>>();
-        let exec = connection.docker_exec("sh", Some("/workspace"), &env, program_args);
-        redact_arguments(connection.docker_cli(), "exec", &exec.args)
+        let exec = connection
+            .docker_exec("sh", Some("/workspace"), &env, program_args)
+            .expect("the environment file must be written");
+        redact_arguments(connection.docker_cli(), "exec", &normalized(&exec.args))
+    }
+
+    fn env_file_path(args: &[String]) -> PathBuf {
+        let position = args
+            .iter()
+            .position(|arg| arg == "--env-file")
+            .expect("the arguments must name an environment file");
+        PathBuf::from(&args[position + 1])
+    }
+
+    fn env_file_contents(args: &[String]) -> String {
+        std::fs::read_to_string(env_file_path(args)).expect("the environment file must exist")
+    }
+
+    fn normalized(args: &[String]) -> Vec<String> {
+        let mut normalized = args.to_vec();
+        if let Some(position) = args.iter().position(|arg| arg == "--env-file") {
+            normalized[position + 1] = String::from("<env-file>");
+        }
+        normalized
     }
 }
