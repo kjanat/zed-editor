@@ -1767,7 +1767,7 @@ mod tests {
         };
         let description = format!("{command:?}");
         assert!(
-            description.contains(r#"args: ["--api-key=[REDACTED]"]"#),
+            description.contains(r#"args: ["--api-key=\"[REDACTED]\""]"#),
             "{description}"
         );
         assert!(!description.contains("sk-ant-"), "{description}");

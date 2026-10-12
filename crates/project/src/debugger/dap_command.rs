@@ -2015,7 +2015,10 @@ mod tests {
         ];
         for description in descriptions {
             assert!(description.contains("./app"), "{description}");
-            assert!(description.contains("--token=[REDACTED]"), "{description}");
+            assert!(
+                description.contains(r#"--token=\"[REDACTED]\""#),
+                "{description}"
+            );
             assert!(!description.contains("ghp_"), "{description}");
             assert!(!description.contains("hunter2"), "{description}");
         }

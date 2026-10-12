@@ -1069,7 +1069,7 @@ mod tests {
         };
         let description = format!("{command:?}");
         assert!(
-            description.contains(r#"args: ["--token=[REDACTED]"]"#),
+            description.contains(r#"args: ["--token=\"[REDACTED]\""]"#),
             "{description}"
         );
         assert!(!description.contains("ghp_"), "{description}");

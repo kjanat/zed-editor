@@ -48,14 +48,25 @@ pub fn is_valid_environment_name(name: &str) -> bool {
 pub fn redact_command(command: &str) -> String {
     let command = redact_private_keys(command);
     let command = redact_assignments(&command);
+    let command = redact_secret_option_values(&command);
     let command = redact_credentialed_urls(&command);
     redact_secret_tokens(&command)
 }
 
 pub fn redact_arguments<S: AsRef<OsStr>>(arguments: impl IntoIterator<Item = S>) -> Vec<String> {
+    let mut follows_secret_option = false;
     arguments
         .into_iter()
-        .map(|argument| redact_command(&argument.as_ref().to_string_lossy()))
+        .map(|argument| {
+            let argument = argument.as_ref().to_string_lossy();
+            let redacted = if follows_secret_option && !argument.starts_with('-') {
+                REDACTED.to_string()
+            } else {
+                redact_command(&argument)
+            };
+            follows_secret_option = awaits_secret_value(&argument);
+            redacted
+        })
         .collect()
 }
 
@@ -66,8 +77,8 @@ pub fn describe_command<'a>(
 ) -> String {
     let redact = |part: &OsStr| redact_command(&part.to_string_lossy());
     let mut description = format!("{:?}", redact(program));
-    for argument in arguments {
-        description.push_str(&format!(" {:?}", redact(argument)));
+    for argument in redact_arguments(arguments) {
+        description.push_str(&format!(" {argument:?}"));
     }
     if let Some(directory) = directory {
         description.push_str(&format!(" in {:?}", redact(directory.as_os_str())));
@@ -124,12 +135,20 @@ fn redact_assignments(text: &str) -> String {
         if key_end < equals && !prefixed {
             continue;
         }
+        let mut long_option = false;
         if !prefixed && bytes.get(key_start) == Some(&b'-') {
             let opens_token = key_start == 0 || is_text_delimiter(bytes[key_start - 1]);
-            if !opens_token || bytes.get(key_start + 1) == Some(&b'-') {
+            if !opens_token {
                 continue;
             }
-            key_start += 2;
+            long_option = bytes.get(key_start + 1) == Some(&b'-');
+            if long_option {
+                if !is_secret_option_name(&text[key_start..key_end]) {
+                    continue;
+                }
+            } else {
+                key_start += 2;
+            }
         }
         if key_start >= key_end || key_start < copied {
             continue;
@@ -146,13 +165,82 @@ fn redact_assignments(text: &str) -> String {
             continue;
         }
         position = value_end;
-        if should_redact(key) {
+        if long_option || should_redact(key) {
             output.push_str(&text[copied..value_start]);
             output.push('"');
             output.push_str(REDACTED);
             output.push('"');
             copied = value_end;
         }
+    }
+    output.push_str(&text[copied..]);
+    output
+}
+
+const SECRET_OPTION_WORDS: &[&str] = &[
+    "accesskey",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "passphrase",
+    "passwd",
+    "password",
+    "privatekey",
+    "secret",
+    "token",
+];
+
+fn is_secret_option_name(option: &str) -> bool {
+    let name = option
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect::<String>();
+    SECRET_OPTION_WORDS.iter().any(|word| name.contains(word))
+}
+
+fn awaits_secret_value(token: &str) -> bool {
+    let option = token
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '-');
+    option.starts_with('-') && !token.contains('=') && is_secret_option_name(option)
+}
+
+fn redact_secret_option_values(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut output = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut position = 0;
+    while position < bytes.len() {
+        if is_value_delimiter(bytes[position]) {
+            position += 1;
+            continue;
+        }
+        let token_start = position;
+        while bytes
+            .get(position)
+            .is_some_and(|byte| !is_value_delimiter(*byte))
+        {
+            position += 1;
+        }
+        if !awaits_secret_value(&text[token_start..position]) {
+            continue;
+        }
+        let mut value_start = position;
+        while bytes.get(value_start).copied().is_some_and(is_inline_space) {
+            value_start += 1;
+        }
+        if bytes
+            .get(value_start)
+            .is_none_or(|byte| *byte == b'-' || is_value_delimiter(*byte))
+        {
+            continue;
+        }
+        let value_end = assignment_value_end(bytes, value_start);
+        output.push_str(&text[copied..value_start]);
+        output.push_str(REDACTED);
+        copied = value_end;
+        position = value_end;
     }
     output.push_str(&text[copied..]);
     output
@@ -496,7 +584,7 @@ mod tests {
                 "envs": { "PATH": "/usr/bin", "DATABASE_URL": "[REDACTED]" },
                 "configuration": {
                     "program": "./app",
-                    "args": ["--verbose", "--token=[REDACTED]", "API_KEY=\"[REDACTED]\""],
+                    "args": ["--verbose", "--token=\"[REDACTED]\"", "API_KEY=\"[REDACTED]\""],
                     "env": { "GH_TOKEN": "[REDACTED]" },
                     "environment": [
                         { "name": "HOME", "value": "/home/user" },
@@ -676,6 +764,40 @@ mod tests {
                 "xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"
             ]),
             ["--stdio", "-eTOKEN=\"[REDACTED]\"", "[REDACTED]"]
+        );
+        assert_eq!(
+            redact_arguments([
+                "--token",
+                "separate-secret",
+                "--verbose",
+                "--password",
+                "--next",
+                "plain"
+            ]),
+            [
+                "--token",
+                "[REDACTED]",
+                "--verbose",
+                "--password",
+                "--next",
+                "plain"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_redact_command_covers_secret_named_options() {
+        assert_eq!(
+            redact_command(
+                "--API_KEY=hunter2 --TOKEN=custom-secret --password hunter2 -token go-secret \
+                 --api-key \"quoted secret\" --token-file --verbose --log-level=debug"
+            ),
+            "--API_KEY=\"[REDACTED]\" --TOKEN=\"[REDACTED]\" --password [REDACTED] -token [REDACTED] \
+             --api-key [REDACTED] --token-file --verbose --log-level=debug"
+        );
+        assert_eq!(
+            redact_command(r#"["--token", "debug-secret"]"#),
+            r#"["--token", [REDACTED]"#
         );
     }
 
