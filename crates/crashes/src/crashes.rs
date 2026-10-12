@@ -571,6 +571,11 @@ impl minidumper::ServerHandler for CrashServer {
 
 fn finish_minidump(path: &Path) -> io::Result<()> {
     let mut dump = fs::read(path)?;
+    if cfg!(target_os = "linux") && environ_streams(&dump).is_empty() {
+        return Err(io::Error::other(
+            "the minidump has no readable environment stream",
+        ));
+    }
     scrub_environment(&mut dump, own_environment());
     let compressed_path = path.with_extension("zstd");
     fs::write(
@@ -1230,6 +1235,25 @@ mod tests {
         assert!(crash_info.scrub_failed());
         assert!(!crash_info_for(None).scrub_failed());
         assert!(!crash_info_for(Some(String::from("Writer error"))).scrub_failed());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linux_minidump_without_an_environment_stream_fails_to_scrub() {
+        let dir = log_tail_test_dir("missing-environ");
+        let stack = b"\0API_KEY=secret\0";
+        let mut wrong_signature = synthetic_minidump(b"API_KEY=secret\0", stack);
+        wrong_signature[..4].copy_from_slice(b"XXXX");
+        let mut out_of_range = synthetic_minidump(b"API_KEY=secret\0", stack);
+        out_of_range[32 + MINIDUMP_DIRECTORY_ENTRY_SIZE + 8..][..4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        for dump in [b"MDMP".to_vec(), wrong_signature, out_of_range] {
+            let path = dir.join("session.dmp");
+            fs::write(&path, &dump).expect("the minidump must be writable");
+            assert!(finish_minidump(&path).is_err());
+            assert_eq!(fs::read(&path).expect("the minidump must remain"), dump);
+        }
         fs::remove_dir_all(&dir).ok();
     }
 
