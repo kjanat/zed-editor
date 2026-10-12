@@ -467,7 +467,8 @@ fn redact_secret_tokens(text: &str) -> String {
         } else {
             None
         };
-        follows_authorization = token.eq_ignore_ascii_case("Authorization");
+        follows_authorization = token.eq_ignore_ascii_case("Authorization")
+            || token.eq_ignore_ascii_case("Proxy-Authorization");
         if let Some(secret) = secret {
             output.push_str(&text[copied..secret.start]);
             output.push_str(REDACTED);
@@ -857,6 +858,7 @@ mod tests {
         let input = "clone with ghp_16C7e42F292c6912E7710c838347Ae178B4a, \
              header Authorization: Bearer abcdef123456 \
              short Authorization: Basic YTpi padded Authorization: Basic YQ== \
+             proxy Proxy-Authorization: Basic YTpi \
              jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c. \
              aws AKIAIOSFODNN7EXAMPLE slack xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx \
              anthropic sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 \
@@ -871,6 +873,7 @@ mod tests {
             "clone with [REDACTED], \
              header Authorization: Bearer [REDACTED] \
              short Authorization: Basic [REDACTED] padded Authorization: Basic [REDACTED] \
+             proxy Proxy-Authorization: Basic [REDACTED] \
              jwt [REDACTED]. \
              aws [REDACTED] slack [REDACTED] \
              anthropic [REDACTED] \
