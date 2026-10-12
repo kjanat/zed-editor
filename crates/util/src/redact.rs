@@ -174,7 +174,7 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
                 None if bytes[start..index].iter().all(|byte| *byte == b'$') => {
                     return bytes.len();
                 }
-                None => break,
+                None => index += 1,
             },
             b'\\' => index = (index + 2).min(bytes.len()),
             _ if is_value_delimiter(byte) => break,
@@ -518,7 +518,7 @@ mod tests {
     fn test_redact_command_covers_quoted_and_chained_assignments() {
         assert_eq!(
             redact_command("+ export 'API_KEY=secret'"),
-            "+ export 'API_KEY=\"[REDACTED]\"'"
+            "+ export 'API_KEY=\"[REDACTED]\""
         );
         assert_eq!(
             redact_command("cmd;API_KEY=secret next&&TOKEN=x|(SECRET=y) `KEY=z` {PATH=/bin}"),
@@ -526,7 +526,7 @@ mod tests {
         );
         assert_eq!(
             redact_command("\"API_KEY=secret\" --log-level=debug -Dprop=value"),
-            "\"API_KEY=\"[REDACTED]\"\" --log-level=debug -Dprop=\"[REDACTED]\""
+            "\"API_KEY=\"[REDACTED]\" --log-level=debug -Dprop=\"[REDACTED]\""
         );
         assert_eq!(
             redact_command("docker exec -eAPI_KEY=argument-secret -ePATH=/usr/bin -e=x"),
@@ -559,6 +559,10 @@ mod tests {
                 "API_KEY=prefix\"secret-suffix\" TOKEN=a'b c'd SECRET=\"unterminated next"
             ),
             "API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" SECRET=\"[REDACTED]\""
+        );
+        assert_eq!(
+            redact_command("KEY=prefix\"stray-secret next"),
+            "KEY=\"[REDACTED]\" next"
         );
         assert_eq!(
             redact_command("https://example.com/?a=1&token=secret&b=2"),

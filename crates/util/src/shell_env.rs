@@ -393,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             describe_shell_stream(b"+ export 'API_KEY=hunter2'\n", false),
-            r#""+ export 'API_KEY=\"[REDACTED]\"'\n""#
+            r#""+ export 'API_KEY=\"[REDACTED]\"\n""#
         );
     }
 }
