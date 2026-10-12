@@ -146,7 +146,7 @@ fn without_escape_sequences(text: &str) -> String {
 }
 
 fn is_value_delimiter(byte: u8) -> bool {
-    byte.is_ascii_whitespace() || (byte.is_ascii_control() && byte != ESCAPE)
+    byte.is_ascii_whitespace()
 }
 
 fn is_key_byte(byte: u8) -> bool {
@@ -816,6 +816,10 @@ mod tests {
                 "API_KEY=\x1b]8;;https://example\x07hunter2 --token \x1b]8;;https://example\x1b\\hunter2 next"
             ),
             "API_KEY=\"[REDACTED]\" --token [REDACTED] next"
+        );
+        assert_eq!(
+            redact_command("API_KEY=prefix\x07hunter2 TOKEN=a\x08b --password x\x00y next"),
+            "API_KEY=\"[REDACTED]\" TOKEN=\"[REDACTED]\" --password [REDACTED] next"
         );
         assert_eq!(
             redact_command("clone ghp_\x1b[31m16C7e42F292c6912E7710c838347Ae178B4a\x1b[0m done"),
