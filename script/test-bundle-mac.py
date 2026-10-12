@@ -3,7 +3,6 @@
 
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -70,7 +69,7 @@ elif command == "sentry-cli":
 
 
 class BundleMacTests(unittest.TestCase):
-    def run_bundle(self, options=(), sentry=False, failure=None):
+    def run_bundle(self, options=(), sentry=False, failure=None, destination=True):
         temporary = tempfile.TemporaryDirectory(prefix="bundle-mac-test-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -102,10 +101,13 @@ class BundleMacTests(unittest.TestCase):
         }
         if sentry:
             environment["SENTRY_AUTH_TOKEN"] = "test-placeholder"
+            if destination:
+                environment["SENTRY_ORG"] = "example-org"
+                environment["SENTRY_PROJECT"] = "example-project"
         if failure:
             environment["BUNDLE_TEST_FAILURE"] = failure
         result = subprocess.run(
-            [shutil.which("bash"), "-c", preparation, "bundle-mac", *options],
+            ["bash", "-c", preparation, "bundle-mac", *options],
             cwd=root,
             env=environment,
             capture_output=True,
@@ -161,6 +163,18 @@ class BundleMacTests(unittest.TestCase):
 
     def test_upload_symbols_before_stripping(self):
         self.assert_release_bundle("aarch64-apple-darwin", sentry=True)
+
+    def test_upload_without_destination_fails_before_building(self):
+        _, result, commands = self.run_bundle(sentry=True, destination=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Sentry upload requires SENTRY_ORG and SENTRY_PROJECT.", result.stderr
+        )
+        self.assertFalse(any(line.startswith("cargo --config") for line in commands))
+
+    def test_local_install_ignores_missing_destination(self):
+        _, result, _ = self.run_bundle(["-i"], sentry=True, destination=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_debug_and_local_install_keep_symbols(self):
         for option in ["-d", "-i"]:

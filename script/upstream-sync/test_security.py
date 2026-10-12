@@ -6,7 +6,7 @@ import tempfile
 import textwrap
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from functools import cached_property
 from itertools import takewhile
 from pathlib import Path
@@ -248,6 +248,68 @@ class CandidateTests(unittest.TestCase):
         _ = self.fixture.git("branch", "-f", "sync/upstream", "HEAD")
         with self.assertRaises(subprocess.CalledProcessError):
             _ = self.fixture.validate()
+
+
+class RunTests(unittest.TestCase):
+    def test_repeatable_failure_logs_stderr_of_every_attempt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _ = subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            stderr = io.StringIO()
+            with (
+                patch.object(time, "sleep") as sleep,
+                redirect_stderr(stderr),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                _ = sync_pr.run("git", "fetch", str(root / "missing"), cwd=root)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(10,), (20,)])
+        log = stderr.getvalue()
+        for attempt in (1, 2, 3):
+            self.assertIn(f"exited with 128 (attempt {attempt}/3):", log)
+        self.assertEqual(log.count("does not appear to be a git repository"), 3)
+
+    def test_single_failure_logs_stderr_once_without_sleeping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _ = subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            stderr = io.StringIO()
+            with (
+                patch.object(time, "sleep") as sleep,
+                redirect_stderr(stderr),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                _ = sync_pr.run("git", "rev-parse", "--verify", "missing", cwd=root)
+        sleep.assert_not_called()
+        self.assertIn(
+            "git rev-parse --verify missing exited with 128 (attempt 1/1):\n"
+            + "fatal: Needed a single revision\n",
+            stderr.getvalue(),
+        )
+
+    def test_success_after_failure_returns_output(self):
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                subprocess,
+                "check_output",
+                side_effect=[
+                    subprocess.CalledProcessError(
+                        1, "gh", stderr="HTTP 502: Bad Gateway\n"
+                    ),
+                    "7\n",
+                ],
+            ),
+            patch.object(time, "sleep") as sleep,
+            redirect_stderr(stderr),
+        ):
+            output = sync_pr.run("gh", "pr", "list", "--repo", "kjanat/zed-editor")
+        self.assertEqual(output, "7")
+        sleep.assert_called_once_with(10)
+        self.assertIn(
+            "gh pr list --repo kjanat/zed-editor exited with 1 (attempt 1/3):\n"
+            + "HTTP 502: Bad Gateway\n",
+            stderr.getvalue(),
+        )
 
 
 class ReportingTests(unittest.TestCase):
