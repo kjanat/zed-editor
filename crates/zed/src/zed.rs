@@ -3916,6 +3916,7 @@ mod tests {
     #[gpui::test]
     async fn test_show_onboarding_view_adds_page_after_building_workspace(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
+        load_bundled_themes(cx);
         cx.update(|cx| client::Client::set_global(app_state.client.clone(), cx));
 
         cx.update(|cx| onboarding::show_onboarding_view(app_state.clone(), cx))
@@ -6297,7 +6298,7 @@ mod tests {
         let (_workspace, pane, reader, mut cx) =
             window_with_item_reading_containers(project, add_item_hooks(), cx);
 
-        cx.update(|_, cx| cx.dispatch_action(&OpenDefaultSettings));
+        cx.dispatch_action(OpenDefaultSettings);
         cx.run_until_parked();
 
         assert_item_added_next_to_reader::<Editor>(&reader, &pane, 2, &mut cx);
@@ -6461,6 +6462,7 @@ mod tests {
         Entity<workspace::item::test::TestItem>,
         VisualTestContext,
     ) {
+        load_bundled_themes(cx);
         cx.update(|cx| {
             client::Client::set_global(app_state.client.clone(), cx);
             onboarding::init(cx);
@@ -6468,7 +6470,7 @@ mod tests {
         let (_workspace, pane, reader, mut cx) =
             window_with_item_reading_containers(project, add_item_hooks(), cx);
 
-        cx.update(|_, cx| cx.dispatch_action(&zed_actions::OpenOnboarding));
+        cx.dispatch_action(zed_actions::OpenOnboarding);
         cx.run_until_parked();
 
         reader.read_with(&cx, |reader, _| {
@@ -6522,7 +6524,7 @@ mod tests {
         let (_workspace, pane, reader, mut cx) =
             window_with_item_reading_containers(project, add_item_hooks(), cx);
 
-        cx.update(|_, cx| cx.dispatch_action(&onboarding::ShowWelcome));
+        cx.dispatch_action(onboarding::ShowWelcome);
         cx.run_until_parked();
 
         assert_item_added_next_to_reader::<workspace::welcome::WelcomePage>(
@@ -6864,6 +6866,13 @@ mod tests {
 
     pub(crate) fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         init_test_with_state(cx, cx.update(AppState::test))
+    }
+
+    fn load_bundled_themes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            theme::init(theme::LoadThemes::All(Box::new(Assets)), cx);
+            theme_settings::load_bundled_themes(&ThemeRegistry::global(cx));
+        });
     }
 
     fn set_file_scan_depth(cx: &mut TestAppContext, depth: u32) {

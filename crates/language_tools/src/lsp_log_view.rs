@@ -827,9 +827,11 @@ fn log_contents<T: Message>(lines: &VecDeque<T>, level: <T as Message>::Level) -
 
 impl Render for LspLogView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.editor.update(cx, |editor, cx| {
-            editor.render(window, cx).into_any_element()
-        })
+        div().size_full().track_focus(&self.focus_handle).child(
+            self.editor.update(cx, |editor, cx| {
+                editor.render(window, cx).into_any_element()
+            }),
+        )
     }
 }
 

@@ -716,8 +716,17 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.focus_handle.contains_focused(window, cx) {
-            window.focus(&self.focus_handle, cx);
+        match self
+            .item_focus_handles
+            .get(&item.item_id())
+            .and_then(|focus_handle| focus_handle.upgrade())
+        {
+            Some(focus_handle) => window.focus(&focus_handle, cx),
+            None => {
+                if !self.focus_handle.contains_focused(window, cx) {
+                    window.focus(&self.focus_handle, cx);
+                }
+            }
         }
         self.item_focus_request += 1;
         let request = self.item_focus_request;
@@ -1425,28 +1434,24 @@ impl Pane {
 
                 cx.notify();
             }
-
-            if activate {
-                self.activate_item(insertion_index, activate_pane, focus_item, window, cx);
-            }
         } else {
             self.items.insert(insertion_index, item.clone());
             cx.notify();
 
-            if activate {
-                if insertion_index <= self.active_item_index
-                    && self.preview_item_idx() != Some(self.active_item_index)
-                {
-                    self.active_item_index += 1;
-                }
-
-                self.activate_item(insertion_index, activate_pane, focus_item, window, cx);
+            if activate
+                && insertion_index <= self.active_item_index
+                && self.preview_item_idx() != Some(self.active_item_index)
+            {
+                self.active_item_index += 1;
             }
         }
 
         if self.index_for_item_id(item.item_id()).is_some() {
             self.item_focus_handles
                 .insert(item.item_id(), focus_handle.downgrade());
+        }
+        if activate {
+            self.activate_item(insertion_index, activate_pane, focus_item, window, cx);
         }
         cx.emit(Event::AddItem { item });
     }
@@ -8695,8 +8700,8 @@ mod tests {
         cx.run_until_parked();
         let reads_after_render = item.read_with(cx, |item, _| item.pane_reads.get());
 
-        cx.update(|window, cx| window.focus(&unrendered_focus_handle, cx));
         let (has_focus, item_check) = cx.update(|window, cx| {
+            window.focus(&unrendered_focus_handle, cx);
             let pane = pane.read(cx);
             let item_check = pane.focus_handle.contains_focused(window, cx)
                 || item.read(cx).focus_handle(cx).contains_focused(window, cx);
@@ -8714,6 +8719,44 @@ mod tests {
         assert_eq!(
             has_focus, item_check,
             "has_focus should see the focus handle the item returned at the last render"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_refocusing_focused_child_after_activating_its_item_keeps_child_focused(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_label("A")
+                .with_child_focus_handles(1, cx)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx)
+        });
+        cx.run_until_parked();
+        let child_focus_handle = item.read_with(cx, |item, _| item.child_focus_handles[0].clone());
+        cx.update(|window, cx| window.focus(&child_focus_handle, cx));
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| child_focus_handle.is_focused(window)));
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| pane.activate_item(0, true, true, window, cx));
+            window.focus(&child_focus_handle, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.update(|window, _| child_focus_handle.is_focused(window)),
+            "focusing the child right after activating its item should win over the item root"
         );
     }
 

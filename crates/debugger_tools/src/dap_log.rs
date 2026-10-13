@@ -686,6 +686,9 @@ impl DapLogView {
         let (editor, editor_subscriptions) = Self::editor_for_logs(String::new(), window, cx);
 
         let focus_handle = cx.focus_handle();
+        let focus_subscription = cx.on_focus(&focus_handle, window, |log_view, window, cx| {
+            window.focus(&log_view.editor.focus_handle(cx), cx);
+        });
 
         let events_subscriptions = cx.subscribe(&log_store, |log_view, _, event, cx| match event {
             Event::NewLogEntry { id, entry, kind } => {
@@ -734,7 +737,7 @@ impl DapLogView {
             log_store,
             editor_subscriptions,
             current_view: None,
-            _subscriptions: vec![events_subscriptions],
+            _subscriptions: vec![events_subscriptions, focus_subscription],
         };
 
         if let Some((session_id, have_adapter_logs)) = state_info {
@@ -955,9 +958,11 @@ const INITIALIZATION_SEQUENCE: &str = "Initialization Sequence";
 
 impl Render for DapLogView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.editor.update(cx, |editor, cx| {
-            editor.render(window, cx).into_any_element()
-        })
+        div().size_full().track_focus(&self.focus_handle).child(
+            self.editor.update(cx, |editor, cx| {
+                editor.render(window, cx).into_any_element()
+            }),
+        )
     }
 }
 

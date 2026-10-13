@@ -6392,12 +6392,13 @@ impl Workspace {
         let Some(item) = pane.update(cx, |pane, cx| pane.take_active_item(window, cx)) else {
             return;
         };
-        let new_pane = workspace.update(cx, |workspace, cx| workspace.add_pane(window, cx));
-        Pane::add_item(&new_pane, item, true, true, None, window, cx);
-        workspace.update(cx, |workspace, cx| {
+        let new_pane = workspace.update(cx, |workspace, cx| {
+            let new_pane = workspace.add_pane(window, cx);
             workspace.center.split(&pane, &new_pane, direction, cx);
             cx.notify();
+            new_pane
         });
+        Pane::add_item(&new_pane, item, true, true, None, window, cx);
     }
 
     pub fn split_and_clone(
@@ -6424,16 +6425,13 @@ impl Workspace {
                     let new_pane = this.add_pane(window, cx);
                     let nav_history = pane.read(cx).fork_nav_history();
                     new_pane.update(cx, |pane, cx| pane.set_nav_history(nav_history, cx));
+                    this.center.split(&pane, &new_pane, direction, cx);
+                    cx.notify();
                     new_pane
                 })
                 .ok()?;
             cx.update(|window, cx| {
                 Pane::add_item(&new_pane, clone, true, true, None, window, cx);
-            })
-            .ok()?;
-            this.update(cx, |this, cx| {
-                this.center.split(&pane, &new_pane, direction, cx);
-                cx.notify();
             })
             .ok()?;
             Some(new_pane)
@@ -20999,8 +20997,6 @@ mod tests {
                 window,
                 cx,
             );
-        });
-        cx.update(|window, cx| {
             Workspace::move_item_to_pane_in_direction(
                 &workspace,
                 &MoveItemToPaneInDirection {
@@ -21021,8 +21017,8 @@ mod tests {
                 window,
                 cx,
             );
-        });
-        workspace.read_with(cx, |workspace, cx| {
+
+            let workspace = workspace.read(cx);
             assert_eq!(workspace.panes.len(), 1, "No new panes were created");
             assert_eq!(
                 pane_items_paths(&workspace.active_pane, cx),
@@ -21043,14 +21039,10 @@ mod tests {
                 window,
                 cx,
             );
-        });
-        workspace.read_with(cx, |workspace, cx| {
             assert_eq!(
-                pane_items_paths(&workspace.panes[0], cx),
+                pane_items_paths(&workspace.read(cx).panes[0], cx),
                 vec!["first.txt".to_string(), "second.txt".to_string()],
             );
-        });
-        cx.update(|window, cx| {
             Workspace::move_item_to_pane_in_direction(
                 &workspace,
                 &MoveItemToPaneInDirection {
@@ -21061,8 +21053,8 @@ mod tests {
                 window,
                 cx,
             );
-        });
-        workspace.read_with(cx, |workspace, cx| {
+
+            let workspace = workspace.read(cx);
             assert_eq!(workspace.panes.len(), 2, "A new pane should be created");
             assert_eq!(
                 pane_items_paths(&workspace.panes[0], cx),
@@ -21079,11 +21071,11 @@ mod tests {
         let item_3 = cx.new(|cx| {
             TestItem::new(cx).with_project_items(&[TestProjectItem::new(3, "third.txt", cx)])
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            let original_pane = workspace.panes[0].clone();
-            workspace.set_active_pane(&original_pane, window, cx);
-        });
         cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let original_pane = workspace.panes[0].clone();
+                workspace.set_active_pane(&original_pane, window, cx);
+            });
             Workspace::add_item_to_active_pane(
                 &workspace,
                 Box::new(item_3),
@@ -21092,16 +21084,17 @@ mod tests {
                 window,
                 cx,
             );
-        });
-        workspace.read_with(cx, |workspace, cx| {
-            assert_eq!(workspace.panes.len(), 2, "No new panes were created");
             assert_eq!(
-                pane_items_paths(&workspace.active_pane, cx),
+                workspace.read(cx).panes.len(),
+                2,
+                "No new panes were created"
+            );
+            assert_eq!(
+                pane_items_paths(&workspace.read(cx).active_pane, cx),
                 vec!["first.txt".to_string(), "third.txt".to_string()],
                 "New pane should be ready to move one item out"
             );
-        });
-        cx.update(|window, cx| {
+
             Workspace::move_item_to_pane_at_index(
                 &workspace,
                 &MoveItemToPane {
@@ -21112,8 +21105,8 @@ mod tests {
                 window,
                 cx,
             );
-        });
-        workspace.read_with(cx, |workspace, cx| {
+
+            let workspace = workspace.read(cx);
             assert_eq!(workspace.panes.len(), 3, "A new pane should be created");
             assert_eq!(
                 pane_items_paths(&workspace.active_pane, cx),

@@ -4,7 +4,9 @@ use crate::lsp_log_view::LogMenuItem;
 
 use super::*;
 use futures::StreamExt;
-use gpui::{AppContext as _, TestAppContext, VisualContext as _, VisualTestContext};
+use gpui::{
+    AppContext as _, Focusable as _, TestAppContext, VisualContext as _, VisualTestContext,
+};
 use language::{
     FakeLspAdapter, Language, LanguageConfig, LanguageMatcher, LanguageServerId, tree_sitter_rust,
 };
@@ -997,6 +999,18 @@ async fn test_open_lsp_log_view_with_items_that_read_their_containers(cx: &mut T
     );
     assert!(left_item.read_with(cx, |item, _| item.container_reads.get() > 0));
     assert!(right_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+
+    cx.update(|window, cx| window.focus(&right_pane.read(cx).focus_handle(cx), cx));
+    cx.run_until_parked();
+    let editor_focused = cx.update(|window, cx| {
+        log_view
+            .as_ref()
+            .is_some_and(|log_view| log_view.read(cx).editor.focus_handle(cx).is_focused(window))
+    });
+    assert!(
+        editor_focused,
+        "focusing the pane should focus the log view's editor"
+    );
 }
 
 fn add_item_reading_containers(
