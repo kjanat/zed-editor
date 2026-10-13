@@ -207,8 +207,8 @@ keybinding when the debugger is stopped in vim normal mode, you need to do
 > `Workspace > Pane > Editor` because of the intermediate `Pane` node.
 
 If you're using Vim mode, we have information on how
-[vim modes influence the context](./vim.md#contexts). Helix mode is built on top
-of Vim mode and uses the same contexts.
+[vim modes influence the context](./vim.md#selecting-the-correct-context). Helix
+mode is built on top of Vim mode and uses the same contexts.
 
 ### Actions
 
@@ -265,14 +265,15 @@ pending keystrokes are shown without a countdown. The indicator can be hidden
 with `{"status_bar": {"pending_keystrokes_indicator": false}}`. Vim and Helix
 modes continue to use their existing pending-key indicator instead.
 
-While a key sequence (chord) is pending, press {#kb which_key::ShowPendingBindings}
-to open the indicator's binding list without moving focus. The list updates as
-you continue typing and stays open until the chord completes or is cleared.
-While it is open, the timeout stays paused, even if the pointer moves away.
+While a key sequence (chord) is pending, press {#kb
+which_key::ShowPendingBindings} to open the indicator's binding list without
+moving focus. The list updates as you continue typing and stays open until the
+chord completes or is cleared. While it is open, the timeout stays paused, even
+if the pointer moves away.
 
 The {#action which_key::ShowPendingBindings} action only works while a chord is
-pending, and only when bound to a single keystroke. While a chord is pending,
-it takes precedence over longer bindings that use the same keystroke, such as
+pending, and only when bound to a single keystroke. While a chord is pending, it
+takes precedence over longer bindings that use the same keystroke, such as
 `ctrl-b alt-/` or `alt-/ x`. To use those bindings mid-chord, rebind or disable
 the shortcut.
 
