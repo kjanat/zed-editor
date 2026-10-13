@@ -1807,6 +1807,7 @@ mod view_commit_tests {
 #[cfg(test)]
 mod item_hook_tests {
     use super::*;
+    use fs::Fs;
     use gpui::{TestAppContext, VisualTestContext};
     use project::{FakeFs, Project};
     use serde_json::json;
@@ -1830,6 +1831,7 @@ mod item_hook_tests {
         cx: &mut TestAppContext,
     ) -> (Entity<Workspace>, &mut VisualTestContext) {
         let fs = FakeFs::new(cx.executor());
+        cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
         fs.insert_tree(
             path!("/project"),
             json!({
@@ -1900,6 +1902,9 @@ mod item_hook_tests {
         let (workspace, cx) = add_git_workspace(cx).await;
         let item_without_path =
             crate::add_test_item_reading_containers(&workspace, HookBits::ACTIVE_PROJECT_PATH, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&item_without_path, true, true, window, cx);
+        });
         item_without_path.update_in(cx, |_, window, cx| cx.focus_self(window));
         cx.run_until_parked();
         assert!(crate::container_reads(&item_without_path, cx) > 0);

@@ -16053,7 +16053,12 @@ mod tests {
         let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
 
         let item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
-        cx.update(|window, _| window.blur());
+        let status_bar_focus_handle = workspace.read_with(cx, |workspace, cx| {
+            workspace.status_bar().read(cx).focus_handle(cx)
+        });
+        cx.update(|window, cx| window.focus(&status_bar_focus_handle, cx));
+        cx.run_until_parked();
+        assert!(!cx.update(|window, cx| item.read(cx).focus_handle(cx).is_focused(window)));
         read_containers_in(&item, HookBits::FOCUS_HANDLE, cx);
 
         cx.dispatch_action(FocusCenterPane);
@@ -16662,6 +16667,7 @@ mod tests {
         let worktree_id = project.update(cx, |project, cx| {
             project.worktrees(cx).next().unwrap().read(cx).id()
         });
+        add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
         workspace.update(cx, |_, cx| {
             cx.set_global(StaticHooksReadContainers {
                 pane: Some(pane.downgrade()),

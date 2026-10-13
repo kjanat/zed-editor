@@ -501,11 +501,11 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (fs, workspace, item, cx) = workspace_with_item_reading_containers(cx).await;
-        let skill_file_path = agent_skills::global_skills_dir()
-            .join("my-rule")
-            .join(agent_skills::SKILL_FILE_NAME);
-        fs.insert_file(&skill_file_path, b"rule body".to_vec())
-            .await;
+        fs.insert_tree(
+            agent_skills::global_skills_dir().join("my-rule"),
+            json!({ "SKILL.md": "rule body" }),
+        )
+        .await;
 
         cx.update(|window, cx| {
             open_mention_uri(

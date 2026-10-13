@@ -3498,12 +3498,8 @@ mod tests {
                     .and_then(|item| item.act_as::<Editor>(cx))
                     .unwrap();
 
-                let preview = MarkdownPreviewView::create_markdown_view(
-                    &workspace,
-                    editor.clone(),
-                    window,
-                    cx,
-                );
+                let preview =
+                    MarkdownPreviewView::create_markdown_view(&workspace, editor, window, cx);
                 let pane = workspace.read(cx).active_pane().clone();
                 Pane::add_item(
                     &pane,

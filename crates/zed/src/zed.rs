@@ -3878,6 +3878,13 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let app_state = init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.on_new_window = Some(settings::OnNewWindow::EmptyTab);
+                });
+            });
+        });
 
         cx.update(|cx| {
             open_new(

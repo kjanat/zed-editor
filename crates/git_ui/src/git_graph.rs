@@ -6562,6 +6562,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         init_test(cx);
+        cx.update(editor::init);
 
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(
@@ -6589,6 +6590,9 @@ mod tests {
             HookBits::BUFFER_KIND | HookBits::ACT_AS_TYPE,
             cx,
         );
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&item, true, true, window, cx);
+        });
         item.update_in(cx, |_, window, cx| cx.focus_self(window));
         cx.run_until_parked();
 

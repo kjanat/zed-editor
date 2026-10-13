@@ -513,7 +513,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use editor::{Editor, MultiBufferOffset, SelectionEffects};
-    use gpui::TestAppContext;
+    use gpui::{AppContext as _, TestAppContext};
     use language::{Language, LanguageConfig};
     use project::{BasicContextProvider, FakeFs, Project, task_store::TaskStore};
     use serde_json::json;
@@ -525,7 +525,59 @@ mod tests {
         item::test::{HookBits, TestItem},
     };
 
-    use crate::task_contexts;
+    use crate::{Spawn, TasksModal, task_contexts};
+
+    #[gpui::test]
+    async fn test_spawn_missing_task_by_name_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                ".zed": {
+                    "tasks.json": r#"[
+                        {
+                            "label": "example task",
+                            "command": "echo",
+                            "args": ["4"]
+                        },
+                    ]"#,
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| item.read_containers_in(HookBits::ACT_AS_TYPE));
+
+        cx.dispatch_action(Spawn::ByName {
+            task_name: "missing task".to_string(),
+            reveal_target: None,
+        });
+        cx.run_until_parked();
+
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_modal::<TasksModal>(cx).is_some());
+        });
+    }
 
     #[gpui::test]
     async fn test_non_project_active_editor_uses_visible_worktree_context(cx: &mut TestAppContext) {
