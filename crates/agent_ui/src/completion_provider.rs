@@ -1416,7 +1416,7 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
         buffer_position: Anchor,
         _trigger: CompletionContext,
         window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Vec<CompletionResponse>>> {
         let state = buffer.update(cx, |buffer, cx| {
             let position = buffer_position.to_point(buffer);
@@ -1467,7 +1467,7 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                 );
                 let slash_candidates: Task<Vec<(SlashCompletionCandidate, Option<SkillInfo>)>> = {
                     let source = source.clone();
-                    cx.spawn(async move |_this, cx| {
+                    cx.spawn(async move |cx| {
                         let candidates = search_task.await;
                         cx.update(|cx| {
                             candidates
@@ -1724,7 +1724,7 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                     (f32::from(available_pixels) / f32::from(em_width)) as usize
                 };
 
-                cx.spawn(async move |_, cx| {
+                cx.spawn(async move |cx| {
                     let mut matches = search_task.await;
                     if show_section_headers {
                         matches.sort_by_key(|mat| match mat {

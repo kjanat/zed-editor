@@ -1548,12 +1548,13 @@ impl MultiWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
         build: B,
-    ) where
-        B: FnOnce(&mut Window, &mut gpui::Context<V>) -> V,
+    ) -> Task<Option<Entity<V>>>
+    where
+        B: FnOnce(&mut Window, &mut gpui::Context<V>) -> V + 'static,
     {
         self.workspace().update(cx, |workspace, cx| {
-            workspace.toggle_modal(window, cx, build);
-        });
+            workspace.toggle_modal(window, cx, build)
+        })
     }
 
     pub fn toggle_dock(

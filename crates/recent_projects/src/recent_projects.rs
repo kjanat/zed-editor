@@ -361,9 +361,9 @@ pub fn init(cx: &mut App) {
                 }
 
                 workspace.update_in(cx, |workspace, window, cx| {
-                    workspace.toggle_modal(window, cx, |window, cx| {
+                    workspace.toggle_modal(window, cx, move |window, cx| {
                         crate::wsl_picker::WslOpenModal::new(paths, create_new_window, window, cx)
-                    });
+                    }).detach();
                 }).log_err();
             })
             .detach();
@@ -378,9 +378,11 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
             let handle = cx.entity().downgrade();
             let fs = workspace.project().read(cx).fs().clone();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::wsl(create_new_window, fs, window, handle, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    RemoteServerProjects::wsl(create_new_window, fs, window, handle, cx)
+                })
+                .detach();
         });
     });
 
@@ -495,9 +497,11 @@ pub fn init(cx: &mut App) {
             }
             let handle = cx.entity().downgrade();
             let fs = workspace.project().read(cx).fs().clone();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::new(create_new_window, fs, window, handle, cx)
-            })
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    RemoteServerProjects::new(create_new_window, fs, window, handle, cx)
+                })
+                .detach();
         });
     });
 
@@ -525,17 +529,19 @@ pub fn init(cx: &mut App) {
             let app_state = workspace.app_state().clone();
             let dev_container_context = DevContainerContext::from_workspace(workspace, cx);
             let handle = cx.entity().downgrade();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::new_dev_container(
-                    fs,
-                    configs,
-                    app_state,
-                    dev_container_context,
-                    window,
-                    handle,
-                    cx,
-                )
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    RemoteServerProjects::new_dev_container(
+                        fs,
+                        configs,
+                        app_state,
+                        dev_container_context,
+                        window,
+                        handle,
+                        cx,
+                    )
+                })
+                .detach();
         });
     });
 
@@ -700,18 +706,20 @@ impl RecentProjects {
 
         let create_new_window = create_new_window.unwrap_or_else(|| default_open_in_new_window(cx));
 
-        workspace.toggle_modal(window, cx, |window, cx| {
-            let delegate = RecentProjectsDelegate::new(
-                weak,
-                create_new_window,
-                focus_handle,
-                open_folders,
-                window_project_groups,
-                ProjectPickerStyle::Modal,
-            );
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                let delegate = RecentProjectsDelegate::new(
+                    weak,
+                    create_new_window,
+                    focus_handle,
+                    open_folders,
+                    window_project_groups,
+                    ProjectPickerStyle::Modal,
+                );
 
-            Self::new(delegate, fs, 42., window, cx)
-        })
+                Self::new(delegate, fs, 42., window, cx)
+            })
+            .detach();
     }
 
     pub fn popover(

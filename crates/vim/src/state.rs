@@ -1387,9 +1387,11 @@ impl RegistersView {
         let editor = workspace
             .active_item(cx)
             .and_then(|item| item.act_as::<Editor>(cx));
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            RegistersView::new(editor, window, cx)
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                RegistersView::new(editor, window, cx)
+            })
+            .detach();
     }
 
     fn new(
@@ -1782,9 +1784,11 @@ impl MarksView {
 
     pub fn toggle(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         let handle = cx.weak_entity();
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            MarksView::new(handle, window, cx)
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                MarksView::new(handle, window, cx)
+            })
+            .detach();
     }
 
     fn new(

@@ -105,9 +105,12 @@ impl CommandPalette {
         };
 
         let entity = cx.weak_entity();
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            CommandPalette::new(previous_focus_handle, query, entity, window, cx)
-        });
+        let query = query.to_string();
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                CommandPalette::new(previous_focus_handle, &query, entity, window, cx)
+            })
+            .detach();
     }
 
     fn new(

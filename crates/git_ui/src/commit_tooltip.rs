@@ -587,16 +587,18 @@ pub(crate) fn fetch_unshallow(
                     .update(cx, |_, window, cx| {
                         workspace
                             .update(cx, |workspace, cx| {
-                                workspace.toggle_modal(window, cx, |window, cx| {
-                                    AskPassModal::new(
-                                        "git fetch --unshallow".into(),
-                                        prompt.into(),
-                                        tx,
-                                        cancellation,
-                                        window,
-                                        cx,
-                                    )
-                                });
+                                workspace
+                                    .toggle_modal(window, cx, move |window, cx| {
+                                        AskPassModal::new(
+                                            "git fetch --unshallow".into(),
+                                            prompt.into(),
+                                            tx,
+                                            cancellation,
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                    .detach();
                             })
                             .ok();
                     })

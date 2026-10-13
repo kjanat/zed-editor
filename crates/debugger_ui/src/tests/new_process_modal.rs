@@ -358,6 +358,88 @@ async fn test_debug_modal_subtitles_with_multiple_worktrees(
 }
 
 #[gpui::test]
+async fn test_start_new_session_starts_debug_and_launch_scenarios(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+            ".zed": {
+                "debug.json": r#"[
+                    {
+                        "adapter": "fake-adapter",
+                        "label": "Debug App",
+                        "request": "launch",
+                        "program": "./app",
+                        "cwd": "."
+                    }
+                ]"#
+            },
+            "main.rs": "fn main() {}"
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    let called_launch = Arc::new(AtomicBool::new(false));
+    let _subscription = project::debugger::test::intercept_debug_sessions(cx, {
+        let called_launch = called_launch.clone();
+        move |client| {
+            client.on_request::<dap::requests::Launch, _>({
+                let called_launch = called_launch.clone();
+                move |_, _| {
+                    called_launch.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+        }
+    });
+
+    for mode in [NewProcessMode::Debug, NewProcessMode::Launch] {
+        workspace
+            .update(cx, |multi, window, cx| {
+                multi.workspace().update(cx, |workspace, cx| {
+                    NewProcessModal::show(workspace, window, NewProcessMode::Debug, None, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let modal = workspace
+            .update(cx, |workspace, _, cx| {
+                workspace.active_modal::<NewProcessModal>(cx)
+            })
+            .unwrap()
+            .expect("Modal should be active");
+
+        modal.update_in(cx, |modal, window, cx| {
+            modal.set_configure("/project/main", "/project", false, window, cx);
+            modal.set_mode(mode);
+        });
+        cx.update(|window, cx| NewProcessModal::start_new_session(modal, window, cx));
+        cx.run_until_parked();
+
+        assert!(
+            called_launch.swap(false, Ordering::SeqCst),
+            "starting a session in {mode} mode should launch the debuggee"
+        );
+        let modal_open = workspace
+            .update(cx, |workspace, _, cx| {
+                workspace.active_modal::<NewProcessModal>(cx).is_some()
+            })
+            .unwrap();
+        assert!(!modal_open, "starting a session should dismiss the modal");
+    }
+}
+
+#[gpui::test]
 async fn test_dap_adapter_config_conversion_and_validation(cx: &mut TestAppContext) {
     init_test(cx);
 

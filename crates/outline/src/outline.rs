@@ -13,7 +13,7 @@ use language::{OffsetRangeExt, Outline, OutlineItem, OutlineSearchEntry};
 use picker::{MatchLocation, Picker, PickerDelegate, PreviewUpdate};
 use theme::ActiveTheme;
 use ui::{ListItem, ListItemSpacing, prelude::*, utils::buffer_text_style};
-use workspace::{DismissDecision, ModalView};
+use workspace::ModalView;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(OutlineView::register).detach();
@@ -39,9 +39,11 @@ pub fn toggle(
     };
     if workspace.read(cx).active_modal::<OutlineView>(cx).is_some() {
         workspace.update(cx, |workspace, cx| {
-            workspace.toggle_modal(window, cx, |window, cx| {
-                OutlineView::new(Outline::new(Vec::new()), editor.clone(), window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    OutlineView::new(Outline::new(Vec::new()), editor, window, cx)
+                })
+                .detach();
         });
         return;
     }
@@ -59,9 +61,11 @@ pub fn toggle(
             cx.update(|window, cx| {
                 let outline = Outline::new(items);
                 workspace.update(cx, |workspace, cx| {
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        OutlineView::new(outline, editor, window, cx)
-                    });
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            OutlineView::new(outline, editor, window, cx)
+                        })
+                        .detach();
                 });
             })
             .ok();
@@ -124,15 +128,10 @@ impl Focusable for OutlineView {
 
 impl EventEmitter<DismissEvent> for OutlineView {}
 impl ModalView for OutlineView {
-    fn on_before_dismiss(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> DismissDecision {
+    fn on_dismissed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker.update(cx, |picker, cx| {
             picker.delegate.restore_active_editor(window, cx)
         });
-        DismissDecision::Dismiss(true)
     }
 }
 

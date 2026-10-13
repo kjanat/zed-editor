@@ -50,9 +50,11 @@ impl LspCommandSelector {
         let project = workspace.project();
         let commands = available_commands(&buffer, project, cx).collect::<BTreeSet<_>>();
         let lsp_store = project.read(cx).lsp_store();
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            LspCommandSelector::new(lsp_store, commands, window, cx)
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                LspCommandSelector::new(lsp_store, commands, window, cx)
+            })
+            .detach();
     }
 
     fn new(

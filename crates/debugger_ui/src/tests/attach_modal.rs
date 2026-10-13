@@ -103,43 +103,48 @@ async fn test_show_attach_modal_and_select_process(
                 Ok(())
             });
         });
-    let attach_modal = workspace
+    workspace
         .update(cx, |multi, window, cx| {
             let workspace_handle = multi.workspace().downgrade();
-            multi.toggle_modal(window, cx, |window, cx| {
-                AttachModal::with_processes(
-                    workspace_handle,
-                    vec![
-                        Candidate {
-                            pid: 0,
-                            name: "fake-binary-1".into(),
-                            command: vec![],
-                        },
-                        Candidate {
-                            pid: 3,
-                            name: "real-binary-1".into(),
-                            command: vec![],
-                        },
-                        Candidate {
-                            pid: 1,
-                            name: "fake-binary-2".into(),
-                            command: vec![],
-                        },
-                    ]
-                    .into_iter()
-                    .collect(),
-                    true,
-                    ModalIntent::AttachToProcess(task::ZedDebugConfig {
-                        adapter: FakeAdapter::ADAPTER_NAME.into(),
-                        request: dap::DebugRequest::Attach(AttachRequest::default()),
-                        label: "attach example".into(),
-                        stop_on_entry: None,
-                    }),
-                    window,
-                    cx,
-                )
-            });
-
+            multi
+                .toggle_modal(window, cx, move |window, cx| {
+                    AttachModal::with_processes(
+                        workspace_handle,
+                        vec![
+                            Candidate {
+                                pid: 0,
+                                name: "fake-binary-1".into(),
+                                command: vec![],
+                            },
+                            Candidate {
+                                pid: 3,
+                                name: "real-binary-1".into(),
+                                command: vec![],
+                            },
+                            Candidate {
+                                pid: 1,
+                                name: "fake-binary-2".into(),
+                                command: vec![],
+                            },
+                        ]
+                        .into_iter()
+                        .collect(),
+                        true,
+                        ModalIntent::AttachToProcess(task::ZedDebugConfig {
+                            adapter: FakeAdapter::ADAPTER_NAME.into(),
+                            request: dap::DebugRequest::Attach(AttachRequest::default()),
+                            label: "attach example".into(),
+                            stop_on_entry: None,
+                        }),
+                        window,
+                        cx,
+                    )
+                })
+                .detach();
+        })
+        .unwrap();
+    let attach_modal = workspace
+        .update(cx, |multi, _, cx| {
             multi.active_modal::<AttachModal>(cx).unwrap()
         })
         .unwrap();

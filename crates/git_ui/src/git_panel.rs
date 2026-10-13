@@ -3559,14 +3559,17 @@ impl GitPanel {
             return;
         }
         // `git::StashAll` is also registered on the workspace, which dispatches it while
-        // `Workspace` is leased, so opening the modal inline would re-enter that update.
-        cx.defer_in(window, move |this, window, cx| {
-            let panel = cx.entity().downgrade();
-            this.workspace
+        // `Workspace` is leased, and hiding the Commit modal updates this panel.
+        let panel = cx.weak_entity();
+        let workspace = self.workspace.clone();
+        window.defer(cx, move |window, cx| {
+            workspace
                 .update(cx, |workspace, cx| {
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        StashMessageModal::new(panel, kind, window, cx)
-                    });
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            StashMessageModal::new(panel, kind, window, cx)
+                        })
+                        .detach();
                 })
                 .ok();
         });
@@ -4935,16 +4938,19 @@ impl GitPanel {
                 window
                     .update(cx, |_, window, cx| {
                         workspace.update(cx, |workspace, cx| {
-                            workspace.toggle_modal(window, cx, |window, cx| {
-                                AskPassModal::new(
-                                    operation.clone(),
-                                    prompt.into(),
-                                    tx,
-                                    cancellation,
-                                    window,
-                                    cx,
-                                )
-                            });
+                            let operation = operation.clone();
+                            workspace
+                                .toggle_modal(window, cx, move |window, cx| {
+                                    AskPassModal::new(
+                                        operation,
+                                        prompt.into(),
+                                        tx,
+                                        cancellation,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                                .detach();
                         })
                     })
                     .ok();
@@ -14697,6 +14703,44 @@ mod tests {
         panel.update_in(&mut cx, |panel, window, cx| {
             assert!(panel.commit_editor.focus_handle(cx).is_focused(window));
         });
+    }
+
+    #[gpui::test]
+    async fn test_stash_from_workspace_replaces_commit_modal(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let (_, _project, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "tracked": "tracked\n",
+            }),
+            &[("tracked", StatusCode::Modified)],
+        )
+        .await;
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            crate::commit_modal::CommitModal::toggle(workspace, None, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<crate::commit_modal::CommitModal>(cx)
+                    .is_some()
+            );
+        });
+
+        workspace.update_in(&mut cx, |_, window, cx| {
+            panel.update(cx, |panel, cx| panel.stash_all(&StashAll, window, cx));
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(workspace.active_modal::<StashMessageModal>(cx).is_some());
+        });
+        panel.read_with(&cx, |panel, _| assert!(!panel.modal_open));
     }
 
     #[gpui::test]

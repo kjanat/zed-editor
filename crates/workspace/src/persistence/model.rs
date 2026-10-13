@@ -365,7 +365,7 @@ impl SerializedPane {
         let mut preview_item_index = None;
         for (index, item) in self.children.iter().enumerate() {
             let project = project.clone();
-            item_tasks.push(pane.update_in(cx, |_, window, cx| {
+            item_tasks.push(cx.update(|window, cx| {
                 SerializableItemRegistry::deserialize(
                     &item.kind,
                     project,

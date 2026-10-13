@@ -3724,6 +3724,133 @@ mod tests {
         })
     }
 
+    fn add_message_editor_with_mention_trigger(
+        workspace: &Entity<Workspace>,
+        project: &Entity<Project>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<Editor> {
+        let editor = workspace.update_in(cx, |workspace, window, cx| {
+            let workspace_handle = cx.weak_entity();
+            let message_editor = cx.new(|cx| {
+                MessageEditor::new(
+                    workspace_handle,
+                    project.downgrade(),
+                    None,
+                    Default::default(),
+                    "Test Agent".into(),
+                    "Test",
+                    EditorMode::AutoHeight {
+                        max_lines: None,
+                        min_lines: 1,
+                    },
+                    window,
+                    cx,
+                )
+            });
+            workspace.active_pane().update(cx, |pane, cx| {
+                pane.add_item(
+                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
+                    true,
+                    true,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+            message_editor.read(cx).focus_handle(cx).focus(window, cx);
+            message_editor.read(cx).editor().clone()
+        });
+
+        editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("@", window, cx);
+            editor.move_to_end(&editor::actions::MoveToEnd, window, cx);
+        });
+        cx.run_until_parked();
+        editor.update(cx, |editor, _| {
+            assert!(!editor.has_visible_completions_menu());
+        });
+
+        editor
+    }
+
+    #[gpui::test]
+    async fn test_mention_completions_shown_inside_workspace_update(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let app_state = cx.update(AppState::test);
+
+        cx.update(|cx| {
+            editor::init(cx);
+            workspace::init(app_state.clone(), cx);
+        });
+
+        let project = Project::test(app_state.fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = add_message_editor_with_mention_trigger(&workspace, &project, &mut cx);
+
+        workspace.update_in(&mut cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.show_completions(&editor::actions::ShowCompletions, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        editor.update(&mut cx, |editor, _| {
+            assert!(editor.has_visible_completions_menu());
+            assert!(current_completion_labels(editor).contains(&"Files & Directories".to_string()));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_mention_completions_shown_inside_agent_panel_update(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let app_state = cx.update(AppState::test);
+
+        cx.update(|cx| {
+            editor::init(cx);
+            workspace::init(app_state.clone(), cx);
+            ThreadStore::init_global(cx);
+            LanguageModelRegistry::test(cx);
+            <dyn fs::Fs>::set_global(app_state.fs.clone(), cx);
+        });
+
+        let project = Project::test(app_state.fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let panel = workspace.update_in(&mut cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| crate::AgentPanel::new(workspace, window, cx));
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        cx.run_until_parked();
+
+        let editor = add_message_editor_with_mention_trigger(&workspace, &project, &mut cx);
+
+        panel.update_in(&mut cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.show_completions(&editor::actions::ShowCompletions, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        editor.update(&mut cx, |editor, _| {
+            assert!(editor.has_visible_completions_menu());
+            assert!(current_completion_labels(editor).contains(&"Files & Directories".to_string()));
+        });
+    }
+
     fn current_completion_labels(editor: &Editor) -> Vec<String> {
         let completions = editor.current_completions().expect("Missing completions");
         completions

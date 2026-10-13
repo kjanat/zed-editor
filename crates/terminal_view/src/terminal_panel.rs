@@ -469,9 +469,11 @@ impl TerminalPanel {
             }
             pane::Event::AddItem { item } => {
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| {
-                        item.added_to_pane(workspace, pane.clone(), window, cx)
-                    })
+                    let item = item.boxed_clone();
+                    let pane = pane.clone();
+                    window.defer(cx, move |window, cx| {
+                        item.added_to_pane(&workspace, pane, window, cx)
+                    });
                 }
                 self.serialize(cx);
             }
@@ -1878,11 +1880,14 @@ mod tests {
 
     use super::*;
     use crate::persistence::{SerializedPane, SerializedPaneGroup};
-    use gpui::{Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext};
+    use gpui::{AppContext as _, Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext};
     use pretty_assertions::assert_eq;
     use project::FakeFs;
     use settings::SettingsStore;
-    use workspace::{MultiWorkspace, WorkspaceId};
+    use workspace::{
+        MultiWorkspace, WorkspaceId,
+        item::test::{HookBits, TestItem},
+    };
 
     #[test]
     fn test_prepare_empty_task() {
@@ -1947,6 +1952,56 @@ mod tests {
             item_count, 5,
             "Terminal panel should bypass max_tabs limit and have all 5 terminals"
         );
+    }
+
+    #[gpui::test]
+    async fn test_items_added_to_the_panel_can_read_the_panel_and_workspace(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let terminal_panel = window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    cx.new(|cx| TerminalPanel::new(workspace, window, cx))
+                })
+            })
+            .unwrap();
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
+
+        let workspace_handle = workspace.downgrade();
+        let terminal_panel_handle = terminal_panel.downgrade();
+        let item = cx.new(|cx| {
+            let item = TestItem::new(cx)
+                .with_workspace_reader(workspace_handle)
+                .with_container_reader(move |cx| {
+                    if let Some(terminal_panel) = terminal_panel_handle.upgrade() {
+                        terminal_panel.read(cx);
+                    }
+                });
+            item.read_containers_in(HookBits::SET_NAV_HISTORY);
+            item
+        });
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+
+        item.read_with(cx, |item, _| {
+            assert!(item.nav_history.is_some());
+            assert!(
+                item.container_reads.get() > 0,
+                "adding the item should give it the terminal pane's history"
+            );
+        });
     }
 
     #[cfg(unix)]
@@ -2547,10 +2602,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
 
@@ -2620,10 +2677,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
 
@@ -2699,10 +2758,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
 
@@ -2789,10 +2850,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
         workspace.update_in(cx, |workspace, window, cx| {

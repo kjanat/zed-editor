@@ -27,15 +27,10 @@ impl Focusable for IconThemeSelector {
 }
 
 impl ModalView for IconThemeSelector {
-    fn on_before_dismiss(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> workspace::DismissDecision {
+    fn on_dismissed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.picker.update(cx, |picker, cx| {
             picker.delegate.revert_theme(cx);
         });
-        workspace::DismissDecision::Dismiss(true)
     }
 }
 

@@ -488,17 +488,19 @@ impl ThreadsArchiveView {
             .unwrap_or_default();
 
         workspace.update(cx, |workspace, cx| {
-            workspace.toggle_modal(window, cx, |window, cx| {
-                ProjectPickerModal::new(
-                    thread,
-                    fs,
-                    archive_view,
-                    current_workspace_id,
-                    sibling_workspace_ids,
-                    window,
-                    cx,
-                )
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    ProjectPickerModal::new(
+                        thread,
+                        fs,
+                        archive_view,
+                        current_workspace_id,
+                        sibling_workspace_ids,
+                        window,
+                        cx,
+                    )
+                })
+                .detach();
         });
     }
 

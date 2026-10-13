@@ -664,12 +664,9 @@ impl CompletionsMenu {
         provider: Option<&dyn CompletionProvider>,
         cx: &mut Context<Editor>,
     ) {
-        if !self.resolve_completions {
+        if !self.resolve_completions || provider.is_none() {
             return;
         }
-        let Some(provider) = provider else {
-            return;
-        };
 
         let entries = self.entries.borrow();
         if entries.is_empty() {
@@ -735,20 +732,25 @@ impl CompletionsMenu {
             .chain(candidate_ids.filter(|id| *id != selected_candidate_id))
             .collect::<Vec<usize>>();
         drop(entries);
+        drop(completions);
 
         if candidate_ids.is_empty() {
             return;
         }
 
-        let resolve_task = provider.resolve_completions(
-            self.buffer.clone(),
-            candidate_ids,
-            self.completions.clone(),
-            cx,
-        );
-
+        let buffer = self.buffer.clone();
+        let completions = self.completions.clone();
         let completion_id = self.id;
         cx.spawn(async move |editor, cx| {
+            let Some(provider) = editor
+                .read_with(cx, |editor, _| editor.completion_provider.clone())
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
+            let resolve_task = cx
+                .update(|cx| provider.resolve_completions(buffer, candidate_ids, completions, cx));
             if let Some(true) = resolve_task.await.log_err() {
                 editor
                     .update(cx, |editor, cx| {

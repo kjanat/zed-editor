@@ -2,7 +2,7 @@ use collections::HashMap;
 use command_palette;
 use editor::{CompletionProvider, Editor};
 use fuzzy::StringMatchCandidate;
-use gpui::{Context, Entity, SharedString, Window};
+use gpui::{App, Context, Entity, SharedString, Window};
 use language::{self, ToOffset};
 use project::{self, CompletionDisplayOptions};
 
@@ -30,7 +30,7 @@ impl CompletionProvider for ActionCompletionProvider {
         buffer_position: language::Anchor,
         _trigger: editor::CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> gpui::Task<anyhow::Result<Vec<project::CompletionResponse>>> {
         let buffer = buffer.read(cx);
         let mut count_back = 0;

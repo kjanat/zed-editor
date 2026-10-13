@@ -1054,9 +1054,11 @@ fn register_actions(
             })
         })
         .register_action(|workspace, _: &OpenUrlPrompt, window, cx| {
-            workspace.toggle_modal(window, cx, |window, cx| {
-                open_url_modal::OpenUrlModal::new(window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    open_url_modal::OpenUrlModal::new(window, cx)
+                })
+                .detach();
         })
         .register_action(|workspace, action: &OpenBrowser, _window, cx| {
             // Parse and validate the URL to ensure it's properly formatted

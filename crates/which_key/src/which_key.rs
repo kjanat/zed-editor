@@ -132,9 +132,12 @@ pub fn init(cx: &mut App) {
                             return;
                         };
 
-                        workspace.toggle_modal(window, cx, |window, cx| {
-                            WhichKeyModal::new(workspace_handle.clone(), window, cx)
-                        });
+                        let workspace_handle = cx.weak_entity();
+                        workspace
+                            .toggle_modal(window, cx, move |window, cx| {
+                                WhichKeyModal::new(workspace_handle, window, cx)
+                            })
+                            .detach();
                     })
                     .log_err();
             }));

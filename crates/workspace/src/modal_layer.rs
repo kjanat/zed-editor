@@ -1,6 +1,6 @@
 use gpui::{
     AnyView, App, DismissEvent, Entity, EventEmitter, FocusHandle, Global, ManagedView,
-    MouseButton, Subscription, WeakFocusHandle,
+    MouseButton, MouseDownEvent, Subscription, WeakEntity, WeakFocusHandle,
 };
 use ui::prelude::*;
 
@@ -55,6 +55,8 @@ pub trait ModalView: ManagedView {
         DismissDecision::Dismiss(true)
     }
 
+    fn on_dismissed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
     fn fade_out_background(&self) -> bool {
         false
     }
@@ -65,17 +67,32 @@ pub trait ModalView: ManagedView {
 }
 
 trait ModalViewHandle {
-    fn on_before_dismiss(&mut self, window: &mut Window, cx: &mut App) -> DismissDecision;
+    fn on_before_dismiss(&self, window: &mut Window, cx: &mut App) -> DismissDecision;
+    fn on_dismissed(&self, window: &mut Window, cx: &mut App);
+    fn boxed_clone(&self) -> Box<dyn ModalViewHandle>;
     fn view(&self) -> AnyView;
     fn focus_handle(&self, cx: &App) -> FocusHandle;
-    fn subscribe_dismiss(&self, window: &mut Window, cx: &mut Context<ModalLayer>) -> Subscription;
+    fn subscribe_dismiss(
+        &self,
+        modal_layer: WeakEntity<ModalLayer>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Subscription;
     fn fade_out_background(&self, cx: &mut App) -> bool;
     fn render_bare(&self, cx: &mut App) -> bool;
 }
 
 impl<V: ModalView> ModalViewHandle for Entity<V> {
-    fn on_before_dismiss(&mut self, window: &mut Window, cx: &mut App) -> DismissDecision {
+    fn on_before_dismiss(&self, window: &mut Window, cx: &mut App) -> DismissDecision {
         self.update(cx, |this, cx| this.on_before_dismiss(window, cx))
+    }
+
+    fn on_dismissed(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |this, cx| this.on_dismissed(window, cx))
+    }
+
+    fn boxed_clone(&self) -> Box<dyn ModalViewHandle> {
+        Box::new(self.clone())
     }
 
     fn view(&self) -> AnyView {
@@ -86,9 +103,16 @@ impl<V: ModalView> ModalViewHandle for Entity<V> {
         self.read(cx).focus_handle(cx)
     }
 
-    fn subscribe_dismiss(&self, window: &mut Window, cx: &mut Context<ModalLayer>) -> Subscription {
-        cx.subscribe_in(self, window, |this, _, _: &DismissEvent, window, cx| {
-            this.hide_modal(window, cx);
+    fn subscribe_dismiss(
+        &self,
+        modal_layer: WeakEntity<ModalLayer>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Subscription {
+        window.subscribe(self, cx, move |_, _: &DismissEvent, window, cx| {
+            if let Some(modal_layer) = modal_layer.upgrade() {
+                ModalLayer::hide(&modal_layer, window, cx);
+            }
         })
     }
 
@@ -103,9 +127,15 @@ impl<V: ModalView> ModalViewHandle for Entity<V> {
 
 pub struct ActiveModal {
     modal: Box<dyn ModalViewHandle>,
+    modal_focus_handle: FocusHandle,
     _subscriptions: [Subscription; 2],
     previous_focus_handle: Option<FocusHandle>,
     focus_handle: FocusHandle,
+}
+
+struct StashedModal {
+    modal: Box<dyn ModalViewHandle>,
+    modal_focus_handle: FocusHandle,
 }
 
 pub struct ModalLayer {
@@ -113,7 +143,7 @@ pub struct ModalLayer {
     // Kept alive (hidden) rather than dropped on dismissal so `ReopenLastPicker`
     // can reveal it again with its exact prior state. Left intact across
     // non-reopenable modals (e.g. the command palette), which may trigger the reopen.
-    stashed_modal: Option<Box<dyn ModalViewHandle>>,
+    stashed_modal: Option<StashedModal>,
     // Set when a reveal was requested while another modal was still active (e.g. the
     // which-key popup that is dismissed only after the reopen action fires). The reveal
     // then happens once that modal closes, so it doesn't matter whether the triggering
@@ -149,26 +179,48 @@ impl ModalLayer {
     /// If closing the current modal fails (e.g., due to `on_before_dismiss` returning
     /// `DismissDecision::Dismiss(false)` or `DismissDecision::Pending`), the new modal
     /// will not be shown.
-    pub fn toggle_modal<V, B>(&mut self, window: &mut Window, cx: &mut Context<Self>, build_view: B)
+    pub fn toggle<V, B>(
+        modal_layer: &Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+        build_view: B,
+    ) -> Option<Entity<V>>
     where
         V: ModalView,
         B: FnOnce(&mut Window, &mut Context<V>) -> V,
     {
         // Opening a modal explicitly supersedes any reveal that was waiting for the
         // layer to become free.
-        self.reveal_stash_when_free = false;
-        let mut previous_focus_handle = window.focused(cx);
-        if let Some(active_modal) = &self.active_modal {
-            let should_close = active_modal.modal.view().downcast::<V>().is_ok();
-            previous_focus_handle = active_modal.previous_focus_handle.clone();
-            let did_close = self.hide_modal(window, cx);
+        let (active_modal_is_same_type, previous_focus_handle) =
+            modal_layer.update(cx, |modal_layer, cx| {
+                modal_layer.reveal_stash_when_free = false;
+                match &modal_layer.active_modal {
+                    Some(active_modal) => (
+                        Some(active_modal.modal.view().downcast::<V>().is_ok()),
+                        active_modal.previous_focus_handle.clone(),
+                    ),
+                    None => (None, window.focused(cx)),
+                }
+            });
+        if let Some(should_close) = active_modal_is_same_type {
+            let did_close = Self::hide(modal_layer, window, cx);
             if should_close || !did_close {
-                return;
+                return None;
             }
         }
         let new_modal = cx.new(|cx| build_view(window, cx));
-        self.show_modal(Box::new(new_modal), previous_focus_handle, window, cx);
-        cx.emit(ModalOpenedEvent);
+        let modal_focus_handle = new_modal.focus_handle(cx);
+        modal_layer.update(cx, |modal_layer, cx| {
+            modal_layer.show_modal(
+                Box::new(new_modal.clone()),
+                modal_focus_handle,
+                previous_focus_handle,
+                window,
+                cx,
+            );
+            cx.emit(ModalOpenedEvent);
+        });
+        Some(new_modal)
     }
 
     /// Shows a modal and sets up subscriptions for dismiss events and focus tracking.
@@ -176,23 +228,26 @@ impl ModalLayer {
     fn show_modal(
         &mut self,
         modal: Box<dyn ModalViewHandle>,
+        modal_focus_handle: FocusHandle,
         previous_focus_handle: Option<FocusHandle>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let focus_handle = cx.focus_handle();
-        let modal_focus_handle = modal.focus_handle(cx);
-        let dismiss_subscription = modal.subscribe_dismiss(window, cx);
+        let modal_layer = cx.weak_entity();
+        let dismiss_subscription = modal.subscribe_dismiss(modal_layer.clone(), window, cx);
+        let focus_out_subscription =
+            window.on_focus_out(&focus_handle, cx, move |_, window, cx| {
+                if let Some(modal_layer) = modal_layer.upgrade()
+                    && modal_layer.read(cx).dismiss_on_focus_lost
+                {
+                    Self::hide(&modal_layer, window, cx);
+                }
+            });
         self.active_modal = Some(ActiveModal {
             modal,
-            _subscriptions: [
-                dismiss_subscription,
-                cx.on_focus_out(&focus_handle, window, |this, _event, window, cx| {
-                    if this.dismiss_on_focus_lost {
-                        this.hide_modal(window, cx);
-                    }
-                }),
-            ],
+            modal_focus_handle: modal_focus_handle.clone(),
+            _subscriptions: [dismiss_subscription, focus_out_subscription],
             previous_focus_handle,
             focus_handle,
         });
@@ -210,15 +265,21 @@ impl ModalLayer {
         }
         if self.active_modal.is_some() {
             // Another modal is still closing (e.g. the which-key popup that dismisses
-            // only after this action fires). Reveal once it is gone; see `hide_modal`.
+            // only after this action fires). Reveal once it is gone; see `finish_hide`.
             self.reveal_stash_when_free = true;
             return false;
         }
-        let Some(modal) = self.stashed_modal.take() else {
+        let Some(stashed_modal) = self.stashed_modal.take() else {
             return false;
         };
         let previous_focus_handle = window.focused(cx);
-        self.show_modal(modal, previous_focus_handle, window, cx);
+        self.show_modal(
+            stashed_modal.modal,
+            stashed_modal.modal_focus_handle,
+            previous_focus_handle,
+            window,
+            cx,
+        );
         cx.emit(ModalOpenedEvent);
         true
     }
@@ -230,18 +291,36 @@ impl ModalLayer {
     /// focused element.
     ///
     /// Returns `true` if the modal was successfully hidden, `false` otherwise.
-    pub fn hide_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(active_modal) = self.active_modal.as_mut() else {
-            self.dismiss_on_focus_lost = false;
+    pub fn hide(modal_layer: &Entity<Self>, window: &mut Window, cx: &mut App) -> bool {
+        let Some(modal) = modal_layer
+            .read(cx)
+            .active_modal
+            .as_ref()
+            .map(|active_modal| active_modal.modal.boxed_clone())
+        else {
+            modal_layer.update(cx, |modal_layer, _| {
+                modal_layer.dismiss_on_focus_lost = false;
+            });
             return false;
         };
+        let decision = modal.on_before_dismiss(window, cx);
+        modal_layer.update(cx, |modal_layer, cx| {
+            modal_layer.finish_hide(modal, decision, window, cx)
+        })
+    }
 
-        match active_modal.modal.on_before_dismiss(window, cx) {
-            DismissDecision::Dismiss(should_dismiss) => {
-                if !should_dismiss {
-                    self.dismiss_on_focus_lost = !should_dismiss;
-                    return false;
-                }
+    fn finish_hide(
+        &mut self,
+        modal: Box<dyn ModalViewHandle>,
+        decision: DismissDecision,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match decision {
+            DismissDecision::Dismiss(true) => {}
+            DismissDecision::Dismiss(false) => {
+                self.dismiss_on_focus_lost = true;
+                return false;
             }
             DismissDecision::Pending => {
                 self.dismiss_on_focus_lost = false;
@@ -249,18 +328,27 @@ impl ModalLayer {
             }
         }
 
-        if let Some(active_modal) = self.active_modal.take() {
-            let reopenable = focus_handle_is_reopenable(&active_modal.modal.focus_handle(cx), cx);
-            if let Some(previous_focus) = active_modal.previous_focus_handle
-                && active_modal.focus_handle.contains_focused(window, cx)
-            {
-                previous_focus.focus(window, cx);
-            }
-            if reopenable {
-                self.stashed_modal = Some(active_modal.modal);
-            }
-            cx.notify();
+        let modal_id = modal.view().entity_id();
+        let Some(active_modal) = self
+            .active_modal
+            .take_if(|active_modal| active_modal.modal.view().entity_id() == modal_id)
+        else {
+            return false;
+        };
+        let reopenable = focus_handle_is_reopenable(&active_modal.modal_focus_handle, cx);
+        if let Some(previous_focus) = active_modal.previous_focus_handle
+            && active_modal.focus_handle.contains_focused(window, cx)
+        {
+            previous_focus.focus(window, cx);
         }
+        if reopenable {
+            self.stashed_modal = Some(StashedModal {
+                modal: active_modal.modal,
+                modal_focus_handle: active_modal.modal_focus_handle,
+            });
+        }
+        cx.notify();
+        window.defer(cx, move |window, cx| modal.on_dismissed(window, cx));
         self.dismiss_on_focus_lost = false;
         // A reveal was requested while this modal was still active; now that the layer
         // is free, honor it.
@@ -307,9 +395,11 @@ impl Render for ModalLayer {
             })
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.hide_modal(window, cx);
-                }),
+                cx.entity_listener(
+                    |modal_layer: Entity<Self>, _: &MouseDownEvent, window, cx| {
+                        Self::hide(&modal_layer, window, cx);
+                    },
+                ),
             )
             .child(
                 v_flex()

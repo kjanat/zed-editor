@@ -18,9 +18,11 @@ pub fn open(
     cx: &mut Context<Workspace>,
 ) {
     let project = workspace.project().clone();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        RepositorySelector::new(project, rems(34.), window, cx)
-    })
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            RepositorySelector::new(project, rems(34.), window, cx)
+        })
+        .detach();
 }
 
 pub struct RepositorySelector {

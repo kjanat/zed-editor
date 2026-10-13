@@ -2190,24 +2190,27 @@ impl OnMatchingLines {
             regexes.push((regex, !inner.invert))
         }
 
-        if let Some(pane) = vim.pane(window, cx) {
-            pane.update(cx, |pane, cx| {
-                if let Some(search_bar) = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>()
-                {
-                    search_bar.update(cx, |search_bar, cx| {
-                        if search_bar.show(window, cx) {
-                            let _ = search_bar.search(
-                                &last_pattern,
-                                Some(SearchOptions::REGEX | SearchOptions::CASE_SENSITIVE),
-                                false,
-                                window,
-                                cx,
-                            );
-                        }
-                    });
-                }
+        if let Some(pane) = vim.pane(window, cx)
+            && let Some(search_bar) = pane
+                .read(cx)
+                .toolbar()
+                .read(cx)
+                .item_of_type::<BufferSearchBar>()
+        {
+            window.defer(cx, move |window, cx| {
+                search_bar.update(cx, |search_bar, cx| {
+                    if search_bar.show(window, cx) {
+                        let _ = search_bar.search(
+                            &last_pattern,
+                            Some(SearchOptions::REGEX | SearchOptions::CASE_SENSITIVE),
+                            false,
+                            window,
+                            cx,
+                        );
+                    }
+                });
             });
-        };
+        }
 
         vim.update_editor(cx, |_, editor, cx| {
             let snapshot = editor.buffer().read(cx).snapshot(cx);
@@ -2661,6 +2664,7 @@ mod test {
     use indoc::indoc;
     use language::Point;
     use multi_buffer::{MultiBuffer, PathKey};
+    use search::BufferSearchBar;
     use settings::Settings;
     use util::path;
     use workspace::{OpenOptions, Workspace};
@@ -3120,6 +3124,28 @@ mod test {
             a
             a
             ˇa"});
+    }
+
+    #[gpui::test]
+    async fn test_command_matching_lines_searches_for_last_pattern(cx: &mut TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.set_state("ˇmatch α\nkeep β\nmatch γ\n", Mode::Normal);
+
+        start_matching_lines(&mut cx, false);
+        cx.run_until_parked();
+
+        let search_bar = cx.workspace(|workspace, _, cx| {
+            workspace
+                .active_pane()
+                .read(cx)
+                .toolbar()
+                .read(cx)
+                .item_of_type::<BufferSearchBar>()
+                .expect("the vim test context adds a buffer search bar")
+        });
+        cx.update_entity(search_bar, |search_bar, _window, cx| {
+            assert_eq!(search_bar.query(cx), "match");
+        });
     }
 
     #[gpui::test]

@@ -4426,6 +4426,41 @@ async fn test_open_without_dismiss_opens_multiple_files(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+async fn test_open_without_dismiss_on_channel_dismisses_finder(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(path!("/root"), json!({ "notes.txt": "notes" }))
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+    let (picker, workspace, cx) = build_find_picker(project, cx);
+
+    simulate_input(cx, "notes");
+    picker.update(cx, |picker, _| {
+        picker.delegate.matches.matches = vec![Match::Channel {
+            channel_id: ChannelId(1),
+            channel_name: "notes".into(),
+            string_match: StringMatch {
+                candidate_id: 0,
+                score: 1.0,
+                positions: Vec::new(),
+                string: "notes".into(),
+            },
+        }];
+        picker.delegate.selected_index = 0;
+    });
+
+    cx.dispatch_action(OpenWithoutDismiss);
+    cx.run_until_parked();
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.active_modal::<FileFinder>(cx).is_none());
+    });
+}
+
+#[gpui::test]
 async fn test_open_without_dismiss_then_confirm_closes_finder(cx: &mut TestAppContext) {
     let app_state = init_test(cx);
     app_state

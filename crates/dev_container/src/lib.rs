@@ -163,9 +163,11 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &InitializeDevContainer, cx| {
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
             let weak_entity = cx.weak_entity();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                DevContainerModal::new(weak_entity, window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    DevContainerModal::new(weak_entity, window, cx)
+                })
+                .detach();
         });
     });
 }

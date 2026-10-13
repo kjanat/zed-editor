@@ -17,7 +17,7 @@ use project::ProjectPath;
 use settings::SeedQuerySetting;
 use text::Anchor;
 use ui::Window;
-use workspace::{DismissDecision, ItemHandle, ModalView, Workspace, WorkspaceDb, WorkspaceId};
+use workspace::{ItemHandle, ModalView, Workspace, WorkspaceDb, WorkspaceId};
 
 mod delegate;
 mod render;
@@ -160,9 +160,11 @@ impl TextFinder {
                 .update_in(cx, |workspace, window, cx| {
                     remove_project_search_tab(project_search_item_id, workspace, window, cx);
                     let workspace_id = workspace.database_id();
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        Self::new(delegate, None, workspace_id, window, cx)
-                    });
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            Self::new(delegate, None, workspace_id, window, cx)
+                        })
+                        .detach();
                 })
                 .ok();
         })
@@ -408,9 +410,11 @@ impl TextFinder {
             workspace
                 .update_in(cx, |workspace, window, cx| {
                     let workspace_id = workspace.database_id();
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        Self::new(delegate, seed_query, workspace_id, window, cx)
-                    });
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            Self::new(delegate, seed_query, workspace_id, window, cx)
+                        })
+                        .detach();
                 })
                 .ok();
         })
@@ -442,7 +446,9 @@ impl TextFinder {
         picker.update(cx, |picker, cx| {
             picker.delegate.focus_handle = picker_focus_handle.clone();
             picker.delegate.query_editor = Some(query_editor);
-            picker.delegate.hook_up_any_ongoing_search(picker_weak, cx);
+            cx.defer_in(window, move |picker, _, cx| {
+                picker.delegate.hook_up_any_ongoing_search(picker_weak, cx);
+            });
             if let Some(seed_query) = seed_query {
                 // Restore filters before seeding the query so the initial search runs with them.
                 if let Some(options) = seed_query.options {
@@ -503,16 +509,11 @@ fn remove_project_search_tab(
 }
 
 impl ModalView for TextFinder {
-    fn on_before_dismiss(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> DismissDecision {
+    fn on_dismissed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let picker = self.picker.read(cx);
         let query = picker.query(cx);
         let options = picker.delegate.search_options;
         store_last_search(self.workspace_id, query, options, cx);
-        DismissDecision::Dismiss(true)
     }
 }
 

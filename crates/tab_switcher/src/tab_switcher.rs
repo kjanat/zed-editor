@@ -78,11 +78,7 @@ impl TabSwitcher {
                 return;
             };
 
-            tab_switcher.update(cx, |tab_switcher, cx| {
-                tab_switcher
-                    .picker
-                    .update(cx, |picker, cx| picker.cycle_selection(window, cx))
-            });
+            Self::cycle_selection(&tab_switcher, window, cx);
         });
         workspace.register_action(|workspace, _action: &ToggleAll, window, cx| {
             let Some(tab_switcher) = workspace.active_modal::<Self>(cx) else {
@@ -90,11 +86,7 @@ impl TabSwitcher {
                 return;
             };
 
-            tab_switcher.update(cx, |tab_switcher, cx| {
-                tab_switcher
-                    .picker
-                    .update(cx, |picker, cx| picker.cycle_selection(window, cx))
-            });
+            Self::cycle_selection(&tab_switcher, window, cx);
         });
         workspace.register_action(|workspace, _action: &OpenInActivePane, window, cx| {
             let Some(tab_switcher) = workspace.active_modal::<Self>(cx) else {
@@ -102,11 +94,14 @@ impl TabSwitcher {
                 return;
             };
 
-            tab_switcher.update(cx, |tab_switcher, cx| {
-                tab_switcher
-                    .picker
-                    .update(cx, |picker, cx| picker.cycle_selection(window, cx))
-            });
+            Self::cycle_selection(&tab_switcher, window, cx);
+        });
+    }
+
+    fn cycle_selection(tab_switcher: &Entity<Self>, window: &mut Window, cx: &mut App) {
+        let picker = tab_switcher.read(cx).picker.clone();
+        window.defer(cx, move |window, cx| {
+            picker.update(cx, |picker, cx| picker.cycle_selection(window, cx));
         });
     }
 
@@ -145,21 +140,23 @@ impl TabSwitcher {
             .iter()
             .map(|p| (p.clone(), p.read(cx).active_item_index()))
             .collect();
-        workspace.toggle_modal(window, cx, |window, cx| {
-            let delegate = TabSwitcherDelegate::new(
-                project,
-                select_last,
-                cx.entity().downgrade(),
-                weak_pane,
-                weak_workspace,
-                is_global,
-                open_in_active_pane,
-                window,
-                cx,
-                original_items,
-            );
-            TabSwitcher::new(delegate, window, is_global, cx)
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                let delegate = TabSwitcherDelegate::new(
+                    project,
+                    select_last,
+                    cx.entity().downgrade(),
+                    weak_pane,
+                    weak_workspace,
+                    is_global,
+                    open_in_active_pane,
+                    window,
+                    cx,
+                    original_items,
+                );
+                TabSwitcher::new(delegate, window, is_global, cx)
+            })
+            .detach();
     }
 
     fn new(
@@ -212,23 +209,20 @@ impl TabSwitcher {
             self.init_modifiers = None;
             if self.picker.read(cx).delegate.matches.is_empty() {
                 cx.emit(DismissEvent)
-            } else if self.visible {
-                window.dispatch_action(menu::Confirm.boxed_clone(), cx);
             } else {
-                self.picker.update(cx, |picker, cx| {
-                    picker.delegate.confirm(false, window, cx);
-                });
+                window.dispatch_action(menu::Confirm.boxed_clone(), cx);
             }
         }
     }
 
     fn handle_close_selected_item(
-        &mut self,
+        tab_switcher: Entity<Self>,
         _: &CloseSelectedItem,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) {
-        self.picker.update(cx, |picker, cx| {
+        let picker = tab_switcher.read(cx).picker.clone();
+        picker.update(cx, |picker, cx| {
             picker
                 .delegate
                 .close_item_at(picker.delegate.selected_index(), window, cx)
@@ -251,7 +245,7 @@ impl Render for TabSwitcher {
             .key_context("TabSwitcher")
             .w(rems(PANEL_WIDTH_REMS))
             .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
-            .on_action(cx.listener(Self::handle_close_selected_item))
+            .on_action(cx.entity_listener(Self::handle_close_selected_item))
             .when(self.visible, |el| el.child(picker.clone()))
             .when(!self.visible, |el| {
                 el.child(div().size_0().overflow_hidden().child(picker.clone()))
@@ -713,9 +707,15 @@ impl TabSwitcherDelegate {
                 return;
             };
             let database_id = workspace.read(cx).database_id();
-            let task = selected_match.item.clone_on_split(database_id, window, cx);
+            let item = selected_match.item.boxed_clone();
             let current_pane = current_pane.downgrade();
             cx.spawn_in(window, async move |_, cx| {
+                let Some(task) = cx
+                    .update(|window, cx| item.clone_on_split(database_id, window, cx))
+                    .log_err()
+                else {
+                    return;
+                };
                 if let Some(clone) = task.await {
                     current_pane
                         .update_in(cx, |pane, window, cx| {

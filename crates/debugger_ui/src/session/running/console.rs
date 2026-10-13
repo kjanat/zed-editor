@@ -18,12 +18,12 @@ use language::{Anchor, Buffer, CharScopeContext, CodeLabel, TextBufferSnapshot, 
 use menu::{Confirm, SelectNext, SelectPrevious};
 use project::{
     CompletionDisplayOptions, CompletionResponse,
-    debugger::session::{CompletionsQuery, OutputToken, Session},
+    debugger::session::{CompletionsQuery, OutputToken, Session, SessionEvent},
     lsp_store::CompletionDocumentation,
     search_history::{SearchHistory, SearchHistoryCursor},
 };
 use settings::Settings;
-use std::{ops::Range, rc::Rc};
+use std::{cell::RefCell, ops::Range, rc::Rc};
 use theme::Theme;
 use theme_settings::ThemeSettings;
 use ui::{ContextMenu, Divider, PopoverMenu, SplitButton, Tooltip, prelude::*};
@@ -41,6 +41,7 @@ pub struct Console {
     console: Entity<Editor>,
     query_bar: Entity<Editor>,
     session: Entity<Session>,
+    completion_trigger_characters: Rc<RefCell<Option<Vec<String>>>>,
     _subscriptions: Vec<Subscription>,
     variable_list: Entity<VariableList>,
     stack_frame_list: Entity<StackFrameList>,
@@ -90,6 +91,13 @@ impl Console {
         let focus_handle = cx.focus_handle();
 
         let this = cx.weak_entity();
+        let completion_trigger_characters = Rc::new(RefCell::new(
+            session
+                .read(cx)
+                .capabilities()
+                .completion_trigger_characters
+                .clone(),
+        ));
         let query_bar = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_placeholder_text("Evaluate an expression", window, cx);
@@ -97,12 +105,23 @@ impl Console {
             editor.set_show_gutter(false, cx);
             editor.set_show_wrap_guides(false, cx);
             editor.set_show_indent_guides(false, cx);
-            editor.set_completion_provider(Some(Rc::new(ConsoleQueryBarCompletionProvider(this))));
+            editor.set_completion_provider(Some(Rc::new(ConsoleQueryBarCompletionProvider {
+                console: this,
+                trigger_characters: completion_trigger_characters.clone(),
+            })));
 
             editor
         });
 
         let _subscriptions = vec![
+            cx.observe(&session, |console, _, cx| {
+                console.refresh_completion_trigger_characters(cx);
+            }),
+            cx.subscribe(&session, |console, _, event: &SessionEvent, cx| {
+                if let SessionEvent::CapabilitiesLoaded = event {
+                    console.refresh_completion_trigger_characters(cx);
+                }
+            }),
             cx.subscribe(&stack_frame_list, Self::handle_stack_frame_list_events),
             cx.on_focus(&focus_handle, window, |console, window, cx| {
                 if console.is_running(cx) {
@@ -115,6 +134,7 @@ impl Console {
             session,
             console,
             query_bar,
+            completion_trigger_characters,
             variable_list,
             _subscriptions,
             stack_frame_list,
@@ -134,8 +154,22 @@ impl Console {
         &self.console
     }
 
+    #[cfg(test)]
+    pub(crate) fn query_bar(&self) -> &Entity<Editor> {
+        &self.query_bar
+    }
+
     fn is_running(&self, cx: &Context<Self>) -> bool {
         self.session.read(cx).is_started()
+    }
+
+    fn refresh_completion_trigger_characters(&self, cx: &App) {
+        *self.completion_trigger_characters.borrow_mut() = self
+            .session
+            .read(cx)
+            .capabilities()
+            .completion_trigger_characters
+            .clone();
     }
 
     fn handle_stack_frame_list_events(
@@ -507,7 +541,10 @@ impl Focusable for Console {
     }
 }
 
-struct ConsoleQueryBarCompletionProvider(WeakEntity<Console>);
+struct ConsoleQueryBarCompletionProvider {
+    console: WeakEntity<Console>,
+    trigger_characters: Rc<RefCell<Option<Vec<String>>>>,
+}
 
 impl CompletionProvider for ConsoleQueryBarCompletionProvider {
     fn completions(
@@ -516,9 +553,9 @@ impl CompletionProvider for ConsoleQueryBarCompletionProvider {
         buffer_position: language::Anchor,
         _trigger: editor::CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Vec<CompletionResponse>>> {
-        let Some(console) = self.0.upgrade() else {
+        let Some(console) = self.console.upgrade() else {
             return Task::ready(Ok(Vec::new()));
         };
 
@@ -561,19 +598,10 @@ impl CompletionProvider for ConsoleQueryBarCompletionProvider {
             return true;
         }
 
-        self.0
-            .read_with(cx, |console, cx| {
-                console
-                    .session
-                    .read(cx)
-                    .capabilities()
-                    .completion_trigger_characters
-                    .as_ref()
-                    .map(|triggers| triggers.contains(&text.to_string()))
-            })
-            .ok()
-            .flatten()
-            .unwrap_or(true)
+        self.trigger_characters
+            .borrow()
+            .as_ref()
+            .is_none_or(|triggers| triggers.contains(&text.to_string()))
     }
 }
 
@@ -583,7 +611,7 @@ impl ConsoleQueryBarCompletionProvider {
         console: &Entity<Console>,
         buffer: &Entity<Buffer>,
         buffer_position: language::Anchor,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Vec<CompletionResponse>>> {
         let (variables, string_matches) = console.update(cx, |console, cx| {
             let mut variables = HashMap::default();
@@ -622,7 +650,7 @@ impl ConsoleQueryBarCompletionProvider {
         let snapshot = buffer.read(cx).text_snapshot();
         let buffer_text = snapshot.text();
 
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |cx| {
             const LIMIT: usize = 10;
             let matches = fuzzy::match_strings(
                 &string_matches,
@@ -725,7 +753,7 @@ impl ConsoleQueryBarCompletionProvider {
         console: &Entity<Console>,
         buffer: &Entity<Buffer>,
         buffer_position: language::Anchor,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Vec<CompletionResponse>>> {
         let completion_task = console.update(cx, |console, cx| {
             console.session.update(cx, |state, cx| {

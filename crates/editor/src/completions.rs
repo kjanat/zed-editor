@@ -515,9 +515,7 @@ impl Editor {
             })
         });
 
-        let provider_responses = if let Some(provider) = &provider
-            && load_provider_completions
-        {
+        let completion_context = if provider.is_some() && load_provider_completions {
             let trigger_character = trigger
                 .as_ref()
                 .filter(|trigger| {
@@ -527,17 +525,15 @@ impl Editor {
                         .contains(trigger.as_str())
                 })
                 .cloned();
-            let completion_context = CompletionContext {
+            Some(CompletionContext {
                 trigger_kind: match &trigger_character {
                     Some(_) => CompletionTriggerKind::TRIGGER_CHARACTER,
                     None => CompletionTriggerKind::INVOKED,
                 },
                 trigger_character,
-            };
-
-            provider.completions(&buffer, buffer_position, completion_context, window, cx)
+            })
         } else {
-            Task::ready(Ok(Vec::new()))
+            None
         };
 
         let load_word_completions = if !self.word_completions_enabled {
@@ -635,6 +631,19 @@ impl Editor {
                 this.completion_tasks.retain(|(task_id, _)| *task_id >= id);
             }) else {
                 return;
+            };
+
+            let provider_responses = if let Some(provider) = &provider
+                && let Some(completion_context) = completion_context
+            {
+                let Ok(provider_responses) = cx.update(|window, cx| {
+                    provider.completions(&buffer, buffer_position, completion_context, window, cx)
+                }) else {
+                    return;
+                };
+                provider_responses
+            } else {
+                Task::ready(Ok(Vec::new()))
             };
 
             // TODO: Ideally completions from different sources would be selectively re-queried, so
@@ -1013,15 +1022,20 @@ impl Editor {
             &multibuffer_snapshot,
         );
 
-        let show_new_completions_on_confirm = completion
-            .confirm
-            .as_ref()
-            .is_some_and(|confirm| confirm(intent, window, cx));
-        if show_new_completions_on_confirm {
-            self.open_or_update_completions_menu(None, None, false, window, cx);
+        if let Some(confirm) = completion.confirm.clone() {
+            let editor = cx.weak_entity();
+            window.defer(cx, move |window, cx| {
+                if confirm(intent, window, cx) {
+                    editor
+                        .update(cx, |editor, cx| {
+                            editor.open_or_update_completions_menu(None, None, false, window, cx);
+                        })
+                        .ok();
+                }
+            });
         }
 
-        let provider = self.completion_provider.as_ref()?;
+        let provider = self.completion_provider.clone()?;
 
         let lsp_store = self.project().map(|project| project.read(cx).lsp_store());
         let command = lsp_store.as_ref().and_then(|lsp_store| {
@@ -1057,14 +1071,7 @@ impl Editor {
         });
 
         drop(completion);
-        let apply_edits = provider.apply_additional_edits_for_completion(
-            buffer_handle.clone(),
-            completions_menu.completions.clone(),
-            candidate_id,
-            true,
-            all_commit_ranges,
-            cx,
-        );
+        let completions = completions_menu.completions.clone();
 
         let editor_settings = EditorSettings::get_global(cx);
         if editor_settings.show_signature_help_after_edits || editor_settings.auto_signature_help {
@@ -1079,6 +1086,16 @@ impl Editor {
             .update(cx, |buffer, cx| buffer.finalize_last_transaction(cx));
 
         Some(cx.spawn_in(window, async move |editor, cx| {
+            let apply_edits = cx.update(|_, cx| {
+                provider.apply_additional_edits_for_completion(
+                    buffer_handle.clone(),
+                    completions,
+                    candidate_id,
+                    true,
+                    all_commit_ranges,
+                    cx,
+                )
+            })?;
             let additional_edits_tx = apply_edits.await?;
 
             if let Some((lsp_store, command)) = lsp_store.zip(command) {
@@ -1147,7 +1164,7 @@ pub trait CompletionProvider {
         buffer_position: text::Anchor,
         trigger: CompletionContext,
         window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Vec<CompletionResponse>>>;
 
     fn resolve_completions(
@@ -1155,7 +1172,7 @@ pub trait CompletionProvider {
         _buffer: Entity<Buffer>,
         _completion_indices: Vec<usize>,
         _completions: Rc<RefCell<Box<[Completion]>>>,
-        _cx: &mut Context<Editor>,
+        _cx: &mut App,
     ) -> Task<Result<bool>> {
         Task::ready(Ok(false))
     }
@@ -1167,7 +1184,7 @@ pub trait CompletionProvider {
         _completion_index: usize,
         _push_to_history: bool,
         _all_commit_ranges: Vec<Range<language::Anchor>>,
-        _cx: &mut Context<Editor>,
+        _cx: &mut App,
     ) -> Task<Result<Option<language::Transaction>>> {
         Task::ready(Ok(None))
     }
@@ -1465,7 +1482,7 @@ impl CompletionProvider for Entity<Project> {
         buffer_position: text::Anchor,
         options: CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Vec<CompletionResponse>>> {
         self.update(cx, |project, cx| {
             let task = project.completions(buffer, buffer_position, options, cx);
@@ -1478,7 +1495,7 @@ impl CompletionProvider for Entity<Project> {
         buffer: Entity<Buffer>,
         completion_indices: Vec<usize>,
         completions: Rc<RefCell<Box<[Completion]>>>,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<bool>> {
         self.update(cx, |project, cx| {
             project.lsp_store().update(cx, |lsp_store, cx| {
@@ -1494,7 +1511,7 @@ impl CompletionProvider for Entity<Project> {
         completion_index: usize,
         push_to_history: bool,
         all_commit_ranges: Vec<Range<language::Anchor>>,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Option<language::Transaction>>> {
         self.update(cx, |project, cx| {
             project.lsp_store().update(cx, |lsp_store, cx| {

@@ -87,9 +87,11 @@ impl EncodingSelector {
             return Some(());
         }
 
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            EncodingSelector::new(buffer, window, cx)
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                EncodingSelector::new(buffer, window, cx)
+            })
+            .detach();
         Some(())
     }
 

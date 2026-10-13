@@ -156,21 +156,23 @@ impl FileFinder {
                 .update_in(cx, |workspace, window, cx| {
                     let project = workspace.project().clone();
                     let weak_workspace = cx.entity().downgrade();
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        let delegate = FileFinderDelegate::new(
-                            cx.entity().downgrade(),
-                            weak_workspace,
-                            project,
-                            currently_opened_path,
-                            history_items.collect(),
-                            separate_history,
-                            include_ignored,
-                            window,
-                            cx,
-                        );
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            let delegate = FileFinderDelegate::new(
+                                cx.entity().downgrade(),
+                                weak_workspace,
+                                project,
+                                currently_opened_path,
+                                history_items.collect(),
+                                separate_history,
+                                include_ignored,
+                                window,
+                                cx,
+                            );
 
-                        FileFinder::new(delegate, seed_query, window, cx)
-                    });
+                            FileFinder::new(delegate, seed_query, window, cx)
+                        })
+                        .detach();
                 })
                 .ok();
         })
@@ -358,12 +360,13 @@ impl FileFinder {
     }
 
     fn open_without_dismiss(
-        &mut self,
+        file_finder: Entity<Self>,
         _: &OpenWithoutDismiss,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) {
-        self.picker.update(cx, |picker, cx| {
+        let picker = file_finder.read(cx).picker.clone();
+        picker.update(cx, |picker, cx| {
             picker.delegate.confirm_without_dismiss(window, cx);
         });
     }
@@ -404,7 +407,7 @@ impl Render for FileFinder {
             .on_action(cx.listener(Self::go_to_file_split_right))
             .on_action(cx.listener(Self::go_to_file_split_up))
             .on_action(cx.listener(Self::go_to_file_split_down))
-            .on_action(cx.listener(Self::open_without_dismiss))
+            .on_action(cx.entity_listener(Self::open_without_dismiss))
             .child(self.picker.clone())
     }
 }
@@ -1644,7 +1647,9 @@ impl FileFinderDelegate {
             let channel_id = channel_id.0;
             let finder = self.file_finder.clone();
             window.dispatch_action(OpenChannelNotesById { channel_id }.boxed_clone(), cx);
-            finder.update(cx, |_, cx| cx.emit(DismissEvent)).log_err();
+            cx.defer(move |cx| {
+                finder.update(cx, |_, cx| cx.emit(DismissEvent)).log_err();
+            });
             return;
         }
 
