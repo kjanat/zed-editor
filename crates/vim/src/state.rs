@@ -15,8 +15,8 @@ use editor::display_map::{is_invisible, replacement};
 use editor::{Anchor, ClipboardSelection, Editor, MultiBuffer, ToPoint as EditorToPoint};
 use gpui::{
     Action, App, AppContext, BorrowAppContext, ClipboardEntry, ClipboardItem, DismissEvent, Entity,
-    EntityId, Global, HighlightStyle, StyledText, Subscription, Task, TaskExt, TextStyle,
-    WeakEntity,
+    EntityId, Global, HighlightStyle, InteractiveElement as _, StyledText, Subscription, Task,
+    TaskExt, TextStyle, WeakEntity,
 };
 use language::{Buffer, BufferEvent, BufferId, Chunk, LanguageAwareStyling, Point};
 
@@ -1378,20 +1378,27 @@ pub struct RegistersView {}
 
 impl RegistersView {
     fn register(workspace: &mut Workspace, _window: Option<&mut Window>) {
-        workspace.register_action(|workspace, _: &ToggleRegistersView, window, cx| {
-            Self::toggle(workspace, window, cx);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &ToggleRegistersView, window, cx| {
+                    Self::toggle(&workspace, window, cx);
+                },
+            ))
         });
     }
 
-    pub fn toggle(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pub fn toggle(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
         let editor = workspace
+            .read(cx)
             .active_item(cx)
             .and_then(|item| item.act_as::<Editor>(cx));
-        workspace
-            .toggle_modal(window, cx, move |window, cx| {
-                RegistersView::new(editor, window, cx)
-            })
-            .detach();
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    RegistersView::new(editor, window, cx)
+                })
+                .detach();
+        });
     }
 
     fn new(
@@ -1513,10 +1520,10 @@ impl PickerDelegate for MarksViewDelegate {
         let Some(workspace) = self.workspace.upgrade() else {
             return Task::ready(());
         };
+        let entity_id = workspace.entity_id();
         cx.spawn(async move |picker, cx| {
             let mut matches = Vec::new();
-            let _ = workspace.update(cx, |workspace, cx| {
-                let entity_id = cx.entity_id();
+            workspace.read_with(cx, |workspace, cx| {
                 let Some(editor) = workspace
                     .active_item(cx)
                     .and_then(|item| item.act_as::<Editor>(cx))

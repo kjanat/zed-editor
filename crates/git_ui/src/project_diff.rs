@@ -76,9 +76,42 @@ pub struct ProjectDiff {
 
 impl ProjectDiff {
     pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
-        workspace.register_action(Self::deploy);
-        workspace.register_action(|workspace, _: &DiffHead, window, cx| {
-            Self::deploy_at(workspace, None, window, cx);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(Self::deploy))
+                .on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>, _: &DiffHead, window, cx| {
+                        Self::deploy_at(&workspace, None, window, cx);
+                    },
+                ))
+                .on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>,
+                     _: &git_actions::ViewUncommittedChanges,
+                     window,
+                     cx| {
+                        Self::deploy_at(&workspace, None, window, cx);
+                    },
+                ))
+                .on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>,
+                     _: &git_actions::ViewUnstagedChanges,
+                     window,
+                     cx| {
+                        UnstagedDiff::deploy_at(&workspace, None, window, cx);
+                    },
+                ))
+                .on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>,
+                     _: &git_actions::ViewStagedChanges,
+                     window,
+                     cx| {
+                        StagedDiff::deploy_at(&workspace, None, window, cx);
+                    },
+                ))
+                .on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>, _: &Add, window, cx| {
+                        Self::deploy_at(&workspace, None, window, cx);
+                    },
+                ))
         });
         workspace.register_action(|workspace, _: &ToggleDiffBase, _window, cx| {
             settings::update_settings_file(
@@ -93,46 +126,23 @@ impl ProjectDiff {
                 },
             );
         });
-        workspace.register_action(
-            |workspace, _: &git_actions::ViewUncommittedChanges, window, cx| {
-                Self::deploy_at(workspace, None, window, cx);
-            },
-        );
-        workspace.register_action(
-            |workspace, _: &git_actions::ViewUnstagedChanges, window, cx| {
-                UnstagedDiff::deploy_at(workspace, None, window, cx);
-            },
-        );
-        workspace.register_action(
-            |workspace, _: &git_actions::ViewStagedChanges, window, cx| {
-                StagedDiff::deploy_at(workspace, None, window, cx);
-            },
-        );
-        workspace.register_action(|workspace, _: &Add, window, cx| {
-            Self::deploy_at(workspace, None, window, cx);
-        });
         workspace::register_serializable_item::<ProjectDiff>(cx);
     }
 
-    fn deploy(
-        workspace: &mut Workspace,
-        _: &Diff,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
-        let project = workspace.project().clone();
+    fn deploy(workspace: Entity<Workspace>, _: &Diff, window: &mut Window, cx: &mut App) {
+        let project = workspace.read(cx).project().clone();
         if project.read(cx).git_store().read(cx).diff_base() == GitDiffBaseSetting::DefaultBranch {
-            BranchDiff::deploy_branch_diff(workspace, window, cx);
+            BranchDiff::deploy_branch_diff(&workspace, window, cx);
             return;
         }
-        Self::deploy_at(workspace, None, window, cx)
+        Self::deploy_at(&workspace, None, window, cx)
     }
 
     pub fn deploy_at(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         entry: Option<GitStatusEntry>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         telemetry::event!(
             "Git Diff Opened",
@@ -142,21 +152,23 @@ impl ProjectDiff {
                 "Action"
             }
         );
-        let intended_repo = workspace.project().read(cx).active_repository(cx);
+        let project = workspace.read(cx).project().clone();
+        let intended_repo = project.read(cx).active_repository(cx);
 
-        let existing = workspace.items_of_type::<Self>(cx).next();
+        let existing = workspace.read(cx).items_of_type::<Self>(cx).next();
         let project_diff = if let Some(existing) = existing {
             existing.update(cx, |project_diff, cx| {
                 project_diff.move_to_beginning(window, cx);
             });
 
-            workspace.activate_item(&existing, true, true, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing, true, true, window, cx);
+            });
             existing
         } else {
-            let workspace_handle = cx.entity();
-            let project_diff =
-                cx.new(|cx| Self::new(workspace.project().clone(), workspace_handle, window, cx));
-            workspace.add_item_to_active_pane(
+            let project_diff = cx.new(|cx| Self::new(project, workspace.clone(), window, cx));
+            Workspace::add_item_to_active_pane(
+                workspace,
                 Box::new(project_diff.clone()),
                 None,
                 true,
@@ -186,21 +198,23 @@ impl ProjectDiff {
     }
 
     pub fn deploy_at_project_path(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         project_path: ProjectPath,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         telemetry::event!("Git Diff Opened", source = "Agent Panel");
-        let existing = workspace.items_of_type::<Self>(cx).next();
+        let existing = workspace.read(cx).items_of_type::<Self>(cx).next();
         let project_diff = if let Some(existing) = existing {
-            workspace.activate_item(&existing, true, true, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing, true, true, window, cx);
+            });
             existing
         } else {
-            let workspace_handle = cx.entity();
-            let project_diff =
-                cx.new(|cx| Self::new(workspace.project().clone(), workspace_handle, window, cx));
-            workspace.add_item_to_active_pane(
+            let project = workspace.read(cx).project().clone();
+            let project_diff = cx.new(|cx| Self::new(project, workspace.clone(), window, cx));
+            Workspace::add_item_to_active_pane(
+                workspace,
                 Box::new(project_diff.clone()),
                 None,
                 true,
@@ -1008,6 +1022,7 @@ mod tests {
     use util::{path, rel_path::rel_path};
 
     use workspace::MultiWorkspace;
+    use workspace::item::test::HookBits;
 
     use super::*;
 
@@ -1172,7 +1187,7 @@ mod tests {
             window.dispatch_action(Diff.boxed_clone(), cx);
         });
         cx.run_until_parked();
-        workspace.update(cx, |workspace, cx| {
+        workspace.read_with(cx, |workspace, cx| {
             assert!(workspace.active_item_as::<BranchDiff>(cx).is_some());
             assert_eq!(workspace.items_of_type::<ProjectDiff>(cx).count(), 0);
         });
@@ -1181,7 +1196,7 @@ mod tests {
             window.dispatch_action(DiffHead.boxed_clone(), cx);
         });
         cx.run_until_parked();
-        workspace.update(cx, |workspace, cx| {
+        workspace.read_with(cx, |workspace, cx| {
             assert!(workspace.active_item_as::<ProjectDiff>(cx).is_some());
         });
 
@@ -1256,7 +1271,7 @@ mod tests {
             window.dispatch_action(project_diff::Diff.boxed_clone(), cx);
         });
         cx.run_until_parked();
-        let item = workspace.update(cx, |workspace, cx| {
+        let item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
         cx.focus(&item);
@@ -1274,6 +1289,107 @@ mod tests {
         let mut cx = EditorTestContext::for_editor_in(editor, cx).await;
 
         cx.assert_excerpts_with_selections("[EXCERPT]\nˇ# My cool project\nDetails to come.\n");
+    }
+
+    #[gpui::test]
+    async fn test_diff_actions_open_beside_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "committed.txt": "head\n",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("committed.txt", "head\n".into())],
+        );
+        fs.set_merge_base_content_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("committed.txt", "base\n".into())],
+        );
+
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let item = crate::add_test_item_reading_containers(
+            &workspace,
+            HookBits::BUFFER_KIND | HookBits::ACT_AS_TYPE,
+            cx,
+        );
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+
+        cx.dispatch_action(CompareWithBranch);
+        cx.run_until_parked();
+        let reads_after_compare = crate::container_reads(&item, cx);
+        assert!(reads_after_compare > 0);
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<crate::branch_picker::BranchList>(cx)
+                    .is_some()
+            );
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.hide_modal(window, cx));
+        });
+        cx.run_until_parked();
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+
+        cx.dispatch_action(DiffHead);
+        cx.run_until_parked();
+        let reads_after_diff_head = crate::container_reads(&item, cx);
+        assert!(reads_after_diff_head > reads_after_compare);
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<ProjectDiff>(cx).is_some());
+        });
+
+        cx.dispatch_action(git_actions::ViewUnstagedChanges);
+        cx.run_until_parked();
+        let reads_after_unstaged = crate::container_reads(&item, cx);
+        assert!(reads_after_unstaged > reads_after_diff_head);
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<UnstagedDiff>(cx).is_some());
+        });
+
+        cx.dispatch_action(git_actions::ViewStagedChanges);
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_after_unstaged);
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<StagedDiff>(cx).is_some());
+        });
+
+        cx.dispatch_action(git_actions::ViewUncommittedChanges);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<ProjectDiff>(cx).is_some());
+        });
+
+        cx.dispatch_action(Add);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<ProjectDiff>(cx).is_some());
+            assert_eq!(workspace.items_of_type::<ProjectDiff>(cx).count(), 1);
+        });
+
+        let reads_before_branch_diff = crate::container_reads(&item, cx);
+        cx.dispatch_action(DeployBranchDiff);
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_before_branch_diff);
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<BranchDiff>(cx).is_some());
+        });
     }
 
     #[gpui::test]
@@ -1341,7 +1457,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let diff_item = workspace.update(cx, |workspace, cx| {
+        let diff_item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
         let paths_a = diff_item.read_with(cx, |diff, cx| diff.excerpt_paths(cx));
@@ -1361,7 +1477,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let same_diff_item = workspace.update(cx, |workspace, cx| {
+        let same_diff_item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
         assert_eq!(diff_item.entity_id(), same_diff_item.entity_id());
@@ -1443,7 +1559,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let diff_item = workspace.update(cx, |workspace, cx| {
+        let diff_item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
         let diff_editor =
@@ -1468,11 +1584,11 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let unstaged_item = workspace.update(cx, |workspace, cx| {
+        let unstaged_item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<UnstagedDiff>(cx).unwrap()
         });
         assert_ne!(diff_item.entity_id(), unstaged_item.entity_id());
-        let unstaged_editor = workspace.update(cx, |workspace, cx| {
+        let unstaged_editor = workspace.read_with(cx, |workspace, cx| {
             let active_item = workspace.active_item(cx).unwrap();
             assert_eq!(active_item.tab_content_text(0, cx), "Unstaged Changes");
             active_item
@@ -1501,7 +1617,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let uncommitted_item = workspace.update(cx, |workspace, cx| {
+        let uncommitted_item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
         assert_eq!(diff_item.entity_id(), uncommitted_item.entity_id());
@@ -1531,7 +1647,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let staged_editor = workspace.update(cx, |workspace, cx| {
+        let staged_editor = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<StagedDiff>(cx).unwrap();
             let active_item = workspace.active_item(cx).unwrap();
             assert_eq!(active_item.tab_content_text(0, cx), "Staged Changes");
@@ -1594,7 +1710,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let item = workspace.update(cx, |workspace, cx| {
+        let item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
         let editor = item.read_with(cx, |item, cx| item.editor(cx).read(cx).rhs_editor().clone());
@@ -1739,7 +1855,7 @@ mod tests {
 
         cx.run_until_parked();
 
-        let item = workspace.update(cx, |workspace, cx| {
+        let item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
         cx.focus(&item);

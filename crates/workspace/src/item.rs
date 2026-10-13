@@ -1062,7 +1062,7 @@ impl<T: Item> ItemHandle for Entity<T> {
                                     );
                                 });
                             }
-                            pane.update(cx, |pane, cx| pane.handle_item_edit(item.item_id(), cx));
+                            Pane::handle_item_edit(&pane, item.item_id(), cx);
                         }
                     });
                 },
@@ -1539,8 +1539,8 @@ impl<T: FollowableItem> WeakFollowableItemHandle for WeakEntity<T> {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test {
     use super::{
-        Dedup, FollowEvent, FollowableItem, HighlightedText, Item, ItemEvent, SerializableItem,
-        TabActions, TabContentParams, TabTooltipContent,
+        Dedup, FollowEvent, FollowableItem, HighlightedText, Item, ItemEvent, ProjectItem,
+        SerializableItem, TabActions, TabContentParams, TabTooltipContent,
     };
     use crate::{
         CollaboratorId, ItemId, ItemNavHistory, Pane, ToolbarItemLocation, ViewId, Workspace,
@@ -1724,10 +1724,18 @@ pub mod test {
     impl project::ProjectItem for TestProjectItem {
         fn try_open(
             _project: &Entity<Project>,
-            _path: &ProjectPath,
-            _cx: &mut App,
+            path: &ProjectPath,
+            cx: &mut App,
         ) -> Option<Task<anyhow::Result<Entity<Self>>>> {
-            None
+            if path.path.extension() != Some("test_item") {
+                return None;
+            }
+            let project_path = Some(path.clone());
+            Some(Task::ready(Ok(cx.new(|_| Self {
+                entry_id: None,
+                project_path,
+                is_dirty: false,
+            }))))
         }
         fn entry_id(&self, _: &App) -> Option<ProjectEntryId> {
             self.entry_id
@@ -2309,6 +2317,29 @@ pub mod test {
         fn preserve_preview(&self, cx: &App) -> bool {
             self.read_containers(HookBits::PRESERVE_PREVIEW, cx);
             false
+        }
+    }
+
+    impl ProjectItem for TestItem {
+        type Item = TestProjectItem;
+
+        fn for_project_item(
+            _project: Entity<Project>,
+            _pane: Option<&Pane>,
+            item: Entity<TestProjectItem>,
+            _window: &mut Window,
+            cx: &mut Context<Self>,
+        ) -> Self {
+            let (pane, workspace) = StaticHooksReadContainers::readers(cx);
+            let mut test_item = Self::new(cx).with_project_items(&[item]);
+            if let Some(pane) = pane {
+                test_item = test_item.with_pane_reader(pane);
+            }
+            if let Some(workspace) = workspace {
+                test_item = test_item.with_workspace_reader(workspace);
+            }
+            test_item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS);
+            test_item
         }
     }
 

@@ -22,9 +22,9 @@ use ui::{
 pub use workspace::welcome::ShowWelcome;
 use workspace::welcome::WelcomePage;
 use workspace::{
-    AppState, Workspace, WorkspaceId,
+    AppState, Pane, Workspace, WorkspaceId,
     dock::DockPosition,
-    item::{Item, ItemEvent},
+    item::{Item, ItemEvent, ItemHandle},
     notifications::NotifyResultExt as _,
     open_new, register_serializable_item, with_active_or_new_workspace,
 };
@@ -90,13 +90,12 @@ pub fn init(cx: &mut App) {
                         workspace.activate_item(&existing, true, true, window, cx);
                     } else {
                         let settings_page = Onboarding::new(workspace, cx);
-                        workspace.add_item_to_active_pane(
+                        add_item_to_active_pane_deferred(
+                            cx.entity(),
                             Box::new(settings_page),
-                            None,
-                            true,
                             window,
                             cx,
-                        )
+                        );
                     }
                 })
                 .detach();
@@ -118,13 +117,12 @@ pub fn init(cx: &mut App) {
                     } else {
                         let settings_page = cx
                             .new(|cx| WelcomePage::new(workspace.weak_handle(), false, window, cx));
-                        workspace.add_item_to_active_pane(
+                        add_item_to_active_pane_deferred(
+                            cx.entity(),
                             Box::new(settings_page),
-                            None,
-                            true,
                             window,
                             cx,
-                        )
+                        );
                     }
                 })
                 .detach();
@@ -180,6 +178,17 @@ pub fn init(cx: &mut App) {
     register_serializable_item::<WelcomePage>(cx);
 }
 
+fn add_item_to_active_pane_deferred(
+    workspace: Entity<Workspace>,
+    item: Box<dyn ItemHandle>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.defer(cx, move |window, cx| {
+        Workspace::add_item_to_active_pane(&workspace, item, None, true, window, cx);
+    });
+}
+
 pub fn show_onboarding_view(app_state: Arc<AppState>, cx: &mut App) -> Task<anyhow::Result<()>> {
     telemetry::event!("Onboarding Page Opened");
     open_new(
@@ -190,11 +199,17 @@ pub fn show_onboarding_view(app_state: Arc<AppState>, cx: &mut App) -> Task<anyh
             {
                 workspace.toggle_dock(DockPosition::Left, window, cx);
                 let onboarding_page = Onboarding::new(workspace, cx);
-                workspace.add_item_to_center(Box::new(onboarding_page.clone()), window, cx);
-
-                window.focus(&onboarding_page.focus_handle(cx), cx);
-
-                cx.notify();
+                let workspace = cx.entity();
+                window.defer(cx, move |window, cx| {
+                    Workspace::add_item_to_center(
+                        &workspace,
+                        Box::new(onboarding_page.clone()),
+                        window,
+                        cx,
+                    );
+                    window.focus(&onboarding_page.focus_handle(cx), cx);
+                    workspace.update(cx, |_, cx| cx.notify());
+                });
             };
             let kvp = KeyValueStore::global(cx);
             db::write_and_log(cx, move || async move {
@@ -447,24 +462,27 @@ fn go_to_welcome_page(cx: &mut App) {
             return;
         };
 
-        workspace.active_pane().update(cx, |pane, cx| {
-            // Get the index here to get around the borrow checker
-            let idx = pane.items().enumerate().find_map(|(idx, item)| {
-                let _ = item.downcast::<WelcomePage>()?;
-                Some(idx)
-            });
-
-            if let Some(idx) = idx {
-                pane.activate_item(idx, true, true, window, cx);
-            } else {
-                let item = Box::new(
-                    cx.new(|cx| WelcomePage::new(workspace.weak_handle(), false, window, cx)),
-                );
-                pane.add_item(item, true, true, Some(onboarding_idx), window, cx);
-            }
-
-            pane.remove_item(onboarding_id, false, false, window, cx);
+        let pane = workspace.active_pane().clone();
+        let idx = pane.read(cx).items().enumerate().find_map(|(idx, item)| {
+            let _ = item.downcast::<WelcomePage>()?;
+            Some(idx)
         });
+
+        if let Some(idx) = idx {
+            pane.update(cx, |pane, cx| {
+                pane.activate_item(idx, true, true, window, cx);
+                pane.remove_item(onboarding_id, false, false, window, cx);
+            });
+        } else {
+            let workspace = workspace.weak_handle();
+            window.defer(cx, move |window, cx| {
+                let item = Box::new(cx.new(|cx| WelcomePage::new(workspace, false, window, cx)));
+                Pane::add_item(&pane, item, true, true, Some(onboarding_idx), window, cx);
+                pane.update(cx, |pane, cx| {
+                    pane.remove_item(onboarding_id, false, false, window, cx);
+                });
+            });
+        }
     });
 }
 

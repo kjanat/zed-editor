@@ -783,10 +783,11 @@ pub fn open_markdown_in_workspace(
             buffer.set_capability(language::Capability::ReadWrite, cx);
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(title.clone()));
 
-            workspace.add_item_to_active_pane(
+            Workspace::add_item_to_active_pane(
+                &workspace,
                 Box::new(cx.new(|cx| {
                     let mut editor =
                         Editor::for_multibuffer(buffer, Some(project.clone()), window, cx);
@@ -13589,6 +13590,10 @@ pub(crate) fn open_link(
             }
             _ => mention,
         };
+        if let MentionUri::Rule { name, .. } = &mention {
+            crate::ui::open_migrated_rule(&workspace, name, window, cx);
+            return;
+        }
         workspace.update(cx, |workspace, cx| match mention {
             MentionUri::File { abs_path } => {
                 open_abs_path_at_point(workspace, abs_path, None, window, cx);
@@ -13648,9 +13653,7 @@ pub(crate) fn open_link(
             MentionUri::TerminalSelection { .. } => {}
             MentionUri::GitDiff { .. } => {}
             MentionUri::MergeConflict { .. } => {}
-            MentionUri::Rule { name, .. } => {
-                crate::ui::open_migrated_rule(workspace, &name, window, cx);
-            }
+            MentionUri::Rule { .. } => {}
             MentionUri::Skill {
                 skill_file_path, ..
             } => {

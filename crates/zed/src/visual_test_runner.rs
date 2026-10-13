@@ -1592,11 +1592,11 @@ import { AiPaneTabContext } from 'context';
     cx.run_until_parked();
 
     // Create and add the ProjectDiff using the public deploy_at method
-    workspace_window
-        .update(cx, |workspace, window, cx| {
-            ProjectDiff::deploy_at(workspace, None, window, cx);
-        })
-        .log_err();
+    let workspace = workspace_window.root(cx)?;
+    cx.update_window(workspace_window.into(), |_, window, cx| {
+        ProjectDiff::deploy_at(&workspace, None, window, cx);
+    })
+    .log_err();
 
     // Wait for diff to render
     for _ in 0..5 {

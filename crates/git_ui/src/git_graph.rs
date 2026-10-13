@@ -1076,92 +1076,85 @@ impl GraphData {
 pub fn init(cx: &mut App) {
     workspace::register_serializable_item::<GitGraph>(cx);
 
-    cx.observe_new(|workspace: &mut workspace::Workspace, _, _| {
-        workspace.register_action_renderer(|div, workspace, window, cx| {
+    cx.observe_new(|workspace: &mut workspace::Workspace, window, cx| {
+        let Some(window) = window else {
+            return;
+        };
+        let active_editor = crate::track_active_item_target(window, cx, |item, cx| {
+            item.act_as::<Editor>(cx).map(|editor| editor.downgrade())
+        });
+        workspace.register_action_renderer(move |div, workspace, window, cx| {
+            let active_editor = active_editor
+                .read(cx)
+                .0
+                .as_ref()
+                .and_then(WeakEntity::upgrade);
             div.when_some(
-                resolve_file_history_target(workspace, window, cx),
+                resolve_file_history_target(workspace, active_editor.as_ref(), window, cx),
                 |div, (repo_id, log_source)| {
                     let git_store = workspace.project().read(cx).git_store().clone();
                     let workspace = workspace.weak_handle();
-
                     div.on_action(move |_: &git::FileHistory, window, cx| {
-                        let git_store = git_store.clone();
-                        workspace
-                            .update(cx, |workspace, cx| {
-                                open_or_reuse_graph(
-                                    workspace,
-                                    repo_id,
-                                    git_store,
-                                    log_source.clone(),
-                                    None,
-                                    window,
-                                    cx,
-                                );
-                            })
-                            .ok();
+                        if let Some(workspace) = workspace.upgrade() {
+                            open_or_reuse_graph(
+                                &workspace,
+                                repo_id,
+                                git_store.clone(),
+                                log_source.clone(),
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
                     })
                 },
             )
             .when(
                 workspace.project().read(cx).active_repository(cx).is_some(),
                 |div| {
-                    let workspace = workspace.weak_handle();
-
-                    div.on_action({
-                        let workspace = workspace.clone();
-                        move |_: &Open, window, cx| {
-                            workspace
-                                .update(cx, |workspace, cx| {
-                                    let Some(repo) =
-                                        workspace.project().read(cx).active_repository(cx)
-                                    else {
-                                        return;
-                                    };
-                                    let selected_repo_id = repo.read(cx).id;
-
-                                    let git_store =
-                                        workspace.project().read(cx).git_store().clone();
-                                    open_or_reuse_graph(
-                                        workspace,
-                                        selected_repo_id,
-                                        git_store,
-                                        LogSource::All,
-                                        None,
-                                        window,
-                                        cx,
-                                    );
-                                })
-                                .ok();
-                        }
-                    })
-                    .on_action(move |action: &OpenAtCommit, window, cx| {
-                        let sha = action.sha.clone();
-                        workspace
-                            .update(cx, |workspace, cx| {
-                                let Some(repo) = workspace.project().read(cx).active_repository(cx)
-                                else {
-                                    return;
-                                };
-                                let selected_repo_id = repo.read(cx).id;
-
-                                let git_store = workspace.project().read(cx).git_store().clone();
-                                open_or_reuse_graph(
-                                    workspace,
-                                    selected_repo_id,
-                                    git_store,
-                                    LogSource::All,
-                                    Some(sha),
-                                    window,
-                                    cx,
-                                );
-                            })
-                            .ok();
-                    })
+                    div.on_action(cx.entity_listener(
+                        |workspace: Entity<Workspace>, _: &Open, window, cx| {
+                            open_active_repository_graph(&workspace, None, window, cx);
+                        },
+                    ))
+                    .on_action(cx.entity_listener(
+                        |workspace: Entity<Workspace>, action: &OpenAtCommit, window, cx| {
+                            open_active_repository_graph(
+                                &workspace,
+                                Some(action.sha.clone()),
+                                window,
+                                cx,
+                            );
+                        },
+                    ))
                 },
             )
         });
     })
     .detach();
+}
+
+fn open_active_repository_graph(
+    workspace: &Entity<Workspace>,
+    sha: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let project = workspace.read(cx).project().clone();
+    let Some(repo) = project.read(cx).active_repository(cx) else {
+        return;
+    };
+    let selected_repo_id = repo.read(cx).id;
+    let git_store = project.read(cx).git_store().clone();
+    open_or_reuse_graph(
+        workspace,
+        selected_repo_id,
+        git_store,
+        LogSource::All,
+        sha,
+        window,
+        cx,
+    );
 }
 
 /// Resolves a `git::FileHistory` target from a known project path (used by
@@ -1186,6 +1179,7 @@ pub fn resolve_file_history_target_from_project_path(
 
 fn resolve_file_history_target(
     workspace: &Workspace,
+    active_editor: Option<&Entity<Editor>>,
     window: &Window,
     cx: &App,
 ) -> Option<(RepositoryId, LogSource)> {
@@ -1196,7 +1190,7 @@ fn resolve_file_history_target(
         return Some((repository.read(cx).id, LogSource::Path(repo_path)));
     }
 
-    let editor = workspace.active_item_as::<Editor>(cx)?;
+    let editor = active_editor?;
 
     let file = editor
         .read(cx)
@@ -1214,24 +1208,29 @@ fn resolve_file_history_target(
 }
 
 pub fn open_or_reuse_graph(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     repo_id: RepositoryId,
     git_store: Entity<GitStore>,
     log_source: LogSource,
     sha: Option<String>,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
 ) {
-    let existing = workspace.items_of_type::<GitGraph>(cx).find(|graph| {
-        let graph = graph.read(cx);
-        graph.repo_id == repo_id && graph.log_source == log_source
-    });
+    let existing = workspace
+        .read(cx)
+        .items_of_type::<GitGraph>(cx)
+        .find(|graph| {
+            let graph = graph.read(cx);
+            graph.repo_id == repo_id && graph.log_source == log_source
+        });
 
     let git_graph = if let Some(existing) = existing {
-        workspace.activate_item(&existing, true, true, window, cx);
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate_item(&existing, true, true, window, cx);
+        });
         existing
     } else {
-        let workspace_handle = workspace.weak_handle();
+        let workspace_handle = workspace.downgrade();
         let git_graph = cx.new(|cx| {
             GitGraph::new(
                 repo_id,
@@ -1242,7 +1241,14 @@ pub fn open_or_reuse_graph(
                 cx,
             )
         });
-        workspace.add_item_to_active_pane(Box::new(git_graph.clone()), None, true, window, cx);
+        Workspace::add_item_to_active_pane(
+            workspace,
+            Box::new(git_graph.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
         git_graph
     };
 
@@ -5370,8 +5376,9 @@ mod tests {
     use serde_json::json;
     use settings::{SettingsStore, ThemeSettingsContent};
     use smallvec::{SmallVec, smallvec};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+    use workspace::item::test::HookBits;
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -6439,15 +6446,14 @@ mod tests {
                 let editor = cx.new(|cx| {
                     Editor::for_multibuffer(multibuffer, Some(project.clone()), window, cx)
                 });
-                workspace.update(cx, |workspace, cx| {
-                    workspace.add_item_to_active_pane(
-                        Box::new(editor.clone()),
-                        None,
-                        true,
-                        window,
-                        cx,
-                    );
-                });
+                Workspace::add_item_to_active_pane(
+                    workspace,
+                    Box::new(editor.clone()),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
                 editor.update(cx, |editor, cx| {
                     let snapshot = editor.buffer().read(cx).snapshot(cx);
                     let second_excerpt_point = snapshot
@@ -6547,6 +6553,106 @@ mod tests {
             assert_eq!(
                 graphs[0].read(cx).log_source,
                 LogSource::Path(tracked_repo_path)
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_git_graph_actions_open_beside_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            Path::new(util::path!("/project")),
+            json!({
+                ".git": {},
+                "file.txt": "content",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(util::path!("/project/.git")),
+            &[("file.txt", "tracked".to_owned())],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(util::path!("/project"))], cx).await;
+        cx.run_until_parked();
+
+        let (multi_workspace, cx) = cx.add_window_view(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = multi_workspace.read_with(cx, |multi, _| multi.workspace().clone());
+        let item = crate::add_test_item_reading_containers(
+            &workspace,
+            HookBits::BUFFER_KIND | HookBits::ACT_AS_TYPE,
+            cx,
+        );
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+
+        let reads_after_activation = crate::container_reads(&item, cx);
+        assert!(reads_after_activation > 0);
+        assert!(
+            !cx.update(|window, cx| window.is_action_available(&git::FileHistory, cx)),
+            "an active item that is not an editor should not register file history"
+        );
+        cx.dispatch_action(git::FileHistory);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<GitGraph>(cx).count(), 0);
+        });
+
+        cx.dispatch_action(Open);
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_after_activation);
+        workspace.read_with(cx, |workspace, cx| {
+            let graphs = workspace.items_of_type::<GitGraph>(cx).collect::<Vec<_>>();
+            assert_eq!(graphs.len(), 1);
+            assert_eq!(graphs[0].read(cx).log_source, LogSource::All);
+            assert!(workspace.active_item_as::<GitGraph>(cx).is_some());
+        });
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&item, true, true, window, cx);
+        });
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        cx.dispatch_action(OpenAtCommit {
+            sha: "0000000000000000000000000000000000000000".to_string(),
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<GitGraph>(cx).count(), 1);
+            assert!(workspace.active_item_as::<GitGraph>(cx).is_some());
+        });
+
+        let editor = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    PathBuf::from(util::path!("/project/file.txt")),
+                    workspace::OpenOptions::default(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .expect("file.txt should open")
+            .downcast::<Editor>()
+            .expect("file.txt should open in an editor");
+        editor.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| window.is_action_available(&git::FileHistory, cx)));
+        cx.dispatch_action(git::FileHistory);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let graph = workspace
+                .active_item_as::<GitGraph>(cx)
+                .expect("file history should open a git graph");
+            assert_eq!(
+                graph.read(cx).log_source,
+                LogSource::Path(RepoPath::new(&"file.txt").unwrap())
             );
         });
     }
@@ -7626,8 +7732,15 @@ mod tests {
                 cx,
             )
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(git_graph.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(git_graph.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
 
@@ -7640,9 +7753,9 @@ mod tests {
         });
         cx.run_until_parked();
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             open_or_reuse_graph(
-                workspace,
+                &workspace,
                 repository.read(cx).id,
                 project.read(cx).git_store().clone(),
                 LogSource::All,
@@ -7718,8 +7831,9 @@ mod tests {
         let buffer_editor = cx.new_window_entity(|window, cx| {
             Editor::for_buffer(buffer, Some(project.clone()), window, cx)
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
                 Box::new(buffer_editor.clone()),
                 None,
                 true,
@@ -7739,8 +7853,15 @@ mod tests {
                 cx,
             )
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(git_graph.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(git_graph.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
 
@@ -7828,8 +7949,15 @@ mod tests {
         });
         cx.run_until_parked();
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(git_graph.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(git_graph.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
 
@@ -8052,8 +8180,15 @@ mod tests {
                 cx,
             )
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(git_graph.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(git_graph.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
 
@@ -8190,8 +8325,15 @@ mod tests {
                 cx,
             )
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(git_graph.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(git_graph.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
 

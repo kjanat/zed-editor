@@ -1,5 +1,5 @@
 use editor::Editor;
-use gpui::{App, Context, Entity, SharedString};
+use gpui::{App, Entity, SharedString};
 use language::Buffer;
 use notifications::status_toast::StatusToast;
 use proto::RpcError;
@@ -8,10 +8,10 @@ use workspace::Workspace;
 
 pub fn open_output(
     operation: impl Into<SharedString>,
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     output: &str,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
 ) {
     let operation = operation.into();
 
@@ -30,7 +30,7 @@ pub fn open_output(
         editor
     });
 
-    workspace.add_item_to_center(Box::new(editor), window, cx);
+    Workspace::add_item_to_center(workspace, Box::new(editor), window, cx);
 }
 
 pub fn show_error_toast(
@@ -57,13 +57,9 @@ pub fn show_error_toast(
                             .color(Color::Error),
                     )
                     .action("View Log", move |window, cx| {
-                        let message = message.clone();
-                        let action = action.clone();
-                        workspace_weak
-                            .update(cx, move |workspace, cx| {
-                                open_output(action, workspace, &message, window, cx)
-                            })
-                            .ok();
+                        if let Some(workspace) = workspace_weak.upgrade() {
+                            open_output(action.clone(), &workspace, &message, window, cx);
+                        }
                     })
                 });
                 workspace.toggle_status_toast(toast, cx)

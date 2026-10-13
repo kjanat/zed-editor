@@ -371,53 +371,52 @@ impl Editor {
                 return;
             }
 
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    if Self::activate_bookmarks_tab(workspace, window, cx) {
-                        return;
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            cx.update(|window, cx| {
+                let activated_existing_tab = workspace.update(cx, |workspace, cx| {
+                    Self::activate_bookmarks_tab(workspace, window, cx)
+                });
+                if activated_existing_tab {
+                    return;
+                }
+
+                let project = workspace.read(cx).project().clone();
+                let capability = project.read(cx).capability();
+                let excerpt_buffer =
+                    cx.new(|_cx| MultiBuffer::new(capability).with_title("Bookmarks".into()));
+                let bookmarks_tab_state = cx.new(|cx| {
+                    BookmarksTabState::new(excerpt_buffer.clone(), bookmark_store, locations, cx)
+                });
+                let first_range = bookmarks_tab_state
+                    .read(cx)
+                    .populated_ranges
+                    .first()
+                    .cloned();
+                let editor = cx.new(|cx| {
+                    let mut editor =
+                        Editor::for_multibuffer(excerpt_buffer, Some(project), window, cx);
+                    editor.set_bookmarks_tab_state(bookmarks_tab_state, cx);
+                    if let Some(first_range) = first_range {
+                        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                            s.clear_disjoint();
+                            s.select_anchor_ranges(std::iter::once(first_range));
+                        });
                     }
+                    editor
+                });
 
-                    let capability = workspace.project().read(cx).capability();
-                    let excerpt_buffer =
-                        cx.new(|_cx| MultiBuffer::new(capability).with_title("Bookmarks".into()));
-                    let bookmarks_tab_state = cx.new(|cx| {
-                        BookmarksTabState::new(
-                            excerpt_buffer.clone(),
-                            bookmark_store,
-                            locations,
-                            cx,
-                        )
-                    });
-                    let first_range = bookmarks_tab_state
-                        .read(cx)
-                        .populated_ranges
-                        .first()
-                        .cloned();
-                    let editor = cx.new(|cx| {
-                        let mut editor = Editor::for_multibuffer(
-                            excerpt_buffer,
-                            Some(workspace.project().clone()),
-                            window,
-                            cx,
-                        );
-                        editor.set_bookmarks_tab_state(bookmarks_tab_state, cx);
-                        if let Some(first_range) = first_range {
-                            editor.change_selections(
-                                SelectionEffects::no_scroll(),
-                                window,
-                                cx,
-                                |s| {
-                                    s.clear_disjoint();
-                                    s.select_anchor_ranges(std::iter::once(first_range));
-                                },
-                            );
-                        }
-                        editor
-                    });
-
-                    workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
-                })
-                .log_err();
+                Workspace::add_item_to_active_pane(
+                    &workspace,
+                    Box::new(editor),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
+            })
+            .log_err();
         })
         .detach();
     }

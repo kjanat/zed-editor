@@ -2194,7 +2194,9 @@ mod tests {
                     toolbar.add_item(project_search_bar, window, cx);
                 });
             });
-            workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx);
+        });
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(&workspace, Box::new(item), None, true, window, cx);
         });
         cx.run_until_parked();
 
@@ -3613,9 +3615,7 @@ mod tests {
                     cx,
                 )
             });
-            workspace.update(cx, |workspace, cx| {
-                workspace.add_item_to_center(Box::new(editor_handle.clone()), window, cx);
-            });
+            Workspace::add_item_to_center(&workspace, Box::new(editor_handle.clone()), window, cx);
             window.focus(&editor_handle.focus_handle(cx), cx);
             search_bar = Some(buffer_search_bar);
             editor = Some(editor_handle);

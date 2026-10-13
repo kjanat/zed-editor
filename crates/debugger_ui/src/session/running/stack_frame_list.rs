@@ -436,14 +436,16 @@ impl StackFrameList {
             });
             let opened_item = this
                 .update_in(cx, |this, window, cx| {
-                    this.workspace.update(cx, |workspace, cx| {
-                        let project_path = buffer
-                            .read(cx)
-                            .project_path(cx)
-                            .context("Could not select a stack frame for unnamed buffer")?;
+                    let project_path = buffer
+                        .read(cx)
+                        .project_path(cx)
+                        .context("Could not select a stack frame for unnamed buffer")?;
+                    let workspace = this.workspace.upgrade().context("workspace was released")?;
 
-                        let open_preview = true;
+                    let open_preview = true;
 
+                    let debug_pane = {
+                        let workspace = workspace.read(cx);
                         let active_debug_line_pane = workspace
                             .project()
                             .read(cx)
@@ -452,7 +454,7 @@ impl StackFrameList {
                             .active_debug_line_pane_id()
                             .and_then(|id| workspace.pane_for_entity_id(id));
 
-                        let debug_pane = if let Some(pane) = active_debug_line_pane {
+                        if let Some(pane) = active_debug_line_pane {
                             Some(pane.downgrade())
                         } else {
                             // No debug pane set yet. Find a pane where the target file
@@ -465,9 +467,11 @@ impl StackFrameList {
                             });
 
                             pane_with_active_file.map(|pane| pane.downgrade())
-                        };
+                        }
+                    };
 
-                        anyhow::Ok(workspace.open_path_preview(
+                    anyhow::Ok(workspace.update(cx, |workspace, cx| {
+                        workspace.open_path_preview(
                             project_path,
                             debug_pane,
                             true,
@@ -475,9 +479,9 @@ impl StackFrameList {
                             open_preview,
                             window,
                             cx,
-                        ))
-                    })
-                })???
+                        )
+                    }))
+                })??
                 .await?;
 
             this.update(cx, |this, cx| {

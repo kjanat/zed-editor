@@ -65,25 +65,33 @@ actions!(
 pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
-            workspace.register_action(|workspace, _: &Sessions, window, cx| {
-                let existing = workspace
-                    .active_pane()
-                    .read(cx)
-                    .items()
-                    .find_map(|item| item.downcast::<ReplSessionsPage>());
+            workspace.register_action_renderer(|div, _, _, cx| {
+                div.on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>, _: &Sessions, window, cx| {
+                        let existing = workspace
+                            .read(cx)
+                            .active_pane()
+                            .read(cx)
+                            .items()
+                            .find_map(|item| item.downcast::<ReplSessionsPage>());
 
-                if let Some(existing) = existing {
-                    workspace.activate_item(&existing, true, true, window, cx);
-                } else {
-                    let repl_sessions_page = ReplSessionsPage::new(window, cx);
-                    workspace.add_item_to_active_pane(
-                        Box::new(repl_sessions_page),
-                        None,
-                        true,
-                        window,
-                        cx,
-                    )
-                }
+                        if let Some(existing) = existing {
+                            workspace.update(cx, |workspace, cx| {
+                                workspace.activate_item(&existing, true, true, window, cx);
+                            });
+                        } else {
+                            let repl_sessions_page = ReplSessionsPage::new(window, cx);
+                            Workspace::add_item_to_active_pane(
+                                &workspace,
+                                Box::new(repl_sessions_page),
+                                None,
+                                true,
+                                window,
+                                cx,
+                            )
+                        }
+                    },
+                ))
             });
 
             workspace.register_action(|_workspace, _: &RefreshKernelspecs, _, cx| {
@@ -176,7 +184,7 @@ pub struct ReplSessionsPage {
 }
 
 impl ReplSessionsPage {
-    pub fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Entity<Self> {
+    pub fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let focus_handle = cx.focus_handle();
 
@@ -326,6 +334,10 @@ mod tests {
     use multi_buffer::MultiBuffer;
     use task::ShellKind;
     use util::path;
+    use workspace::{
+        Pane,
+        item::test::{HookBits, TestItem},
+    };
 
     struct TestPythonToolchainLister;
 
@@ -452,5 +464,65 @@ mod tests {
         cx.run_until_parked();
 
         assert!(cx.update(|cx| store.read(cx).has_python_kernelspecs(worktree_id)));
+    }
+
+    #[gpui::test]
+    async fn test_sessions_action_opens_beside_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            settings::init(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let fs = project::FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/project"), serde_json::json!({ "main.txt": "" }))
+            .await;
+        let project = project::Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        cx.update(|cx| crate::init(fs, cx));
+
+        let (multi_workspace, cx) = cx
+            .add_window_view(|window, cx| workspace::MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let pane_handle = pane.downgrade();
+        let workspace_handle = workspace.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| item.read_containers_in(HookBits::BUFFER_KIND));
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+
+        cx.dispatch_action(Sessions);
+        cx.run_until_parked();
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        let sessions_page = pane.read_with(cx, |pane, _| {
+            pane.active_item()
+                .and_then(|active| active.downcast::<ReplSessionsPage>())
+        });
+        assert!(sessions_page.is_some());
+
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        cx.dispatch_action(Sessions);
+        cx.run_until_parked();
+        pane.read_with(cx, |pane, _| {
+            assert_eq!(pane.items_of_type::<ReplSessionsPage>().count(), 1);
+            assert_eq!(
+                pane.active_item()
+                    .and_then(|active| active.downcast::<ReplSessionsPage>())
+                    .map(|page| page.entity_id()),
+                sessions_page.map(|page| page.entity_id())
+            );
+        });
     }
 }

@@ -10,7 +10,9 @@ use serde_json::json;
 use settings::{SettingsStore, SplicingVec};
 use util::{path, rel_path::rel_path};
 use workspace::{
-    AppState, CloseActiveItem, Item, MultiWorkspace, OpenOptions, ToggleFileFinder, Workspace,
+    AppState, CloseActiveItem, Item, MultiWorkspace, OpenOptions, Pane, ToggleFileFinder,
+    Workspace,
+    item::test::{HookBits, TestItem},
     open_paths,
 };
 
@@ -4613,6 +4615,41 @@ async fn open_queried_buffer(
     });
 
     history_items
+}
+
+#[gpui::test]
+async fn test_toggle_file_finder_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+        .await;
+    let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+    let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let workspace_handle = workspace.downgrade();
+    let pane_handle = pane.downgrade();
+    let item = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::ACTIVE_PROJECT_PATH | HookBits::AS_SEARCHABLE)
+    });
+
+    let picker = open_file_picker(&workspace, cx);
+    picker.read_with(cx, |picker, _| {
+        assert_eq!(picker.delegate.currently_opened_path, None);
+    });
+    assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
 }
 
 pub(crate) fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {

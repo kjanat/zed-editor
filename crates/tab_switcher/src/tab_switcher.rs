@@ -612,15 +612,14 @@ impl TabSwitcherDelegate {
             let Some(workspace) = self.workspace.upgrade() else {
                 return;
             };
-            workspace.update(cx, |workspace, cx| {
-                workspace.close_items_with_project_path(
-                    &project_path,
-                    SaveIntent::Close,
-                    true,
-                    window,
-                    cx,
-                );
-            });
+            Workspace::close_items_with_project_path(
+                &workspace,
+                &project_path,
+                SaveIntent::Close,
+                true,
+                window,
+                cx,
+            );
         } else {
             let Some(pane) = tab_match.pane.upgrade() else {
                 return;
@@ -709,12 +708,13 @@ impl TabSwitcherDelegate {
                 else {
                     return;
                 };
-                if let Some(clone) = task.await {
-                    current_pane
-                        .update_in(cx, |pane, window, cx| {
-                            pane.add_item(clone, true, true, None, window, cx);
-                        })
-                        .log_err();
+                if let Some(clone) = task.await
+                    && let Some(current_pane) = current_pane.upgrade()
+                {
+                    cx.update(|window, cx| {
+                        Pane::add_item(&current_pane, clone, true, true, None, window, cx);
+                    })
+                    .log_err();
                 }
             })
             .detach();

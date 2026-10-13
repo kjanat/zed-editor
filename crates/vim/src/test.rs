@@ -3413,8 +3413,8 @@ async fn test_project_search_opens_in_normal_mode(cx: &mut gpui::TestAppContext)
 
     let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
 
-    workspace.update_in(cx, |workspace, window, cx| {
-        ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx)
+    cx.update(|window, cx| {
+        ProjectSearchView::deploy_search(&workspace, &DeploySearch::default(), window, cx)
     });
 
     let search_view = workspace.update_in(cx, |workspace, _, cx| {
@@ -3436,5 +3436,106 @@ async fn test_project_search_opens_in_normal_mode(cx: &mut gpui::TestAppContext)
             .map(|addon| addon.entity.read(cx).mode);
 
         assert_eq!(vim_mode, Some(Mode::Normal));
+    });
+}
+
+async fn vim_with_focused_item_reading_containers(
+    hooks: workspace::item::test::HookBits,
+    cx: &mut TestAppContext,
+) -> (
+    VimTestContext,
+    gpui::Entity<workspace::item::test::TestItem>,
+) {
+    let mut cx = VimTestContext::new(cx, true).await;
+    let workspace = cx.workspace.clone();
+    let item = cx.update(|_, cx| {
+        let pane = workspace.read(cx).active_pane().downgrade();
+        gpui::AppContext::new(cx, |cx| {
+            workspace::item::test::TestItem::new(cx)
+                .with_pane_reader(pane)
+                .with_workspace_reader(workspace.downgrade())
+        })
+    });
+    cx.update(|window, cx| {
+        workspace::Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(item.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| item.read(cx).read_containers_in(hooks));
+    (cx, item)
+}
+
+#[gpui::test]
+async fn test_number_counts_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    let (mut cx, item) =
+        vim_with_focused_item_reading_containers(workspace::item::test::HookBits::ACT_AS_TYPE, cx)
+            .await;
+
+    cx.dispatch_action(crate::Number(3));
+    cx.run_until_parked();
+
+    cx.update(|_, cx| {
+        assert_eq!(crate::Vim::globals(cx).pre_count, Some(3));
+        assert!(item.read(cx).container_reads.get() > 0);
+    });
+}
+
+#[gpui::test]
+async fn test_search_submit_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    let (mut cx, item) =
+        vim_with_focused_item_reading_containers(workspace::item::test::HookBits::ACT_AS_TYPE, cx)
+            .await;
+
+    cx.dispatch_action(crate::normal::search::SearchSubmit);
+    cx.run_until_parked();
+
+    cx.update(|_, cx| assert!(item.read(cx).container_reads.get() > 0));
+}
+
+#[gpui::test]
+async fn test_toggle_registers_view_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    let (mut cx, item) =
+        vim_with_focused_item_reading_containers(workspace::item::test::HookBits::ACT_AS_TYPE, cx)
+            .await;
+    let workspace = cx.workspace.clone();
+
+    cx.dispatch_action(crate::ToggleRegistersView);
+    cx.run_until_parked();
+
+    cx.update(|_, cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .active_modal::<picker::Picker<crate::state::RegistersViewDelegate>>(cx)
+                .is_some()
+        );
+        assert!(item.read(cx).container_reads.get() > 0);
+    });
+}
+
+#[gpui::test]
+async fn test_toggle_marks_view_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    let (mut cx, item) =
+        vim_with_focused_item_reading_containers(workspace::item::test::HookBits::ACT_AS_TYPE, cx)
+            .await;
+    let workspace = cx.workspace.clone();
+
+    cx.dispatch_action(crate::ToggleMarksView);
+    cx.run_until_parked();
+
+    cx.update(|_, cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .active_modal::<picker::Picker<crate::state::MarksViewDelegate>>(cx)
+                .is_some()
+        );
+        assert!(item.read(cx).container_reads.get() > 0);
     });
 }

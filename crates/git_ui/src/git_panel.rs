@@ -2602,19 +2602,17 @@ impl GitPanel {
                 return None;
             };
 
-            self.workspace
-                .update(cx, |workspace, cx| match target {
-                    DiffTarget::Uncommitted => {
-                        ProjectDiff::deploy_at(workspace, Some(entry.clone()), window, cx);
-                    }
-                    DiffTarget::Staged => {
-                        StagedDiff::deploy_at(workspace, Some(entry.clone()), window, cx);
-                    }
-                    DiffTarget::Unstaged => {
-                        UnstagedDiff::deploy_at(workspace, Some(entry.clone()), window, cx);
-                    }
-                })
-                .ok();
+            match target {
+                DiffTarget::Uncommitted => {
+                    ProjectDiff::deploy_at(&workspace, Some(entry.clone()), window, cx);
+                }
+                DiffTarget::Staged => {
+                    StagedDiff::deploy_at(&workspace, Some(entry.clone()), window, cx);
+                }
+                DiffTarget::Unstaged => {
+                    UnstagedDiff::deploy_at(&workspace, Some(entry.clone()), window, cx);
+                }
+            }
             self.focus_handle.focus(window, cx);
 
             Some(())
@@ -5180,9 +5178,7 @@ impl GitPanel {
                 .cloned()
         };
         if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| {
-                StagedDiff::deploy_at(workspace, entry, window, cx);
-            });
+            StagedDiff::deploy_at(&workspace, entry, window, cx);
         }
     }
 
@@ -5200,9 +5196,7 @@ impl GitPanel {
                 .cloned()
         };
         if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| {
-                UnstagedDiff::deploy_at(workspace, entry, window, cx);
-            });
+            UnstagedDiff::deploy_at(&workspace, entry, window, cx);
         }
     }
 
@@ -6138,11 +6132,15 @@ impl GitPanel {
                     buffer.set_capability(language::Capability::ReadWrite, cx);
                 });
 
-                workspace.update_in(cx, |workspace, window, cx| {
+                let workspace = workspace
+                    .upgrade()
+                    .ok_or_else(|| anyhow::anyhow!("workspace was released"))?;
+                cx.update(|window, cx| {
                     let buffer =
                         cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(title.clone()));
 
-                    workspace.add_item_to_active_pane(
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
                         Box::new(cx.new(|cx| {
                             let mut editor =
                                 Editor::for_multibuffer(buffer, Some(project.clone()), window, cx);
@@ -6216,11 +6214,9 @@ impl GitPanel {
                             let output = output.clone();
                             let output =
                                 format!("stdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
-                            workspace_weak
-                                .update(cx, move |workspace, cx| {
-                                    open_output(operation, workspace, &output, window, cx)
-                                })
-                                .ok();
+                            if let Some(workspace) = workspace_weak.upgrade() {
+                                open_output(operation, &workspace, &output, window, cx);
+                            }
                         })
                     }
                 }
@@ -12161,6 +12157,126 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_git_panel_diffs_open_beside_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "partial.rs": "partial content",
+            }),
+        )
+        .await;
+        fs.set_status_for_repo(
+            path!("/project/.git").as_ref(),
+            &[(
+                "partial.rs",
+                TrackedStatus {
+                    index_status: StatusCode::Modified,
+                    worktree_status: StatusCode::Modified,
+                }
+                .into(),
+            )],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Staging);
+                })
+            });
+        });
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let item = crate::add_test_item_reading_containers(
+            &workspace,
+            workspace::item::test::HookBits::BUFFER_KIND,
+            &mut cx,
+        );
+        let panel = workspace.update_in(&mut cx, GitPanel::new);
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        let reads_before_staged = crate::container_reads(&item, &mut cx);
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.selected_entry =
+                panel.entry_by_path_in_section(&repo_path("partial.rs"), Section::Staged);
+            panel.open_diff(&menu::Confirm, window, cx);
+        });
+        cx.run_until_parked();
+        let reads_after_staged = crate::container_reads(&item, &mut cx);
+        assert!(reads_after_staged > reads_before_staged);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<StagedDiff>(cx).is_some());
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.open_solo_diff(&menu::SecondaryConfirm, window, cx);
+        });
+        cx.run_until_parked();
+        let reads_after_solo = crate::container_reads(&item, &mut cx);
+        assert!(reads_after_solo > reads_after_staged);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<SoloDiffView>(cx).is_some());
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.view_unstaged_changes(&ViewUnstagedChanges, window, cx);
+        });
+        cx.run_until_parked();
+        let reads_after_unstaged = crate::container_reads(&item, &mut cx);
+        assert!(reads_after_unstaged > reads_after_solo);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<UnstagedDiff>(cx).is_some());
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.view_staged_changes(&ViewStagedChanges, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<StagedDiff>(cx).is_some());
+            assert_eq!(workspace.items_of_type::<StagedDiff>(cx).count(), 1);
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.show_git_job_queue(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, &mut cx) > reads_after_unstaged);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_item(cx)
+                    .and_then(|active| active.downcast::<Editor>())
+                    .is_some()
+            );
+        });
+    }
+
+    #[gpui::test]
     async fn test_bulk_staging(cx: &mut TestAppContext) {
         use GitListEntry::*;
 
@@ -14750,18 +14866,21 @@ mod tests {
         let (_, _project, workspace, panel, mut cx) =
             setup_git_panel_with_changes(cx, json!({ ".git": {} }), &[]).await;
 
-        let center_item = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let center_item = cx.update(|window, cx| {
             let center_item = cx.new(TestItem::new);
-            workspace.add_item_to_active_pane(
+            Workspace::add_item_to_active_pane(
+                &workspace,
                 Box::new(center_item.clone()),
                 None,
                 true,
                 window,
                 cx,
             );
+            center_item
+        });
+        workspace.update_in(&mut cx, |workspace, window, cx| {
             workspace.add_panel(panel.clone(), window, cx);
             workspace.open_panel::<GitPanel>(window, cx);
-            center_item
         });
         panel.update_in(&mut cx, |panel, window, cx| {
             assert!(panel.entries.is_empty());

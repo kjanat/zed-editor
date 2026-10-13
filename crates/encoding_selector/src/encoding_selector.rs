@@ -37,22 +37,33 @@ impl EncodingSelector {
         _window: Option<&mut Window>,
         _: &mut Context<Workspace>,
     ) {
-        workspace.register_action(move |workspace, _: &Toggle, window, cx| {
-            Self::toggle(workspace, window, cx);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &Toggle, window, cx| {
+                    Self::toggle(&workspace, window, cx);
+                },
+            ))
         });
     }
 
-    pub fn toggle(
-        workspace: &mut Workspace,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) -> Option<()> {
-        let buffer = workspace
-            .active_item(cx)?
+    pub fn toggle(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) -> Option<()> {
+        let active_item = workspace.read(cx).active_item(cx)?;
+        let buffer = active_item
             .act_as::<Editor>(cx)?
             .read(cx)
             .active_buffer(cx)?;
+        workspace.update(cx, |workspace, cx| {
+            Self::toggle_for_buffer(workspace, buffer, window, cx)
+        });
+        Some(())
+    }
 
+    fn toggle_for_buffer(
+        workspace: &mut Workspace,
+        buffer: Entity<Buffer>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
         let buffer_handle = buffer.read(cx);
         let project = workspace.project().read(cx);
 
@@ -64,7 +75,7 @@ impl EncodingSelector {
                 ),
                 cx,
             );
-            return Some(());
+            return;
         }
         if project.is_shared() {
             workspace.show_toast(
@@ -74,7 +85,7 @@ impl EncodingSelector {
                 ),
                 cx,
             );
-            return Some(());
+            return;
         }
         if project.is_via_remote_server() {
             workspace.show_toast(
@@ -84,7 +95,7 @@ impl EncodingSelector {
                 ),
                 cx,
             );
-            return Some(());
+            return;
         }
 
         workspace
@@ -92,7 +103,6 @@ impl EncodingSelector {
                 EncodingSelector::new(buffer, window, cx)
             })
             .detach();
-        Some(())
     }
 
     fn new(buffer: Entity<Buffer>, window: &mut Window, cx: &mut Context<Self>) -> Self {

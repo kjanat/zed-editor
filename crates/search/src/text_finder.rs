@@ -8,7 +8,7 @@ use db::{
 use editor::Editor;
 use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    Modifiers, Subscription, Task, TaskExt as _, WeakEntity, actions,
+    InteractiveElement as _, Modifiers, Subscription, Task, TaskExt as _, WeakEntity, actions,
 };
 use language::Buffer;
 use picker::Picker;
@@ -130,19 +130,25 @@ impl TextFinder {
         _: &mut Context<Workspace>,
     ) {
         pub use zed_actions::text_finder::Toggle;
-        workspace.register_action(|workspace, _: &Toggle, window, cx| {
-            let Some(text_picker) = workspace.active_modal::<Self>(cx) else {
-                let seed_query = Self::seed_query(workspace, window, cx);
-                Self::open(seed_query, window, cx).detach();
-                return;
-            };
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &Toggle, window, cx| {
+                    let Some(text_picker) = workspace.read(cx).active_modal::<Self>(cx) else {
+                        let seed_query = Self::seed_query(&workspace, window, cx);
+                        workspace
+                            .update(cx, |_, cx| Self::open(seed_query, window, cx))
+                            .detach();
+                        return;
+                    };
 
-            text_picker.update(cx, |text_picker, cx| {
-                text_picker.init_modifiers = Some(window.modifiers());
-                text_picker.picker.update(cx, |picker, cx| {
-                    picker.cycle_selection(window, cx);
-                });
-            })
+                    text_picker.update(cx, |text_picker, cx| {
+                        text_picker.init_modifiers = Some(window.modifiers());
+                        text_picker.picker.update(cx, |picker, cx| {
+                            picker.cycle_selection(window, cx);
+                        });
+                    })
+                },
+            ))
         });
     }
 
@@ -199,17 +205,19 @@ impl TextFinder {
                 .log_err();
 
             this.update(cx, |_, cx| cx.emit(DismissEvent)).log_err();
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    workspace.add_item_to_active_pane(
+            cx.update(|window, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
                         Box::new(project_search_view.clone()),
                         None,
                         true, // focus item
                         window,
                         cx,
                     );
-                })
-                .log_err();
+                }
+            })
+            .log_err();
 
             if let PopulateProjectSearch::SupersededByNewSearch =
                 matches_to_multibuffer(&project_search_view, &matches, cx).await
@@ -320,11 +328,11 @@ impl TextFinder {
 
     /// Guess the query the user probably wants for pre-populating the search input.
     fn seed_query(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Option<SearchSeed> {
-        let last_search = load_last_search(workspace.database_id(), cx);
+        let last_search = load_last_search(workspace.read(cx).database_id(), cx);
         let options = last_search.as_ref().and_then(|seed| seed.options);
 
         let query = Self::active_item_query(workspace, window, cx)
@@ -342,12 +350,17 @@ impl TextFinder {
     /// focused terminal without a selection), the center item is tried so an editor selection
     /// still seeds.
     fn active_item_query(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Option<QuerySeed> {
-        let focused_item = workspace.focused_pane(window, cx).read(cx).active_item();
+        let focused_item = workspace
+            .read(cx)
+            .focused_pane(window, cx)
+            .read(cx)
+            .active_item();
         let active_item = workspace
+            .read(cx)
             .active_item(cx)
             .filter(|active| match &focused_item {
                 Some(focused) => focused.item_id() != active.item_id(),
@@ -367,10 +380,10 @@ impl TextFinder {
     /// cursor on reopen would clobber the search you were in the middle of, whereas a deliberate
     /// selection (e.g. a double-click) is a clear signal to search for that text.
     fn item_query(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         item: &dyn ItemHandle,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Option<QuerySeed> {
         if let Some(project_search) = item.downcast::<ProjectSearchView>() {
             let query = project_search.read(cx).search_query_text(cx);
@@ -379,7 +392,9 @@ impl TextFinder {
             }
         }
 
-        if let Some(query) = crate::project_search::buffer_search_query(workspace, item, cx) {
+        if let Some(query) =
+            crate::project_search::buffer_search_query(workspace.read(cx), item, cx)
+        {
             return Some(QuerySeed::Query(query));
         }
 
@@ -642,9 +657,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let seed_query = workspace.update_in(cx, |workspace, window, cx| {
-            TextFinder::seed_query(workspace, window, cx)
-        });
+        let seed_query = cx.update(|window, cx| TextFinder::seed_query(&workspace, window, cx));
         assert!(matches!(
             seed_query.as_ref().map(|seed| &seed.query),
             Some(QuerySeed::Query(query)) if query == initial_query
@@ -669,9 +682,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let seed_query = workspace.update_in(cx, |workspace, window, cx| {
-            TextFinder::seed_query(workspace, window, cx)
-        });
+        let seed_query = cx.update(|window, cx| TextFinder::seed_query(&workspace, window, cx));
         assert!(seed_query.is_none());
     }
 
@@ -698,15 +709,22 @@ mod tests {
             .unwrap();
         let cx = &mut VisualTestContext::from_window(window.into(), cx);
 
-        let seed_query = workspace.update_in(cx, |workspace, window, cx| {
+        let seed_query = cx.update(|window, cx| {
             let editor = cx.new(|cx| {
                 let mut editor = Editor::multi_line(window, cx);
                 editor.set_text("O.E(", window, cx);
                 editor.select_all(&editor::actions::SelectAll, window, cx);
                 editor
             });
-            workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
-            let mut seed_query = TextFinder::seed_query(workspace, window, cx).unwrap();
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor),
+                None,
+                true,
+                window,
+                cx,
+            );
+            let mut seed_query = TextFinder::seed_query(&workspace, window, cx).unwrap();
             seed_query.options = Some(SearchOptions::REGEX);
             seed_query
         });
@@ -746,6 +764,37 @@ mod tests {
                 "highlighting should be dropped once the regex filter is off"
             );
         });
+    }
+
+    #[gpui::test]
+    async fn test_toggle_text_finder_seeds_from_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/dir"), json!({"one.rs": "const ONE: usize = 1;"}))
+            .await;
+        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        let item = crate::add_focused_test_item_reading_containers(
+            &workspace,
+            workspace::item::test::HookBits::AS_SEARCHABLE,
+            cx,
+        );
+
+        cx.dispatch_action(zed_actions::text_finder::Toggle);
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_modal::<TextFinder>(cx).is_some());
+        });
+        item.read_with(cx, |item, _| assert!(item.container_reads.get() > 0));
     }
 
     fn query_language_name(delegate: &Delegate, cx: &App) -> Option<String> {

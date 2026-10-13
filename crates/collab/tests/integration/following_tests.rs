@@ -19,7 +19,7 @@ use settings::{SettingsStore, SplicingVec};
 use text::{Point, ToPoint};
 use util::{path, rel_path::rel_path, test::sample_text};
 use workspace::{
-    CloseWindow, CollaboratorId, Item, MultiWorkspace, ParticipantLocation, SplitDirection,
+    CloseWindow, CollaboratorId, Item, MultiWorkspace, Pane, ParticipantLocation, SplitDirection,
     Workspace, item::ItemHandle as _,
 };
 
@@ -325,10 +325,17 @@ async fn test_basic_following(
         );
         result
     });
-    let multibuffer_editor_a = workspace_a.update_in(cx_a, |workspace, window, cx| {
+    let multibuffer_editor_a = cx_a.update(|window, cx| {
         let editor = cx
             .new(|cx| Editor::for_multibuffer(multibuffer_a, Some(project_a.clone()), window, cx));
-        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        Workspace::add_item_to_active_pane(
+            &workspace_a,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
         editor
     });
     executor.run_until_parked();
@@ -562,10 +569,17 @@ async fn test_basic_following(
         // Client B activates an item that doesn't implement following,
         // so the previously-opened screen-sharing item gets activated.
         let unfollowable_item = cx_b.new(TestItem::new);
-        workspace_b.update_in(cx_b, |workspace, window, cx| {
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(Box::new(unfollowable_item), true, true, None, window, cx)
-            })
+        let pane = workspace_b.read_with(cx_b, |workspace, _| workspace.active_pane().clone());
+        cx_b.update(|window, cx| {
+            Pane::add_item(
+                &pane,
+                Box::new(unfollowable_item),
+                true,
+                true,
+                None,
+                window,
+                cx,
+            )
         });
         executor.run_until_parked();
         assert_eq!(
@@ -656,7 +670,7 @@ async fn test_following_tab_order(
         .unwrap();
 
     let pane_paths = |pane: &Entity<workspace::Pane>, cx: &mut VisualTestContext| {
-        pane.update(cx, |pane, cx| {
+        pane.read_with(cx, |pane, cx| {
             pane.items()
                 .map(|item| item.project_path(cx).unwrap().path)
                 .collect::<Vec<_>>()
@@ -1565,7 +1579,7 @@ async fn test_following_across_workspaces(cx_a: &mut TestAppContext, cx_b: &mut 
         .unwrap();
 
     // assert that b is following a in project a in w.rs
-    workspace_b_project_a.update(&mut cx_b2, |workspace, cx| {
+    workspace_b_project_a.read_with(&cx_b2, |workspace, cx| {
         assert!(workspace.is_being_followed(client_a.peer_id().unwrap()));
         assert_eq!(
             client_a.peer_id().map(Into::into),
@@ -1596,7 +1610,7 @@ async fn test_following_across_workspaces(cx_a: &mut TestAppContext, cx_b: &mut 
         .unwrap();
 
     executor.run_until_parked();
-    workspace_b_project_a.update(&mut cx_b2, |workspace, cx| {
+    workspace_b_project_a.read_with(&cx_b2, |workspace, cx| {
         let item = workspace.active_item(cx).unwrap();
         assert_eq!(item.tab_content_text(0, cx), SharedString::from("x.rs"));
     });
@@ -1606,7 +1620,7 @@ async fn test_following_across_workspaces(cx_a: &mut TestAppContext, cx_b: &mut 
     });
 
     executor.run_until_parked();
-    workspace_a.update(cx_a, |workspace, cx| {
+    workspace_a.read_with(cx_a, |workspace, cx| {
         assert!(workspace.is_being_followed(client_b.peer_id().unwrap()));
         assert_eq!(
             client_b.peer_id().map(Into::into),
@@ -1668,7 +1682,7 @@ async fn test_following_across_workspaces(cx_a: &mut TestAppContext, cx_b: &mut 
 
     executor.run_until_parked();
 
-    workspace_a_project_b.update(cx_a2, |workspace, cx| {
+    workspace_a_project_b.read_with(cx_a2, |workspace, cx| {
         assert_eq!(workspace.project().read(cx).remote_id(), Some(project_b_id));
         assert!(workspace.is_being_followed(client_b.peer_id().unwrap()));
         assert_eq!(
@@ -1694,10 +1708,10 @@ async fn test_following_stops_on_unshare(cx_a: &mut TestAppContext, cx_b: &mut T
     cx_a.run_until_parked();
     cx_a.simulate_keystrokes("2 enter");
 
-    let editor_a = workspace_a.update(cx_a, |workspace, cx| {
+    let editor_a = workspace_a.read_with(cx_a, |workspace, cx| {
         workspace.active_item_as::<Editor>(cx).unwrap()
     });
-    let editor_b = workspace_b.update(cx_b, |workspace, cx| {
+    let editor_b = workspace_b.read_with(cx_b, |workspace, cx| {
         workspace.active_item_as::<Editor>(cx).unwrap()
     });
 
@@ -2511,7 +2525,7 @@ async fn test_active_multi_workspace_determines_follower_view(
         .await
         .unwrap();
     executor.run_until_parked();
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let active_item = workspace
             .active_item(cx)
             .expect("follower should have an active item");
@@ -2544,7 +2558,7 @@ async fn test_active_multi_workspace_determines_follower_view(
         .await
         .unwrap();
     executor.run_until_parked();
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let active_item = workspace
             .active_item(cx)
             .expect("follower should have an active item");
@@ -2564,7 +2578,7 @@ async fn test_active_multi_workspace_determines_follower_view(
         })
         .unwrap();
     executor.run_until_parked();
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let active_item = workspace
             .active_item(cx)
             .expect("follower should retain its active item while the host is inactive");
@@ -2573,7 +2587,7 @@ async fn test_active_multi_workspace_determines_follower_view(
 
     cx_a.update(|window, _| window.activate_window());
     executor.run_until_parked();
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         assert!(workspace.is_being_followed(peer_id_a));
         assert_eq!(
             workspace.leader_for_pane(workspace.active_pane()),
@@ -2631,8 +2645,8 @@ async fn test_following_after_replacement(cx_a: &mut TestAppContext, cx_b: &mut 
             cx,
         )
     });
-    workspace.update_in(cx_a, |workspace, window, cx| {
-        workspace.add_item_to_center(Box::new(editor.clone()) as _, window, cx)
+    cx_a.update(|window, cx| {
+        Workspace::add_item_to_center(&workspace, Box::new(editor.clone()) as _, window, cx)
     });
     editor.update_in(cx_a, |editor, window, cx| {
         editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
@@ -2705,7 +2719,7 @@ async fn test_following_to_channel_notes_other_workspace(
     cx_a.run_until_parked();
     cx_a.simulate_keystrokes("1 enter");
     cx_a.run_until_parked();
-    workspace_a.update(cx_a, |workspace, cx| {
+    workspace_a.read_with(cx_a, |workspace, cx| {
         let editor = workspace.active_item(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "1.txt");
     });
@@ -2714,7 +2728,7 @@ async fn test_following_to_channel_notes_other_workspace(
     join_channel(channel, &client_b, cx_b).await.unwrap();
     cx_b.run_until_parked();
     let (workspace_b, cx_b) = client_b.active_workspace(cx_b);
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let editor = workspace.active_item(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "1.txt");
     });
@@ -2729,7 +2743,7 @@ async fn test_following_to_channel_notes_other_workspace(
     cx_a2.run_until_parked();
 
     // b should follow a to the channel notes
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let editor = workspace.active_item_as::<ChannelView>(cx).unwrap();
         assert_eq!(editor.read(cx).channel(cx).unwrap().id, channel);
     });
@@ -2738,13 +2752,13 @@ async fn test_following_to_channel_notes_other_workspace(
     cx_a.update(|window, _| window.activate_window());
     cx_a.run_until_parked();
 
-    workspace_a.update(cx_a, |workspace, cx| {
+    workspace_a.read_with(cx_a, |workspace, cx| {
         let editor = workspace.active_item(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "1.txt");
     });
 
     // b should follow a back
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let editor = workspace.active_item_as::<Editor>(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "1.txt");
     });
@@ -2764,7 +2778,7 @@ async fn test_following_while_deactivated(cx_a: &mut TestAppContext, cx_b: &mut 
     cx_a.run_until_parked();
     cx_a.simulate_keystrokes("1 enter");
     cx_a.run_until_parked();
-    workspace_a.update(cx_a, |workspace, cx| {
+    workspace_a.read_with(cx_a, |workspace, cx| {
         let editor = workspace.active_item(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "1.txt");
     });
@@ -2773,7 +2787,7 @@ async fn test_following_while_deactivated(cx_a: &mut TestAppContext, cx_b: &mut 
     join_channel(channel, &client_b, cx_b).await.unwrap();
     cx_b.run_until_parked();
     let (workspace_b, cx_b) = client_b.active_workspace(cx_b);
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let editor = workspace.active_item(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "1.txt");
     });
@@ -2786,7 +2800,7 @@ async fn test_following_while_deactivated(cx_a: &mut TestAppContext, cx_b: &mut 
     cx_a.run_until_parked();
     cx_a.simulate_keystrokes("2 enter");
 
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let editor = workspace.active_item_as::<Editor>(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "1.txt");
     });
@@ -2807,13 +2821,13 @@ async fn test_following_while_deactivated(cx_a: &mut TestAppContext, cx_b: &mut 
     cx_a.update(|window, _| window.activate_window());
     cx_a.run_until_parked();
 
-    workspace_a.update(cx_a, |workspace, cx| {
+    workspace_a.read_with(cx_a, |workspace, cx| {
         let editor = workspace.active_item(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "2.js");
     });
 
     // b should follow a back
-    workspace_b.update(cx_b, |workspace, cx| {
+    workspace_b.read_with(cx_b, |workspace, cx| {
         let editor = workspace.active_item_as::<Editor>(cx).unwrap();
         assert_eq!(editor.tab_content_text(0, cx), "2.js");
     });
@@ -2898,10 +2912,10 @@ async fn test_following_with_multibuffer_excerpts_at_unobserved_lamport(
         );
         mb
     });
-    workspace_a.update_in(cx_a, |workspace, window, cx| {
+    cx_a.update(|window, cx| {
         let editor = cx
             .new(|cx| Editor::for_multibuffer(multibuffer_a, Some(project_a.clone()), window, cx));
-        workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
+        Workspace::add_item_to_active_pane(&workspace_a, Box::new(editor), None, true, window, cx);
     });
 
     executor.run_until_parked();
@@ -2920,4 +2934,96 @@ async fn test_following_with_multibuffer_excerpts_at_unobserved_lamport(
         active_text(&workspace_a, cx_a),
         active_text(&workspace_b, cx_b)
     );
+}
+
+#[gpui::test]
+async fn test_open_shared_screen_adds_screens_next_to_items_that_read_their_containers(
+    executor: BackgroundExecutor,
+    cx_a: &mut TestAppContext,
+    cx_b: &mut TestAppContext,
+) {
+    use workspace::{
+        item::test::{HookBits, TestItem, TestProjectItem},
+        shared_screen::SharedScreen,
+    };
+
+    let mut server = TestServer::start(executor.clone()).await;
+    let client_a = server.create_client(cx_a, "user_a").await;
+    let client_b = server.create_client(cx_b, "user_b").await;
+    server
+        .create_room(&mut [(&client_a, cx_a), (&client_b, cx_b)])
+        .await;
+    let active_call_a = cx_a.read(ActiveCall::global);
+
+    let display = gpui::TestScreenCaptureSource::new();
+    cx_a.set_screen_capture_sources(vec![display]);
+    let source = cx_a
+        .update(|cx| cx.screen_capture_sources())
+        .await
+        .unwrap()
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    active_call_a
+        .update(cx_a, |call, cx| {
+            call.room()
+                .unwrap()
+                .update(cx, |room, cx| room.share_screen(source, cx))
+        })
+        .await
+        .unwrap();
+    executor.run_until_parked();
+
+    let peer_id_a = client_a.peer_id().unwrap();
+    let project_b = client_b.build_empty_local_project(false, cx_b);
+    let (workspace_b, cx_b) = client_b.build_workspace(&project_b, cx_b);
+    let pane = workspace_b.read_with(cx_b, |workspace, _| workspace.active_pane().clone());
+    let pane_handle = pane.downgrade();
+    let workspace_handle = workspace_b.downgrade();
+    let reader = cx_b.new(|cx| {
+        TestItem::new(cx)
+            .with_project_items(&[TestProjectItem::new(1, "1.txt", cx)])
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx_b.update(|window, cx| {
+        Pane::add_item(
+            &pane,
+            Box::new(reader.clone()),
+            true,
+            true,
+            None,
+            window,
+            cx,
+        );
+    });
+    executor.run_until_parked();
+    reader.read_with(cx_b, |reader, _| {
+        reader.read_containers_in(
+            HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS | HookBits::ACTIVE_PROJECT_PATH,
+        );
+        reader.container_reads.set(0);
+    });
+
+    cx_b.update(|window, cx| {
+        Workspace::open_shared_screen(&workspace_b, peer_id_a, window, cx);
+    });
+    executor.run_until_parked();
+
+    reader.read_with(cx_b, |reader, _| {
+        assert!(
+            reader.container_reads.get() > 0,
+            "opening the shared screen should read the existing item's entry ids"
+        );
+    });
+    pane.read_with(cx_b, |pane, _| {
+        assert_eq!(pane.items_len(), 2);
+        assert!(
+            pane.active_item()
+                .and_then(|item| item.downcast::<SharedScreen>())
+                .is_some(),
+            "the shared screen should be the active item"
+        );
+    });
 }

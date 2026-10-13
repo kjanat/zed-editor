@@ -81,40 +81,44 @@ impl FileFinder {
         _window: Option<&mut Window>,
         _: &mut Context<Workspace>,
     ) {
-        workspace.register_action(
-            |workspace, action: &workspace::ToggleFileFinder, window, cx| {
-                let Some(file_finder) = workspace.active_modal::<Self>(cx) else {
-                    let seed_query = Self::seed_query(workspace, window, cx);
-                    Self::open(
-                        workspace,
-                        action.separate_history,
-                        action.include_ignored,
-                        seed_query,
-                        window,
-                        cx,
-                    )
-                    .detach();
-                    return;
-                };
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &workspace::ToggleFileFinder, window, cx| {
+                    let Some(file_finder) = workspace.read(cx).active_modal::<Self>(cx) else {
+                        let seed_query = Self::seed_query(&workspace, window, cx);
+                        Self::open(
+                            &workspace,
+                            action.separate_history,
+                            action.include_ignored,
+                            seed_query,
+                            window,
+                            cx,
+                        )
+                        .detach();
+                        return;
+                    };
 
-                file_finder.update(cx, |file_finder, cx| {
-                    file_finder.init_modifiers = Some(window.modifiers());
-                    file_finder.picker.update(cx, |picker, cx| {
-                        picker.cycle_selection(window, cx);
+                    file_finder.update(cx, |file_finder, cx| {
+                        file_finder.init_modifiers = Some(window.modifiers());
+                        file_finder.picker.update(cx, |picker, cx| {
+                            picker.cycle_selection(window, cx);
+                        });
                     });
-                });
-            },
-        );
+                },
+            ))
+        });
     }
 
     fn open(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         separate_history: bool,
         include_ignored: Option<bool>,
         seed_query: Option<String>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Task<()> {
+        let weak_workspace = workspace.downgrade();
+        let workspace = workspace.read(cx);
         let project = workspace.project().read(cx);
         let fs = project.fs();
 
@@ -149,13 +153,13 @@ impl FileFinder {
                 }
             })
             .collect::<Vec<_>>();
-        cx.spawn_in(window, async move |workspace, cx| {
+        window.spawn(cx, async move |cx| {
             let history_items = join_all(history_items).await.into_iter().flatten();
 
-            workspace
+            weak_workspace
+                .clone()
                 .update_in(cx, |workspace, window, cx| {
                     let project = workspace.project().clone();
-                    let weak_workspace = cx.entity().downgrade();
                     workspace
                         .toggle_modal(window, cx, move |window, cx| {
                             let delegate = FileFinderDelegate::new(
@@ -183,14 +187,15 @@ impl FileFinder {
     /// (e.g. a terminal in a dock) is consulted before the active center pane's
     /// item, so the selection next to the focus wins.
     fn seed_query(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Option<String> {
         if !FileFinderSettings::get_global(cx).prefill_query_from_selection {
             return None;
         }
 
+        let workspace = workspace.read(cx);
         let focused_item = workspace.focused_pane(window, cx).read(cx).active_item();
         let active_item = workspace
             .active_item(cx)

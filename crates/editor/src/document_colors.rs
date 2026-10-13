@@ -396,7 +396,7 @@ mod tests {
     use serde_json::json;
     use util::{path, rel_path::rel_path};
     use workspace::{
-        CloseActiveItem, MoveItemToPaneInDirection, MultiWorkspace, OpenOptions,
+        CloseActiveItem, MoveItemToPaneInDirection, MultiWorkspace, OpenOptions, Workspace,
         item::{Item as _, SaveOptions},
     };
 
@@ -552,13 +552,16 @@ mod tests {
         });
 
         // opening another file in a split should not influence the LSP query counter
-        workspace.update_in(cx, |workspace, window, cx| {
+        workspace.read_with(cx, |workspace, _| {
             assert_eq!(
                 workspace.panes().len(),
                 1,
                 "Should have one pane with one editor"
             );
-            workspace.move_item_to_pane_in_direction(
+        });
+        cx.update(|window, cx| {
+            Workspace::move_item_to_pane_in_direction(
+                &workspace,
                 &MoveItemToPaneInDirection {
                     direction: workspace::SplitDirection::Right,
                     focus: false,

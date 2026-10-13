@@ -1122,7 +1122,8 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
 
                             let buffer = buffer_task.await?;
 
-                            workspace.update_in(cx, |workspace, window, cx| {
+                            let workspace = workspace.upgrade().context("workspace was dropped")?;
+                            cx.update(|window, cx| {
                                 buffer.update(cx, |buffer, cx| {
                                     buffer.edit([(0..0, json_schema_content)], None, cx);
                                     buffer.edit(
@@ -1132,13 +1133,15 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                                     );
                                 });
 
-                                workspace.add_item_to_active_pane(
-                                    Box::new(cx.new(|cx| {
-                                        let mut editor =
-                                            editor::Editor::for_buffer(buffer, None, window, cx);
-                                        editor.set_read_only(true);
-                                        editor
-                                    })),
+                                let editor = cx.new(|cx| {
+                                    let mut editor =
+                                        editor::Editor::for_buffer(buffer, None, window, cx);
+                                    editor.set_read_only(true);
+                                    editor
+                                });
+                                workspace::Workspace::add_item_to_active_pane(
+                                    &workspace,
+                                    Box::new(editor),
                                     None,
                                     true,
                                     window,

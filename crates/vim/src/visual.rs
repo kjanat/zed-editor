@@ -863,19 +863,19 @@ impl Vim {
         self.update_editor(cx, |_, editor, _| {
             editor.set_collapse_matches(false);
         });
-        if vim_is_normal {
-            pane.update(cx, |pane, cx| {
-                if let Some(search_bar) = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>()
-                {
-                    search_bar.update(cx, |search_bar, cx| {
-                        if !search_bar.has_active_match() || !search_bar.show(window, cx) {
-                            return;
-                        }
-                        // without update_match_index there is a bug when the cursor is before the first match
-                        search_bar.update_match_index(window, cx);
-                        search_bar.select_match(direction.opposite(), 1, window, cx);
-                    });
+        let search_bar = pane
+            .read(cx)
+            .toolbar()
+            .read(cx)
+            .item_of_type::<BufferSearchBar>();
+        if vim_is_normal && let Some(search_bar) = &search_bar {
+            search_bar.update(cx, |search_bar, cx| {
+                if !search_bar.has_active_match() || !search_bar.show(window, cx) {
+                    return;
                 }
+                // without update_match_index there is a bug when the cursor is before the first match
+                search_bar.update_match_index(window, cx);
+                search_bar.select_match(direction.opposite(), 1, window, cx);
             });
         }
         self.update_editor(cx, |_, editor, cx| {
@@ -887,15 +887,13 @@ impl Vim {
         });
 
         let mut match_exists = false;
-        pane.update(cx, |pane, cx| {
-            if let Some(search_bar) = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>() {
-                search_bar.update(cx, |search_bar, cx| {
-                    search_bar.update_match_index(window, cx);
-                    search_bar.select_match(direction, count, window, cx);
-                    match_exists = search_bar.match_exists(window, cx);
-                });
-            }
-        });
+        if let Some(search_bar) = &search_bar {
+            search_bar.update(cx, |search_bar, cx| {
+                search_bar.update_match_index(window, cx);
+                search_bar.select_match(direction, count, window, cx);
+                match_exists = search_bar.match_exists(window, cx);
+            });
+        }
         if !match_exists {
             self.update_editor(cx, |_, editor, _| {
                 editor.set_collapse_matches(true);

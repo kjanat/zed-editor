@@ -26,35 +26,84 @@ pub struct LspCommandSelector {
     picker: Entity<Picker<LspCommandSelectorDelegate>>,
 }
 
+struct ActiveEditor(Option<WeakEntity<Editor>>);
+
 impl LspCommandSelector {
-    fn register(workspace: &mut Workspace, _: Option<&mut Window>, _: &mut Context<Workspace>) {
-        workspace.register_action_renderer(|div, workspace, _, cx| {
-            let commands_available = active_buffer(workspace, cx).is_some_and(|buffer| {
-                available_commands(&buffer, workspace.project(), cx)
-                    .next()
-                    .is_some()
-            });
+    fn register(
+        workspace: &mut Workspace,
+        window: Option<&mut Window>,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(window) = window else {
+            return;
+        };
+        let active_editor = cx.new(|_| ActiveEditor(None));
+        let workspace_handle = cx.entity();
+        window
+            .subscribe(&workspace_handle, cx, {
+                let active_editor = active_editor.clone();
+                move |workspace, event: &workspace::Event, _, cx| {
+                    if let workspace::Event::ActiveItemChanged = event {
+                        refresh_active_editor(&active_editor, &workspace, cx);
+                    }
+                }
+            })
+            .detach();
+        window.defer(cx, {
+            let active_editor = active_editor.clone();
+            let workspace = workspace_handle.downgrade();
+            move |_, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    refresh_active_editor(&active_editor, &workspace, cx);
+                }
+            }
+        });
+
+        workspace.register_action_renderer(move |div, workspace, _, cx| {
+            let Some(editor) = active_editor
+                .read(cx)
+                .0
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+            else {
+                return div;
+            };
+            let Some(buffer) = editor_buffer(&editor, cx) else {
+                return div;
+            };
+            let commands_available = available_commands(&buffer, workspace.project(), cx)
+                .next()
+                .is_some();
             if !commands_available {
                 return div;
             }
-            div.on_action(cx.listener(|workspace, _: &Toggle, window, cx| {
-                Self::toggle(workspace, window, cx);
-            }))
+            div.on_action(cx.entity_listener(
+                move |workspace: Entity<Workspace>, _: &Toggle, window, cx| {
+                    Self::toggle(&workspace, &editor, window, cx);
+                },
+            ))
         });
     }
 
-    fn toggle(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-        let Some(buffer) = active_buffer(workspace, cx) else {
+    fn toggle(
+        workspace: &Entity<Workspace>,
+        editor: &Entity<Editor>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(buffer) = editor_buffer(editor, cx) else {
             return;
         };
-        let project = workspace.project();
-        let commands = available_commands(&buffer, project, cx).collect::<BTreeSet<_>>();
+        let project = workspace.read(cx).project().clone();
+        let commands = available_commands(&buffer, &project, cx).collect::<BTreeSet<_>>();
         let lsp_store = project.read(cx).lsp_store();
-        workspace
-            .toggle_modal(window, cx, move |window, cx| {
-                LspCommandSelector::new(lsp_store, commands, window, cx)
-            })
-            .detach();
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    LspCommandSelector::new(lsp_store, commands, window, cx)
+                })
+                .detach();
+        });
     }
 
     fn new(
@@ -410,8 +459,21 @@ impl PickerDelegate for LspCommandSelectorDelegate {
     }
 }
 
-fn active_buffer(workspace: &Workspace, cx: &App) -> Option<Entity<Buffer>> {
-    let editor = workspace.active_item(cx)?.act_as::<Editor>(cx)?;
+fn refresh_active_editor(
+    active_editor: &Entity<ActiveEditor>,
+    workspace: &Entity<Workspace>,
+    cx: &mut App,
+) {
+    let editor = workspace
+        .read(cx)
+        .active_item(cx)
+        .and_then(|item| item.act_as::<Editor>(cx))
+        .map(|editor| editor.downgrade());
+    active_editor.update(cx, |active_editor, _| active_editor.0 = editor);
+    workspace.update(cx, |_, cx| cx.notify());
+}
+
+fn editor_buffer(editor: &Entity<Editor>, cx: &App) -> Option<Entity<Buffer>> {
     let editor = editor.read(cx);
     editor
         .buffer()
@@ -484,7 +546,10 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use util::{path, rel_path::rel_path};
-    use workspace::{AppState, MultiWorkspace, OpenOptions, OpenVisible};
+    use workspace::{
+        AppState, MultiWorkspace, OpenOptions, OpenVisible, Pane,
+        item::test::{HookBits, TestItem},
+    };
 
     #[gpui::test]
     async fn test_executing_commands_from_the_picker(cx: &mut TestAppContext) {
@@ -658,6 +723,62 @@ mod tests {
             !selector_is_open(&workspace, &cx),
             "the selector should not open when no server advertises commands"
         );
+    }
+
+    #[gpui::test]
+    async fn test_toggle_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let SelectorTest {
+            workspace, mut cx, ..
+        } = init_selector_test(cx).await;
+        let (pane, editor) = workspace.read_with(&cx, |workspace, cx| {
+            (
+                workspace.active_pane().clone(),
+                workspace.active_item_as::<Editor>(cx),
+            )
+        });
+        let editor = editor.expect("the markdown file should be open in an editor");
+        assert!(toggle_is_available(&mut cx));
+
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        item.read_with(&cx, |item, _| {
+            item.read_containers_in(HookBits::ACT_AS_TYPE)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(
+            !toggle_is_available(&mut cx),
+            "an item that is not an editor should not register the action"
+        );
+        cx.dispatch_action(Toggle);
+        cx.run_until_parked();
+        assert!(!selector_is_open(&workspace, &cx));
+        assert!(item.read_with(&cx, |item, _| item.container_reads.get() > 0));
+
+        pane.update_in(&mut cx, |pane, window, cx| {
+            let editor_index = pane
+                .index_for_item(&editor)
+                .expect("the editor should stay in the pane");
+            pane.activate_item(editor_index, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            toggle_is_available(&mut cx),
+            "reactivating the editor should register the action again"
+        );
+        open_selector(&workspace, &mut cx);
+    }
+
+    fn toggle_is_available(cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| window.is_action_available(&Toggle, cx))
     }
 
     #[gpui::test]

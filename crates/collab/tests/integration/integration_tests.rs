@@ -8040,8 +8040,13 @@ async fn test_preview_tabs(cx: &mut TestAppContext) {
     });
 
     // Focus left pane
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.activate_pane_in_direction(workspace::SplitDirection::Left, window, cx)
+    cx.update(|window, cx| {
+        workspace::Workspace::activate_pane_in_direction(
+            &workspace,
+            workspace::SplitDirection::Left,
+            window,
+            cx,
+        )
     });
 
     // Open item 2 as preview in left pane

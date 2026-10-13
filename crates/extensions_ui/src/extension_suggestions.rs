@@ -262,7 +262,57 @@ mod tests {
     use settings::SettingsStore;
     use util::path;
     use util::rel_path::rel_path;
-    use workspace::{AppState, SplitDirection};
+    use workspace::item::test::{HookBits, TestItem};
+    use workspace::{AppState, MultiWorkspace, Pane, SplitDirection};
+
+    use crate::ExtensionsPage;
+
+    #[gpui::test]
+    async fn test_extensions_action_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let reader = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(
+                &pane,
+                Box::new(reader.clone()),
+                true,
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
+        reader.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        reader.read_with(cx, |reader, _| {
+            reader.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+        });
+
+        cx.dispatch_action(zed_actions::Extensions::default());
+        cx.run_until_parked();
+
+        assert!(reader.read_with(cx, |reader, _| reader.container_reads.get()) > 0);
+        pane.read_with(cx, |pane, _| {
+            assert!(
+                pane.active_item()
+                    .and_then(|item| item.downcast::<ExtensionsPage>())
+                    .is_some(),
+                "the extensions page should open in the active pane"
+            );
+        });
+    }
 
     const EMMET_EXTENSION_ID: &str = "emmet";
 
@@ -703,9 +753,17 @@ mod tests {
             })
             .await
             .unwrap();
-        inactive_pane.update_in(cx, |pane, window, cx| {
+        cx.update(|window, cx| {
             let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx));
-            pane.add_item(Box::new(editor), false, false, None, window, cx);
+            Pane::add_item(
+                &inactive_pane,
+                Box::new(editor),
+                false,
+                false,
+                None,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
 
@@ -744,10 +802,17 @@ mod tests {
             .update(cx, |project, cx| project.create_buffer(None, false, cx))
             .await
             .unwrap();
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             let editor =
                 cx.new(|cx| Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx));
-            workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor),
+                None,
+                true,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
         assert_eq!(notification_ids(&workspace, cx), Vec::new());

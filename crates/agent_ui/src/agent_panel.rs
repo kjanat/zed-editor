@@ -437,20 +437,27 @@ pub fn init(cx: &mut App) {
                 .register_action(|workspace, _: &Follow, window, cx| {
                     workspace.follow(CollaboratorId::Agent, window, cx);
                 })
-                .register_action(|workspace, _: &OpenAgentDiff, window, cx| {
-                    let thread = workspace
-                        .panel::<AgentPanel>(cx)
-                        .and_then(|panel| panel.read(cx).active_conversation_view().cloned())
-                        .and_then(|conversation| {
-                            conversation
+                .register_action_renderer(|div, _, _, cx| {
+                    div.on_action(cx.entity_listener(
+                        |workspace: Entity<Workspace>, _: &OpenAgentDiff, window, cx| {
+                            let thread = workspace
                                 .read(cx)
-                                .root_thread_view()
-                                .map(|r| r.read(cx).thread.clone())
-                        });
+                                .panel::<AgentPanel>(cx)
+                                .and_then(|panel| {
+                                    panel.read(cx).active_conversation_view().cloned()
+                                })
+                                .and_then(|conversation| {
+                                    conversation
+                                        .read(cx)
+                                        .root_thread_view()
+                                        .map(|r| r.read(cx).thread.clone())
+                                });
 
-                    if let Some(thread) = thread {
-                        AgentDiffPane::deploy_in_workspace(thread, workspace, window, cx);
-                    }
+                            if let Some(thread) = thread {
+                                AgentDiffPane::deploy_in_workspace(thread, &workspace, window, cx);
+                            }
+                        },
+                    ))
                 })
                 .register_action(|workspace, _: &ToggleOptionsMenu, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
@@ -630,83 +637,13 @@ pub fn init(cx: &mut App) {
                         });
                     },
                 )
-                .register_action(
-                    |workspace: &mut Workspace, _: &AddSelectionToThread, window, cx| {
-                        let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
-                            return;
-                        };
-
-                        let source = AgentContextSource::from_focused(workspace, window, cx);
-                        let source = source.or_else(|| {
-                            let cached = agent_panel.read(cx).last_context_source.clone()?;
-                            cached.exists(workspace, cx).then_some(cached)
-                        });
-                        let source =
-                            source.or_else(|| AgentContextSource::from_active(workspace, cx));
-
-                        let Some(source) = source else {
-                            return;
-                        };
-
-                        let Some(selection) = source.read_selection(workspace, true, cx) else {
-                            return;
-                        };
-
-                        if !agent_panel.focus_handle(cx).contains_focused(window, cx) {
-                            workspace.toggle_panel_focus::<AgentPanel>(window, cx);
-                        }
-
-                        agent_panel.update(cx, |panel, cx| {
-                            panel.last_context_source = Some(source);
-                            if let Some(conversation_view) = panel.active_conversation_view() {
-                                conversation_view.update(cx, |conversation_view, cx| {
-                                    if conversation_view.active_thread().is_some() {
-                                        cx.defer_in(
-                                            window,
-                                            move |conversation_view, window, cx| {
-                                                conversation_view
-                                                    .insert_selection(selection, window, cx);
-                                            },
-                                        );
-                                    } else {
-                                        conversation_view.insert_selection(selection, window, cx);
-                                    }
-                                });
-                                return;
-                            }
-
-                            cx.defer_in(window, move |panel, window, cx| {
-                                if let Some(terminal_id) = panel.active_terminal_id()
-                                    && let Some(agent_terminal) = panel.terminals.get(&terminal_id)
-                                {
-                                    // Resolve mentions against the cwd: live cwd, else spawn dir.
-                                    let working_directory = agent_terminal
-                                        .view
-                                        .read(cx)
-                                        .terminal()
-                                        .read(cx)
-                                        .working_directory()
-                                        .or_else(|| agent_terminal.working_directory.clone());
-                                    let text = format_selection_for_terminal(
-                                        &selection,
-                                        &panel.project,
-                                        working_directory.as_deref(),
-                                        cx,
-                                    );
-                                    if !text.is_empty() {
-                                        let view = agent_terminal.view.clone();
-                                        view.update(cx, |view, cx| {
-                                            view.terminal().update(cx, |terminal, _| {
-                                                terminal.paste(&text);
-                                            });
-                                            window.focus(&view.focus_handle(cx), cx);
-                                        });
-                                    }
-                                }
-                            });
-                        });
-                    },
-                )
+                .register_action_renderer(|div, _, _, cx| {
+                    div.on_action(cx.entity_listener(
+                        |workspace: Entity<Workspace>, _: &AddSelectionToThread, window, cx| {
+                            AgentPanel::add_selection_to_thread(&workspace, window, cx);
+                        },
+                    ))
+                })
                 .register_action(|workspace, _: &menu::Cancel, _window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         let dismissed =
@@ -1579,6 +1516,79 @@ impl AgentPanel {
 
         panel.ensure_native_agent_connection(cx);
         panel
+    }
+
+    fn add_selection_to_thread(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
+        let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) else {
+            return;
+        };
+
+        let source = AgentContextSource::from_focused(workspace.read(cx), window, cx);
+        let source = source.or_else(|| {
+            let cached = agent_panel.read(cx).last_context_source.clone()?;
+            cached.exists(workspace.read(cx), cx).then_some(cached)
+        });
+        let source = source.or_else(|| AgentContextSource::from_active(workspace.read(cx), cx));
+
+        let Some(source) = source else {
+            return;
+        };
+
+        let Some(selection) = source.read_selection(workspace, true, cx) else {
+            return;
+        };
+
+        if !agent_panel.focus_handle(cx).contains_focused(window, cx) {
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_panel_focus::<AgentPanel>(window, cx);
+            });
+        }
+
+        agent_panel.update(cx, |panel, cx| {
+            panel.last_context_source = Some(source);
+            if let Some(conversation_view) = panel.active_conversation_view() {
+                conversation_view.update(cx, |conversation_view, cx| {
+                    if conversation_view.active_thread().is_some() {
+                        cx.defer_in(window, move |conversation_view, window, cx| {
+                            conversation_view.insert_selection(selection, window, cx);
+                        });
+                    } else {
+                        conversation_view.insert_selection(selection, window, cx);
+                    }
+                });
+                return;
+            }
+
+            cx.defer_in(window, move |panel, window, cx| {
+                if let Some(terminal_id) = panel.active_terminal_id()
+                    && let Some(agent_terminal) = panel.terminals.get(&terminal_id)
+                {
+                    // Resolve mentions against the cwd: live cwd, else spawn dir.
+                    let working_directory = agent_terminal
+                        .view
+                        .read(cx)
+                        .terminal()
+                        .read(cx)
+                        .working_directory()
+                        .or_else(|| agent_terminal.working_directory.clone());
+                    let text = format_selection_for_terminal(
+                        &selection,
+                        &panel.project,
+                        working_directory.as_deref(),
+                        cx,
+                    );
+                    if !text.is_empty() {
+                        let view = agent_terminal.view.clone();
+                        view.update(cx, |view, cx| {
+                            view.terminal().update(cx, |terminal, _| {
+                                terminal.paste(&text);
+                            });
+                            window.focus(&view.focus_handle(cx), cx);
+                        });
+                    }
+                }
+            });
+        });
     }
 
     pub fn toggle_focus(
@@ -4006,11 +4016,15 @@ impl AgentPanel {
                     buffer.set_capability(language::Capability::ReadWrite, cx);
                 });
 
-                workspace.update_in(cx, |workspace, window, cx| {
+                let workspace = workspace
+                    .upgrade()
+                    .ok_or_else(|| anyhow::anyhow!("workspace was released"))?;
+                cx.update(|window, cx| {
                     let buffer =
                         cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(title.clone()));
 
-                    workspace.add_item_to_active_pane(
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
                         Box::new(cx.new(|cx| {
                             let mut editor =
                                 Editor::for_multibuffer(buffer, Some(project.clone()), window, cx);
@@ -4917,11 +4931,9 @@ impl agent::SiblingThreadHost for AgentPanelSiblingHost {
                     branch_target,
                 };
                 let creation = window.update(cx, |_root, window, cx| {
-                    workspace.update(cx, |workspace, cx| {
-                        git_ui_core::worktree_service::create_worktree_workspace(
-                            workspace, &action, window, None, cx,
-                        )
-                    })
+                    git_ui_core::worktree_service::create_worktree_workspace(
+                        &workspace, &action, window, None, cx,
+                    )
                 })?;
                 let created = creation
                     .await
@@ -7014,6 +7026,10 @@ mod tests {
     use project::{Project, WorktreePaths};
     use settings::{SettingsStore, WorkingDirectory};
     use std::any::Any;
+    use workspace::{
+        Pane,
+        item::test::{HookBits, TestItem},
+    };
 
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -9468,12 +9484,19 @@ mod tests {
         previous_editor.update_in(&mut cx, |editor, window, cx| {
             editor.set_text("Keep this draft", window, cx);
         });
-        let editor = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let editor = cx.update(|window, cx| {
             let buffer = project.update(cx, |project, cx| {
                 project.create_local_buffer("first selection\nsecond selection\n", None, false, cx)
             });
             let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             editor
         });
         editor.update_in(&mut cx, |editor, window, cx| {
@@ -9743,7 +9766,7 @@ mod tests {
             .await;
         cx.run_until_parked();
 
-        let editor = workspace.update(&mut cx, |workspace, cx| {
+        let editor = workspace.read_with(&cx, |workspace, cx| {
             workspace
                 .active_item(cx)
                 .and_then(|item| item.act_as::<Editor>(cx))
@@ -9881,6 +9904,125 @@ mod tests {
         (panel, cx)
     }
 
+    #[gpui::test]
+    async fn test_agent_workspace_actions_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, mut cx) = setup_visible_panel(cx).await;
+        open_thread_with_connection(&panel, StubAgentConnection::new(), &mut cx);
+        let workspace = panel.read_with(&cx, |panel, _| {
+            panel.workspace.upgrade().expect("workspace must exist")
+        });
+        let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+        let pane_handle = pane.downgrade();
+        let workspace_handle = workspace.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(&cx, |item, _| {
+            item.read_containers_in(HookBits::ACT_AS_TYPE | HookBits::BUFFER_KIND)
+        });
+        item.update_in(&mut cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+
+        let reads_before_selection = item.read_with(&cx, |item, _| item.container_reads.get());
+        cx.dispatch_action(AddSelectionToThread);
+        cx.run_until_parked();
+        let reads_after_selection = item.read_with(&cx, |item, _| item.container_reads.get());
+        assert!(reads_after_selection > reads_before_selection);
+
+        cx.update(|window, cx| {
+            crate::InlineAssistant::inline_assist(
+                workspace.clone(),
+                &zed_actions::assistant::InlineAssist::default(),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let reads_after_inline_assist = item.read_with(&cx, |item, _| item.container_reads.get());
+        assert!(reads_after_inline_assist > reads_after_selection);
+
+        item.update_in(&mut cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        cx.dispatch_action(OpenAgentDiff);
+        cx.run_until_parked();
+        assert!(
+            item.read_with(&cx, |item, _| item.container_reads.get()) > reads_after_inline_assist
+        );
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_item(cx)
+                    .and_then(|active| active.downcast::<AgentDiffPane>())
+                    .is_some()
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_agent_registry_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let (panel, mut cx) = setup_visible_panel(cx).await;
+        cx.update(|_, cx| {
+            project::AgentRegistryStore::init_test_global(cx, Vec::new());
+        });
+        let workspace = panel.read_with(&cx, |panel, _| {
+            panel.workspace.upgrade().expect("workspace must exist")
+        });
+        let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+        let pane_handle = pane.downgrade();
+        let workspace_handle = workspace.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(&cx, |item, _| {
+            item.read_containers_in(HookBits::BUFFER_KIND)
+        });
+
+        cx.update(|window, cx| crate::open_agent_registry(&workspace, window, cx));
+        cx.run_until_parked();
+        assert!(item.read_with(&cx, |item, _| item.container_reads.get() > 0));
+        let registry_page = pane.read_with(&cx, |pane, _| {
+            pane.active_item()
+                .and_then(|active| active.downcast::<crate::agent_registry_ui::AgentRegistryPage>())
+        });
+        assert!(registry_page.is_some());
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.activate_item(&item, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| crate::open_agent_registry(&workspace, window, cx));
+        cx.run_until_parked();
+        pane.read_with(&cx, |pane, _| {
+            assert_eq!(
+                pane.items_of_type::<crate::agent_registry_ui::AgentRegistryPage>()
+                    .count(),
+                1
+            );
+            assert_eq!(
+                pane.active_item()
+                    .and_then(
+                        |active| active.downcast::<crate::agent_registry_ui::AgentRegistryPage>()
+                    )
+                    .map(|page| page.entity_id()),
+                registry_page.map(|page| page.entity_id())
+            );
+        });
+    }
+
     fn expected_terminal_drop_text(paths: &[PathBuf]) -> String {
         let mut text = String::new();
         for path in paths {
@@ -9985,55 +10127,56 @@ mod tests {
         let workspace = panel
             .read_with(&cx, |panel, _cx| panel.workspace.upgrade())
             .expect("workspace should still be open");
-        let (source_pane, terminal_view, dragged_tab) =
-            workspace.update_in(&mut cx, |workspace, window, cx| {
-                let source_pane = workspace.active_pane().clone();
-                let project = workspace.project().clone();
-                let settings = TerminalSettings::get_global(cx).clone();
-                let path_style = project.read(cx).path_style(cx);
-                let terminal = cx.new(|cx| {
-                    terminal::TerminalBuilder::new_display_only(
-                        settings.cursor_shape,
-                        settings.alternate_scroll,
-                        settings.max_scroll_history_lines,
-                        0,
-                        cx.background_executor(),
-                        path_style,
-                    )
-                    .subscribe(cx)
-                });
-                let terminal_view = cx.new(|cx| {
-                    let mut view = TerminalView::new(
-                        terminal,
-                        workspace.weak_handle(),
-                        workspace.database_id(),
-                        project.downgrade(),
-                        window,
-                        cx,
-                    );
-                    view.set_custom_title(Some("Moved Terminal".to_string()), cx);
-                    view
-                });
-                source_pane.update(cx, |pane, cx| {
-                    pane.add_item(
-                        Box::new(terminal_view.clone()),
-                        true,
-                        false,
-                        None,
-                        window,
-                        cx,
-                    );
-                });
-
-                let dragged_tab = DraggedTab {
-                    pane: source_pane.clone(),
-                    item: Box::new(terminal_view.clone()),
-                    ix: 0,
-                    detail: 0,
-                    is_active: true,
-                };
-                (source_pane, terminal_view, dragged_tab)
+        let (source_pane, terminal_view) = workspace.update_in(&mut cx, |workspace, window, cx| {
+            let source_pane = workspace.active_pane().clone();
+            let project = workspace.project().clone();
+            let settings = TerminalSettings::get_global(cx).clone();
+            let path_style = project.read(cx).path_style(cx);
+            let terminal = cx.new(|cx| {
+                terminal::TerminalBuilder::new_display_only(
+                    settings.cursor_shape,
+                    settings.alternate_scroll,
+                    settings.max_scroll_history_lines,
+                    0,
+                    cx.background_executor(),
+                    path_style,
+                )
+                .subscribe(cx)
             });
+            let terminal_view = cx.new(|cx| {
+                let mut view = TerminalView::new(
+                    terminal,
+                    workspace.weak_handle(),
+                    workspace.database_id(),
+                    project.downgrade(),
+                    window,
+                    cx,
+                );
+                view.set_custom_title(Some("Moved Terminal".to_string()), cx);
+                view
+            });
+            (source_pane, terminal_view)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(
+                &source_pane,
+                Box::new(terminal_view.clone()),
+                true,
+                false,
+                None,
+                window,
+                cx,
+            )
+        });
+
+        let dragged_tab = DraggedTab {
+            pane: source_pane.clone(),
+            item: Box::new(terminal_view.clone()),
+            ix: 0,
+            detail: 0,
+            is_active: true,
+            project_path: None,
+        };
 
         let handled = panel.update_in(&mut cx, |panel, window, cx| {
             panel.handle_dragged_terminal_tab(&dragged_tab, window, cx)

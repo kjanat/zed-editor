@@ -2084,13 +2084,7 @@ impl Render for MultiWorkspace {
 
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
-        let active_item_is_read_only = workspace
-            .read(cx)
-            .active_item(cx)
-            .is_some_and(|item| !item.capability(cx).editable());
-        let root = workspace.update(cx, |workspace, cx| {
-            workspace.actions(h_flex(), active_item_is_read_only, window, cx)
-        });
+        let root = Workspace::actions(&workspace, h_flex(), window, cx);
 
         client_side_decorations(
             root.key_context(workspace_key_context)

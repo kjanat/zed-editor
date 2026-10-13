@@ -28,7 +28,10 @@ use std::{
 };
 use unindent::Unindent as _;
 use util::{RandomCharIter, path, post_inc, rel_path::rel_path};
-use workspace::MultiWorkspace;
+use workspace::{
+    MultiWorkspace, Pane,
+    item::test::{HookBits, TestItem},
+};
 
 #[ctor::ctor(unsafe)]
 fn init_logger() {
@@ -687,8 +690,13 @@ async fn test_random_diagnostics_blocks(cx: &mut TestAppContext, mut rng: StdRng
         ProjectDiagnosticsEditor::new(true, project.clone(), workspace.downgrade(), window, cx)
     });
 
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_center(Box::new(mutated_diagnostics.clone()), window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_center(
+            &workspace,
+            Box::new(mutated_diagnostics.clone()),
+            window,
+            cx,
+        );
     });
     mutated_diagnostics.update_in(cx, |diagnostics, window, _cx| {
         assert!(diagnostics.focus_handle.is_focused(window));
@@ -862,8 +870,13 @@ async fn test_random_diagnostics_with_inlays(cx: &mut TestAppContext, mut rng: S
         ProjectDiagnosticsEditor::new(true, project.clone(), workspace.downgrade(), window, cx)
     });
 
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_center(Box::new(mutated_diagnostics.clone()), window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_center(
+            &workspace,
+            Box::new(mutated_diagnostics.clone()),
+            window,
+            cx,
+        );
     });
     mutated_diagnostics.update_in(cx, |diagnostics, window, _cx| {
         assert!(diagnostics.focus_handle.is_focused(window));
@@ -2431,6 +2444,84 @@ async fn test_buffer_diagnostics_multiple_servers(cx: &mut TestAppContext) {
             }
         );
     })
+}
+
+#[gpui::test]
+async fn test_deploy_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/test"), json!({})).await;
+    let project = Project::test(fs, [path!("/test").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    let item = add_item_reading_containers(&workspace, cx);
+    item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+    });
+
+    cx.dispatch_action(Deploy);
+    cx.run_until_parked();
+
+    let deployed = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .active_item(cx)
+            .and_then(|item| item.downcast::<ProjectDiagnosticsEditor>())
+    });
+    assert!(
+        deployed.is_some(),
+        "project diagnostics should become the active item"
+    );
+    assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+}
+
+#[gpui::test]
+async fn test_deploy_current_file_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/test"), json!({})).await;
+    let project = Project::test(fs, [path!("/test").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    let item = add_item_reading_containers(&workspace, cx);
+    item.read_with(cx, |item, _| item.read_containers_in(HookBits::ACT_AS_TYPE));
+
+    cx.dispatch_action(crate::buffer_diagnostics::DeployCurrentFile);
+    cx.run_until_parked();
+
+    let active_item_id = workspace.read_with(cx, |workspace, cx| {
+        workspace.active_item(cx).map(|item| item.item_id())
+    });
+    assert_eq!(
+        active_item_id,
+        Some(item.entity_id()),
+        "an item that is not an editor should not deploy buffer diagnostics"
+    );
+    assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+}
+
+fn add_item_reading_containers(
+    workspace: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) -> Entity<TestItem> {
+    let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let workspace_handle = workspace.downgrade();
+    let pane_handle = pane.downgrade();
+    let item = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item
 }
 
 fn init_test(cx: &mut TestAppContext) {

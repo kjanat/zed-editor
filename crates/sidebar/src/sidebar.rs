@@ -753,19 +753,17 @@ fn create_worktree_in_workspace(
     window: &mut Window,
     cx: &mut App,
 ) {
-    workspace.update(cx, |workspace, cx| {
-        let focused_dock = workspace.focused_dock_position(window, cx);
-        git_ui_core::worktree_service::handle_create_worktree(
-            workspace,
-            &CreateWorktree {
-                worktree_name: None,
-                branch_target,
-            },
-            window,
-            focused_dock,
-            cx,
-        );
-    });
+    let focused_dock = workspace.read(cx).focused_dock_position(window, cx);
+    git_ui_core::worktree_service::handle_create_worktree(
+        workspace,
+        &CreateWorktree {
+            worktree_name: None,
+            branch_target,
+        },
+        window,
+        focused_dock,
+        cx,
+    );
 }
 
 /// The sidebar re-derives its entire entry list from scratch on every
@@ -8246,8 +8244,12 @@ pub fn dump_workspace_info(
             editor::MultiBuffer::singleton(buffer, cx).with_title("Workspace Info".into())
         });
 
-        _this.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(
+        let workspace = _this
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("workspace was released"))?;
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
                 Box::new(cx.new(|cx| {
                     let mut editor =
                         editor::Editor::for_multibuffer(buffer, Some(project.clone()), window, cx);

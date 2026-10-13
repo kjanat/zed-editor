@@ -24,7 +24,7 @@ use std::{
 use ui::{Color, Icon, IconName, SharedString, prelude::*};
 use util::paths::PathExt as _;
 use workspace::{
-    Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
+    Item, ItemHandle, ItemNavHistory, Pane, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
     Workspace,
     item::{ItemEvent, SaveOptions},
     searchable::SearchableItemHandle,
@@ -61,7 +61,7 @@ impl FileDiffView {
 
             let buffer_diff = build_buffer_diff(&old_buffer, &new_buffer, cx).await?;
 
-            workspace.update_in(cx, |workspace, window, cx| {
+            let (pane, diff_view) = workspace.update_in(cx, |workspace, window, cx| {
                 let workspace_entity = cx.entity();
                 let diff_view = cx.new(|cx| {
                     FileDiffView::new(
@@ -74,11 +74,19 @@ impl FileDiffView {
                         cx,
                     )
                 });
+                (workspace.active_pane().clone(), diff_view)
+            })?;
 
-                let pane = workspace.active_pane();
-                pane.update(cx, |pane, cx| {
-                    pane.add_item(Box::new(diff_view.clone()), true, true, None, window, cx);
-                });
+            cx.update(|window, cx| {
+                Pane::add_item(
+                    &pane,
+                    Box::new(diff_view.clone()),
+                    true,
+                    true,
+                    None,
+                    window,
+                    cx,
+                );
 
                 if let Some(target_position) = target_position {
                     let (new_buffer, rhs_editor) = {

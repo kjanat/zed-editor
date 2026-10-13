@@ -259,13 +259,18 @@ impl ActivityIndicator {
                         );
                         buffer.set_capability(language::Capability::ReadOnly, cx);
                     });
-                    workspace.update_in(cx, |workspace, window, cx| {
-                        workspace.add_item_to_active_pane(
-                            Box::new(cx.new(|cx| {
-                                let mut editor = Editor::for_buffer(buffer, None, window, cx);
-                                editor.set_read_only(true);
-                                editor
-                            })),
+                    let Some(workspace) = workspace.upgrade() else {
+                        return anyhow::Ok(());
+                    };
+                    cx.update(|window, cx| {
+                        let editor = cx.new(|cx| {
+                            let mut editor = Editor::for_buffer(buffer, None, window, cx);
+                            editor.set_read_only(true);
+                            editor
+                        });
+                        Workspace::add_item_to_active_pane(
+                            &workspace,
+                            Box::new(editor),
                             None,
                             true,
                             window,

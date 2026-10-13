@@ -117,33 +117,32 @@ fn main() {
                         )
                     });
 
-                    workspace.update(cx, |workspace, cx| {
-                        let weak_workspace = cx.entity().downgrade();
-                        let language_registry = app_state.languages.clone();
-                        let user_store = app_state.user_store.clone();
+                    let weak_workspace = workspace.downgrade();
+                    let language_registry = app_state.languages.clone();
+                    let user_store = app_state.user_store.clone();
 
-                        let component_preview = cx.new(|cx| {
-                            ComponentPreview::new(
-                                weak_workspace,
-                                project,
-                                language_registry,
-                                user_store,
-                                None,
-                                None,
-                                window,
-                                cx,
-                            )
-                            .expect("Failed to create component preview")
-                        });
-
-                        workspace.add_item_to_active_pane(
-                            Box::new(component_preview),
+                    let component_preview = cx.new(|cx| {
+                        ComponentPreview::new(
+                            weak_workspace,
+                            project,
+                            language_registry,
+                            user_store,
                             None,
-                            true,
+                            None,
                             window,
                             cx,
-                        );
+                        )
+                        .expect("Failed to create component preview")
                     });
+
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
+                        Box::new(component_preview),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
 
                     workspace
                 }

@@ -22,7 +22,7 @@ use ui::{Color, Icon, IconName};
 use util::paths::PathStyle;
 use util::rel_path::RelPath;
 use workspace::{
-    Item, ItemHandle as _, ItemNavHistory, ToolbarItemLocation, Workspace,
+    Item, ItemHandle as _, ItemNavHistory, Pane, ToolbarItemLocation, Workspace,
     item::{ItemEvent, SaveOptions},
     searchable::SearchableItemHandle,
 };
@@ -161,7 +161,7 @@ impl MultiDiffView {
         window.spawn(cx, async move |cx| {
             let (entries, common_root) = load_entries(diff_pairs, &project, cx).await?;
 
-            workspace.update_in(cx, |workspace, window, cx| {
+            let (pane, diff_view) = workspace.update_in(cx, |workspace, window, cx| {
                 let multibuffer = cx.new(|cx| {
                     let mut multibuffer = MultiBuffer::new(Capability::ReadWrite);
                     multibuffer.set_all_diff_hunks_expanded(cx);
@@ -185,18 +185,28 @@ impl MultiDiffView {
                     )
                 });
 
-                let pane = workspace.active_pane();
-                pane.update(cx, |pane, cx| {
-                    pane.add_item(Box::new(diff_view.clone()), true, true, None, window, cx);
-                });
+                (workspace.active_pane().clone(), diff_view)
+            })?;
+            cx.update(|window, cx| {
+                Pane::add_item(
+                    &pane,
+                    Box::new(diff_view.clone()),
+                    true,
+                    true,
+                    None,
+                    window,
+                    cx,
+                )
+            })?;
 
+            workspace.update_in(cx, |workspace, window, cx| {
                 // Hide the left dock (file explorer) for a cleaner diff view
                 workspace.left_dock().update(cx, |dock, cx| {
                     dock.set_open(false, window, cx);
                 });
+            })?;
 
-                diff_view
-            })
+            Ok(diff_view)
         })
     }
 

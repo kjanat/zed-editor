@@ -2199,8 +2199,15 @@ async fn remote_code_action_resolve(
     let editor = cx.new_window_entity(|window, cx| {
         Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx)
     });
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        workspace::Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
     cx.run_until_parked();
 
@@ -3075,8 +3082,15 @@ async fn test_remote_code_lens_resolve(cx: &mut TestAppContext, server_cx: &mut 
     let editor = cx.new_window_entity(|window, cx| {
         Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx)
     });
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        workspace::Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
 
     editor.update_in(cx, |editor, window, cx| {
