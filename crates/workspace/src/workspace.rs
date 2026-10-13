@@ -6159,6 +6159,9 @@ impl Workspace {
                 let pane = pane.clone();
                 let workspace = cx.entity();
                 window.defer(cx, move |window, cx| {
+                    if pane.read(cx).index_for_item(item.as_ref()).is_none() {
+                        return;
+                    }
                     item.added_to_pane(&workspace, pane, window, cx);
                     workspace.update(cx, |_, cx| cx.emit(Event::ItemAdded { item }));
                 });
@@ -15388,6 +15391,46 @@ mod tests {
         assert!(
             container_reads(&item_a, cx) > reads_after_activation,
             "refreshing the window title should read the active item's project path"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_items_removed_before_their_deferred_setup_stay_unregistered(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let added_item_ids = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|_, cx| {
+            let added_item_ids = added_item_ids.clone();
+            cx.subscribe(&workspace, move |_, event: &Event, _| {
+                if let Event::ItemAdded { item } = event {
+                    added_item_ids.borrow_mut().push(item.item_id());
+                }
+            })
+        });
+
+        let item = cx.new(TestItem::new);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(Box::new(item.clone()), true, true, None, window, cx);
+            pane.remove_item(item.item_id(), false, false, window, cx);
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, _| {
+            assert!(
+                !workspace.panes_by_item.contains_key(&item.item_id()),
+                "an item removed before its deferred setup should not be mapped to a pane"
+            );
+        });
+        assert!(
+            added_item_ids.borrow().is_empty(),
+            "an item removed before its deferred setup should not be announced as added"
         );
     }
 

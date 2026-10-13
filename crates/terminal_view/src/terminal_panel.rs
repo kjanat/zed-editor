@@ -472,7 +472,9 @@ impl TerminalPanel {
                     let item = item.boxed_clone();
                     let pane = pane.clone();
                     window.defer(cx, move |window, cx| {
-                        item.added_to_pane(&workspace, pane, window, cx)
+                        if pane.read(cx).index_for_item(item.as_ref()).is_some() {
+                            item.added_to_pane(&workspace, pane, window, cx)
+                        }
                     });
                 }
                 self.serialize(cx);
