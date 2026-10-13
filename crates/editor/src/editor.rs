@@ -8068,7 +8068,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_first(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_first(self.completion_provider.as_ref(), window, cx);
         }
     }
 
@@ -8079,7 +8079,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_prev(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_prev(self.completion_provider.as_ref(), window, cx);
         }
     }
 
@@ -8090,7 +8090,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_next(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_next(self.completion_provider.as_ref(), window, cx);
         }
     }
 
@@ -8101,7 +8101,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_last(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_last(self.completion_provider.as_ref(), window, cx);
         }
     }
 

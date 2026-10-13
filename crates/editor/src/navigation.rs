@@ -211,7 +211,7 @@ impl Editor {
             .context_menu
             .borrow_mut()
             .as_mut()
-            .map(|menu| menu.select_first(self.completion_provider.as_deref(), window, cx))
+            .map(|menu| menu.select_first(self.completion_provider.as_ref(), window, cx))
             .unwrap_or(false)
         {
             return;
@@ -333,7 +333,7 @@ impl Editor {
             .context_menu
             .borrow_mut()
             .as_mut()
-            .map(|menu| menu.select_last(self.completion_provider.as_deref(), window, cx))
+            .map(|menu| menu.select_last(self.completion_provider.as_ref(), window, cx))
             .unwrap_or(false)
         {
             return;

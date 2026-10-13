@@ -96,7 +96,7 @@ pub enum CodeContextMenu {
 impl CodeContextMenu {
     pub fn select_first(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) -> bool {
@@ -113,7 +113,7 @@ impl CodeContextMenu {
 
     pub fn select_prev(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) -> bool {
@@ -130,7 +130,7 @@ impl CodeContextMenu {
 
     pub fn select_next(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) -> bool {
@@ -147,7 +147,7 @@ impl CodeContextMenu {
 
     pub fn select_last(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) -> bool {
@@ -486,7 +486,7 @@ impl CompletionsMenu {
 
     fn select_first(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -508,7 +508,7 @@ impl CompletionsMenu {
 
     fn select_last(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -530,7 +530,7 @@ impl CompletionsMenu {
 
     fn select_prev(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -544,7 +544,7 @@ impl CompletionsMenu {
 
     fn select_next(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -559,7 +559,7 @@ impl CompletionsMenu {
     fn update_selection_index(
         &mut self,
         match_index: usize,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -639,7 +639,7 @@ impl CompletionsMenu {
 
     fn handle_selection_changed(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -661,12 +661,15 @@ impl CompletionsMenu {
 
     pub fn resolve_visible_completions(
         &mut self,
-        provider: Option<&dyn CompletionProvider>,
+        provider: Option<&Rc<dyn CompletionProvider>>,
         cx: &mut Context<Editor>,
     ) {
-        if !self.resolve_completions || provider.is_none() {
+        if !self.resolve_completions {
             return;
         }
+        let Some(provider) = provider.cloned() else {
+            return;
+        };
 
         let entries = self.entries.borrow();
         if entries.is_empty() {
@@ -742,13 +745,6 @@ impl CompletionsMenu {
         let completions = self.completions.clone();
         let completion_id = self.id;
         cx.spawn(async move |editor, cx| {
-            let Some(provider) = editor
-                .read_with(cx, |editor, _| editor.completion_provider.clone())
-                .ok()
-                .flatten()
-            else {
-                return;
-            };
             let resolve_task = cx
                 .update(|cx| provider.resolve_completions(buffer, candidate_ids, completions, cx));
             if let Some(true) = resolve_task.await.log_err() {
@@ -1512,7 +1508,7 @@ impl CompletionsMenu {
         *self.label_match_state.label_matches.borrow_mut() = label_matches;
         *self.entries.borrow_mut() = entries.into_boxed_slice();
         self.selected_item = self.find_selectable_entry(0, true).unwrap_or(0);
-        self.handle_selection_changed(provider.as_deref(), window, cx);
+        self.handle_selection_changed(provider.as_ref(), window, cx);
     }
 
     pub fn sort_string_matches(
