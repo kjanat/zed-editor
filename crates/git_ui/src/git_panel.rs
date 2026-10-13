@@ -2681,23 +2681,21 @@ impl GitPanel {
         };
         let repository_id = repository.read(cx).id;
         let git_store = self.project.read(cx).git_store().clone();
-        self.workspace
-            .update(cx, |workspace, cx| {
-                for entry in entries {
-                    if !entry.status.is_created() {
-                        crate::git_graph::open_or_reuse_graph(
-                            workspace,
-                            repository_id,
-                            git_store.clone(),
-                            LogSource::Path(entry.repo_path),
-                            None,
-                            window,
-                            cx,
-                        );
-                    }
+        if let Some(workspace) = self.workspace.upgrade() {
+            for entry in entries {
+                if !entry.status.is_created() {
+                    crate::git_graph::open_or_reuse_graph(
+                        &workspace,
+                        repository_id,
+                        git_store.clone(),
+                        LogSource::Path(entry.repo_path),
+                        None,
+                        window,
+                        cx,
+                    );
                 }
-            })
-            .log_err();
+            }
+        }
         cx.stop_propagation();
     }
 
