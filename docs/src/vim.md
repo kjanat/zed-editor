@@ -216,16 +216,12 @@ ecosystem:
   [indent wise](https://github.com/jeetsukumaran/vim-indentwise) plugin `[-`,
   `]-`, `[+`, `]+`, `[=`, `]=`.
 - You can select quoted text with AnyQuotes and bracketed text with AnyBrackets
-  text objects. Zed also provides MiniQuotes and MiniBrackets which offer
+  text objects. Zed also provides MiniQuotes and MiniBrackets, which offer
   alternative selection behavior based on the
   [mini.ai](https://github.com/echasnovski/mini.nvim/blob/main/readmes/mini-ai.md)
-  Neovim plugin. See the
-  [Quote and Bracket text objects](#quote-and-bracket-text-objects) section
-  below for details.
-- You can configure AnyQuotes, AnyBrackets, MiniQuotes, and MiniBrackets text
-  objects for selecting quoted and bracketed text using different selection
-  strategies. See the [Any Bracket Functionality](#any-bracket-functionality)
-  section below for details.
+  Neovim plugin. These text objects are not bound by default; see the
+  [Any Bracket Functionality](#any-bracket-functionality) section below for how
+  to configure them.
 
 ### Any Bracket Functionality
 

@@ -15,7 +15,7 @@ and [more](https://gleam.run/language-server/).
 - Tree-sitter:
   [gleam-lang/tree-sitter-gleam](https://github.com/gleam-lang/tree-sitter-gleam)
 - Language Server:
-  [gleam lsp](https://github.com/gleam-lang/gleam/tree/main/compiler-core/src/language_server)
+  [gleam lsp](https://github.com/gleam-lang/gleam/tree/main/language-server)
 
 ## Using the Tailwind CSS Language Server with Gleam
 

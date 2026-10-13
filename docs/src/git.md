@@ -513,7 +513,8 @@ root URL of your self-hosted server, including any path it is served under (e.g.
 `https://git.example.com/gitlab`). For the `gerrit` provider, set `base_url` to
 the Gerrit web root (e.g. `https://git.example.com/gerrit`). For the `gitiles`
 provider, set `base_url` to the Gitiles browse root (e.g.
-`https://android.googlesource.com` or `https://git.example.com/plugins/gitiles`).
+`https://android.googlesource.com` or
+`https://git.example.com/plugins/gitiles`).
 
 You can configure multiple custom providers if you work with several self-hosted
 instances.
@@ -526,9 +527,9 @@ lines in a file at a specific commit.
 
 For the current selection in the editor, use {#action
 editor::CopyPermalinkToLine} or {#action editor::OpenPermalinkToLine} from the
-[Command Palette](./getting-started.md#command-palette) (search for
-`permalink`), via [custom key bindings](./key-bindings.md#custom-key-bindings),
-or by right-clicking and selecting **Copy Permalink to Line**.
+[Command Palette](./command-palette.md) (search for `permalink`), via
+[custom key bindings](./key-bindings.md#keymap-editor), or by right-clicking and
+selecting **Copy Permalink to Line**.
 
 From a file tab or the Project Panel, you can also **Open File Permalink** or
 **Copy File Permalink** for the whole file (without a line selection).

@@ -10,7 +10,9 @@ repo.
 ## Structure
 
 Currently, Zed includes support for a number of languages without requiring
-installing an extension. Those languages can be found under
+installing an extension. Their grammars, queries, and configs can be found under
+[`crates/grammars/src`](https://github.com/zed-industries/zed/tree/main/crates/grammars/src),
+and their language server adapters under
 [`crates/languages/src`](https://github.com/zed-industries/zed/tree/main/crates/languages/src).
 
 Support for all other languages is done via extensions. This directory

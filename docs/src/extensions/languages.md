@@ -45,7 +45,7 @@ line_comments = ["# "]
   `path_suffixes` (above) or `file_types` in settings to match files that should
   use this language. For example, Zed uses this to identify Shell Scripts by
   matching
-  [shebang lines](https://github.com/zed-industries/zed/blob/main/crates/languages/src/bash/config.toml)
+  [shebang lines](https://github.com/zed-industries/zed/blob/main/crates/grammars/src/bash/config.toml)
   in the first line of a script.
 - `debuggers` is an array of strings that are used to identify debuggers in the
   language. When launching a debugger's `New Process Modal`, Zed will order
@@ -460,7 +460,7 @@ If you are not sure what to put in textobjects.scm, both
 [nvim-treesitter-textobjects](https://github.com/nvim-treesitter/nvim-treesitter-textobjects),
 and the [Helix editor](https://github.com/helix-editor/helix) have queries for
 many languages. You can refer to the Zed
-[built-in languages](https://github.com/zed-industries/zed/tree/main/crates/languages/src)
+[built-in languages](https://github.com/zed-industries/zed/tree/main/crates/grammars/src)
 to see how to adapt these.
 
 | Capture          | Description                                                             | Vim mode                                         |
