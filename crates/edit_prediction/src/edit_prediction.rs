@@ -1038,25 +1038,23 @@ impl EditPredictionStore {
                     .ok();
             }
         });
-        cx.defer({
-            let this = cx.weak_entity();
-            move |cx| {
-                let Some(app_state) = AppState::try_global(cx) else {
-                    return;
-                };
-                let workspaces = app_state
-                    .workspace_store
-                    .read(cx)
-                    .workspaces()
-                    .filter_map(|workspace| workspace.upgrade())
-                    .collect::<Vec<_>>();
-                this.update(cx, |this, cx| {
-                    for workspace in workspaces {
-                        this.track_workspace(workspace, cx);
-                    }
-                })
-                .ok();
-            }
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            let Some(app_state) = AppState::try_global(cx) else {
+                return;
+            };
+            let workspaces = app_state
+                .workspace_store
+                .read(cx)
+                .workspaces()
+                .filter_map(|workspace| workspace.upgrade())
+                .collect::<Vec<_>>();
+            this.update(cx, |this, cx| {
+                for workspace in workspaces {
+                    this.track_workspace(workspace, cx);
+                }
+            })
+            .ok();
         });
 
         let this = Self {
