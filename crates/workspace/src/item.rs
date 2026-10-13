@@ -1539,27 +1539,35 @@ impl<T: FollowableItem> WeakFollowableItemHandle for WeakEntity<T> {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test {
     use super::{
-        Dedup, FollowEvent, FollowableItem, Item, ItemEvent, SerializableItem, TabActions,
-        TabContentParams, TabTooltipContent,
+        Dedup, FollowEvent, FollowableItem, HighlightedText, Item, ItemEvent, SerializableItem,
+        TabActions, TabContentParams, TabTooltipContent,
     };
     use crate::{
-        CollaboratorId, ItemId, ItemNavHistory, Pane, ViewId, Workspace, WorkspaceId,
+        CollaboratorId, ItemId, ItemNavHistory, Pane, ToolbarItemLocation, ViewId, Workspace,
+        WorkspaceId,
         item::{ItemBufferKind, SaveOptions},
+        searchable::SearchableItemHandle,
     };
     use client::proto;
     use gpui::{
-        Action, AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter,
-        Focusable, Global, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-        Task, WeakEntity, Window,
+        Action, AnyElement, AnyEntity, App, AppContext as _, Context, Entity, EntityId,
+        EventEmitter, Focusable, Font, Global, InteractiveElement, IntoElement, ParentElement,
+        Pixels, Point, Render, SharedString, Task, WeakEntity, Window,
     };
     use language::Capability;
     use project::{Project, ProjectEntryId, ProjectPath, WorktreeId};
-    use std::{any::Any, cell::Cell, ops::BitOr, rc::Rc, sync::Arc};
+    use std::{
+        any::{Any, TypeId},
+        cell::Cell,
+        ops::BitOr,
+        rc::Rc,
+        sync::Arc,
+    };
     use ui::Icon;
     use util::rel_path::rel_path;
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct HookBits(u32);
+    pub struct HookBits(u64);
 
     impl HookBits {
         pub const TAB_ACTIONS: Self = Self(1 << 0);
@@ -1590,6 +1598,18 @@ pub mod test {
         pub const IS_PROJECT_ITEM: Self = Self(1 << 25);
         pub const DEDUP: Self = Self(1 << 26);
         pub const UPDATE_AGENT_LOCATION: Self = Self(1 << 27);
+        pub const BUFFER_KIND: Self = Self(1 << 28);
+        pub const HAS_DELETED_FILE: Self = Self(1 << 29);
+        pub const CAN_SAVE_AS: Self = Self(1 << 30);
+        pub const SUGGESTED_FILENAME: Self = Self(1 << 31);
+        pub const TAB_TOOLTIP_TEXT: Self = Self(1 << 32);
+        pub const FOCUS_HANDLE: Self = Self(1 << 33);
+        pub const ACT_AS_TYPE: Self = Self(1 << 34);
+        pub const AS_SEARCHABLE: Self = Self(1 << 35);
+        pub const BREADCRUMB_LOCATION: Self = Self(1 << 36);
+        pub const BREADCRUMBS: Self = Self(1 << 37);
+        pub const PIXEL_POSITION_OF_CURSOR: Self = Self(1 << 38);
+        pub const PRESERVE_PREVIEW: Self = Self(1 << 39);
         pub const TAB_RENDERING: Self = Self(
             Self::TAB_CONTENT.0
                 | Self::TAB_CONTENT_TEXT.0
@@ -1942,8 +1962,8 @@ pub mod test {
     }
 
     impl Render for TestItem {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let parent = gpui::div().track_focus(&self.focus_handle(cx));
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let parent = gpui::div().track_focus(&self.focus_handle);
             self.child_focus_handles
                 .iter()
                 .fold(parent, |parent, child_handle| {
@@ -1955,7 +1975,8 @@ pub mod test {
     impl EventEmitter<ItemEvent> for TestItem {}
 
     impl Focusable for TestItem {
-        fn focus_handle(&self, _: &App) -> gpui::FocusHandle {
+        fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
+            self.read_containers(HookBits::FOCUS_HANDLE, cx);
             self.focus_handle.clone()
         }
     }
@@ -1991,6 +2012,11 @@ pub mod test {
                 .into()
         }
 
+        fn suggested_filename(&self, cx: &App) -> SharedString {
+            self.read_containers(HookBits::SUGGESTED_FILENAME, cx);
+            self.tab_content_text(0, cx)
+        }
+
         fn telemetry_event_text(&self) -> Option<&'static str> {
             None
         }
@@ -2003,6 +2029,11 @@ pub mod test {
 
         fn tab_icon(&self, _window: &Window, cx: &App) -> Option<Icon> {
             self.read_containers(HookBits::TAB_ICON, cx);
+            None
+        }
+
+        fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString> {
+            self.read_containers(HookBits::TAB_TOOLTIP_TEXT, cx);
             None
         }
 
@@ -2026,7 +2057,8 @@ pub mod test {
                 .for_each(|item| f(item.entity_id(), item.read(cx)))
         }
 
-        fn buffer_kind(&self, _: &App) -> ItemBufferKind {
+        fn buffer_kind(&self, cx: &App) -> ItemBufferKind {
+            self.read_containers(HookBits::BUFFER_KIND, cx);
             self.buffer_kind
         }
 
@@ -2161,7 +2193,8 @@ pub mod test {
             self.has_conflict
         }
 
-        fn has_deleted_file(&self, _: &App) -> bool {
+        fn has_deleted_file(&self, cx: &App) -> bool {
+            self.read_containers(HookBits::HAS_DELETED_FILE, cx);
             self.has_deleted_file
         }
 
@@ -2174,7 +2207,8 @@ pub mod test {
                     .all(|item| item.read(cx).entry_id.is_some())
         }
 
-        fn can_save_as(&self, _cx: &App) -> bool {
+        fn can_save_as(&self, cx: &App) -> bool {
+            self.read_containers(HookBits::CAN_SAVE_AS, cx);
             self.buffer_kind == ItemBufferKind::Singleton
         }
 
@@ -2236,6 +2270,45 @@ pub mod test {
             self.reload_count += 1;
             self.is_dirty = false;
             Task::ready(Ok(()))
+        }
+
+        fn act_as_type<'a>(
+            &'a self,
+            type_id: TypeId,
+            self_handle: &'a Entity<Self>,
+            cx: &'a App,
+        ) -> Option<AnyEntity> {
+            self.read_containers(HookBits::ACT_AS_TYPE, cx);
+            (TypeId::of::<Self>() == type_id).then(|| self_handle.clone().into())
+        }
+
+        fn as_searchable(
+            &self,
+            _: &Entity<Self>,
+            cx: &App,
+        ) -> Option<Box<dyn SearchableItemHandle>> {
+            self.read_containers(HookBits::AS_SEARCHABLE, cx);
+            None
+        }
+
+        fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation {
+            self.read_containers(HookBits::BREADCRUMB_LOCATION, cx);
+            ToolbarItemLocation::Hidden
+        }
+
+        fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)> {
+            self.read_containers(HookBits::BREADCRUMBS, cx);
+            None
+        }
+
+        fn pixel_position_of_cursor(&self, cx: &App) -> Option<Point<Pixels>> {
+            self.read_containers(HookBits::PIXEL_POSITION_OF_CURSOR, cx);
+            None
+        }
+
+        fn preserve_preview(&self, cx: &App) -> bool {
+            self.read_containers(HookBits::PRESERVE_PREVIEW, cx);
+            false
         }
     }
 
