@@ -7264,6 +7264,11 @@ impl Workspace {
             };
 
             let mut new_item = task.await?;
+            let pane_items = pane.read_with(cx, |pane, _| {
+                pane.items()
+                    .map(|item| item.boxed_clone())
+                    .collect::<Vec<_>>()
+            });
             let item_to_remove = cx.update(|window, cx| {
                 for (ix, item) in pane_items.iter().enumerate() {
                     if let Some(item) = item.to_followable_item_handle(cx) {
@@ -12766,7 +12771,9 @@ mod tests {
         invalid_item_view::InvalidItemView,
         item::{
             ItemBufferKind, ItemEvent,
-            test::{HookBits, StaticHooksReadContainers, TestItem, TestProjectItem},
+            test::{
+                HookBits, PendingFollowerView, StaticHooksReadContainers, TestItem, TestProjectItem,
+            },
         },
         persistence::model::DockData,
     };
@@ -15101,6 +15108,84 @@ mod tests {
             assert!(
                 pane.index_for_item(&replaced_item).is_none(),
                 "the new view should replace the item it deduplicates"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_adding_a_view_from_a_leader_dedups_against_items_opened_while_it_loads(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| FollowableViewRegistry::register::<TestItem>(cx));
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let peer_id = PeerId { owner_id: 1, id: 1 };
+        let leader_id = CollaboratorId::PeerId(peer_id);
+        let view_id = ViewId {
+            creator: leader_id,
+            id: 1,
+        };
+        workspace.update(cx, |workspace, _| {
+            workspace.follower_states.insert(
+                leader_id,
+                FollowerState {
+                    center_pane: pane.clone(),
+                    dock_pane: None,
+                    active_view_id: None,
+                    items_by_leader_view_id: HashMap::default(),
+                },
+            );
+        });
+        let (sender, receiver) = oneshot::channel();
+        cx.update(|_, cx| cx.set_global(PendingFollowerView(receiver)));
+
+        let view = proto::View {
+            id: view_id.to_proto(),
+            leader_id: Some(peer_id),
+            panel_id: None,
+            variant: Some(proto::view::Variant::Editor(proto::view::Editor::default())),
+        };
+        let weak_workspace = workspace.downgrade();
+        let task = cx.update(|window, cx| {
+            window.spawn(cx, async move |cx| {
+                Workspace::add_view_from_leader(weak_workspace, peer_id, &view, cx).await
+            })
+        });
+        cx.run_until_parked();
+
+        let item_opened_while_loading = cx.new(TestItem::new);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(
+                Box::new(item_opened_while_loading.clone()),
+                true,
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
+        sender.send(()).unwrap();
+        task.await.unwrap();
+        cx.run_until_parked();
+
+        let new_item = workspace.read_with(cx, |workspace, _| {
+            workspace
+                .follower_states
+                .get(&leader_id)
+                .and_then(|state| state.items_by_leader_view_id.get(&view_id))
+                .and_then(|view| view.view.to_any_view().downcast::<TestItem>().ok())
+                .expect("the new view should be followed")
+        });
+        pane.read_with(cx, |pane, _| {
+            assert_eq!(pane.index_for_item(&new_item), Some(0));
+            assert!(
+                pane.index_for_item(&item_opened_while_loading).is_none(),
+                "the new view should replace the item opened while it loaded"
             );
         });
     }

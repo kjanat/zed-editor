@@ -1647,6 +1647,10 @@ pub mod test {
         }
     }
 
+    pub struct PendingFollowerView(pub futures::channel::oneshot::Receiver<()>);
+
+    impl Global for PendingFollowerView {}
+
     pub struct TestProjectItem {
         pub entry_id: Option<ProjectEntryId>,
         pub project_path: Option<ProjectPath>,
@@ -2322,7 +2326,14 @@ pub mod test {
                 );
                 item
             });
-            Some(Task::ready(Ok(item)))
+            if !cx.has_global::<PendingFollowerView>() {
+                return Some(Task::ready(Ok(item)));
+            }
+            let PendingFollowerView(receiver) = cx.remove_global::<PendingFollowerView>();
+            Some(cx.spawn(async move |_| {
+                receiver.await?;
+                Ok(item)
+            }))
         }
 
         fn to_follow_event(_event: &Self::Event) -> Option<FollowEvent> {
