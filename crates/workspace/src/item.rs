@@ -650,6 +650,7 @@ pub trait ItemHandle: 'static + Send {
         cx: &mut App,
         callback: Box<dyn FnOnce(&mut App) + Send>,
     ) -> gpui::Subscription;
+    fn on_notify(&self, cx: &mut App, callback: Box<dyn FnMut(&mut App)>) -> gpui::Subscription;
     fn to_searchable_item_handle(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation;
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)>;
@@ -1229,6 +1230,14 @@ impl<T: Item> ItemHandle for Entity<T> {
         cx.observe_release(self, move |_, cx| callback(cx))
     }
 
+    fn on_notify(
+        &self,
+        cx: &mut App,
+        mut callback: Box<dyn FnMut(&mut App)>,
+    ) -> gpui::Subscription {
+        cx.observe(self, move |_, cx| callback(cx))
+    }
+
     fn to_searchable_item_handle(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>> {
         self.read(cx).as_searchable(self, cx)
     }
@@ -1714,6 +1723,7 @@ pub mod test {
         container_reader: Option<Rc<dyn Fn(&App)>>,
         hooks_reading_containers: Cell<HookBits>,
         pub container_reads: Cell<usize>,
+        pub acts_as: Option<AnyEntity>,
         pub remote_id: Option<ViewId>,
         pub leader_id: Option<CollaboratorId>,
         pub is_project_item: bool,
@@ -1829,6 +1839,7 @@ pub mod test {
                 container_reader: None,
                 hooks_reading_containers: Cell::new(HookBits::default()),
                 container_reads: Cell::new(0),
+                acts_as: None,
                 remote_id: None,
                 leader_id: None,
                 is_project_item: false,
@@ -2182,6 +2193,7 @@ pub mod test {
                     container_reader: self.container_reader.clone(),
                     hooks_reading_containers: Cell::new(self.hooks_reading_containers.get()),
                     container_reads: Cell::new(0),
+                    acts_as: self.acts_as.clone(),
                     remote_id: None,
                     leader_id: None,
                     is_project_item: self.is_project_item,
@@ -2287,7 +2299,12 @@ pub mod test {
             cx: &'a App,
         ) -> Option<AnyEntity> {
             self.read_containers(HookBits::ACT_AS_TYPE, cx);
-            (TypeId::of::<Self>() == type_id).then(|| self_handle.clone().into())
+            if TypeId::of::<Self>() == type_id {
+                return Some(self_handle.clone().into());
+            }
+            self.acts_as
+                .clone()
+                .filter(|entity| entity.entity_type() == type_id)
         }
 
         fn as_searchable(

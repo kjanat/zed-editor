@@ -26,8 +26,6 @@ pub struct LspCommandSelector {
     picker: Entity<Picker<LspCommandSelectorDelegate>>,
 }
 
-struct ActiveEditor(Option<WeakEntity<Editor>>);
-
 impl LspCommandSelector {
     fn register(
         workspace: &mut Workspace,
@@ -37,33 +35,14 @@ impl LspCommandSelector {
         let Some(window) = window else {
             return;
         };
-        let active_editor = cx.new(|_| ActiveEditor(None));
-        let workspace_handle = cx.entity();
-        window
-            .subscribe(&workspace_handle, cx, {
-                let active_editor = active_editor.clone();
-                move |workspace, event: &workspace::Event, _, cx| {
-                    if let workspace::Event::ActiveItemChanged = event {
-                        refresh_active_editor(&active_editor, &workspace, cx);
-                    }
-                }
-            })
-            .detach();
-        window.defer(cx, {
-            let active_editor = active_editor.clone();
-            let workspace = workspace_handle.downgrade();
-            move |_, cx| {
-                if let Some(workspace) = workspace.upgrade() {
-                    refresh_active_editor(&active_editor, &workspace, cx);
-                }
-            }
+        let active_editor = Workspace::track_active_item_target(window, cx, |item, cx| {
+            item.act_as::<Editor>(cx).map(|editor| editor.downgrade())
         });
 
         workspace.register_action_renderer(move |div, workspace, _, cx| {
             let Some(editor) = active_editor
                 .read(cx)
-                .0
-                .as_ref()
+                .target()
                 .and_then(WeakEntity::upgrade)
             else {
                 return div;
@@ -459,20 +438,6 @@ impl PickerDelegate for LspCommandSelectorDelegate {
     }
 }
 
-fn refresh_active_editor(
-    active_editor: &Entity<ActiveEditor>,
-    workspace: &Entity<Workspace>,
-    cx: &mut App,
-) {
-    let editor = workspace
-        .read(cx)
-        .active_item(cx)
-        .and_then(|item| item.act_as::<Editor>(cx))
-        .map(|editor| editor.downgrade());
-    active_editor.update(cx, |active_editor, _| active_editor.0 = editor);
-    workspace.update(cx, |_, cx| cx.notify());
-}
-
 fn editor_buffer(editor: &Entity<Editor>, cx: &App) -> Option<Entity<Buffer>> {
     let editor = editor.read(cx);
     editor
@@ -774,6 +739,64 @@ mod tests {
             toggle_is_available(&mut cx),
             "reactivating the editor should register the action again"
         );
+        open_selector(&workspace, &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_toggle_follows_active_item_notifications(cx: &mut TestAppContext) {
+        let SelectorTest {
+            workspace, mut cx, ..
+        } = init_selector_test(cx).await;
+        let (pane, editor) = workspace.read_with(&cx, |workspace, cx| {
+            (
+                workspace.active_pane().clone(),
+                workspace.active_item_as::<Editor>(cx),
+            )
+        });
+        let editor = editor.expect("the markdown file should be open in an editor");
+
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            let mut item = TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle);
+            item.acts_as = Some(editor.clone().into());
+            item
+        });
+        item.read_with(&cx, |item, _| {
+            item.read_containers_in(HookBits::ACT_AS_TYPE)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            toggle_is_available(&mut cx),
+            "an item acting as an editor should register the action"
+        );
+
+        let reads_before_notify = item.read_with(&cx, |item, _| item.container_reads.get());
+        item.update(&mut cx, |item, cx| {
+            item.acts_as = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(item.read_with(&cx, |item, _| item.container_reads.get()) > reads_before_notify);
+        assert!(
+            !toggle_is_available(&mut cx),
+            "the action should follow an editor change that the active item only notifies about"
+        );
+        cx.dispatch_action(Toggle);
+        cx.run_until_parked();
+        assert!(!selector_is_open(&workspace, &cx));
+
+        item.update(&mut cx, |item, cx| {
+            item.acts_as = Some(editor.into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(toggle_is_available(&mut cx));
         open_selector(&workspace, &mut cx);
     }
 

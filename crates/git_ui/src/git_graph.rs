@@ -1080,14 +1080,13 @@ pub fn init(cx: &mut App) {
         let Some(window) = window else {
             return;
         };
-        let active_editor = crate::track_active_item_target(window, cx, |item, cx| {
+        let active_editor = Workspace::track_active_item_target(window, cx, |item, cx| {
             item.act_as::<Editor>(cx).map(|editor| editor.downgrade())
         });
         workspace.register_action_renderer(move |div, workspace, window, cx| {
             let active_editor = active_editor
                 .read(cx)
-                .0
-                .as_ref()
+                .target()
                 .and_then(WeakEntity::upgrade);
             div.when_some(
                 resolve_file_history_target(workspace, active_editor.as_ref(), window, cx),
@@ -6648,6 +6647,78 @@ mod tests {
         editor.update_in(cx, |_, window, cx| cx.focus_self(window));
         cx.run_until_parked();
         assert!(cx.update(|window, cx| window.is_action_available(&git::FileHistory, cx)));
+        cx.dispatch_action(git::FileHistory);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let graph = workspace
+                .active_item_as::<GitGraph>(cx)
+                .expect("file history should open a git graph");
+            assert_eq!(
+                graph.read(cx).log_source,
+                LogSource::Path(RepoPath::new(&"file.txt").unwrap())
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_file_history_follows_active_item_notifications(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(editor::init);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            Path::new(util::path!("/project")),
+            json!({
+                ".git": {},
+                "file.txt": "content",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(util::path!("/project/.git")),
+            &[("file.txt", "tracked".to_owned())],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(util::path!("/project"))], cx).await;
+        cx.run_until_parked();
+
+        let (multi_workspace, cx) = cx.add_window_view(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = multi_workspace.read_with(cx, |multi, _| multi.workspace().clone());
+        let editor = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    PathBuf::from(util::path!("/project/file.txt")),
+                    workspace::OpenOptions::default(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .expect("file.txt should open")
+            .downcast::<Editor>()
+            .expect("file.txt should open in an editor");
+        let item = crate::add_test_item_reading_containers(&workspace, HookBits::ACT_AS_TYPE, cx);
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert!(
+            !cx.update(|window, cx| window.is_action_available(&git::FileHistory, cx)),
+            "an active item that is not an editor should not register file history"
+        );
+
+        let reads_before_notify = crate::container_reads(&item, cx);
+        item.update(cx, |item, cx| {
+            item.acts_as = Some(editor.into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_before_notify);
+        assert!(
+            cx.update(|window, cx| window.is_action_available(&git::FileHistory, cx)),
+            "file history should follow an editor that the active item only notifies about"
+        );
+
         cx.dispatch_action(git::FileHistory);
         cx.run_until_parked();
         workspace.read_with(cx, |workspace, cx| {

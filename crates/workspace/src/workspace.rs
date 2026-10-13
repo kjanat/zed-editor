@@ -1522,6 +1522,62 @@ pub enum Event {
     WorktreeCreationChanged,
 }
 
+pub struct ActiveItemTarget<T> {
+    target: Option<T>,
+    _item_subscription: Option<Subscription>,
+}
+
+impl<T> ActiveItemTarget<T> {
+    pub fn target(&self) -> Option<&T> {
+        self.target.as_ref()
+    }
+}
+
+fn observe_active_item<T: PartialEq + 'static>(
+    tracker: &Entity<ActiveItemTarget<T>>,
+    workspace: &Entity<Workspace>,
+    resolve: fn(&dyn ItemHandle, &App) -> Option<T>,
+    cx: &mut App,
+) {
+    let active_item = workspace.read(cx).active_item(cx);
+    let item_subscription = active_item.map(|item| {
+        let tracker = tracker.downgrade();
+        let workspace = workspace.downgrade();
+        item.on_notify(
+            cx,
+            Box::new(move |cx: &mut App| {
+                if let Some((tracker, workspace)) = tracker.upgrade().zip(workspace.upgrade()) {
+                    refresh_active_item_target(&tracker, &workspace, resolve, cx);
+                }
+            }),
+        )
+    });
+    tracker.update(cx, |tracker, _| {
+        tracker._item_subscription = item_subscription;
+    });
+    refresh_active_item_target(tracker, workspace, resolve, cx);
+}
+
+fn refresh_active_item_target<T: PartialEq + 'static>(
+    tracker: &Entity<ActiveItemTarget<T>>,
+    workspace: &Entity<Workspace>,
+    resolve: fn(&dyn ItemHandle, &App) -> Option<T>,
+    cx: &mut App,
+) {
+    let target = workspace
+        .read(cx)
+        .active_item(cx)
+        .and_then(|item| resolve(item.as_ref(), cx));
+    let changed = tracker.update(cx, |tracker, _| {
+        let changed = tracker.target != target;
+        tracker.target = target;
+        changed
+    });
+    if changed {
+        workspace.update(cx, |_, cx| cx.notify());
+    }
+}
+
 /// Controls which types of items should be made visible in the project panel
 /// when opened.
 #[derive(Debug, Clone)]
@@ -8964,6 +9020,38 @@ impl Workspace {
     ) -> &mut Self {
         self.workspace_actions.push(Box::new(callback));
         self
+    }
+
+    pub fn track_active_item_target<T: PartialEq + 'static>(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        resolve: fn(&dyn ItemHandle, &App) -> Option<T>,
+    ) -> Entity<ActiveItemTarget<T>> {
+        let tracker = cx.new(|_| ActiveItemTarget {
+            target: None,
+            _item_subscription: None,
+        });
+        let workspace_handle = cx.entity();
+        window
+            .subscribe(&workspace_handle, cx, {
+                let tracker = tracker.clone();
+                move |workspace, event: &Event, _, cx| {
+                    if let Event::ActiveItemChanged = event {
+                        observe_active_item(&tracker, &workspace, resolve, cx);
+                    }
+                }
+            })
+            .detach();
+        window.defer(cx, {
+            let tracker = tracker.clone();
+            let workspace = workspace_handle.downgrade();
+            move |_, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    observe_active_item(&tracker, &workspace, resolve, cx);
+                }
+            }
+        });
+        tracker
     }
 
     fn add_workspace_actions_listeners(

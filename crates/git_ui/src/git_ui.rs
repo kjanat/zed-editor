@@ -342,12 +342,11 @@ pub fn init(cx: &mut App) {
         });
         if let Some(window) = window {
             let active_project_path =
-                track_active_item_target(window, cx, |item, cx| item.project_path(cx));
+                Workspace::track_active_item_target(window, cx, |item, cx| item.project_path(cx));
             workspace.register_action_renderer(move |div, workspace, _window, cx| {
                 let entry = active_project_path
                     .read(cx)
-                    .0
-                    .as_ref()
+                    .target()
                     .and_then(|project_path| file_diff_entry(workspace, project_path, cx));
                 div.when_some(entry, |div, (entry, repository)| {
                     let workspace = workspace.weak_handle();
@@ -395,51 +394,6 @@ fn open_file_diff(
         SoloDiffView::open_or_focus(entry, repository, workspace.clone(), window, cx)
             .detach_and_notify_err(workspace, window, cx);
     });
-}
-
-pub(crate) struct ActiveItemTarget<T>(pub(crate) Option<T>);
-
-pub(crate) fn track_active_item_target<T: 'static>(
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-    resolve: fn(&dyn workspace::ItemHandle, &App) -> Option<T>,
-) -> Entity<ActiveItemTarget<T>> {
-    let target = cx.new(|_| ActiveItemTarget(None));
-    let workspace_handle = cx.entity();
-    window
-        .subscribe(&workspace_handle, cx, {
-            let target = target.clone();
-            move |workspace, event: &workspace::Event, _, cx| {
-                if let workspace::Event::ActiveItemChanged = event {
-                    refresh_active_item_target(&target, &workspace, resolve, cx);
-                }
-            }
-        })
-        .detach();
-    window.defer(cx, {
-        let target = target.clone();
-        let workspace = workspace_handle.downgrade();
-        move |_, cx| {
-            if let Some(workspace) = workspace.upgrade() {
-                refresh_active_item_target(&target, &workspace, resolve, cx);
-            }
-        }
-    });
-    target
-}
-
-fn refresh_active_item_target<T: 'static>(
-    target: &Entity<ActiveItemTarget<T>>,
-    workspace: &Entity<Workspace>,
-    resolve: fn(&dyn workspace::ItemHandle, &App) -> Option<T>,
-    cx: &mut App,
-) {
-    let value = workspace
-        .read(cx)
-        .active_item(cx)
-        .and_then(|item| resolve(item.as_ref(), cx));
-    target.update(cx, |target, _| target.0 = value);
-    workspace.update(cx, |_, cx| cx.notify());
 }
 
 fn file_diff_entry(
@@ -1957,6 +1911,54 @@ mod item_hook_tests {
         assert!(
             open_file_diff_is_available(cx),
             "an active item with a changed path should register the action"
+        );
+
+        cx.dispatch_action(git::OpenFileDiff);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<SoloDiffView>(cx).is_some());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_file_diff_follows_active_item_notifications(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (workspace, cx) = add_git_workspace(cx).await;
+        let item =
+            crate::add_test_item_reading_containers(&workspace, HookBits::ACTIVE_PROJECT_PATH, cx);
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert!(
+            !open_file_diff_is_available(cx),
+            "an active item without a changed path should not register the action"
+        );
+
+        let worktree_id = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .project()
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .expect("the project should have a worktree")
+                .read(cx)
+                .id()
+        });
+        let reads_before_notify = crate::container_reads(&item, cx);
+        item.update(cx, |item, cx| {
+            item.project_items
+                .push(workspace::item::test::TestProjectItem::new_in_worktree(
+                    1,
+                    "file.txt",
+                    worktree_id,
+                    cx,
+                ));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_before_notify);
+        assert!(
+            open_file_diff_is_available(cx),
+            "the action should follow a path change that the active item only notifies about"
         );
 
         cx.dispatch_action(git::OpenFileDiff);
