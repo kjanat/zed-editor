@@ -85,7 +85,7 @@ mod tests {
         tests::init_test,
     };
     use fs::FakeFs;
-    use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+    use gpui::{Entity, TestAppContext, VisualTestContext};
     use project::Project;
 
     fn add_item_reading_containers(

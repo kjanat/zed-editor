@@ -8266,7 +8266,7 @@ mod tests {
             |item, _| {
                 item.with_label("A")
                     .with_workspace_reader(workspace_handle)
-                    .with_project_items(&[project_item.clone()])
+                    .with_project_items(std::slice::from_ref(&project_item))
             },
             cx,
         );
@@ -8997,7 +8997,7 @@ mod tests {
             HookBits::ACTIVE_PROJECT_PATH,
             |item, _| {
                 item.with_label("A")
-                    .with_project_items(&[project_item.clone()])
+                    .with_project_items(std::slice::from_ref(&project_item))
             },
             cx,
         );
