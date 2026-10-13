@@ -8319,11 +8319,13 @@ impl Workspace {
     }
 
     /// Multiworkspace uses this to add workspace action handling to itself
-    pub fn actions(&self, div: Div, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let active_item_is_read_only = self
-            .active_item(cx)
-            .is_some_and(|item| !item.capability(cx).editable());
-
+    pub fn actions(
+        &self,
+        div: Div,
+        active_item_is_read_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         self.add_workspace_actions_listeners(div, window, cx)
             .on_action(cx.listener(
                 |_workspace, action_sequence: &settings::ActionSequence, window, cx| {
@@ -14646,7 +14648,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(*toolbar_notify_count.borrow(), 2);
+        assert_eq!(*toolbar_notify_count.borrow(), 3);
         pane.read_with(cx, |pane, _| {
             assert!(!pane.can_navigate_backward());
             assert!(pane.can_navigate_forward());
@@ -15026,13 +15028,13 @@ mod tests {
             creator: leader_id,
             id: 2,
         };
+        let replaced_item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
         let existing_item = add_test_item_reading_containers(
             &workspace,
             &pane,
             |item, _| item.with_label("A").with_remote_id(existing_view_id),
             cx,
         );
-        let replaced_item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
         read_containers_in(
             &existing_item,
             HookBits::SET_LEADER_ID | HookBits::IS_PROJECT_ITEM,
@@ -15162,8 +15164,8 @@ mod tests {
         pane.update_in(cx, |pane, window, cx| {
             pane.add_item(
                 Box::new(item_opened_while_loading.clone()),
-                true,
-                true,
+                false,
+                false,
                 None,
                 window,
                 cx,
@@ -15394,8 +15396,9 @@ mod tests {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
         let project = Project::test(fs, [], cx).await;
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
         let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
 
         let workspace_handle = workspace.downgrade();
@@ -15460,8 +15463,9 @@ mod tests {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
         let project = Project::test(fs, [], cx).await;
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
         let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
 
         let item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
@@ -15474,6 +15478,28 @@ mod tests {
             assert_eq!(item.capability, language::Capability::Read);
             assert!(item.container_reads.get() > 0);
         });
+    }
+
+    #[gpui::test]
+    async fn test_rendering_the_window_reads_the_capability_of_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
+        read_containers_in(&item, HookBits::CAPABILITY, cx);
+        multi_workspace.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(
+            container_reads(&item, cx) > 0,
+            "rendering the window should read the active item's capability"
+        );
     }
 
     struct NavigationTestFile {

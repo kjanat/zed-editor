@@ -1496,11 +1496,15 @@ impl Pane {
                 let prev_item = prev_item.boxed_clone();
                 let mut nav_history = self.nav_history.clone();
                 let mode = nav_history.mode();
+                let preview_item_id = nav_history.0.lock().preview_item_id;
                 window.defer(cx, move |window, cx| {
                     let current_mode = nav_history.mode();
+                    let current_preview_item_id =
+                        mem::replace(&mut nav_history.0.lock().preview_item_id, preview_item_id);
                     nav_history.set_mode(mode);
                     prev_item.deactivated(window, cx);
                     nav_history.set_mode(current_mode);
+                    nav_history.0.lock().preview_item_id = current_preview_item_id;
                 });
             }
             self.update_history(index);
@@ -2254,8 +2258,11 @@ impl Pane {
     ) {
         let mut nav_history = self.nav_history.clone();
         let mode_when_emptied = self.items.is_empty().then(|| nav_history.mode());
+        let preview_item_id = nav_history.0.lock().preview_item_id;
         window.defer(cx, move |window, cx| {
             let current_mode = nav_history.mode();
+            let current_preview_item_id =
+                mem::replace(&mut nav_history.0.lock().preview_item_id, preview_item_id);
             if let Some(mode) = mode_when_emptied {
                 nav_history.set_mode(mode);
                 item.deactivated(window, cx);
@@ -2264,6 +2271,7 @@ impl Pane {
             item.deactivated(window, cx);
             item.on_removed(cx);
             nav_history.set_mode(current_mode);
+            nav_history.0.lock().preview_item_id = current_preview_item_id;
 
             let project_path = item.project_path(cx);
             let mut history = nav_history.0.lock();
