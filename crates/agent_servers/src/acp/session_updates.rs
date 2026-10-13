@@ -27,6 +27,13 @@ pub enum InboundSessionUpdate {
         update_meta: Option<acp_v2::Meta>,
     },
     Terminal(DecodedTerminalUpdate),
+    SessionInfo(acp_v2::SessionInfoUpdate),
+    AvailableCommands(acp_v2::AvailableCommandsUpdate),
+    ConfigOptions(acp_v2::ConfigOptionUpdate),
+    Usage(acp_v2::UsageUpdate),
+    Notice(acp_v2::Notice),
+    Compaction(acp_v2::CompactionUpdate),
+    CompactionSummary(acp_v2::CompactionSummaryChunk),
 }
 
 impl From<DecodedTerminalNotification> for InboundSessionNotification {
@@ -82,6 +89,23 @@ impl TryFrom<acp_v2::UpdateSessionNotification> for InboundSessionNotification {
                     update_meta: update.meta,
                 }
             }
+            acp_v2::SessionUpdate::SessionInfoUpdate(update) => {
+                InboundSessionUpdate::SessionInfo(update)
+            }
+            acp_v2::SessionUpdate::AvailableCommandsUpdate(update) => {
+                InboundSessionUpdate::AvailableCommands(update)
+            }
+            acp_v2::SessionUpdate::ConfigOptionUpdate(update) => {
+                InboundSessionUpdate::ConfigOptions(update)
+            }
+            acp_v2::SessionUpdate::UsageUpdate(update) => InboundSessionUpdate::Usage(update),
+            acp_v2::SessionUpdate::Notice(notice) => InboundSessionUpdate::Notice(notice),
+            acp_v2::SessionUpdate::CompactionUpdate(update) => {
+                InboundSessionUpdate::Compaction(update)
+            }
+            acp_v2::SessionUpdate::CompactionSummaryChunk(chunk) => {
+                InboundSessionUpdate::CompactionSummary(chunk)
+            }
             update => {
                 notification.update = update;
                 return Err(notification);
@@ -106,7 +130,7 @@ impl InboundSessionNotification {
             &session_id == thread.session_id(),
             "Session notification belongs to a different ACP session"
         );
-        // Delivery metadata must not patch retained message, tool, plan or terminal fields.
+        // Delivery metadata must not patch retained payload fields.
         match update {
             InboundSessionUpdate::UserMessage(message) => thread.upsert_user_message(message, cx),
             InboundSessionUpdate::AgentMessage(message) => {
@@ -138,6 +162,36 @@ impl InboundSessionNotification {
                 update,
             }
             .apply(thread, cx),
+            InboundSessionUpdate::SessionInfo(update) => {
+                thread.update_session_info(update, cx);
+                Ok(())
+            }
+            InboundSessionUpdate::AvailableCommands(update) => {
+                thread.update_available_commands(update.available_commands, cx);
+                Ok(())
+            }
+            InboundSessionUpdate::ConfigOptions(update) => {
+                cx.emit(acp_thread::AcpThreadEvent::ConfigOptionsUpdated(
+                    update.config_options,
+                ));
+                Ok(())
+            }
+            InboundSessionUpdate::Usage(update) => {
+                thread.update_usage(update, cx);
+                Ok(())
+            }
+            InboundSessionUpdate::Notice(notice) => {
+                thread.push_notice(notice, cx);
+                Ok(())
+            }
+            InboundSessionUpdate::Compaction(update) => {
+                thread.upsert_context_compaction_update(update, cx);
+                Ok(())
+            }
+            InboundSessionUpdate::CompactionSummary(chunk) => {
+                thread.append_context_compaction_summary(chunk, cx);
+                Ok(())
+            }
         }
     }
 }

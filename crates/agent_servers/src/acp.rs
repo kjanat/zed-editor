@@ -5,7 +5,7 @@ mod transport;
 
 use debug_log::AcpDebugLog;
 pub use debug_log::{AcpDebugMessage, AcpDebugMessageContent, AcpDebugMessageDirection};
-use session_updates::InboundSessionNotification;
+use session_updates::{InboundSessionNotification, InboundSessionUpdate};
 pub use terminal_updates::{DecodedTerminalNotification, DecodedTerminalUpdate};
 
 use acp_thread::{
@@ -498,12 +498,9 @@ impl AcpSessionList {
             .log_err();
     }
 
-    fn send_info_update(&self, session_id: acp_v2::SessionId, update: acp::SessionInfoUpdate) {
+    fn send_info_update(&self, session_id: acp_v2::SessionId, update: acp_v2::SessionInfoUpdate) {
         self.updates_tx
-            .try_send(acp_thread::SessionListUpdate::SessionInfo {
-                session_id,
-                update: acp_thread::session_info_update_from_v1(update),
-            })
+            .try_send(acp_thread::SessionListUpdate::SessionInfo { session_id, update })
             .log_err();
     }
 }
@@ -3287,6 +3284,382 @@ mod tests {
                     .expect("display terminal")
             })
         }
+
+        async fn session_list_updates(
+            &self,
+        ) -> async_channel::Receiver<acp_thread::SessionListUpdate> {
+            fn install(
+                (connection, sender): (
+                    ConnectionTo<Agent>,
+                    futures::channel::oneshot::Sender<
+                        async_channel::Receiver<acp_thread::SessionListUpdate>,
+                    >,
+                ),
+                cx: &mut AsyncApp,
+                context: &ClientContext,
+            ) {
+                let list = Rc::new(AcpSessionList::new(connection, false));
+                let updates = cx.update(|cx| list.watch(cx).expect("list updates"));
+                *context.session_list.borrow_mut() = Some(list);
+                assert!(sender.send(updates).is_ok(), "list update receiver");
+            }
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            enqueue_notification(
+                &self.connection.dispatch_tx,
+                (self.connection.connection.clone(), sender),
+                install,
+            );
+            receiver.await.expect("installed session list")
+        }
+    }
+
+    #[gpui::test]
+    async fn v2_session_info_sdk_updates_thread_and_list_projection(cx: &mut gpui::TestAppContext) {
+        use acp_thread::{AcpThreadEvent, AgentSessionInfo, SessionListUpdate};
+        use serde_json::json;
+
+        let harness = V2SessionHarness::new(cx).await;
+        let updates = harness.session_list_updates().await;
+        let session_id = harness
+            .thread
+            .read_with(cx, |thread, _| thread.session_id().clone());
+        let mut listed = AgentSessionInfo::new(session_id.clone());
+        listed.title = Some("Saved list title".into());
+        harness.thread.update(cx, |thread, cx| {
+            thread.set_provisional_title("Preview".into(), cx);
+        });
+        let titles = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&harness.thread, {
+                let titles = titles.clone();
+                move |thread, event, cx| {
+                    if matches!(event, AcpThreadEvent::TitleUpdated) {
+                        titles.borrow_mut().push(thread.read(cx).title());
+                    }
+                }
+            })
+        });
+        for (patch, expected_title, expected_list_title, expected_meta, expected_timestamp) in [
+            (
+                json!({"updatedAt": "2026-10-01T10:20:30Z", "_meta": {"scope": "session"}}),
+                Some("Preview"),
+                Some("Saved list title"),
+                Some(v2_terminal_meta("session")),
+                Some("2026-10-01T10:20:30+00:00"),
+            ),
+            (
+                json!({"title": "Agent title"}),
+                Some("Agent title"),
+                Some("Agent title"),
+                Some(v2_terminal_meta("session")),
+                Some("2026-10-01T10:20:30+00:00"),
+            ),
+            (
+                json!({"updatedAt": null, "_meta": {}}),
+                Some("Agent title"),
+                Some("Agent title"),
+                Some(acp_v2::Meta::new()),
+                None,
+            ),
+            (
+                json!({"title": null, "_meta": null}),
+                None,
+                None,
+                None,
+                None,
+            ),
+        ] {
+            let expected_update: acp_v2::SessionInfoUpdate =
+                serde_json::from_value(patch.clone()).expect("session-info patch");
+            let mut update = patch;
+            update
+                .as_object_mut()
+                .expect("update object")
+                .insert("sessionUpdate".into(), json!("session_info_update"));
+            harness.send(update, Some(v2_terminal_meta("delivery")));
+            harness.drain(cx).await;
+            let SessionListUpdate::SessionInfo {
+                session_id: updated_id,
+                update,
+            } = updates.try_recv().expect("list projection update")
+            else {
+                panic!("session-info list update");
+            };
+            assert_eq!(updated_id, session_id);
+            assert_eq!(update, expected_update);
+            listed.apply_update(update);
+            assert_eq!(listed.title.as_deref(), expected_list_title);
+            assert_eq!(listed.meta, expected_meta);
+            assert_eq!(
+                listed.updated_at.map(|time| time.to_rfc3339()).as_deref(),
+                expected_timestamp
+            );
+            harness.thread.read_with(cx, |thread, _| {
+                assert_eq!(thread.title().as_deref(), expected_title);
+                assert_eq!(thread.session_info().meta, listed.meta);
+                assert_eq!(thread.session_info().updated_at, listed.updated_at);
+                assert!(thread.entries().is_empty());
+            });
+        }
+        cx.run_until_parked();
+        assert_eq!(
+            titles
+                .borrow()
+                .iter()
+                .map(|title| title.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("Agent title"), None]
+        );
+        assert!(updates.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    async fn v2_commands_sdk_preserves_source_and_replaces_the_list(cx: &mut gpui::TestAppContext) {
+        use acp_thread::AcpThreadEvent;
+        use serde_json::json;
+
+        let harness = V2SessionHarness::new(cx).await;
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&harness.thread, {
+                let events = events.clone();
+                move |_, event, _| {
+                    if let AcpThreadEvent::AvailableCommandsUpdated(commands) = event {
+                        events.borrow_mut().push(commands.clone());
+                    }
+                }
+            })
+        });
+        let first = json!([
+            {"name": "opaque/手動", "description": "First command",
+                "input": {"type": "text", "hint": "Describe the task", "_meta": {"scope": "input"}},
+                "_meta": {"scope": "command", "retain": [null, 7]}},
+            {"name": "future", "description": "Unknown input",
+                "input": {"type": "_future", "payload": {"retain": [false, null]}}}
+        ]);
+        let mut expected_events = Vec::new();
+        for commands in [
+            first,
+            json!([{"name": "only", "description": "Replacement command"}]),
+            json!([]),
+        ] {
+            let expected: Vec<acp_v2::AvailableCommand> =
+                serde_json::from_value(commands.clone()).expect("command source");
+            harness.send(
+                json!({"sessionUpdate": "available_commands_update", "availableCommands": commands,
+                    "_meta": {"scope": "update"}}),
+                Some(v2_terminal_meta("delivery")),
+            );
+            harness.drain(cx).await;
+            harness.thread.read_with(cx, |thread, _| {
+                assert_eq!(thread.available_commands(), expected);
+                assert!(thread.entries().is_empty());
+            });
+            expected_events.push(expected);
+        }
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), expected_events);
+        assert!(harness.fallback.lock().expect("fallback mutex").is_empty());
+    }
+
+    #[gpui::test]
+    async fn v2_config_sdk_replaces_owner_and_notifies_subscribers(cx: &mut gpui::TestAppContext) {
+        use acp_thread::AcpThreadEvent;
+        use serde_json::json;
+
+        let harness = V2SessionHarness::new(cx).await;
+        let session_id = harness
+            .thread
+            .read_with(cx, |thread, _| thread.session_id().clone());
+        assert!(
+            cx.read(|cx| harness.connection.session_config_options(&session_id, cx))
+                .is_none()
+        );
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&harness.thread, {
+                let events = events.clone();
+                let connection = harness.connection.clone();
+                let session_id = session_id.clone();
+                move |_, event, cx| {
+                    if let AcpThreadEvent::ConfigOptionsUpdated(options) = event {
+                        let owner = connection
+                            .session_config_options(&session_id, cx)
+                            .expect("config owner installed before the event");
+                        assert_eq!(owner.config_options(), *options);
+                        events.borrow_mut().push(options.clone());
+                    }
+                }
+            })
+        });
+        let first = json!([
+            {"configId": "opaque/手動", "name": "Mode", "description": "Select a mode",
+                "category": "mode", "type": "select", "currentValue": "custom",
+                "options": [{"value": "custom", "name": "Custom", "description": "Offered",
+                    "_meta": {"scope": "value", "retain": [null, 7]}}],
+                "_meta": {"scope": "option"}},
+            {"configId": "future", "name": "Future", "type": "_future",
+                "payload": {"retain": [false, null]}, "_meta": {"scope": "future"}}
+        ]);
+        let mut expected_events = Vec::new();
+        harness.send(
+            json!({"sessionUpdate": "config_option_update", "configOptions": first,
+                "_meta": {"scope": "update"}}),
+            Some(v2_terminal_meta("delivery")),
+        );
+        harness.drain(cx).await;
+        expected_events.push(
+            serde_json::from_value::<Vec<acp_v2::SessionConfigOption>>(first.clone())
+                .expect("initial options"),
+        );
+        let owner = cx
+            .read(|cx| harness.connection.session_config_options(&session_id, cx))
+            .expect("config owner");
+        assert_eq!(owner.config_options(), expected_events[0]);
+        let mut updates = cx.update(|cx| owner.watch(cx).expect("config subscription"));
+        drop(updates.borrow());
+        for options in [
+            json!([{"configId": "enabled", "name": "Enabled", "type": "boolean",
+                "currentValue": true, "_meta": {"scope": "replacement"}}]),
+            json!([]),
+        ] {
+            let expected: Vec<acp_v2::SessionConfigOption> =
+                serde_json::from_value(options.clone()).expect("replacement options");
+            harness.send(
+                json!({"sessionUpdate": "config_option_update", "configOptions": options}),
+                None,
+            );
+            harness.drain(cx).await;
+            updates
+                .changed()
+                .now_or_never()
+                .expect("config replacement notification")
+                .expect("live config subscription");
+            assert_eq!(owner.config_options(), expected);
+            expected_events.push(expected);
+        }
+        harness.send_to(
+            "unknown-session",
+            json!({"sessionUpdate": "config_option_update", "configOptions": first}),
+            None,
+        );
+        harness.drain(cx).await;
+        assert!(updates.changed().now_or_never().is_none());
+        assert!(owner.config_options().is_empty());
+        assert!(
+            !harness
+                .connection
+                .sessions
+                .borrow()
+                .contains_key(&"unknown-session".into())
+        );
+        harness.thread.read_with(cx, |thread, _| {
+            assert!(thread.entries().is_empty());
+        });
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), expected_events);
+        assert!(harness.fallback.lock().expect("fallback mutex").is_empty());
+    }
+
+    #[gpui::test]
+    async fn v2_usage_sdk_preserves_counters_and_optional_cost(cx: &mut gpui::TestAppContext) {
+        use acp_thread::{AcpThreadEvent, TokenUsage};
+        use serde_json::json;
+
+        let harness = V2SessionHarness::new(cx).await;
+        let events = Rc::new(RefCell::new(0));
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&harness.thread, {
+                let events = events.clone();
+                move |_, event, _| {
+                    if matches!(event, AcpThreadEvent::TokenUsageUpdated) {
+                        *events.borrow_mut() += 1;
+                    }
+                    assert!(!matches!(event, AcpThreadEvent::Error));
+                }
+            })
+        });
+        harness.send(
+            json!({"sessionUpdate": "usage_update", "used": 0, "size": 10000}),
+            None,
+        );
+        harness.drain(cx).await;
+        harness.thread.update(cx, |thread, cx| {
+            assert_eq!(
+                thread.token_usage().expect("initial usage").max_tokens,
+                10000
+            );
+            assert!(thread.cost().is_none());
+            thread.update_token_usage(
+                Some(TokenUsage {
+                    max_tokens: 10000,
+                    used_tokens: 0,
+                    input_tokens: 123,
+                    output_tokens: 456,
+                    max_output_tokens: Some(789),
+                }),
+                cx,
+            );
+        });
+        for (update, expected_amount, expected_currency) in [
+            (
+                json!({"used": 1000, "size": 10000,
+                "cost": {"amount": 0.42, "currency": "USD", "_meta": {"scope": "cost"}}}),
+                0.42,
+                "USD",
+            ),
+            (json!({"used": 2000, "size": 20000}), 0.42, "USD"),
+            (json!({"used": 0, "size": 0, "cost": null}), 0.42, "USD"),
+            (
+                json!({"used": 3000, "size": 30000, "cost": {"amount": 0, "currency": "EUR"}}),
+                0.0,
+                "EUR",
+            ),
+        ] {
+            let expected: acp_v2::UsageUpdate =
+                serde_json::from_value(update.clone()).expect("usage source");
+            let mut update = update;
+            let object = update.as_object_mut().expect("usage object");
+            object.insert("sessionUpdate".into(), json!("usage_update"));
+            object.insert("_meta".into(), json!({"scope": "update"}));
+            harness.send(update, Some(v2_terminal_meta("delivery")));
+            harness.drain(cx).await;
+            harness.thread.read_with(cx, |thread, _| {
+                assert_eq!(
+                    thread.token_usage(),
+                    Some(&TokenUsage {
+                        max_tokens: expected.size,
+                        used_tokens: expected.used,
+                        input_tokens: 123,
+                        output_tokens: 456,
+                        max_output_tokens: Some(789),
+                    })
+                );
+                let cost = thread.cost().expect("retained cost");
+                assert_eq!(cost.amount, expected_amount);
+                assert_eq!(cost.currency.as_ref(), expected_currency);
+                assert_eq!(
+                    cost.meta,
+                    (expected_currency == "USD").then(|| v2_terminal_meta("cost"))
+                );
+                assert!(thread.entries().is_empty());
+                assert!(!thread.had_error());
+            });
+        }
+        harness.send_to(
+            "unknown-session",
+            json!({"sessionUpdate": "usage_update", "used": 999, "size": 999,
+                "cost": {"amount": 999, "currency": "USD"}}),
+            None,
+        );
+        harness.drain(cx).await;
+        harness.thread.read_with(cx, |thread, _| {
+            assert_eq!(thread.token_usage().expect("usage").used_tokens, 3000);
+            assert_eq!(thread.cost().expect("cost").amount, 0.0);
+        });
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), 6);
+        assert!(harness.fallback.lock().expect("fallback mutex").is_empty());
     }
 
     #[gpui::test]
@@ -3676,6 +4049,18 @@ mod tests {
                     "output": {"data": encoded_output}, "exitStatus": {"exitCode": 0}}),
                 None,
             );
+            harness.send_to(
+                session_id,
+                json!({"sessionUpdate": "config_option_update", "configOptions": [
+                    {"configId": "shared", "name": text, "type": "boolean", "currentValue": true}
+                ]}),
+                None,
+            );
+            harness.send_to(
+                session_id,
+                json!({"sessionUpdate": "usage_update", "used": text.len(), "size": 10000}),
+                None,
+            );
         }
         harness.drain(cx).await;
         for (thread, expected) in [(&harness.thread, "main"), (&child, "child")] {
@@ -3684,6 +4069,19 @@ mod tests {
                     panic!("one message in the routed session");
                 };
                 assert_eq!(user.content.to_markdown(cx), expected);
+                assert_eq!(
+                    thread.token_usage().expect("routed usage").used_tokens,
+                    expected.len() as u64
+                );
+                let config = harness
+                    .connection
+                    .session_config_options(thread.session_id(), cx)
+                    .expect("routed config");
+                assert_eq!(config.config_options().len(), 1);
+                assert_eq!(
+                    config.config_options().first().expect("config option").name,
+                    expected
+                );
                 let terminal = thread
                     .terminal("shared-display".into())
                     .expect("routed terminal");
@@ -3701,6 +4099,10 @@ mod tests {
         let child_terminal = child
             .read_with(cx, |thread, _| thread.terminal("shared-display".into()))
             .expect("child terminal");
+        let child_config = cx
+            .read(|cx| harness.connection.session_config_options(&child_id, cx))
+            .expect("child config owner");
+        let child_options = child_config.config_options();
         assert_eq!(harness.connection.sessions.borrow().len(), 2);
         let released = cx.update(|cx| {
             harness
@@ -3730,6 +4132,8 @@ mod tests {
                 "exitStatus": {"exitCode": 7}}),
             json!({"sessionUpdate": "terminal_output_chunk", "terminalId": "shared-display",
                 "data": "bGF0ZQ=="}),
+            json!({"sessionUpdate": "config_option_update", "configOptions": []}),
+            json!({"sessionUpdate": "usage_update", "used": 999, "size": 999}),
         ] {
             harness.send_to("child-session", update, None);
         }
@@ -3740,7 +4144,9 @@ mod tests {
                 panic!("released owner's retained message");
             };
             assert_eq!(user.content.to_markdown(cx), "child");
+            assert_eq!(thread.token_usage().expect("retained usage").used_tokens, 5);
         });
+        assert_eq!(child_config.config_options(), child_options);
         child_terminal.read_with(cx, |terminal, _| {
             let output = terminal.output().expect("retained child output");
             assert_eq!(output.content.trim_end(), "child");
@@ -3758,6 +4164,10 @@ mod tests {
         let _transport_tasks = (_client_task, _agent_task, _legacy_agent_task);
         let weak_thread = thread.downgrade();
         let session_id = thread.read_with(cx, |thread, _| thread.session_id().clone());
+        let config = cx
+            .read(|cx| connection.session_config_options(&session_id, cx))
+            .expect("config owner before drop");
+        let options = config.config_options();
         let notification =
             InboundSessionNotification::try_from(acp_v2::UpdateSessionNotification::new(
                 session_id.clone(),
@@ -3768,7 +4178,7 @@ mod tests {
             .expect("message notification");
         let terminal_notification =
             terminal_updates::decode_terminal_notification(acp_v2::UpdateSessionNotification::new(
-                session_id,
+                session_id.clone(),
                 acp_v2::SessionUpdate::TerminalOutputChunk(acp_v2::TerminalOutputChunk::new(
                     "shared-display",
                     "bGF0ZQ==",
@@ -3787,12 +4197,231 @@ mod tests {
                 terminal_notification.into(),
                 handle_v2_session_notification,
             );
+            for update in [
+                acp_v2::SessionUpdate::ConfigOptionUpdate(acp_v2::ConfigOptionUpdate::new(
+                    Vec::new(),
+                )),
+                acp_v2::SessionUpdate::UsageUpdate(acp_v2::UsageUpdate::new(999, 999)),
+            ] {
+                enqueue_notification(
+                    &connection.dispatch_tx,
+                    InboundSessionNotification::try_from(acp_v2::UpdateSessionNotification::new(
+                        session_id.clone(),
+                        update,
+                    ))
+                    .expect("queued config/usage notification"),
+                    handle_v2_session_notification,
+                );
+            }
             drop(thread);
         });
         drain_foreground_queue(&connection.dispatch_tx)
             .await
             .expect("apply queued work after owner drop");
         assert!(weak_thread.upgrade().is_none());
+        assert_eq!(config.config_options(), options);
+    }
+
+    #[gpui::test]
+    async fn v2_notice_sdk_preserves_feedback_without_failing_the_turn(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use acp_thread::{AcpThreadEvent, ForegroundActivity};
+        use serde_json::json;
+
+        let harness = V2SessionHarness::new(cx).await;
+        let notice_events = Rc::new(RefCell::new(0));
+        let turn_errors = Rc::new(RefCell::new(0));
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&harness.thread, {
+                let notice_events = notice_events.clone();
+                let turn_errors = turn_errors.clone();
+                move |_, event, _| match event {
+                    AcpThreadEvent::NoticesUpdated => *notice_events.borrow_mut() += 1,
+                    AcpThreadEvent::Error
+                    | AcpThreadEvent::Refusal
+                    | AcpThreadEvent::Stopped { .. } => {
+                        *turn_errors.borrow_mut() += 1;
+                    }
+                    _ => {}
+                }
+            })
+        });
+        let sources = [
+            json!({"severity": "error", "title": "Optional integration failed",
+                "description": "Continue with the available tools",
+                "_meta": {"scope": "notice", "retain": [null, 7]}}),
+            json!({"severity": "_future", "title": "Optional integration failed",
+                "_meta": {"scope": "second notice"}}),
+        ];
+        for source in &sources {
+            let mut update = source.clone();
+            update
+                .as_object_mut()
+                .expect("notice object")
+                .insert("sessionUpdate".into(), json!("notice"));
+            harness.send(update, Some(v2_terminal_meta("delivery")));
+        }
+        harness.send_to(
+            "unknown-session",
+            json!({"sessionUpdate": "notice", "severity": "error", "title": "Ignored"}),
+            None,
+        );
+        harness.drain(cx).await;
+        let first_id = harness.thread.read_with(cx, |thread, _| {
+            let [(first_id, first), (second_id, second)] = thread.notices() else {
+                panic!("two independent notices");
+            };
+            assert_ne!(first_id, second_id);
+            assert_eq!(
+                &serde_json::to_value(first).expect("first notice"),
+                sources.first().expect("source")
+            );
+            assert_eq!(
+                &serde_json::to_value(second).expect("second notice"),
+                sources.get(1).expect("source")
+            );
+            assert!(thread.entries().is_empty());
+            assert!(!thread.had_error());
+            assert_eq!(thread.foreground_activity(), ForegroundActivity::Idle);
+            *first_id
+        });
+        harness
+            .thread
+            .update(cx, |thread, cx| thread.dismiss_notice(first_id, cx));
+        cx.run_until_parked();
+        harness.thread.read_with(cx, |thread, _| {
+            let [(_, notice)] = thread.notices() else {
+                panic!("only the selected notice is dismissed");
+            };
+            assert_eq!(
+                &serde_json::to_value(notice).expect("retained notice"),
+                sources.get(1).expect("source")
+            );
+        });
+        assert_eq!(*notice_events.borrow(), 3);
+        assert_eq!(*turn_errors.borrow(), 0);
+        assert!(harness.fallback.lock().expect("fallback mutex").is_empty());
+    }
+
+    #[gpui::test]
+    async fn v2_compaction_sdk_chunks_snapshots_and_historical_targeting(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use acp_thread::{AgentThreadEntry, ContextCompactionStatus};
+        use serde_json::json;
+
+        let harness = V2SessionHarness::new(cx).await;
+        let original = json!({"type": "text", "text": "original", "_meta": {"scope": "item"}});
+        harness.send(
+            json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": "first",
+                "content": original, "_meta": {"scope": "chunk"}}),
+            Some(v2_terminal_meta("delivery")),
+        );
+        harness.drain(cx).await;
+        harness.thread.read_with(cx, |thread, _| {
+            let [AgentThreadEntry::ContextCompaction(compaction)] = thread.entries() else {
+                panic!("chunk-first compaction");
+            };
+            assert_eq!(compaction.status, ContextCompactionStatus::InProgress);
+            assert_eq!(compaction.meta, None);
+            assert!(thread.is_compacting());
+        });
+        for update in [
+            json!({"sessionUpdate": "compaction_update", "compactionId": "first-extra",
+                "status": "completed", "summary": [{"type": "text", "text": "other"}]}),
+            json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": "first",
+                "content": {"type": "text", "text": " tail"}, "_meta": {"scope": "chunk"}}),
+            json!({"sessionUpdate": "compaction_update", "compactionId": "first",
+                "status": "failed", "error": "Retry compaction", "_meta": {"scope": "compaction"}}),
+        ] {
+            harness.send(update, Some(v2_terminal_meta("later delivery")));
+        }
+        harness.drain(cx).await;
+        harness.thread.read_with(cx, |thread, cx| {
+            let [
+                AgentThreadEntry::ContextCompaction(first),
+                AgentThreadEntry::ContextCompaction(other),
+            ] = thread.entries()
+            else {
+                panic!("first-seen compaction rows");
+            };
+            let mut expected: Vec<acp_v2::ContentBlock> =
+                vec![serde_json::from_value(original).expect("item source")];
+            expected.push(" tail".into());
+            assert_eq!(first.summary.source_blocks(), expected);
+            assert_eq!(first.status, ContextCompactionStatus::Failed);
+            assert_eq!(
+                first.error.as_ref().expect("error").read(cx).source(),
+                "Retry compaction"
+            );
+            assert_eq!(first.meta, Some(v2_terminal_meta("compaction")));
+            assert_eq!(other.summary.to_markdown(cx), "other");
+            assert!(!thread.is_compacting());
+        });
+        let replacement = json!([
+            {"type": "text", "text": "replacement", "_meta": {"scope": "replacement item"}},
+            {"type": "_future", "payload": {"retain": [false, null]}}
+        ]);
+        for update in [
+            json!({"sessionUpdate": "compaction_update", "compactionId": "first",
+                "status": "_future", "summary": replacement}),
+            json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": "first",
+                "content": {"type": "text", "text": " appended"}, "_meta": {"scope": "chunk"}}),
+        ] {
+            harness.send(update, Some(v2_terminal_meta("replacement delivery")));
+        }
+        harness.drain(cx).await;
+        harness.thread.read_with(cx, |thread, cx| {
+            let [
+                AgentThreadEntry::ContextCompaction(first),
+                AgentThreadEntry::ContextCompaction(_),
+            ] = thread.entries()
+            else {
+                panic!("replacement retains its historical row");
+            };
+            let mut expected: Vec<acp_v2::ContentBlock> =
+                serde_json::from_value(replacement).expect("replacement source");
+            expected.push(" appended".into());
+            assert_eq!(first.summary.source_blocks(), expected);
+            assert_eq!(
+                first.status,
+                ContextCompactionStatus::Other("_future".into())
+            );
+            assert_eq!(
+                first
+                    .error
+                    .as_ref()
+                    .expect("omitted error survives")
+                    .read(cx)
+                    .source(),
+                "Retry compaction"
+            );
+            assert_eq!(first.meta, Some(v2_terminal_meta("compaction")));
+        });
+        harness.send(
+            json!({"sessionUpdate": "compaction_update", "compactionId": "first",
+                "status": "completed", "summary": null, "error": null, "_meta": null}),
+            Some(v2_terminal_meta("clear delivery")),
+        );
+        harness.drain(cx).await;
+        harness.thread.read_with(cx, |thread, cx| {
+            let [
+                AgentThreadEntry::ContextCompaction(first),
+                AgentThreadEntry::ContextCompaction(other),
+            ] = thread.entries()
+            else {
+                panic!("clears do not remove compaction identities");
+            };
+            assert_eq!(first.id.0.as_ref(), "first");
+            assert_eq!(first.status, ContextCompactionStatus::Completed);
+            assert!(first.summary.source_blocks().is_empty());
+            assert_eq!(first.error, None);
+            assert_eq!(first.meta, None);
+            assert_eq!(other.id.0.as_ref(), "first-extra");
+            assert_eq!(other.summary.to_markdown(cx), "other");
+        });
+        assert!(harness.fallback.lock().expect("fallback mutex").is_empty());
     }
 
     #[gpui::test]
@@ -4094,7 +4723,7 @@ mod tests {
                 "sessionId": "v2-terminal-session", "_meta": {"scope": "known envelope"},
                 "futureOuter": {"preserve": [1, null, true]},
                 "update": {
-                    "sessionUpdate": "available_commands_update", "availableCommands": [],
+                    "sessionUpdate": "state_update", "state": "running",
                     "_meta": {"scope": "known update"}, "futureKnownField": {"nested": "keep"}
                 }
             }),
@@ -8257,9 +8886,31 @@ fn handle_v2_session_notification(
             return;
         }
     };
+    let Some(thread) = thread.upgrade() else {
+        log::warn!("Received ACP v2 update for a released session");
+        return;
+    };
+    if let InboundSessionUpdate::SessionInfo(update) = &notification.update
+        && let Some(session_list) = context.session_list.borrow().as_ref()
+    {
+        session_list.send_info_update(notification.session_id.clone(), update.clone());
+    }
+    if let InboundSessionUpdate::ConfigOptions(update) = &notification.update {
+        let config_options = {
+            let mut sessions = context.sessions.borrow_mut();
+            let Some(session) = sessions.get_mut(&notification.session_id) else {
+                return;
+            };
+            session
+                .config_options
+                .get_or_insert_with(|| ConfigOptions::new(Rc::new(RefCell::new(Vec::new()))))
+                .clone()
+        };
+        *config_options.config_options.borrow_mut() = update.config_options.clone();
+        config_options.tx.borrow_mut().send(()).log_err();
+    }
     thread
         .update(cx, |thread, cx| notification.apply(thread, cx))
-        .and_then(|result| result)
         .log_err();
 }
 
@@ -8631,7 +9282,10 @@ fn handle_session_notification(
     if let acp::SessionUpdate::SessionInfoUpdate(info_update) = &notification.update
         && let Some(session_list) = ctx.session_list.borrow().as_ref()
     {
-        session_list.send_info_update(session_id.clone(), info_update.clone());
+        session_list.send_info_update(
+            session_id.clone(),
+            acp_thread::session_info_update_from_v1(info_update.clone()),
+        );
     }
 
     // Abandoned loads can keep replaying until their wire operation settles.
