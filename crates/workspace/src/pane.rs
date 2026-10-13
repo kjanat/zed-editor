@@ -3677,7 +3677,7 @@ impl Pane {
         let strip = Rc::new(TabStrip {
             items: self.items.clone(),
             active_item_index: self.active_item_index,
-            focus_handle: focus_handle.clone(),
+            focus_handle,
             can_drop_predicate: self.can_drop_predicate.clone(),
             details: OnceCell::new(),
         });
