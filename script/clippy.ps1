@@ -27,3 +27,4 @@ if ($needAddWorkspace) {
 else {
 	& $Cargo clippy @args --release --all-targets --all-features -- --deny warnings
 }
+exit $LASTEXITCODE
