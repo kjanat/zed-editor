@@ -15869,9 +15869,11 @@ mod tests {
         });
 
         let item = cx.new(TestItem::new);
-        pane.update_in(cx, |pane, window, cx| {
-            pane.add_item(Box::new(item.clone()), true, true, None, window, cx);
-            pane.remove_item(item.item_id(), false, false, window, cx);
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+            pane.update(cx, |pane, cx| {
+                pane.remove_item(item.item_id(), false, false, window, cx)
+            });
         });
         cx.run_until_parked();
 
