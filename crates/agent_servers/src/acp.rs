@@ -6011,64 +6011,75 @@ mod tests {
                 AgentConfigOptionValue::Boolean(true),
             )]),
         );
-        let session_id = acp_v2::SessionId::new("late-config-session");
-        let _thread = cx
-            .update(|cx| {
-                connection.clone().open_or_create_session(
-                    session_id.clone(),
-                    project,
-                    PathList::new(&[std::path::Path::new("/a")]),
-                    None,
-                    move |_, _, _| {
-                        async move {
-                            Ok(SessionConfigResponse {
-                                modes: None,
-                                config_options: None,
-                            })
-                        }
-                        .boxed_local()
-                    },
-                    cx,
-                )
-            })
-            .await
-            .expect("load a session without config options");
-        cx.run_until_parked();
-        assert!(
-            set_config_requests
-                .lock()
-                .expect("set config requests mutex poisoned")
-                .is_empty()
-        );
-
         let context = ClientContext {
             sessions: connection.sessions.clone(),
             session_list: Rc::new(RefCell::new(None)),
             request_elicitations: cx.new(|_| ElicitationStore::default()),
         };
-        let notification =
-            InboundSessionNotification::try_from(acp_v2::UpdateSessionNotification::new(
-                session_id,
-                acp_v2::SessionUpdate::ConfigOptionUpdate(acp_v2::ConfigOptionUpdate::new(vec![
-                    acp_v2::SessionConfigOption::boolean("web_search", "Web Search", false),
-                ])),
-            ))
-            .expect("config option notification");
-        let mut async_cx = cx.to_async();
-        handle_v2_session_notification(notification, &mut async_cx, &context);
-        drop(async_cx);
-        cx.run_until_parked();
-
-        assert_eq!(
-            set_config_requests
+        let mut threads = Vec::new();
+        for (session_name, initial_options) in [
+            ("session-without-config", None),
+            ("session-with-empty-config", Some(Vec::new())),
+        ] {
+            let session_id = acp_v2::SessionId::new(session_name);
+            let thread = cx
+                .update(|cx| {
+                    connection.clone().open_or_create_session(
+                        session_id.clone(),
+                        project.clone(),
+                        PathList::new(&[std::path::Path::new("/a")]),
+                        None,
+                        move |_, _, _| {
+                            async move {
+                                Ok(SessionConfigResponse {
+                                    modes: None,
+                                    config_options: initial_options,
+                                })
+                            }
+                            .boxed_local()
+                        },
+                        cx,
+                    )
+                })
+                .await
+                .expect("load the session");
+            threads.push(thread);
+            cx.run_until_parked();
+            let requests_before = set_config_requests
                 .lock()
                 .expect("set config requests mutex poisoned")
-                .as_slice(),
-            &[serde_json::json!({
-                "sessionId": "late-config-session", "configId": "web_search",
-                "type": "boolean", "value": true
-            })]
-        );
+                .len();
+
+            let notification =
+                InboundSessionNotification::try_from(acp_v2::UpdateSessionNotification::new(
+                    session_id,
+                    acp_v2::SessionUpdate::ConfigOptionUpdate(acp_v2::ConfigOptionUpdate::new(
+                        vec![acp_v2::SessionConfigOption::boolean(
+                            "web_search",
+                            "Web Search",
+                            false,
+                        )],
+                    )),
+                ))
+                .expect("config option notification");
+            let mut async_cx = cx.to_async();
+            handle_v2_session_notification(notification, &mut async_cx, &context);
+            drop(async_cx);
+            cx.run_until_parked();
+
+            assert_eq!(
+                set_config_requests
+                    .lock()
+                    .expect("set config requests mutex poisoned")
+                    .get(requests_before..)
+                    .expect("requests sent for this session"),
+                &[serde_json::json!({
+                    "sessionId": session_name, "configId": "web_search",
+                    "type": "boolean", "value": true
+                })],
+                "{session_name}"
+            );
+        }
     }
 
     #[gpui::test]
@@ -9036,21 +9047,21 @@ fn handle_v2_session_notification(
         return;
     };
     if let InboundSessionUpdate::ConfigOptions(update) = &notification.update {
-        let (config_options, announced_late) = {
+        let config_options = {
             let mut sessions = context.sessions.borrow_mut();
             let Some(session) = sessions.get_mut(&notification.session_id) else {
                 return;
             };
-            let announced_late = session.config_options.is_none();
-            let config_options = session
+            session
                 .config_options
                 .get_or_insert_with(|| ConfigOptions::new(Rc::new(RefCell::new(Vec::new()))))
-                .clone();
-            (config_options, announced_late)
+                .clone()
         };
+        let first_options =
+            config_options.config_options.borrow().is_empty() && !update.config_options.is_empty();
         *config_options.config_options.borrow_mut() = update.config_options.clone();
         config_options.tx.borrow_mut().send(()).log_err();
-        if announced_late {
+        if first_options {
             let connection = context
                 .sessions
                 .borrow()
