@@ -43,7 +43,7 @@ use workspace::item::{
     test::{HookBits, TestItem},
 };
 use workspace::pane_group::SplitDirection;
-use workspace::{Item, dock::Panel, move_active_item};
+use workspace::{Item, Pane, dock::Panel, move_active_item};
 
 #[gpui::test]
 async fn test_basic_show_debug_panel(executor: BackgroundExecutor, cx: &mut TestAppContext) {
@@ -3027,13 +3027,13 @@ async fn test_debugger_tab_bar_renders_items_that_read_their_pane(
         .unwrap();
 
     let pane_handle = pane.downgrade();
-    let item = pane.update_in(cx, |pane, window, cx| {
+    let item = cx.update(|window, cx| {
         let item = Box::new(cx.new(|cx| {
             TestItem::new(cx)
                 .with_label("Reader")
                 .with_pane_reader(pane_handle)
         }));
-        pane.add_item(item.clone(), false, false, None, window, cx);
+        Pane::add_item(&pane, item.clone(), false, false, None, window, cx);
         item
     });
     item.read_with(cx, |item, _| item.read_containers_in(HookBits::TAB_CONTENT));
@@ -3075,7 +3075,7 @@ async fn test_debugger_pane_items_are_added_beside_items_that_read_the_running_s
 
     let pane = running_state.read_with(cx, |running_state, _| running_state.last_pane());
     let running_state_handle = running_state.downgrade();
-    let item = pane.update_in(cx, |pane, window, cx| {
+    let item = cx.update(|window, cx| {
         let item = cx.new(|cx| {
             TestItem::new(cx)
                 .with_label("Reader")
@@ -3085,7 +3085,15 @@ async fn test_debugger_pane_items_are_added_beside_items_that_read_the_running_s
                     }
                 })
         });
-        pane.add_item(Box::new(item.clone()), false, false, None, window, cx);
+        Pane::add_item(
+            &pane,
+            Box::new(item.clone()),
+            false,
+            false,
+            None,
+            window,
+            cx,
+        );
         item
     });
     cx.run_until_parked();

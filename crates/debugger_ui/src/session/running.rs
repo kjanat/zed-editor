@@ -517,6 +517,7 @@ impl RenderOnce for DebuggerTab {
                             detail: 0,
                             is_active: selected,
                             ix,
+                            project_path: None,
                         },
                         |tab, _, _, cx| {
                             let label = tab.item.tab_content_text(0, cx);
@@ -1534,9 +1535,7 @@ impl RunningState {
             }) else {
                 return;
             };
-            pane.update(cx, |pane, cx| {
-                pane.add_item_inner(sub_view, false, false, false, None, window, cx);
-            });
+            Pane::add_item_inner(&pane, sub_view, false, false, false, None, window, cx);
         });
     }
 
@@ -1570,9 +1569,7 @@ impl RunningState {
             let sub_view = self.create_sub_view(item_kind, &pane, cx);
 
             window.defer(cx, move |window, cx| {
-                pane.update(cx, |pane, cx| {
-                    pane.add_item(sub_view, false, false, None, window, cx);
-                });
+                Pane::add_item(&pane, sub_view, false, false, None, window, cx);
             });
         }
     }
@@ -1680,12 +1677,8 @@ impl RunningState {
             pane.update(cx, |pane, cx| {
                 pane.focus_active_item(window, cx);
             })
-        } else {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.activate_pane_in_direction(direction, window, cx)
-                })
-                .ok();
+        } else if let Some(workspace) = self.workspace.upgrade() {
+            Workspace::activate_pane_in_direction(&workspace, direction, window, cx);
         }
     }
 
@@ -2043,16 +2036,25 @@ impl RunningState {
             leftmost_pane_handle,
             cx,
         );
+        Pane::add_item(
+            &leftmost_pane,
+            Box::new(leftmost_frames),
+            true,
+            false,
+            None,
+            window,
+            cx,
+        );
+        Pane::add_item(
+            &leftmost_pane,
+            Box::new(leftmost_breakpoints),
+            true,
+            false,
+            None,
+            window,
+            cx,
+        );
         leftmost_pane.update(cx, |this, cx| {
-            this.add_item(Box::new(leftmost_frames), true, false, None, window, cx);
-            this.add_item(
-                Box::new(leftmost_breakpoints),
-                true,
-                false,
-                None,
-                window,
-                cx,
-            );
             this.activate_item(0, false, false, window, cx);
         });
 
@@ -2073,10 +2075,26 @@ impl RunningState {
             cx,
         );
 
-        center_pane.update(cx, |this, cx| {
-            this.add_item(Box::new(center_console), true, false, None, window, cx);
+        Pane::add_item(
+            &center_pane,
+            Box::new(center_console),
+            true,
+            false,
+            None,
+            window,
+            cx,
+        );
 
-            this.add_item(Box::new(center_variables), true, false, None, window, cx);
+        Pane::add_item(
+            &center_pane,
+            Box::new(center_variables),
+            true,
+            false,
+            None,
+            window,
+            cx,
+        );
+        center_pane.update(cx, |this, cx| {
             this.activate_item(0, false, false, window, cx);
         });
 
@@ -2089,9 +2107,15 @@ impl RunningState {
             rightmost_pane.downgrade(),
             cx,
         );
-        rightmost_pane.update(cx, |this, cx| {
-            this.add_item(Box::new(rightmost_terminal), false, false, None, window, cx);
-        });
+        Pane::add_item(
+            &rightmost_pane,
+            Box::new(rightmost_terminal),
+            false,
+            false,
+            None,
+            window,
+            cx,
+        );
 
         subscriptions.extend(
             [&leftmost_pane, &center_pane, &rightmost_pane]
@@ -2196,6 +2220,7 @@ mod tests {
                     ix: 0,
                     detail: 0,
                     is_active: true,
+                    project_path: None,
                 }
             })
         };

@@ -357,11 +357,24 @@ impl StatusBar {
     where
         T: 'static + StatusItemView,
     {
-        let active_pane_item = self.active_pane.read(cx).active_item();
-        item.set_active_pane_item(active_pane_item.as_deref(), window, cx);
+        Self::show_active_pane_item_in(item.clone(), window, cx);
 
         self.left_items.push(Box::new(item));
         cx.notify();
+    }
+
+    fn show_active_pane_item_in<T>(item: Entity<T>, window: &mut Window, cx: &mut Context<Self>)
+    where
+        T: 'static + StatusItemView,
+    {
+        let status_bar = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            let Some(status_bar) = status_bar.upgrade() else {
+                return;
+            };
+            let active_pane_item = status_bar.read(cx).active_pane.read(cx).active_item();
+            item.set_active_pane_item(active_pane_item.as_deref(), window, cx);
+        });
     }
 
     pub fn item_of_type<T: StatusItemView>(&self) -> Option<Entity<T>> {
@@ -397,8 +410,7 @@ impl StatusBar {
     ) where
         T: 'static + StatusItemView,
     {
-        let active_pane_item = self.active_pane.read(cx).active_item();
-        item.set_active_pane_item(active_pane_item.as_deref(), window, cx);
+        Self::show_active_pane_item_in(item.clone(), window, cx);
 
         if position < self.left_items.len() {
             self.left_items.insert(position + 1, Box::new(item))
@@ -426,8 +438,7 @@ impl StatusBar {
     ) where
         T: 'static + StatusItemView,
     {
-        let active_pane_item = self.active_pane.read(cx).active_item();
-        item.set_active_pane_item(active_pane_item.as_deref(), window, cx);
+        Self::show_active_pane_item_in(item.clone(), window, cx);
 
         self.right_items.push(Box::new(item));
         cx.notify();
@@ -443,7 +454,15 @@ impl StatusBar {
         self._observe_active_pane = cx.observe_in(active_pane, window, |this, _, window, cx| {
             this.update_active_pane_item(window, cx)
         });
-        self.update_active_pane_item(window, cx);
+        let status_bar = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            let Some(status_bar) = status_bar.upgrade() else {
+                return;
+            };
+            status_bar.update(cx, |status_bar, cx| {
+                status_bar.update_active_pane_item(window, cx)
+            });
+        });
     }
 
     fn update_active_pane_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {

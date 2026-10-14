@@ -25,7 +25,10 @@ use std::path::{Path, PathBuf};
 use util::{path, paths::PathStyle, rel_path::rel_path};
 use workspace::{
     AppState, ItemHandle, MultiWorkspace, Pane, Workspace,
-    item::{Item, ProjectItem, test::TestItem},
+    item::{
+        Item, ProjectItem,
+        test::{HookBits, TestItem},
+    },
     register_project_item,
 };
 
@@ -241,6 +244,109 @@ async fn test_opening_file_with_project_panel_previews_disabled(cx: &mut gpui::T
 }
 
 #[gpui::test]
+async fn test_file_history_action_next_to_items_that_read_their_containers(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test_with_git_ui(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        Path::new("/project"),
+        json!({
+            ".git": {},
+            "tracked.txt": "tracked",
+        }),
+    )
+    .await;
+    fs.set_graph_commits(
+        Path::new("/project/.git"),
+        vec![Arc::new(InitialGraphCommitData {
+            sha: Oid::from_bytes(&[1; 20]).unwrap(),
+            parents: smallvec![],
+            ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+        })],
+    );
+
+    let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
+    cx.run_until_parked();
+    let repo_path = RepoPath::new(&"tracked.txt").unwrap();
+    let project_path = project
+        .read_with(cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("should have active repository")
+                .read(cx)
+                .repo_path_to_project_path(&repo_path, cx)
+        })
+        .expect("project path should resolve");
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace.read_with(&*cx, |multi_workspace, _| {
+        multi_workspace.workspace().clone()
+    });
+    let project_panel = workspace.update_in(cx, |workspace, window, cx| {
+        let project_panel = ProjectPanel::new(workspace, window, cx);
+        workspace.add_panel(project_panel.clone(), window, cx);
+        project_panel
+    });
+    cx.run_until_parked();
+
+    let pane = workspace.read_with(&*cx, |workspace, _| workspace.active_pane().clone());
+    let pane_handle = pane.downgrade();
+    let workspace_handle = workspace.downgrade();
+    let reader = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(
+            &pane,
+            Box::new(reader.clone()),
+            true,
+            false,
+            None,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    project_panel.update_in(cx, |panel, window, cx| {
+        panel.select_path_for_test(project_path.clone(), cx);
+        panel.focus_handle(cx).focus(window, cx);
+    });
+    cx.run_until_parked();
+    reader.read_with(&*cx, |reader, _| {
+        reader.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS);
+        reader.container_reads.set(0);
+    });
+
+    cx.update(|window, cx| {
+        window.dispatch_action(Box::new(git::FileHistory), cx);
+    });
+    cx.run_until_parked();
+
+    workspace.read_with(&*cx, |workspace, cx| {
+        let graphs = workspace
+            .items_of_type::<git_ui::git_graph::GitGraph>(cx)
+            .collect::<Vec<_>>();
+        assert_eq!(graphs.len(), 1);
+        assert_eq!(
+            graphs[0].read(cx).log_source_for_test(),
+            &LogSource::Path(repo_path)
+        );
+    });
+    reader.read_with(&*cx, |reader, _| {
+        assert!(
+            reader.container_reads.get() > 0,
+            "opening the file history should run the existing item's hooks"
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_file_history_action_uses_focused_project_panel_selection(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -320,9 +426,14 @@ async fn test_file_history_action_uses_focused_project_panel_selection(
         });
         let editor =
             cx.new(|cx| Editor::for_multibuffer(multibuffer, Some(project.clone()), window, cx));
-        workspace.update(cx, |workspace, cx| {
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
-        });
+        Workspace::add_item_to_active_pane(
+            workspace,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
         editor.update(cx, |editor, cx| {
             window.focus(&editor.focus_handle(cx), cx);
         });
@@ -454,9 +565,14 @@ async fn test_file_history_action_does_not_fall_back_to_editor_when_focused_proj
         });
         let editor =
             cx.new(|cx| Editor::for_multibuffer(multibuffer, Some(project.clone()), window, cx));
-        workspace.update(cx, |workspace, cx| {
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
-        });
+        Workspace::add_item_to_active_pane(
+            workspace,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
         editor.update(cx, |editor, cx| {
             window.focus(&editor.focus_handle(cx), cx);
         });
@@ -7036,9 +7152,9 @@ async fn test_autoreveal_follows_multibuffer_selection(cx: &mut gpui::TestAppCon
     // Wrap the multibuffer editor in an `Item`, mirroring real multibuffer
     // views (`ProjectDiagnosticsEditor`, `ProjectDiff`, etc.). Auto-reveal
     // should follow the inner editor's active buffer.
-    workspace.update_in(cx, |workspace, window, cx| {
+    cx.update(|window, cx| {
         let wrapper = cx.new(|cx| TestMultibufferWrapper::new(inner_editor.clone(), cx));
-        workspace.add_item_to_active_pane(Box::new(wrapper), None, true, window, cx);
+        Workspace::add_item_to_active_pane(&workspace, Box::new(wrapper), None, true, window, cx);
     });
     cx.run_until_parked();
 
@@ -7227,12 +7343,9 @@ async fn test_reveal_in_project_panel_fallback(cx: &mut gpui::TestAppContext) {
     // Focus again on the center pane so we're sure that the focus doesn't
     // remain on the project panel, otherwise later assertions wouldn't matter.
     panel.update_in(cx, |panel, window, cx| {
-        panel
-            .workspace
-            .update(cx, |workspace, cx| {
-                workspace.focus_center_pane(window, cx);
-            })
-            .log_err();
+        if let Some(workspace) = panel.workspace.upgrade() {
+            Workspace::focus_center_pane(&workspace, window, cx);
+        }
 
         assert!(
             !panel.focus_handle(cx).is_focused(window),
@@ -7250,9 +7363,9 @@ async fn test_reveal_in_project_panel_fallback(cx: &mut gpui::TestAppContext) {
     // Create an unsaved buffer and verify that pane: reveal in project panel`
     // still activates and focuses the panel.
     let pane = workspace.update(cx, |workspace, _| workspace.active_pane().clone());
-    pane.update_in(cx, |pane, window, cx| {
+    cx.update(|window, cx| {
         let item = cx.new(|cx| TestItem::new(cx).with_label("Unsaved buffer"));
-        pane.add_item(Box::new(item), false, false, None, window, cx);
+        Pane::add_item(&pane, Box::new(item), false, false, None, window, cx);
     });
 
     cx.dispatch_action(workspace::RevealInProjectPanel::default());
@@ -7360,7 +7473,7 @@ async fn test_creating_excluded_entries(cx: &mut gpui::TestAppContext) {
             "Should have closed the file name editor"
         );
     });
-    workspace.update_in(cx, |workspace, _, cx| {
+    workspace.read_with(cx, |workspace, cx| {
         let active_entry_path = workspace
             .active_item(cx)
             .expect("should have opened and activated the excluded item")
@@ -10768,7 +10881,7 @@ async fn test_compare_selected_files(cx: &mut gpui::TestAppContext) {
     });
     cx.executor().run_until_parked();
 
-    workspace.update_in(cx, |workspace, _, cx| {
+    workspace.read_with(cx, |workspace, cx| {
         let active_items = workspace
             .panes()
             .iter()
@@ -12615,7 +12728,7 @@ fn ensure_single_file_is_opened(
     expected_path: &str,
     cx: &mut VisualTestContext,
 ) {
-    workspace.update_in(cx, |workspace, _, cx| {
+    workspace.read_with(cx, |workspace, cx| {
         let worktrees = workspace.worktrees(cx).collect::<Vec<_>>();
         assert_eq!(worktrees.len(), 1);
         let worktree_id = worktrees[0].read(cx).id();
@@ -12673,7 +12786,7 @@ fn ensure_no_open_items_and_panes(workspace: &Entity<Workspace>, cx: &mut Visual
         !cx.has_pending_prompt(),
         "Should have no prompts after deletion operation closes the file"
     );
-    workspace.update_in(cx, |workspace, _window, cx| {
+    workspace.read_with(cx, |workspace, cx| {
         let open_project_paths = workspace
             .panes()
             .iter()

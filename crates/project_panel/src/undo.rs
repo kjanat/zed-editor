@@ -906,7 +906,7 @@ impl Inner {
         name: &str,
         cx: &mut AsyncApp,
     ) -> Result<bool> {
-        let open_item = self.workspace.update(cx, |workspace, cx| {
+        let open_item = self.workspace.read_with(cx, |workspace, cx| {
             workspace.panes().iter().find_map(|pane| {
                 pane.read(cx).items().find_map(|item| {
                     (item.is_dirty(cx)

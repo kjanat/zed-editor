@@ -284,6 +284,48 @@ async fn test_workspace_menu_uses_bare_repository_worktree_name(cx: &mut TestApp
     assert_eq!(labels[0].secondary_name, None);
 }
 
+#[gpui::test]
+async fn test_dump_workspace_info_opens_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace = multi_workspace.read_with(cx, |multi_workspace, _cx| {
+        multi_workspace.workspace().clone()
+    });
+    let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let pane_handle = pane.downgrade();
+    let workspace_handle = workspace.downgrade();
+    let item = cx.new(|cx| {
+        workspace::item::test::TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        workspace::Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item.read_with(cx, |item, _| {
+        item.read_containers_in(workspace::item::test::HookBits::BUFFER_KIND)
+    });
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        dump_workspace_info(workspace, &DumpWorkspaceInfo, window, cx);
+    });
+    cx.run_until_parked();
+
+    assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(
+            workspace
+                .active_item(cx)
+                .and_then(|active| active.downcast::<editor::Editor>())
+                .is_some()
+        );
+    });
+}
+
 fn setup_sidebar(
     multi_workspace: &Entity<MultiWorkspace>,
     cx: &mut gpui::VisualTestContext,

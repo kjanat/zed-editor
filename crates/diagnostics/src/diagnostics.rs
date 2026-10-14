@@ -162,7 +162,13 @@ impl ProjectDiagnosticsEditor {
         _window: Option<&mut Window>,
         _: &mut Context<Workspace>,
     ) {
-        workspace.register_action(Self::deploy);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &Deploy, window, cx| {
+                    Self::deploy(workspace, action, window, cx);
+                },
+            ))
+        });
     }
 
     fn new(
@@ -383,20 +389,21 @@ impl ProjectDiagnosticsEditor {
         }));
     }
 
-    fn deploy(
-        workspace: &mut Workspace,
-        _: &Deploy,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
-        if let Some(existing) = workspace.item_of_type::<ProjectDiagnosticsEditor>(cx) {
-            let is_active = workspace
-                .active_item(cx)
-                .is_some_and(|item| item.item_id() == existing.item_id());
+    fn deploy(workspace: Entity<Workspace>, _: &Deploy, window: &mut Window, cx: &mut App) {
+        let existing = workspace
+            .read(cx)
+            .item_of_type::<ProjectDiagnosticsEditor>(cx);
+        if let Some(existing) = existing {
+            workspace.update(cx, |workspace, cx| {
+                let is_active = workspace
+                    .active_item(cx)
+                    .is_some_and(|item| item.item_id() == existing.item_id());
 
-            workspace.activate_item(&existing, true, !is_active, window, cx);
+                workspace.activate_item(&existing, true, !is_active, window, cx);
+            });
         } else {
-            let workspace_handle = cx.entity().downgrade();
+            let workspace_handle = workspace.downgrade();
+            let project = workspace.read(cx).project().clone();
 
             let include_warnings = match cx.try_global::<IncludeWarnings>() {
                 Some(include_warnings) => include_warnings.0,
@@ -406,13 +413,20 @@ impl ProjectDiagnosticsEditor {
             let diagnostics = cx.new(|cx| {
                 ProjectDiagnosticsEditor::new(
                     include_warnings,
-                    workspace.project().clone(),
+                    project,
                     workspace_handle,
                     window,
                     cx,
                 )
             });
-            workspace.add_item_to_active_pane(Box::new(diagnostics), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(diagnostics),
+                None,
+                true,
+                window,
+                cx,
+            );
         }
     }
 

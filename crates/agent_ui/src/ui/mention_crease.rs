@@ -4,7 +4,7 @@ use acp_thread::MentionUri;
 use agent_client_protocol::schema::v2 as acp;
 use editor::Editor;
 use gpui::{
-    Animation, AnimationExt, AnyView, Context, IntoElement, TaskExt, WeakEntity, Window,
+    Animation, AnimationExt, AnyView, Context, Entity, IntoElement, TaskExt, WeakEntity, Window,
     pulsating_between,
 };
 use language::Buffer;
@@ -158,6 +158,20 @@ fn open_mention_uri(
         return;
     };
 
+    match &mention_uri {
+        MentionUri::Skill {
+            skill_file_path, ..
+        } => {
+            open_skill_file(&workspace, skill_file_path.clone(), window, cx);
+            return;
+        }
+        MentionUri::Rule { name, .. } => {
+            open_migrated_rule(&workspace, name, window, cx);
+            return;
+        }
+        _ => {}
+    }
+
     workspace.update(cx, |workspace, cx| match mention_uri {
         MentionUri::File { abs_path } => {
             open_abs_path_at_point(workspace, abs_path, None, window, cx);
@@ -194,18 +208,12 @@ fn open_mention_uri(
         MentionUri::Thread { id, name } => {
             open_thread(workspace, id, name, window, cx);
         }
-        MentionUri::Skill {
-            skill_file_path, ..
-        } => {
-            open_skill_file(workspace, skill_file_path, window, cx);
-        }
-        MentionUri::Rule { name, .. } => {
-            open_migrated_rule(workspace, &name, window, cx);
-        }
         MentionUri::Fetch { url } => {
             cx.open_url(url.as_str());
         }
-        MentionUri::PastedImage { .. }
+        MentionUri::Skill { .. }
+        | MentionUri::Rule { .. }
+        | MentionUri::PastedImage { .. }
         | MentionUri::Selection { abs_path: None, .. }
         | MentionUri::Diagnostics { .. }
         | MentionUri::TerminalSelection { .. }
@@ -219,23 +227,25 @@ fn open_mention_uri(
 /// file is always resolved against the local filesystem (local, SSH, or
 /// collab). Does nothing else when no matching skill exists.
 pub(crate) fn open_migrated_rule(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     name: &str,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
 ) {
     struct RulesMigratedToSkillsToast;
-    workspace.show_toast(
-        workspace::Toast::new(
-            workspace::notifications::NotificationId::unique::<RulesMigratedToSkillsToast>(),
-            "Rules have been migrated to Skills.",
-        )
-        .on_click("View docs", |_, cx| {
-            cx.open_url("https://zed.dev/docs/ai/skills");
-        })
-        .autohide(),
-        cx,
-    );
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_toast(
+            workspace::Toast::new(
+                workspace::notifications::NotificationId::unique::<RulesMigratedToSkillsToast>(),
+                "Rules have been migrated to Skills.",
+            )
+            .on_click("View docs", |_, cx| {
+                cx.open_url("https://zed.dev/docs/ai/skills");
+            })
+            .autohide(),
+            cx,
+        );
+    });
 
     let Some(slug) = agent_skills::slugify_skill_name(name) else {
         return;
@@ -244,34 +254,45 @@ pub(crate) fn open_migrated_rule(
         .join(slug)
         .join(agent_skills::SKILL_FILE_NAME);
 
-    if workspace.project().read(cx).is_local() {
-        // Local project: open the editable on-disk file if it exists.
-        if skill_file_path.exists() {
-            open_skill_file(workspace, skill_file_path, window, cx);
-        }
-        return;
-    }
+    let is_local = workspace.read(cx).project().read(cx).is_local();
+    let fs = workspace.read(cx).app_state().fs.clone();
+    let workspace = workspace.downgrade();
+    window
+        .spawn(cx, async move |cx| {
+            if is_local {
+                // Local project: open the editable on-disk file if it exists.
+                if fs.is_file(&skill_file_path).await {
+                    let workspace = workspace
+                        .upgrade()
+                        .ok_or_else(|| anyhow::anyhow!("workspace was released"))?;
+                    cx.update(|window, cx| {
+                        open_skill_file(&workspace, skill_file_path, window, cx);
+                    })?;
+                }
+                return Ok(());
+            }
 
-    // Remote/collab: `open_abs_path` targets the remote project, where this
-    // local file doesn't exist, so read it locally and show it read-only.
-    let fs = workspace.app_state().fs.clone();
-    cx.spawn_in(window, async move |workspace, cx| {
-        let Ok(content) = fs.load(&skill_file_path).await else {
-            return Ok(()); // No readable migrated skill: do nothing.
-        };
-        let title = skill_content_buffer_title(&skill_file_path);
-        workspace.update_in(cx, |workspace, window, cx| {
-            open_skill_content_buffer(workspace, title, content, window, cx);
+            // Remote/collab: `open_abs_path` targets the remote project, where this
+            // local file doesn't exist, so read it locally and show it read-only.
+            let Ok(content) = fs.load(&skill_file_path).await else {
+                return Ok(()); // No readable migrated skill: do nothing.
+            };
+            let title = skill_content_buffer_title(&skill_file_path);
+            let workspace = workspace
+                .upgrade()
+                .ok_or_else(|| anyhow::anyhow!("workspace was released"))?;
+            cx.update(|window, cx| {
+                open_skill_content_buffer(&workspace, title, content, window, cx);
+            })
         })
-    })
-    .detach_and_log_err(cx);
+        .detach_and_log_err(cx);
 }
 
 fn open_skill_file(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     skill_file_path: PathBuf,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
 ) {
     // Built-in skills have synthetic paths with no on-disk file, so show their
     // embedded content in a local buffer instead.
@@ -281,17 +302,19 @@ fn open_skill_file(
         return;
     }
 
-    workspace
-        .open_abs_path(
-            skill_file_path,
-            OpenOptions {
-                focus: Some(true),
-                ..Default::default()
-            },
-            window,
-            cx,
-        )
-        .detach_and_log_err(cx);
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .open_abs_path(
+                skill_file_path,
+                OpenOptions {
+                    focus: Some(true),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+            .detach_and_log_err(cx);
+    });
 }
 
 fn skill_content_buffer_title(skill_file_path: &std::path::Path) -> String {
@@ -308,19 +331,19 @@ fn skill_content_buffer_title(skill_file_path: &std::path::Path) -> String {
 /// buffer store: that keeps it out of search and avoids
 /// `Project::create_local_buffer` panicking on remote projects.
 fn open_skill_content_buffer(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     title: String,
     content: impl Into<String>,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
 ) {
-    let languages = workspace.project().read(cx).languages().clone();
+    let languages = workspace.read(cx).project().read(cx).languages().clone();
     let buffer = cx.new(|cx| Buffer::local(content, cx));
     // Set markdown highlighting asynchronously — the buffer
     // opens instantly and the highlighting appears once loaded.
     cx.spawn({
         let buffer = buffer.clone();
-        async move |_, cx| {
+        async move |cx| {
             if let Ok(markdown) = languages.language_for_name("Markdown").await {
                 buffer.update(cx, |buffer, cx| buffer.set_language(Some(markdown), cx));
             }
@@ -335,8 +358,8 @@ fn open_skill_content_buffer(
             .update(cx, |buffer, cx| buffer.set_title(title, cx));
         editor
     });
-    let pane = workspace.active_pane().clone();
-    workspace.add_item(pane, Box::new(editor), None, true, true, window, cx);
+    let pane = workspace.read(cx).active_pane().clone();
+    Workspace::add_item(pane, Box::new(editor), None, true, true, window, cx);
 }
 
 fn reveal_in_project_panel(
@@ -389,4 +412,127 @@ fn open_thread(
             panel.open_thread(id, None, Some(name.into()), window, cx);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversation_view::tests::init_test;
+    use gpui::{TestAppContext, VisualTestContext};
+    use project::{FakeFs, Project};
+    use serde_json::json;
+    use std::sync::Arc;
+    use util::path;
+    use workspace::{
+        MultiWorkspace, Pane,
+        item::test::{HookBits, TestItem},
+    };
+
+    async fn workspace_with_item_reading_containers(
+        cx: &mut TestAppContext,
+    ) -> (
+        Arc<FakeFs>,
+        Entity<Workspace>,
+        Entity<TestItem>,
+        &mut VisualTestContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({ "file.txt": "" }))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let pane_handle = pane.downgrade();
+        let workspace_handle = workspace.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| item.read_containers_in(HookBits::BUFFER_KIND));
+        (fs, workspace, item, cx)
+    }
+
+    #[gpui::test]
+    async fn test_open_builtin_skill_mention_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fs, workspace, item, cx) = workspace_with_item_reading_containers(cx).await;
+        let skill_file_path =
+            PathBuf::from("<built-in>/create-skill").join(agent_skills::SKILL_FILE_NAME);
+
+        cx.update(|window, cx| {
+            open_mention_uri(
+                MentionUri::Skill {
+                    name: "create-skill".to_string(),
+                    source: "built-in".to_string(),
+                    skill_file_path,
+                },
+                &workspace.downgrade(),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        workspace.read_with(cx, |workspace, cx| {
+            let editor = workspace
+                .active_item(cx)
+                .and_then(|active| active.downcast::<Editor>())
+                .expect("the built-in skill should open in an editor");
+            assert_eq!(
+                editor.read(cx).buffer().read(cx).title(cx).as_ref(),
+                "create-skill"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_migrated_rule_mention_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (fs, workspace, item, cx) = workspace_with_item_reading_containers(cx).await;
+        fs.insert_tree(
+            agent_skills::global_skills_dir().join("my-rule"),
+            json!({ "SKILL.md": "rule body" }),
+        )
+        .await;
+
+        cx.update(|window, cx| {
+            open_mention_uri(
+                MentionUri::Rule {
+                    id: serde_json::Value::Null,
+                    name: "my-rule".to_string(),
+                },
+                &workspace.downgrade(),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        workspace.read_with(cx, |workspace, cx| {
+            let editor = workspace
+                .active_item(cx)
+                .and_then(|active| active.downcast::<Editor>())
+                .expect("the migrated skill should open in an editor");
+            let buffer = editor
+                .read(cx)
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .expect("the skill file should open as a single buffer");
+            assert_eq!(buffer.read(cx).text(), "rule body");
+        });
+    }
 }

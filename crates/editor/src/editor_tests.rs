@@ -78,7 +78,10 @@ use util::{
 use workspace::{
     CloseActiveItem, CloseAllItems, CloseOtherItems, MultiWorkspace, NavigationEntry, OpenOptions,
     Pane, SaveIntent, SplitDirection, ToolbarItemLocation, ViewId, Workspace,
-    item::{FollowEvent, FollowableItem, Item, ItemHandle, SaveOptions},
+    item::{
+        FollowEvent, FollowableItem, Item, ItemHandle, SaveOptions,
+        test::{HookBits, TestItem},
+    },
     register_project_item,
 };
 
@@ -18990,13 +18993,19 @@ async fn test_save_actions_are_hidden_for_read_only_files(cx: &mut TestAppContex
             cx,
         )
     });
-    window
-        .update(cx, |multi_workspace, window, cx| {
-            multi_workspace.workspace().update(cx, |workspace, cx| {
-                workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
-            })
-        })
+    let workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
         .unwrap();
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
+    });
     cx.run_until_parked();
 
     fn save_actions_visible(cx: &mut VisualTestContext) -> (bool, bool, bool, bool) {
@@ -24669,8 +24678,16 @@ async fn test_completion_in_multibuffer_with_replace_range(cx: &mut TestAppConte
     });
 
     let pane = workspace.update_in(cx, |workspace, _, _| workspace.active_pane().clone());
-    pane.update_in(cx, |pane, window, cx| {
-        pane.add_item(Box::new(editor.clone()), true, true, None, window, cx);
+    cx.update(|window, cx| {
+        Pane::add_item(
+            &pane,
+            Box::new(editor.clone()),
+            true,
+            true,
+            None,
+            window,
+            cx,
+        );
     });
 
     let fake_server = fake_servers.next().await.unwrap();
@@ -24829,8 +24846,16 @@ async fn test_completion_in_multibuffer_with_newest_selection_in_other_buffer(
     });
 
     let pane = workspace.update_in(cx, |workspace, _, _| workspace.active_pane().clone());
-    pane.update_in(cx, |pane, window, cx| {
-        pane.add_item(Box::new(editor.clone()), true, true, None, window, cx);
+    cx.update(|window, cx| {
+        Pane::add_item(
+            &pane,
+            Box::new(editor.clone()),
+            true,
+            true,
+            None,
+            window,
+            cx,
+        );
     });
 
     let fake_server = fake_servers.next().await.unwrap();
@@ -31679,12 +31704,13 @@ async fn test_multibuffer_in_navigation_history(cx: &mut TestAppContext) {
             cx,
         )
     });
-    let multibuffer_item_id = workspace.update_in(cx, |workspace, window, cx| {
+    let multibuffer_item_id = cx.update(|window, cx| {
         assert!(
-            workspace.active_item(cx).is_none(),
+            workspace.read(cx).active_item(cx).is_none(),
             "active item should be None before the first item is added"
         );
-        workspace.add_item_to_active_pane(
+        Workspace::add_item_to_active_pane(
+            &workspace,
             Box::new(multi_buffer_editor.clone()),
             None,
             true,
@@ -31692,6 +31718,7 @@ async fn test_multibuffer_in_navigation_history(cx: &mut TestAppContext) {
             cx,
         );
         let active_item = workspace
+            .read(cx)
             .active_item(cx)
             .expect("should have an active item after adding the multi buffer");
         assert_eq!(
@@ -39314,8 +39341,16 @@ async fn test_view_bookmarks_activates_most_recent_tab(cx: &mut TestAppContext) 
     let second_pane = workspace.update_in(&mut cx, |workspace, window, cx| {
         workspace.split_pane(pane.clone(), SplitDirection::Right, window, cx)
     });
-    second_pane.update_in(&mut cx, |pane, window, cx| {
-        pane.add_item(Box::new(split_editor.clone()), true, true, None, window, cx);
+    cx.update(|window, cx| {
+        Pane::add_item(
+            &second_pane,
+            Box::new(split_editor.clone()),
+            true,
+            true,
+            None,
+            window,
+            cx,
+        );
     });
     cx.run_until_parked();
 
@@ -40291,8 +40326,18 @@ async fn test_reveal_if_open_uses_user_setting_for_loaded_editor(cx: &mut TestAp
         assert_eq!(workspace.active_pane(), &right_pane);
     });
 
-    let revealed_editor = workspace.update_in(cx, |workspace, window, cx| {
-        workspace.open_project_item(None, buffer.clone(), true, true, false, false, window, cx)
+    let revealed_editor: Entity<Editor> = cx.update(|window, cx| {
+        Workspace::open_project_item(
+            &workspace,
+            None,
+            buffer.clone(),
+            true,
+            true,
+            false,
+            false,
+            window,
+            cx,
+        )
     });
     assert_eq!(revealed_editor, original_editor);
     assert_eq!(left_pane.read_with(cx, |pane, _| pane.items_len()), 1);
@@ -40301,8 +40346,9 @@ async fn test_reveal_if_open_uses_user_setting_for_loaded_editor(cx: &mut TestAp
         assert_eq!(workspace.active_pane(), &left_pane);
     });
 
-    let duplicate_editor = workspace.update_in(cx, |workspace, window, cx| {
-        workspace.open_project_item(
+    let duplicate_editor: Entity<Editor> = cx.update(|window, cx| {
+        Workspace::open_project_item(
+            &workspace,
             Some(right_pane.clone()),
             buffer,
             true,
@@ -40755,8 +40801,15 @@ async fn test_hide_mouse_context_menu_on_modal_opened(cx: &mut TestAppContext) {
             cx,
         )
     });
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
 
     editor.update_in(cx, |editor, window, cx| {
@@ -40804,8 +40857,15 @@ async fn test_hide_pending_blame_popover_when_modal_opens(cx: &mut TestAppContex
         )
     });
 
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(editor.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
 
     editor.update_in(cx, |editor, _, cx| {
@@ -50202,8 +50262,16 @@ async fn open_bookmarks_test_editor(
         })
     });
     let pane = workspace.update(cx, |workspace, _| workspace.active_pane().clone());
-    pane.update_in(cx, |pane, window, cx| {
-        pane.add_item(Box::new(editor.clone()), true, true, None, window, cx);
+    cx.update(|window, cx| {
+        Pane::add_item(
+            &pane,
+            Box::new(editor.clone()),
+            true,
+            true,
+            None,
+            window,
+            cx,
+        );
     });
     editor
 }
@@ -51177,4 +51245,472 @@ async fn test_soft_wrap_indent_updated_on_file_move_between_directories(
         .update(cx, |editor, window, cx| editor.snapshot(window, cx))
         .unwrap();
     assert_eq!(snapshot.soft_wrap_indent(DisplayRow(0)), Some(0));
+}
+
+fn new_multi_workspace_test_window(
+    project: Entity<Project>,
+    cx: &mut TestAppContext,
+) -> (Entity<Workspace>, VisualTestContext) {
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .expect("window should still be open");
+    (workspace, VisualTestContext::from_window(*window, cx))
+}
+
+fn add_test_item_reading_containers(
+    workspace: &Entity<Workspace>,
+    pane: &Entity<Pane>,
+    cx: &mut VisualTestContext,
+) -> Entity<TestItem> {
+    let workspace_handle = workspace.downgrade();
+    let pane_handle = pane.downgrade();
+    let item = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item
+}
+
+fn read_containers_in(item: &Entity<TestItem>, hooks: HookBits, cx: &mut VisualTestContext) {
+    item.read_with(cx, |item, _| item.read_containers_in(hooks));
+}
+
+fn container_reads(item: &Entity<TestItem>, cx: &mut VisualTestContext) -> usize {
+    item.read_with(cx, |item, _| item.container_reads.get())
+}
+
+fn focus_test_item(item: &Entity<TestItem>, cx: &mut VisualTestContext) {
+    item.update_in(cx, |_, window, cx| cx.focus_self(window));
+    cx.run_until_parked();
+}
+
+fn active_item_id(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<EntityId> {
+    workspace.read_with(cx, |workspace, cx| {
+        workspace.active_item(cx).map(|item| item.item_id())
+    })
+}
+
+fn add_simple_editor(
+    project: &Entity<Project>,
+    pane: &Entity<Pane>,
+    cx: &mut VisualTestContext,
+) -> Entity<Editor> {
+    let buffer = cx.update(|_, cx| MultiBuffer::build_simple("one\ntwo\n", cx));
+    let editor = cx.new_window_entity(|window, cx| {
+        Editor::new(
+            EditorMode::full(),
+            buffer,
+            Some(project.clone()),
+            window,
+            cx,
+        )
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(pane, Box::new(editor.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    editor
+}
+
+struct SplitPanesReadingContainers {
+    left_item: Entity<TestItem>,
+    right_pane: Entity<Pane>,
+    right_item: Entity<TestItem>,
+}
+
+fn split_panes_with_items_reading_containers(
+    workspace: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) -> SplitPanesReadingContainers {
+    let left_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let left_item = add_test_item_reading_containers(workspace, &left_pane, cx);
+    let right_pane = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.split_pane(left_pane.clone(), SplitDirection::Right, window, cx)
+    });
+    let right_item = add_test_item_reading_containers(workspace, &right_pane, cx);
+    focus_test_item(&left_item, cx);
+    workspace.read_with(cx, |workspace, _| {
+        assert_eq!(workspace.active_pane(), &left_pane);
+    });
+    read_containers_in(&left_item, HookBits::PIXEL_POSITION_OF_CURSOR, cx);
+    read_containers_in(
+        &right_item,
+        HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS,
+        cx,
+    );
+    SplitPanesReadingContainers {
+        left_item,
+        right_pane,
+        right_item,
+    }
+}
+
+fn two_buffer_multibuffer_editor(
+    project: &Entity<Project>,
+    cx: &mut VisualTestContext,
+) -> (Entity<Editor>, Entity<Buffer>) {
+    let first_buffer = cx.new(|cx| Buffer::local("aaaa\nbbbb\n", cx));
+    let second_buffer = cx.new(|cx| Buffer::local("cccc\ndddd\n", cx));
+    let multi_buffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::new(ReadWrite);
+        multibuffer.set_excerpts_for_path(
+            PathKey::sorted(0),
+            first_buffer.clone(),
+            [Point::new(0, 0)..Point::new(1, 0)],
+            0,
+            cx,
+        );
+        multibuffer.set_excerpts_for_path(
+            PathKey::sorted(1),
+            second_buffer.clone(),
+            [Point::new(0, 0)..Point::new(1, 0)],
+            0,
+            cx,
+        );
+        multibuffer
+    });
+    let editor = cx.new_window_entity(|window, cx| {
+        Editor::new(
+            EditorMode::full(),
+            multi_buffer,
+            Some(project.clone()),
+            window,
+            cx,
+        )
+    });
+    (editor, first_buffer)
+}
+
+fn select_start_of_first_excerpt(editor: &Entity<Editor>, cx: &mut VisualTestContext) {
+    editor.update_in(cx, |editor, window, cx| {
+        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+            s.select_ranges(Some(MultiBufferOffset(1)..MultiBufferOffset(1)))
+        });
+    });
+}
+
+fn singleton_buffer_of(
+    item: Option<Entity<Editor>>,
+    cx: &mut VisualTestContext,
+) -> Option<Entity<Buffer>> {
+    let editor = item?;
+    editor.read_with(cx, |editor, cx| editor.buffer().read(cx).as_singleton())
+}
+
+#[gpui::test]
+async fn test_new_file_adds_editor_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let project = Project::test(fs, [], cx).await;
+    let (workspace, mut cx) = new_multi_workspace_test_window(project, cx);
+    let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+    let item = add_test_item_reading_containers(&workspace, &pane, &mut cx);
+    focus_test_item(&item, &mut cx);
+    read_containers_in(
+        &item,
+        HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS,
+        &mut cx,
+    );
+
+    cx.dispatch_action(workspace::NewFile);
+    cx.run_until_parked();
+
+    assert_eq!(pane.read_with(&cx, |pane, _| pane.items_len()), 2);
+    let new_editor = workspace.read_with(&cx, |workspace, cx| {
+        workspace
+            .active_item(cx)
+            .and_then(|item| item.downcast::<Editor>())
+    });
+    assert!(new_editor.is_some(), "NewFile should activate a new editor");
+    assert!(container_reads(&item, &mut cx) > 0);
+}
+
+#[gpui::test]
+async fn test_view_bookmarks_adds_tab_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, pane, _project, editor, mut cx) =
+        init_bookmarks_tab_test(cx, json!({ "main.rs": "line0\nline1\n" })).await;
+    toggle_bookmark_on_row(&editor, 0, &mut cx);
+    cx.run_until_parked();
+    let item = add_test_item_reading_containers(&workspace, &pane, &mut cx);
+    focus_test_item(&item, &mut cx);
+    read_containers_in(
+        &item,
+        HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS,
+        &mut cx,
+    );
+
+    cx.dispatch_action(actions::ViewBookmarks);
+    cx.run_until_parked();
+
+    let bookmarks_editor = find_bookmarks_editor(&workspace, &mut cx)
+        .expect("bookmarks editor should exist after ViewBookmarks");
+    assert_eq!(
+        active_item_id(&workspace, &mut cx),
+        Some(bookmarks_editor.entity_id())
+    );
+    assert!(container_reads(&item, &mut cx) > 0);
+}
+
+#[gpui::test]
+async fn test_toggle_focus_activates_editor_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let project = Project::test(fs, [], cx).await;
+    let (workspace, mut cx) = new_multi_workspace_test_window(project.clone(), cx);
+    let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+    let editor = add_simple_editor(&project, &pane, &mut cx);
+    let item = add_test_item_reading_containers(&workspace, &pane, &mut cx);
+    focus_test_item(&item, &mut cx);
+    read_containers_in(&item, HookBits::ACT_AS_TYPE, &mut cx);
+
+    cx.dispatch_action(actions::ToggleFocus);
+    cx.run_until_parked();
+
+    assert_eq!(
+        active_item_id(&workspace, &mut cx),
+        Some(editor.entity_id())
+    );
+    assert!(container_reads(&item, &mut cx) > 0);
+}
+
+#[gpui::test]
+async fn test_cancel_language_server_work_for_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let project = Project::test(fs, [], cx).await;
+    let (workspace, mut cx) = new_multi_workspace_test_window(project, cx);
+    let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+    let item = add_test_item_reading_containers(&workspace, &pane, &mut cx);
+    focus_test_item(&item, &mut cx);
+    read_containers_in(&item, HookBits::ACT_AS_TYPE, &mut cx);
+
+    cx.dispatch_action(actions::CancelLanguageServerWork);
+    cx.run_until_parked();
+
+    assert_eq!(active_item_id(&workspace, &mut cx), Some(item.entity_id()));
+    assert!(container_reads(&item, &mut cx) > 0);
+}
+
+#[gpui::test]
+async fn test_open_excerpts_opens_buffer_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let project = Project::test(fs, [], cx).await;
+    let (workspace, mut cx) = new_multi_workspace_test_window(project.clone(), cx);
+    let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+    let (multi_buffer_editor, first_buffer) = two_buffer_multibuffer_editor(&project, &mut cx);
+    cx.update(|window, cx| {
+        Pane::add_item(
+            &pane,
+            Box::new(multi_buffer_editor.clone()),
+            true,
+            true,
+            None,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let item = add_test_item_reading_containers(&workspace, &pane, &mut cx);
+    read_containers_in(
+        &item,
+        HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS,
+        &mut cx,
+    );
+    select_start_of_first_excerpt(&multi_buffer_editor, &mut cx);
+
+    multi_buffer_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.open_excerpts(&OpenExcerpts, window, cx);
+    });
+    cx.run_until_parked();
+
+    let active_editor = workspace.read_with(&cx, |workspace, cx| {
+        workspace
+            .active_item(cx)
+            .and_then(|item| item.downcast::<Editor>())
+    });
+    assert_eq!(
+        singleton_buffer_of(active_editor, &mut cx),
+        Some(first_buffer)
+    );
+    assert!(container_reads(&item, &mut cx) > 0);
+}
+
+#[gpui::test]
+async fn test_open_excerpts_in_split_opens_buffer_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let project = Project::test(fs, [], cx).await;
+    let (workspace, mut cx) = new_multi_workspace_test_window(project.clone(), cx);
+    let left_pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+    let (multi_buffer_editor, first_buffer) = two_buffer_multibuffer_editor(&project, &mut cx);
+    cx.update(|window, cx| {
+        Pane::add_item(
+            &left_pane,
+            Box::new(multi_buffer_editor.clone()),
+            true,
+            true,
+            None,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let panes = split_panes_with_items_reading_containers(&workspace, &mut cx);
+    select_start_of_first_excerpt(&multi_buffer_editor, &mut cx);
+
+    multi_buffer_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.open_excerpts_in_split(&actions::OpenExcerptsSplit, window, cx);
+    });
+    cx.run_until_parked();
+
+    let right_editor = panes
+        .right_pane
+        .read_with(&cx, |pane, _| pane.items_of_type::<Editor>().next());
+    assert_eq!(
+        singleton_buffer_of(right_editor, &mut cx),
+        Some(first_buffer)
+    );
+    assert!(container_reads(&panes.left_item, &mut cx) > 0);
+    assert!(container_reads(&panes.right_item, &mut cx) > 0);
+}
+
+#[gpui::test]
+async fn test_go_to_definition_split_opens_target_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            definition_provider: Some(lsp::OneOf::Left(true)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.set_state(
+        &r#"fn caller() {
+            let _ = ˇtarget();
+        }
+        fn target() {}
+        "#
+        .unindent(),
+    );
+    cx.set_request_handler::<lsp::request::GotoDefinition, _, _>(move |url, _, _| async move {
+        Ok(Some(lsp::GotoDefinitionResponse::Scalar(lsp::Location {
+            uri: url,
+            range: lsp::Range::new(lsp::Position::new(3, 3), lsp::Position::new(3, 9)),
+        })))
+    });
+    let workspace = cx.workspace.clone();
+    let panes = split_panes_with_items_reading_containers(&workspace, &mut cx.cx.cx);
+
+    cx.update_editor(|editor, window, cx| {
+        editor.go_to_definition_split(&actions::GoToDefinitionSplit, window, cx)
+    })
+    .await
+    .expect("Failed to navigate to the definition");
+    cx.run_until_parked();
+
+    let right_editor = panes
+        .right_pane
+        .read_with(&cx.cx.cx, |pane, _| pane.items_of_type::<Editor>().next());
+    let right_buffer = singleton_buffer_of(right_editor, &mut cx.cx.cx);
+    let source_buffer = cx.update_editor(|editor, _, cx| editor.buffer().read(cx).as_singleton());
+    assert!(right_buffer.is_some());
+    assert_eq!(right_buffer, source_buffer);
+    assert!(container_reads(&panes.left_item, &mut cx.cx.cx) > 0);
+    assert!(container_reads(&panes.right_item, &mut cx.cx.cx) > 0);
+}
+
+#[gpui::test]
+async fn test_go_to_definition_split_opens_multibuffer_beside_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            definition_provider: Some(lsp::OneOf::Left(true)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.set_state(
+        &r#"fn caller() {
+            let _ = ˇtarget();
+        }
+        fn target_a() {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        fn target_b() {}
+        "#
+        .unindent(),
+    );
+    cx.set_request_handler::<lsp::request::GotoDefinition, _, _>(move |url, _, _| async move {
+        Ok(Some(lsp::GotoDefinitionResponse::Array(vec![
+            lsp::Location {
+                uri: url.clone(),
+                range: lsp::Range::new(lsp::Position::new(3, 3), lsp::Position::new(3, 11)),
+            },
+            lsp::Location {
+                uri: url,
+                range: lsp::Range::new(lsp::Position::new(19, 3), lsp::Position::new(19, 11)),
+            },
+        ])))
+    });
+    let workspace = cx.workspace.clone();
+    let panes = split_panes_with_items_reading_containers(&workspace, &mut cx.cx.cx);
+
+    let navigated = cx
+        .update_editor(|editor, window, cx| {
+            editor.go_to_definition_split(&actions::GoToDefinitionSplit, window, cx)
+        })
+        .await
+        .expect("Failed to navigate to the definitions");
+    assert_eq!(navigated, Navigated::Yes);
+    cx.run_until_parked();
+
+    let right_multibuffer_text = panes.right_pane.read_with(&cx.cx.cx, |pane, cx| {
+        pane.items_of_type::<Editor>()
+            .find(|editor| !editor.read(cx).buffer().read(cx).is_singleton())
+            .map(|editor| editor.read(cx).text(cx))
+    });
+    let right_multibuffer_text =
+        right_multibuffer_text.expect("the definitions should open in the right pane");
+    assert!(right_multibuffer_text.contains("target_a"));
+    assert!(right_multibuffer_text.contains("target_b"));
+    assert!(container_reads(&panes.left_item, &mut cx.cx.cx) > 0);
+    assert!(container_reads(&panes.right_item, &mut cx.cx.cx) > 0);
 }

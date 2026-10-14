@@ -29,8 +29,8 @@ use editor::{
     movement::{self, FindRange},
 };
 use gpui::{
-    Action, App, AppContext, Axis, Context, Entity, EventEmitter, Focusable, KeyContext,
-    KeystrokeEvent, Render, Subscription, Task, WeakEntity, Window, actions,
+    Action, App, AppContext, Axis, Context, Entity, EventEmitter, Focusable, InteractiveElement,
+    KeyContext, KeystrokeEvent, Render, Subscription, Task, WeakEntity, Window, actions,
 };
 use insert::{NormalBefore, TemporaryNormal};
 use language::{CursorShape, Point, Selection, SelectionGoal, TransactionId};
@@ -333,29 +333,28 @@ pub fn init(cx: &mut App) {
             }
         });
 
-        workspace.register_action(|workspace, n: &Number, window, cx| {
-            let vim = workspace
-                .focused_pane(window, cx)
-                .read(cx)
-                .active_item()
-                .and_then(|item| item.act_as::<Editor>(cx))
-                .and_then(|editor| editor.read(cx).addon::<VimAddon>().cloned());
-            if let Some(vim) = vim {
-                let digit = n.0;
-                vim.entity.update(cx, |_, cx| {
-                    cx.defer_in(window, move |vim, window, cx| {
-                        vim.push_count_digit(digit, window, cx)
-                    })
-                });
-            } else {
-                let count = Vim::globals(cx).pre_count.unwrap_or(0);
-                Vim::globals(cx).pre_count = Some(
-                    count
-                        .checked_mul(10)
-                        .and_then(|c| c.checked_add(n.0))
-                        .unwrap_or(count),
-                );
-            };
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, n: &Number, window, cx| {
+                    let vim = focused_vim_addon(&workspace, window, cx);
+                    if let Some(vim) = vim {
+                        let digit = n.0;
+                        vim.entity.update(cx, |_, cx| {
+                            cx.defer_in(window, move |vim, window, cx| {
+                                vim.push_count_digit(digit, window, cx)
+                            })
+                        });
+                    } else {
+                        let count = Vim::globals(cx).pre_count.unwrap_or(0);
+                        Vim::globals(cx).pre_count = Some(
+                            count
+                                .checked_mul(10)
+                                .and_then(|c| c.checked_add(n.0))
+                                .unwrap_or(count),
+                        );
+                    };
+                },
+            ))
         });
 
         workspace.register_action(|_, _: &zed_actions::vim::OpenDefaultKeymap, _, cx| {
@@ -431,21 +430,21 @@ pub fn init(cx: &mut App) {
             workspace.resize_pane(Axis::Vertical, -height * count, window, cx);
         });
 
-        workspace.register_action(|workspace, _: &SearchSubmit, window, cx| {
-            let vim = workspace
-                .focused_pane(window, cx)
-                .read(cx)
-                .active_item()
-                .and_then(|item| item.act_as::<Editor>(cx))
-                .and_then(|editor| editor.read(cx).addon::<VimAddon>().cloned());
-            let Some(vim) = vim else { return };
-            vim.entity.update(cx, |vim, cx| {
-                if !vim.search.cmd_f_search {
-                    cx.defer_in(window, |vim, window, cx| vim.search_submit(window, cx))
-                } else {
-                    cx.propagate()
-                }
-            })
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &SearchSubmit, window, cx| {
+                    let Some(vim) = focused_vim_addon(&workspace, window, cx) else {
+                        return;
+                    };
+                    vim.entity.update(cx, |vim, cx| {
+                        if !vim.search.cmd_f_search {
+                            cx.defer_in(window, |vim, window, cx| vim.search_submit(window, cx))
+                        } else {
+                            cx.propagate()
+                        }
+                    })
+                },
+            ))
         });
         workspace.register_action(|_, _: &GoToTab, window, cx| {
             let count = Vim::take_count(cx);
@@ -495,6 +494,16 @@ pub fn init(cx: &mut App) {
         });
     })
     .detach();
+}
+
+fn focused_vim_addon(workspace: &Entity<Workspace>, window: &Window, cx: &App) -> Option<VimAddon> {
+    workspace
+        .read(cx)
+        .focused_pane(window, cx)
+        .read(cx)
+        .active_item()
+        .and_then(|item| item.act_as::<Editor>(cx))
+        .and_then(|editor| editor.read(cx).addon::<VimAddon>().cloned())
 }
 
 #[derive(Clone)]

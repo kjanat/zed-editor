@@ -1036,8 +1036,15 @@ mod tests {
             editor
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             editor.update(cx, |editor, cx| window.focus(&editor.focus_handle(cx), cx))
         });
 
@@ -1470,8 +1477,15 @@ mod tests {
             editor
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             editor.update(cx, |editor, cx| window.focus(&editor.focus_handle(cx), cx))
         });
 
@@ -1503,7 +1517,7 @@ mod tests {
 
         cx.simulate_keystrokes("cmd-n");
 
-        let editor = workspace.update(cx, |workspace, cx| {
+        let editor = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<Editor>(cx).unwrap()
         });
         editor.update_in(cx, |editor, window, cx| {

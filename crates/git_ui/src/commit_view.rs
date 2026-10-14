@@ -40,7 +40,7 @@ use ui::{ContextMenu, DiffStat, Disclosure, Divider, Tooltip, WithScrollbar, pre
 use util::{ResultExt, paths::PathStyle, rel_path::RelPath, truncate_and_trailoff};
 use workspace::item::TabTooltipContent;
 use workspace::{
-    Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
+    Item, ItemHandle, ItemNavHistory, Pane, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
     Workspace, item::ItemEvent, notifications::NotifyTaskExt, pane::SaveIntent,
     searchable::SearchableItemHandle,
 };
@@ -60,14 +60,22 @@ actions!(
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
-        workspace.register_action(|workspace, _: &ApplyCurrentStash, window, cx| {
-            CommitView::apply_stash(workspace, window, cx);
-        });
-        workspace.register_action(|workspace, _: &DropCurrentStash, window, cx| {
-            CommitView::remove_stash(workspace, window, cx);
-        });
-        workspace.register_action(|workspace, _: &PopCurrentStash, window, cx| {
-            CommitView::pop_stash(workspace, window, cx);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &ApplyCurrentStash, window, cx| {
+                    CommitView::apply_stash(&workspace, window, cx);
+                },
+            ))
+            .on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &DropCurrentStash, window, cx| {
+                    CommitView::remove_stash(&workspace, window, cx);
+                },
+            ))
+            .on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &PopCurrentStash, window, cx| {
+                    CommitView::pop_stash(&workspace, window, cx);
+                },
+            ))
         });
     })
     .detach();
@@ -235,7 +243,7 @@ impl CommitView {
 
                 let repo = repo.upgrade()?;
 
-                workspace
+                let (pane, commit_view, destination_index) = workspace
                     .update_in(cx, |workspace, window, cx| {
                         let project = workspace.project();
                         let workspace_entity = cx.entity();
@@ -255,35 +263,32 @@ impl CommitView {
                             )
                         });
 
-                        let pane = workspace.active_pane();
-                        pane.update(cx, |pane, cx| {
-                            let ix = pane.items().position(|item| {
-                                let commit_view = item.downcast::<CommitView>();
-                                commit_view
-                                    .is_some_and(|view| view.read(cx).commit.sha == commit_sha)
-                            });
-                            if let Some(ix) = ix {
-                                let existing = pane
-                                    .items()
-                                    .filter_map(|item| item.downcast::<CommitView>())
-                                    .find(|view| view.read(cx).commit.sha == commit_sha)
-                                    .unwrap();
-
-                                pane.remove_item(existing.item_id(), false, false, window, cx);
-                                pane.add_item(
-                                    Box::new(commit_view),
-                                    true,
-                                    true,
-                                    Some(ix),
-                                    window,
-                                    cx,
-                                );
-                            } else {
-                                pane.add_item(Box::new(commit_view), true, true, None, window, cx);
-                            }
-                        })
+                        let pane = workspace.active_pane().clone();
+                        let destination_index = pane.update(cx, |pane, cx| {
+                            let (ix, existing) =
+                                pane.items().enumerate().find_map(|(ix, item)| {
+                                    item.downcast::<CommitView>()
+                                        .filter(|view| view.read(cx).commit.sha == commit_sha)
+                                        .map(|view| (ix, view))
+                                })?;
+                            pane.remove_item(existing.item_id(), false, false, window, cx);
+                            Some(ix)
+                        });
+                        (pane, commit_view, destination_index)
                     })
-                    .log_err()
+                    .log_err()?;
+                cx.update(|window, cx| {
+                    Pane::add_item(
+                        &pane,
+                        Box::new(commit_view),
+                        true,
+                        true,
+                        destination_index,
+                        window,
+                        cx,
+                    )
+                })
+                .log_err()
             })
             .detach();
     }
@@ -907,7 +912,7 @@ impl CommitView {
         )
     }
 
-    fn apply_stash(workspace: &mut Workspace, window: &mut Window, cx: &mut App) {
+    fn apply_stash(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
         Self::stash_action(
             workspace,
             "Apply",
@@ -934,7 +939,7 @@ impl CommitView {
         );
     }
 
-    fn pop_stash(workspace: &mut Workspace, window: &mut Window, cx: &mut App) {
+    fn pop_stash(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
         Self::stash_action(
             workspace,
             "Pop",
@@ -961,7 +966,7 @@ impl CommitView {
         );
     }
 
-    fn remove_stash(workspace: &mut Workspace, window: &mut Window, cx: &mut App) {
+    fn remove_stash(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
         Self::stash_action(
             workspace,
             "Drop",
@@ -989,7 +994,7 @@ impl CommitView {
     }
 
     fn stash_action<AsyncFn>(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         str_action: &str,
         window: &mut Window,
         cx: &mut App,
@@ -1005,7 +1010,7 @@ impl CommitView {
             ) -> anyhow::Result<()>
             + 'static,
     {
-        let Some(commit_view) = workspace.active_item_as::<CommitView>(cx) else {
+        let Some(commit_view) = workspace.read(cx).active_item_as::<CommitView>(cx) else {
             return;
         };
         let Some(stash) = commit_view.read(cx).stash else {
@@ -1020,7 +1025,7 @@ impl CommitView {
             cx,
         );
 
-        let workspace_weak = workspace.weak_handle();
+        let workspace_weak = workspace.downgrade();
         let commit_view_entity = commit_view;
 
         window
@@ -1046,7 +1051,7 @@ impl CommitView {
                 callback(repo, &sha, stash, commit_view_entity, workspace_weak, cx).await?;
                 anyhow::Ok(())
             })
-            .detach_and_notify_err(workspace.weak_handle(), window, cx);
+            .detach_and_notify_err(workspace.downgrade(), window, cx);
     }
 
     async fn close_commit_view(

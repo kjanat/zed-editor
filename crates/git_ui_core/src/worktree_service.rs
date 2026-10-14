@@ -265,22 +265,20 @@ impl Render for WorktreeFetchFailedToast {
                 .on_click(cx.listener(move |_, _event, window, cx| {
                     cx.emit(DismissEvent);
                     if let Some(workspace) = workspace_for_retry.upgrade() {
-                        workspace.update(cx, |workspace, cx| {
-                            let task = create_worktree_workspace_inner(
-                                workspace,
-                                &zed_actions::CreateWorktree {
-                                    worktree_name: worktree_name.clone(),
-                                    branch_target: branch_target.clone(),
-                                },
-                                window,
-                                focused_dock,
-                                RemoteBranchFetchMode::UseLocal,
-                                // User-initiated retry of a foreground create.
-                                true,
-                                cx,
-                            );
-                            task.detach_and_log_err(cx);
-                        });
+                        let task = create_worktree_workspace_inner(
+                            &workspace,
+                            &zed_actions::CreateWorktree {
+                                worktree_name: worktree_name.clone(),
+                                branch_target: branch_target.clone(),
+                            },
+                            window,
+                            focused_dock,
+                            RemoteBranchFetchMode::UseLocal,
+                            // User-initiated retry of a foreground create.
+                            true,
+                            cx,
+                        );
+                        task.detach_and_log_err(cx);
                     }
                 })),
             )
@@ -289,13 +287,9 @@ impl Render for WorktreeFetchFailedToast {
                     .color(Color::Muted)
                     .on_click(cx.listener(move |_, _event, window, cx| {
                         cx.emit(DismissEvent);
-                        let output = output.clone();
-                        let operation = operation.clone();
-                        workspace_for_log
-                            .update(cx, move |workspace, cx| {
-                                open_output(operation, workspace, &output, window, cx)
-                            })
-                            .ok();
+                        if let Some(workspace) = workspace_for_log.upgrade() {
+                            open_output(operation.clone(), &workspace, &output, window, cx);
+                        }
                     })),
             )
             .child(
@@ -383,7 +377,7 @@ fn create_worktree_askpass_delegate(
     workspace: WeakEntity<Workspace>,
     operation: impl Into<SharedString>,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
 ) -> AskPassDelegate {
     let operation = operation.into();
     let window = window.window_handle();
@@ -689,11 +683,11 @@ fn maybe_propagate_worktree_trust(
 /// discarded. Use [`create_worktree_workspace`] when you need the resulting
 /// workspace (e.g., the `create_thread` agent tool spawns a thread in it).
 pub fn handle_create_worktree(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     action: &zed_actions::CreateWorktree,
     window: &mut gpui::Window,
     fallback_focused_dock: Option<DockPosition>,
-    cx: &mut gpui::Context<Workspace>,
+    cx: &mut App,
 ) {
     let task = create_worktree_workspace_inner(
         workspace,
@@ -737,11 +731,11 @@ pub struct CreatedWorktreeWorkspace {
 /// This mirrors how the agent's non-worktree threads are created in the
 /// background rather than yanking the user away from what they're doing.
 pub fn create_worktree_workspace(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     action: &zed_actions::CreateWorktree,
     window: &mut gpui::Window,
     fallback_focused_dock: Option<DockPosition>,
-    cx: &mut gpui::Context<Workspace>,
+    cx: &mut App,
 ) -> Task<anyhow::Result<CreatedWorktreeWorkspace>> {
     create_worktree_workspace_inner(
         workspace,
@@ -756,15 +750,15 @@ pub fn create_worktree_workspace(
 }
 
 fn create_worktree_workspace_inner(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     action: &zed_actions::CreateWorktree,
     window: &mut gpui::Window,
     fallback_focused_dock: Option<DockPosition>,
     remote_branch_fetch_mode: RemoteBranchFetchMode,
     activate: bool,
-    cx: &mut gpui::Context<Workspace>,
+    cx: &mut App,
 ) -> Task<anyhow::Result<CreatedWorktreeWorkspace>> {
-    let project = workspace.project().clone();
+    let project = workspace.read(cx).project().clone();
 
     if project.read(cx).repositories(cx).is_empty() {
         return Task::ready(Err(anyhow!(
@@ -781,22 +775,28 @@ fn create_worktree_workspace_inner(
     // a hard error here so the caller can surface it; the user-facing
     // wrapper [`handle_create_worktree`] swallows the error via
     // `detach_and_log_err`, matching the pre-existing silent return.
-    if workspace.active_worktree_creation().label.is_some() {
+    if workspace
+        .read(cx)
+        .active_worktree_creation()
+        .label
+        .is_some()
+    {
         return Task::ready(Err(anyhow!("A worktree creation is already in progress")));
     }
 
     let previous_state =
-        workspace.capture_state_for_worktree_switch(window, fallback_focused_dock, cx);
-    let workspace_handle = workspace.weak_handle();
+        workspace
+            .read(cx)
+            .capture_state_for_worktree_switch(window, fallback_focused_dock, cx);
+    let workspace_handle = workspace.downgrade();
     let window_handle = window.window_handle().downcast::<MultiWorkspace>();
     let remote_connection_options = project.read(cx).remote_connection_options(cx);
 
     let (git_repos, non_git_paths) = classify_worktrees(project.read(cx), cx);
 
     if git_repos.is_empty() {
-        let toast_workspace = cx.entity();
         show_error_toast(
-            toast_workspace,
+            workspace.clone(),
             "worktree create",
             anyhow!("No git repositories found in the project"),
             cx,
@@ -810,9 +810,8 @@ fn create_worktree_workspace_inner(
             .remote_client()
             .is_some_and(|client| client.read(cx).is_disconnected());
         if is_disconnected {
-            let toast_workspace = cx.entity();
             show_error_toast(
-                toast_workspace,
+                workspace.clone(),
                 "worktree create",
                 anyhow!("Cannot create worktree: remote connection is not active"),
                 cx,
@@ -850,9 +849,11 @@ fn create_worktree_workspace_inner(
         .to_string()
         .into();
 
-    workspace.set_active_worktree_creation(Some(display_name), false, cx);
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_active_worktree_creation(Some(display_name), false, cx);
+    });
 
-    cx.spawn_in(window, async move |_workspace_entity, mut cx| {
+    window.spawn(cx, async move |cx| {
         let result = do_create_worktree(
             git_repos,
             non_git_paths,
@@ -865,7 +866,7 @@ fn create_worktree_workspace_inner(
             window_handle,
             remote_connection_options,
             activate,
-            &mut cx,
+            cx,
         )
         .await;
 
@@ -898,13 +899,13 @@ fn create_worktree_workspace_inner(
 }
 
 pub fn handle_switch_worktree(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     action: &zed_actions::SwitchWorktree,
     window: &mut gpui::Window,
     fallback_focused_dock: Option<DockPosition>,
-    cx: &mut gpui::Context<Workspace>,
+    cx: &mut App,
 ) {
-    let project = workspace.project().clone();
+    let project = workspace.read(cx).project().clone();
 
     if project.read(cx).repositories(cx).is_empty() {
         log::error!("switch_to_worktree: no git repository in the project");
@@ -916,13 +917,20 @@ pub fn handle_switch_worktree(
     }
 
     // Guard against concurrent creation
-    if workspace.active_worktree_creation().label.is_some() {
+    if workspace
+        .read(cx)
+        .active_worktree_creation()
+        .label
+        .is_some()
+    {
         return;
     }
 
     let previous_state =
-        workspace.capture_state_for_worktree_switch(window, fallback_focused_dock, cx);
-    let workspace_handle = workspace.weak_handle();
+        workspace
+            .read(cx)
+            .capture_state_for_worktree_switch(window, fallback_focused_dock, cx);
+    let workspace_handle = workspace.downgrade();
     let window_handle = window.window_handle().downcast::<MultiWorkspace>();
     let remote_connection_options = project.read(cx).remote_connection_options(cx);
 
@@ -935,36 +943,39 @@ pub fn handle_switch_worktree(
 
     let display_name: SharedString = action.display_name.clone().into();
 
-    workspace.set_active_worktree_creation(Some(display_name), true, cx);
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_active_worktree_creation(Some(display_name), true, cx);
+    });
 
     let worktree_path = action.path.clone();
 
-    cx.spawn_in(window, async move |_workspace_entity, mut cx| {
-        let result = do_switch_worktree(
-            worktree_path,
-            git_repo_work_dirs,
-            non_git_paths,
-            previous_state,
-            workspace_handle.clone(),
-            window_handle,
-            remote_connection_options,
-            &mut cx,
-        )
-        .await;
+    window
+        .spawn(cx, async move |cx| {
+            let result = do_switch_worktree(
+                worktree_path,
+                git_repo_work_dirs,
+                non_git_paths,
+                previous_state,
+                workspace_handle.clone(),
+                window_handle,
+                remote_connection_options,
+                cx,
+            )
+            .await;
 
-        if let Err(err) = &result {
-            log::error!("Failed to switch worktree: {err}");
-            workspace_handle
-                .update(cx, |workspace, cx| {
-                    workspace.set_active_worktree_creation(None, false, cx);
-                    show_error_toast(cx.entity(), "worktree switch", anyhow!("{err:#}"), cx);
-                })
-                .ok();
-        }
+            if let Err(err) = &result {
+                log::error!("Failed to switch worktree: {err}");
+                workspace_handle
+                    .update(cx, |workspace, cx| {
+                        workspace.set_active_worktree_creation(None, false, cx);
+                        show_error_toast(cx.entity(), "worktree switch", anyhow!("{err:#}"), cx);
+                    })
+                    .ok();
+            }
 
-        result
-    })
-    .detach_and_log_err(cx);
+            result
+        })
+        .detach_and_log_err(cx);
 }
 
 async fn do_create_worktree(
@@ -1341,8 +1352,11 @@ async fn open_worktree_workspace(
                             item.log_err();
                         }
                         if should_focus_center {
-                            workspace.update_in(cx, |workspace, window, cx| {
-                                workspace.focus_center_pane(window, cx);
+                            let workspace = workspace
+                                .upgrade()
+                                .ok_or_else(|| anyhow!("workspace was released"))?;
+                            cx.update(|window, cx| {
+                                Workspace::focus_center_pane(&workspace, window, cx);
                             })?;
                         }
                         anyhow::Ok(())
@@ -1407,7 +1421,10 @@ mod tests {
     use theme::LoadThemes;
     use util::path;
     use util::rel_path::rel_path;
-    use workspace::{TerminalProvider, WorkspaceSettings};
+    use workspace::{
+        Pane, TerminalProvider, WorkspaceSettings,
+        item::test::{HookBits, TestItem},
+    };
 
     struct CountingTerminalProvider {
         spawned_task_labels: Arc<Mutex<Vec<String>>>,
@@ -1538,9 +1555,9 @@ mod tests {
 
         let main_workspace =
             multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
-        main_workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             handle_create_worktree(
-                workspace,
+                &main_workspace,
                 &zed_actions::CreateWorktree {
                     worktree_name: Some("feature".to_string()),
                     branch_target: NewWorktreeBranchTarget::CurrentBranch,
@@ -1577,9 +1594,9 @@ mod tests {
             "create_worktree hook should run once for the created linked worktree"
         );
 
-        active_workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             handle_switch_worktree(
-                workspace,
+                &active_workspace,
                 &zed_actions::SwitchWorktree {
                     path: main_project_root.clone(),
                     display_name: "project".to_string(),
@@ -1672,9 +1689,9 @@ mod tests {
 
         // Create a linked worktree from the trusted main worktree
         let main_workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
-        main_workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             handle_create_worktree(
-                workspace,
+                &main_workspace,
                 &zed_actions::CreateWorktree {
                     worktree_name: Some("feature".to_string()),
                     branch_target: NewWorktreeBranchTarget::CurrentBranch,
@@ -1710,6 +1727,89 @@ mod tests {
             !has_modal,
             "security modal should not show for a linked worktree created from a trusted main worktree"
         );
+    }
+
+    #[gpui::test]
+    async fn test_handle_create_worktree_captures_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
+        fs.insert_tree(
+            "/root",
+            json!({
+                "project": {
+                    ".git": {},
+                    "src": {
+                        "main.rs": "fn main() {}",
+                    },
+                },
+            }),
+        )
+        .await;
+
+        let main_project_root = PathBuf::from(path!("/root/project"));
+        let project = Project::test(fs.clone(), [main_project_root.as_path()], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        multi_workspace.update(cx, |multi_workspace, cx| {
+            multi_workspace.retain_active_workspace(cx);
+        });
+        let main_workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let pane = main_workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = main_workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            item.read_containers_in(
+                HookBits::ACTIVE_PROJECT_PATH | HookBits::PROJECT_ITEMS | HookBits::BUFFER_KIND,
+            )
+        });
+
+        cx.update(|window, cx| {
+            handle_create_worktree(
+                &main_workspace,
+                &zed_actions::CreateWorktree {
+                    worktree_name: Some("feature".to_string()),
+                    branch_target: NewWorktreeBranchTarget::CurrentBranch,
+                },
+                window,
+                None,
+                cx,
+            );
+        });
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        cx.run_until_parked();
+
+        let new_workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        assert_ne!(new_workspace, main_workspace);
+
+        let reads_before_output = item.read_with(cx, |item, _| item.container_reads.get());
+        cx.update(|window, cx| {
+            crate::notifications::open_output("fetch", &main_workspace, "output", window, cx);
+        });
+        cx.run_until_parked();
+        assert!(item.read_with(cx, |item, _| item.container_reads.get()) > reads_before_output);
+        main_workspace.read_with(cx, |workspace, cx| {
+            let active_editor = workspace
+                .active_item(cx)
+                .and_then(|active| active.downcast::<editor::Editor>());
+            assert!(active_editor.is_some());
+        });
     }
 
     #[test]

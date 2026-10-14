@@ -91,9 +91,10 @@ impl NewProcessModal {
         let languages = workspace.app_state().languages.clone();
 
         cx.spawn_in(window, async move |workspace, cx| {
-            let task_contexts = workspace.update_in(cx, |workspace, window, cx| {
+            let workspace_entity = workspace.upgrade().context("workspace was released")?;
+            let task_contexts = cx.update(|window, cx| {
                 // todo(debugger): get the buffer here (if the active item is an editor) and store it so we can pass it to start_session later
-                tasks_ui::task_contexts(workspace, window, cx)
+                tasks_ui::task_contexts(&workspace_entity, window, cx)
             })?;
             workspace.update_in(cx, |workspace, window, cx| {
                 let workspace_handle = workspace.weak_handle();

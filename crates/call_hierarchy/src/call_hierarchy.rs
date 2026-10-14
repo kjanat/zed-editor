@@ -627,36 +627,34 @@ impl PickerDelegate for CallHierarchyDelegate {
         let target = call.target.range.start;
         self.prev_scroll_position = None;
 
-        self.workspace
-            .update(cx, |workspace, cx| {
-                let position = target.to_point(&buffer.read(cx).snapshot());
-                let pane = if secondary {
-                    workspace.adjacent_pane(window, cx)
-                } else {
-                    workspace.active_pane().clone()
-                };
+        if let Some(workspace) = self.workspace.upgrade() {
+            let pane = if secondary {
+                Workspace::adjacent_pane(&workspace, window, cx)
+            } else {
+                workspace.read(cx).active_pane().clone()
+            };
+            let position = target.to_point(&buffer.read(cx).snapshot());
+            let editor = Workspace::open_project_item::<Editor>(
+                &workspace,
+                Some(pane),
+                buffer,
+                true,
+                true,
+                true,
+                true,
+                window,
+                cx,
+            );
 
-                let editor = workspace.open_project_item::<Editor>(
-                    Some(pane),
-                    buffer,
-                    true,
-                    true,
-                    true,
-                    true,
+            editor.update(cx, |editor, cx| {
+                editor.change_selections(
+                    SelectionEffects::scroll(Autoscroll::center()),
                     window,
                     cx,
+                    |s| s.select_ranges([position..position]),
                 );
-
-                editor.update(cx, |editor, cx| {
-                    editor.change_selections(
-                        SelectionEffects::scroll(Autoscroll::center()),
-                        window,
-                        cx,
-                        |s| s.select_ranges([position..position]),
-                    );
-                });
-            })
-            .ok();
+            });
+        }
 
         self.dismissed(window, cx);
     }
@@ -1243,7 +1241,10 @@ mod tests {
     };
     use theme::SyntaxTheme;
     use util::{path, rel_path::rel_path};
-    use workspace::{AppState, MultiWorkspace};
+    use workspace::{
+        AppState, MultiWorkspace, Pane, SplitDirection,
+        item::test::{HookBits, TestItem},
+    };
 
     #[gpui::test]
     async fn test_call_display_basic(cx: &mut TestAppContext) {
@@ -1660,7 +1661,7 @@ mod tests {
         });
 
         let editor = workspace
-            .update(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
+            .read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
             .expect("editor should be open");
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(200));
@@ -2236,6 +2237,190 @@ mod tests {
             );
             assert_eq!(delegate.calls[0].item.name, "main");
         });
+    }
+
+    #[gpui::test]
+    async fn test_call_hierarchy_confirm_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let (workspace, fake_server, test_uri, cx) =
+            setup_modal_test("fn main() { helper(); }\nfn helper() {}\n", cx).await;
+
+        fake_server.set_request_handler::<lsp::request::CallHierarchyPrepare, _, _>({
+            let uri = test_uri.clone();
+            move |_, _| {
+                let uri = uri.clone();
+                async move { Ok(Some(vec![make_lsp_call_hierarchy_item("main", uri, 0)])) }
+            }
+        });
+        fake_server.set_request_handler::<lsp::request::CallHierarchyOutgoingCalls, _, _>({
+            move |_, _| {
+                let uri = test_uri.clone();
+                async move {
+                    Ok(Some(vec![lsp::CallHierarchyOutgoingCall {
+                        to: make_lsp_call_hierarchy_item("helper", uri, 1),
+                        from_ranges: Vec::new(),
+                    }]))
+                }
+            }
+        });
+
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let editor = workspace
+            .read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
+            .expect("editor should be open");
+        let test_item = add_item_reading_containers(&workspace, &pane, Some(0), cx);
+        pane.update_in(cx, |pane, window, cx| {
+            let editor_index = pane
+                .index_for_item(&editor)
+                .expect("editor should be in the pane");
+            pane.activate_item(editor_index, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        test_item.read_with(cx, |item, _| {
+            item.read_containers_in(HookBits::PROJECT_ITEMS)
+        });
+
+        cx.dispatch_action(ShowOutgoingCalls);
+        cx.executor().run_until_parked();
+        assert!(
+            workspace.read_with(cx, |workspace, cx| {
+                workspace.active_modal::<CallHierarchyView>(cx).is_some()
+            }),
+            "modal should be open"
+        );
+
+        cx.dispatch_action(menu::Confirm);
+        cx.executor().run_until_parked();
+
+        let has_modal = workspace.read_with(cx, |workspace, cx| {
+            workspace.active_modal::<CallHierarchyView>(cx).is_some()
+        });
+        assert!(!has_modal, "confirming a call should dismiss the modal");
+        let cursor = editor.update(cx, |editor, cx| {
+            editor
+                .selections
+                .newest::<language::Point>(&editor.display_snapshot(cx))
+                .head()
+        });
+        assert_eq!(cursor, language::Point::new(1, 3));
+        assert!(test_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+    }
+
+    #[gpui::test]
+    async fn test_call_hierarchy_secondary_confirm_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let (workspace, fake_server, test_uri, cx) =
+            setup_modal_test("fn main() { helper(); }\nfn helper() {}\n", cx).await;
+
+        fake_server.set_request_handler::<lsp::request::CallHierarchyPrepare, _, _>({
+            let uri = test_uri.clone();
+            move |_, _| {
+                let uri = uri.clone();
+                async move { Ok(Some(vec![make_lsp_call_hierarchy_item("main", uri, 0)])) }
+            }
+        });
+        fake_server.set_request_handler::<lsp::request::CallHierarchyOutgoingCalls, _, _>({
+            move |_, _| {
+                let uri = test_uri.clone();
+                async move {
+                    Ok(Some(vec![lsp::CallHierarchyOutgoingCall {
+                        to: make_lsp_call_hierarchy_item("helper", uri, 1),
+                        from_ranges: Vec::new(),
+                    }]))
+                }
+            }
+        });
+
+        let (left_pane, editor) = workspace.read_with(cx, |workspace, cx| {
+            (
+                workspace.active_pane().clone(),
+                workspace.active_item_as::<Editor>(cx),
+            )
+        });
+        let editor = editor.expect("editor should be open");
+        let right_pane = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(left_pane.clone(), SplitDirection::Right, window, cx)
+        });
+        let right_item = add_item_reading_containers(&workspace, &right_pane, None, cx);
+        editor.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.active_pane().clone()),
+            left_pane
+        );
+
+        cx.dispatch_action(ShowOutgoingCalls);
+        cx.executor().run_until_parked();
+        let picker = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.active_modal::<CallHierarchyView>(cx)
+            })
+            .expect("modal should be open")
+            .read_with(cx, |view, _| view.picker.clone());
+
+        let left_item = add_item_reading_containers(&workspace, &left_pane, None, cx);
+        left_item.read_with(cx, |item, _| {
+            item.read_containers_in(HookBits::PIXEL_POSITION_OF_CURSOR)
+        });
+        right_item.read_with(cx, |item, _| {
+            item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+        });
+
+        picker.update_in(cx, |picker, window, cx| {
+            picker.delegate.confirm(true, window, cx);
+        });
+        cx.executor().run_until_parked();
+
+        let (pane_count, active_pane) = workspace.read_with(cx, |workspace, _| {
+            (workspace.panes().len(), workspace.active_pane().clone())
+        });
+        assert_eq!(pane_count, 2);
+        assert_eq!(active_pane, right_pane);
+        let opened_editor = right_pane
+            .read_with(cx, |pane, _| pane.active_item())
+            .and_then(|item| item.downcast::<Editor>())
+            .expect("the adjacent pane should show an editor");
+        let cursor = opened_editor.update(cx, |editor, cx| {
+            editor
+                .selections
+                .newest::<language::Point>(&editor.display_snapshot(cx))
+                .head()
+        });
+        assert_eq!(cursor, language::Point::new(1, 3));
+        assert!(left_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        assert!(right_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+    }
+
+    fn add_item_reading_containers(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<Pane>,
+        destination_index: Option<usize>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TestItem> {
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(
+                pane,
+                Box::new(item.clone()),
+                false,
+                false,
+                destination_index,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        item
     }
 
     #[gpui::test]

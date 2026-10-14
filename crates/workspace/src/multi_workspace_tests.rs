@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::item::test::TestItem;
+use crate::item::test::{HookBits, TestItem};
 use agent_settings::AgentSettings;
 use client::proto;
 use fs::{FakeFs, Fs};
@@ -417,12 +417,9 @@ async fn test_open_directory_in_empty_workspace_does_not_open_sidebar(cx: &mut T
         let mw = MultiWorkspace::test_new(project, window, cx);
         // Simulate a blank project that has an untitled editor tab,
         // so that workspace_windows_for_location finds this window.
-        mw.workspace().update(cx, |workspace, cx| {
-            workspace.active_pane().update(cx, |pane, cx| {
-                let item = cx.new(|cx| item::test::TestItem::new(cx));
-                pane.add_item(Box::new(item), false, false, None, window, cx);
-            });
-        });
+        let pane = mw.workspace().read(cx).active_pane().clone();
+        let item = cx.new(|cx| item::test::TestItem::new(cx));
+        crate::Pane::add_item(&pane, Box::new(item), false, false, None, window, cx);
         mw
     });
 
@@ -457,6 +454,58 @@ async fn test_open_directory_in_empty_workspace_does_not_open_sidebar(cx: &mut T
             );
         })
         .unwrap();
+}
+
+#[gpui::test]
+async fn test_open_workspace_for_paths_checks_items_that_read_their_containers(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({ "file.txt": "" }))
+        .await;
+    let project = Project::test(fs, [], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let item = cx.new(|cx| {
+        let item = TestItem::new(cx)
+            .with_dirty(true)
+            .with_pane_reader(pane.downgrade())
+            .with_workspace_reader(workspace.downgrade());
+        item.read_containers_in(HookBits::IS_DIRTY);
+        item
+    });
+    cx.update(|window, cx| {
+        crate::Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    let reads_before_open = item.read_with(cx, |item, _| item.container_reads.get());
+
+    workspace
+        .update_in(cx, |workspace, window, cx| {
+            workspace.open_workspace_for_paths(
+                OpenMode::NewWindow,
+                vec![PathBuf::from(path!("/project"))],
+                window,
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        item.read_with(cx, |item, _| item.container_reads.get()) > reads_before_open,
+        "opening paths should check whether the workspace has dirty items"
+    );
+    assert_eq!(
+        cx.update(|_, cx| cx.windows().len()),
+        2,
+        "a workspace with dirty items should open the paths in a new window"
+    );
 }
 
 #[gpui::test]
@@ -1327,8 +1376,15 @@ async fn test_open_project_closes_empty_workspace_but_not_non_empty_ones(cx: &mu
 
     // Add a dirty untitled item to the empty workspace.
     let dirty_item = cx.new(|cx| TestItem::new(cx).with_dirty(true));
-    empty_workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(dirty_item.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &empty_workspace,
+            Box::new(dirty_item.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
 
     // Opening a project while the lone empty workspace has unsaved
@@ -1398,8 +1454,15 @@ async fn test_open_project_closes_empty_workspace_but_not_non_empty_ones(cx: &mu
     );
 
     let dirty_item = cx.new(|cx| TestItem::new(cx).with_dirty(true));
-    workspace_a.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(dirty_item.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &workspace_a,
+            Box::new(dirty_item.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
 
     // Opening another project does not close the existing project or prompt.

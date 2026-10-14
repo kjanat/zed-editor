@@ -57,7 +57,7 @@ pub(crate) enum AgentContextSource {
 impl AgentContextSource {
     pub(crate) fn read_selection(
         &self,
-        workspace: &Workspace,
+        workspace: &Entity<Workspace>,
         include_current_line: bool,
         cx: &mut App,
     ) -> Option<AgentContextSelection> {
@@ -73,7 +73,7 @@ impl AgentContextSource {
                     .map(|text| AgentContextSelection::Terminal(vec![text]))
             }
             Self::TerminalPanel => {
-                let panel = workspace.panel::<TerminalPanel>(cx)?;
+                let panel = workspace.read(cx).panel::<TerminalPanel>(cx)?;
                 let selections = panel.read(cx).terminal_selections(cx);
                 (!selections.is_empty()).then_some(AgentContextSelection::Terminal(selections))
             }
@@ -524,10 +524,8 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
                 group: None,
             }),
             PromptContextEntry::Action(action) => {
-                let selection = workspace.update(cx, |workspace, cx| {
-                    AgentContextSource::from_active(workspace, cx)?
-                        .read_selection(workspace, false, cx)
-                });
+                let selection = AgentContextSource::from_active(workspace.read(cx), cx)
+                    .and_then(|source| source.read_selection(workspace, false, cx));
                 Self::completion_for_action(
                     action,
                     source_range,
@@ -1370,11 +1368,9 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
             entries.push(PromptContextEntry::Mode(PromptContextType::Thread));
         }
 
-        let has_active_selection = workspace.update(cx, |workspace, cx| {
-            AgentContextSource::from_active(workspace, cx)
-                .and_then(|source| source.read_selection(workspace, false, cx))
-                .is_some()
-        });
+        let has_active_selection = AgentContextSource::from_active(workspace.read(cx), cx)
+            .and_then(|source| source.read_selection(workspace, false, cx))
+            .is_some();
         if has_active_selection {
             entries.push(PromptContextEntry::Action(
                 PromptContextAction::AddSelections,
@@ -3401,9 +3397,9 @@ mod tests {
 
         let source = AgentContextSource::Editor(editor.downgrade());
 
-        workspace.update(cx, |workspace, cx| {
+        cx.update(|_, cx| {
             let selection = source
-                .read_selection(workspace, true, cx)
+                .read_selection(&workspace, true, cx)
                 .expect("editor source with cursor on a line should yield a selection");
             assert!(
                 matches!(selection, AgentContextSelection::Editor(_)),
@@ -3428,7 +3424,7 @@ mod tests {
 
             // With include_current_line = false and no non-empty selection, the
             // fallback is suppressed and read_selection should return None.
-            assert!(source.read_selection(workspace, false, cx).is_none());
+            assert!(source.read_selection(&workspace, false, cx).is_none());
         });
     }
 }

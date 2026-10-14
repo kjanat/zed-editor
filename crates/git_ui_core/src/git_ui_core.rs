@@ -85,14 +85,14 @@ pub fn build_branch_picker(
     Some(builder(workspace, repository, window, cx))
 }
 
-type FileHistoryOpener = dyn Fn(&mut Workspace, &ProjectPath, &mut Window, &mut Context<Workspace>);
+type FileHistoryOpener = dyn Fn(&Entity<Workspace>, &ProjectPath, &mut Window, &mut App);
 
 struct FileHistoryOpenerGlobal(Rc<FileHistoryOpener>);
 
 impl Global for FileHistoryOpenerGlobal {}
 
 pub fn set_file_history_opener(
-    opener: impl Fn(&mut Workspace, &ProjectPath, &mut Window, &mut Context<Workspace>) + 'static,
+    opener: impl Fn(&Entity<Workspace>, &ProjectPath, &mut Window, &mut App) + 'static,
     cx: &mut App,
 ) {
     cx.set_global(FileHistoryOpenerGlobal(Rc::new(opener)));
@@ -101,10 +101,10 @@ pub fn set_file_history_opener(
 /// Opens the file history view for `path`, if an opener was installed via
 /// [`set_file_history_opener`].
 pub fn open_file_history(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     path: &ProjectPath,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
 ) {
     let Some(opener) = cx
         .try_global::<FileHistoryOpenerGlobal>()

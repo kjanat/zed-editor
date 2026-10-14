@@ -106,10 +106,10 @@ impl StagedDiff {
     }
 
     pub fn deploy_at(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         entry: Option<GitStatusEntry>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         telemetry::event!(
             "Git Staged Diff Opened",
@@ -119,16 +119,18 @@ impl StagedDiff {
                 "Action"
             }
         );
-        let intended_repo = workspace.project().read(cx).active_repository(cx);
-        let existing = workspace.items_of_type::<Self>(cx).next();
+        let project = workspace.read(cx).project().clone();
+        let intended_repo = project.read(cx).active_repository(cx);
+        let existing = workspace.read(cx).items_of_type::<Self>(cx).next();
         let staged_diff = if let Some(existing) = existing {
-            workspace.activate_item(&existing, true, true, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing, true, true, window, cx);
+            });
             existing
         } else {
-            let workspace_handle = cx.entity();
-            let staged_diff =
-                cx.new(|cx| Self::new(workspace.project().clone(), workspace_handle, window, cx));
-            workspace.add_item_to_active_pane(
+            let staged_diff = cx.new(|cx| Self::new(project, workspace.clone(), window, cx));
+            Workspace::add_item_to_active_pane(
+                workspace,
                 Box::new(staged_diff.clone()),
                 None,
                 true,
@@ -777,16 +779,16 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let uncommitted_item = workspace.update(cx, |workspace, cx| {
+        let uncommitted_item = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<ProjectDiff>(cx).unwrap()
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            StagedDiff::deploy_at(workspace, None, window, cx);
+        cx.update(|window, cx| {
+            StagedDiff::deploy_at(&workspace, None, window, cx);
         });
         cx.run_until_parked();
 
-        workspace.update(cx, |workspace, cx| {
+        workspace.read_with(cx, |workspace, cx| {
             let staged_diff = workspace.active_item_as::<StagedDiff>(cx).unwrap();
             assert_ne!(staged_diff.entity_id(), uncommitted_item.entity_id());
             let staged_item = workspace
@@ -872,12 +874,12 @@ mod tests {
         let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
         cx.run_until_parked();
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            StagedDiff::deploy_at(workspace, None, window, cx);
+        cx.update(|window, cx| {
+            StagedDiff::deploy_at(&workspace, None, window, cx);
         });
         cx.run_until_parked();
 
-        let editor = workspace.update(cx, |workspace, cx| {
+        let editor = workspace.read_with(cx, |workspace, cx| {
             let staged_diff = workspace.active_item_as::<StagedDiff>(cx).unwrap();
             let staged_diff = staged_diff.read(cx);
             staged_diff
@@ -1014,8 +1016,9 @@ mod tests {
         });
         let restored_staged_diff = restore_task.await.unwrap();
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
                 Box::new(restored_staged_diff.clone()),
                 None,
                 true,
@@ -1025,7 +1028,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        workspace.update(cx, |workspace, cx| {
+        workspace.read_with(cx, |workspace, cx| {
             let active_item = workspace.active_item(cx).unwrap();
             assert!(active_item.act_as::<StagedDiff>(cx).is_some());
             assert!(active_item.act_as::<DiffMultibuffer>(cx).is_some());
@@ -1097,12 +1100,12 @@ mod tests {
         let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
         cx.run_until_parked();
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            StagedDiff::deploy_at(workspace, None, window, cx);
+        cx.update(|window, cx| {
+            StagedDiff::deploy_at(&workspace, None, window, cx);
         });
         cx.run_until_parked();
 
-        let staged_diff = workspace.update(cx, |workspace, cx| {
+        let staged_diff = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<StagedDiff>(cx).unwrap()
         });
         let editor = staged_diff.read_with(cx, |staged_diff, cx| {

@@ -91,22 +91,27 @@ pub fn init(cx: &mut App) {
 
     fn open_keymap_editor(
         filter: Option<String>,
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         let existing = workspace
+            .read(cx)
             .active_pane()
             .read(cx)
             .items()
             .find_map(|item| item.downcast::<KeymapEditor>());
 
         let keymap_editor = if let Some(existing) = existing {
-            workspace.activate_item(&existing, true, true, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing, true, true, window, cx);
+            });
             existing
         } else {
-            let keymap_editor = cx.new(|cx| KeymapEditor::new(workspace.weak_handle(), window, cx));
-            workspace.add_item_to_active_pane(
+            let workspace_handle = workspace.downgrade();
+            let keymap_editor = cx.new(|cx| KeymapEditor::new(workspace_handle, window, cx));
+            Workspace::add_item_to_active_pane(
+                workspace,
                 Box::new(keymap_editor.clone()),
                 None,
                 true,
@@ -130,14 +135,21 @@ pub fn init(cx: &mut App) {
     }
 
     cx.on_action(|_: &OpenKeymap, cx| {
-        with_active_or_new_workspace(cx, |workspace, window, cx| {
-            open_keymap_editor(None, workspace, window, cx);
+        with_active_or_new_workspace(cx, |_, window, cx| {
+            let workspace = cx.entity();
+            window.defer(cx, move |window, cx| {
+                open_keymap_editor(None, &workspace, window, cx);
+            });
         });
     });
 
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
-        workspace.register_action(|workspace, action: &ChangeKeybinding, window, cx| {
-            open_keymap_editor(Some(action.action.clone()), workspace, window, cx);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &ChangeKeybinding, window, cx| {
+                    open_keymap_editor(Some(action.action.clone()), &workspace, window, cx);
+                },
+            ))
         });
     })
     .detach();
@@ -4062,7 +4074,10 @@ mod tests {
     use project::Project;
     use serde_json::json;
     use settings::KeymapFileLoadResult;
-    use workspace::{AppState, MultiWorkspace};
+    use workspace::{
+        AppState, MultiWorkspace, Pane,
+        item::test::{HookBits, TestItem},
+    };
 
     async fn reload_keymap_from_file(fs: &Arc<FakeFs>, cx: &mut TestAppContext) {
         let content = fs.load(paths::keymap_file().as_path()).await.unwrap();
@@ -4169,26 +4184,92 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_change_keybinding_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let _state = AppState::test(cx);
+            editor::init(cx);
+            init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            paths::config_dir(),
+            json!({ "keymap.json": r#"[{"bindings": {"ctrl-k": "zed::OpenKeymap"}}]"# }),
+        )
+        .await;
+        reload_keymap_from_file(&fs, cx).await;
+
+        let project = Project::test(fs.clone(), [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+        let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let test_item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(
+                &pane,
+                Box::new(test_item.clone()),
+                true,
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        test_item.read_with(&cx, |item, _| {
+            item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+        });
+
+        cx.dispatch_action(ChangeKeybinding {
+            action: "zed::OpenKeymap".to_string(),
+        });
+        cx.run_until_parked();
+
+        let keymap_editor = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace
+                    .active_item(cx)
+                    .and_then(|item| item.downcast::<KeymapEditor>())
+            })
+            .expect("the keymap editor should be the active item");
+        keymap_editor.read_with(&cx, |editor, cx| {
+            assert_eq!(editor.filter_editor.read(cx).text(cx), "zed::OpenKeymap");
+        });
+        assert!(test_item.read_with(&cx, |item, _| item.container_reads.get() > 0));
+    }
+
+    #[gpui::test]
     async fn test_modifier_search_keeps_matching_shortcuts_after_release(cx: &mut TestAppContext) {
         let keymap_content = r#"[{"bindings": {
             "ctrl-k": "zed::OpenKeymap",
             "ctrl": "zed::OpenKeymap"
         }}]"#;
         let (_fs, keymap_editor, mut cx) = setup_keymap_editor(cx, keymap_content).await;
-        let workspace = keymap_editor.read_with(&cx, |editor, _| editor.workspace.clone());
-        // Mount and activate the editor so keystroke search installs its interceptor.
-        workspace
-            .update_in(&mut cx, |workspace, window, cx| {
-                workspace.add_item_to_active_pane(
-                    Box::new(keymap_editor.clone()),
-                    None,
-                    true,
-                    window,
-                    cx,
-                );
-                window.activate_window();
-            })
+        let workspace = keymap_editor
+            .read_with(&cx, |editor, _| editor.workspace.upgrade())
             .expect("workspace exists");
+        // Mount and activate the editor so keystroke search installs its interceptor.
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(keymap_editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
+            window.activate_window();
+        });
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
         keymap_editor.update_in(&mut cx, |editor, window, cx| {

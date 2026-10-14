@@ -35,8 +35,8 @@ use editor::{
 use fs::Fs;
 use futures::{FutureExt, channel::mpsc};
 use gpui::{
-    App, Context, Entity, Focusable, Global, HighlightStyle, Subscription, Task, TaskExt,
-    UpdateGlobal, WeakEntity, Window, point,
+    App, Entity, Focusable, Global, HighlightStyle, Subscription, Task, TaskExt, UpdateGlobal,
+    WeakEntity, Window, point,
 };
 use language::{Buffer, Point, Selection, TransactionId};
 use language_model::{ConfigurationError, LanguageModelRegistry};
@@ -204,16 +204,17 @@ impl InlineAssistant {
     }
 
     pub fn inline_assist(
-        workspace: &mut Workspace,
+        workspace: Entity<Workspace>,
         action: &zed_actions::assistant::InlineAssist,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         if !AgentSettings::get_global(cx).enabled(cx) {
             return;
         }
 
-        let Some(inline_assist_target) = Self::resolve_inline_assist_target(workspace, window, cx)
+        let Some(inline_assist_target) =
+            Self::resolve_inline_assist_target(workspace.read(cx), window, cx)
         else {
             return;
         };
@@ -223,46 +224,45 @@ impl InlineAssistant {
             model_registry.configuration_error(model_registry.inline_assistant_model(), cx)
         };
 
-        let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
+        let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) else {
             return;
         };
-        let agent_panel = agent_panel.read(cx);
+        let thread_store = agent_panel.read(cx).thread_store().clone();
+        let project = workspace.read(cx).project().downgrade();
+        let weak_workspace = workspace.downgrade();
 
-        let thread_store = agent_panel.thread_store().clone();
-
-        let handle_assist =
-            |window: &mut Window, cx: &mut Context<Workspace>| match inline_assist_target {
-                InlineAssistTarget::Editor(active_editor) => {
-                    InlineAssistant::update_global(cx, |assistant, cx| {
-                        assistant.assist(
-                            &active_editor,
-                            cx.entity().downgrade(),
-                            workspace.project().downgrade(),
-                            thread_store,
-                            action.prompt.clone(),
-                            window,
-                            cx,
-                        );
-                    })
-                }
-                InlineAssistTarget::Terminal(active_terminal) => {
-                    TerminalInlineAssistant::update_global(cx, |assistant, cx| {
-                        assistant.assist(
-                            &active_terminal,
-                            cx.entity().downgrade(),
-                            workspace.project().downgrade(),
-                            thread_store,
-                            action.prompt.clone(),
-                            window,
-                            cx,
-                        );
-                    });
-                }
-            };
+        let handle_assist = |window: &mut Window, cx: &mut App| match inline_assist_target {
+            InlineAssistTarget::Editor(active_editor) => {
+                InlineAssistant::update_global(cx, |assistant, cx| {
+                    assistant.assist(
+                        &active_editor,
+                        weak_workspace,
+                        project,
+                        thread_store,
+                        action.prompt.clone(),
+                        window,
+                        cx,
+                    );
+                })
+            }
+            InlineAssistTarget::Terminal(active_terminal) => {
+                TerminalInlineAssistant::update_global(cx, |assistant, cx| {
+                    assistant.assist(
+                        &active_terminal,
+                        weak_workspace,
+                        project,
+                        thread_store,
+                        action.prompt.clone(),
+                        window,
+                        cx,
+                    );
+                });
+            }
+        };
 
         if let Some(error) = configuration_error(cx) {
             if let ConfigurationError::ProviderNotAuthenticated(provider) = error {
-                cx.spawn(async move |_, cx| {
+                cx.spawn(async move |cx| {
                     cx.update(|cx| provider.authenticate(cx)).await?;
                     anyhow::Ok(())
                 })
@@ -272,25 +272,28 @@ impl InlineAssistant {
                     handle_assist(window, cx);
                 }
             } else {
-                cx.spawn_in(window, async move |_, cx| {
-                    let answer = cx
-                        .prompt(
-                            gpui::PromptLevel::Warning,
-                            &error.to_string(),
-                            None,
-                            &["Configure", "Cancel"],
-                        )
-                        .await
-                        .ok();
-                    if let Some(answer) = answer
-                        && answer == 0
-                    {
-                        cx.update(|window, cx| window.dispatch_action(Box::new(OpenSettings), cx))
+                window
+                    .spawn(cx, async move |cx| {
+                        let answer = cx
+                            .prompt(
+                                gpui::PromptLevel::Warning,
+                                &error.to_string(),
+                                None,
+                                &["Configure", "Cancel"],
+                            )
+                            .await
                             .ok();
-                    }
-                    anyhow::Ok(())
-                })
-                .detach_and_log_err(cx);
+                        if let Some(answer) = answer
+                            && answer == 0
+                        {
+                            cx.update(|window, cx| {
+                                window.dispatch_action(Box::new(OpenSettings), cx)
+                            })
+                            .ok();
+                        }
+                        anyhow::Ok(())
+                    })
+                    .detach_and_log_err(cx);
             }
         } else {
             handle_assist(window, cx);
@@ -1456,9 +1459,9 @@ impl InlineAssistant {
     }
 
     fn resolve_inline_assist_target(
-        workspace: &mut Workspace,
-        window: &mut Window,
-        cx: &mut App,
+        workspace: &Workspace,
+        window: &Window,
+        cx: &App,
     ) -> Option<InlineAssistTarget> {
         if let Some(terminal_panel) = workspace.panel::<TerminalPanel>(cx)
             && terminal_panel
@@ -1882,48 +1885,52 @@ pub mod evals {
 
         setup(cx);
 
-        let (_editor, buffer) = cx.update(|window, cx| {
-            let buffer = cx.new(|cx| Buffer::local("", cx));
-            let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
-            let editor = cx.new(|cx| Editor::for_multibuffer(multibuffer, None, window, cx));
-            editor.update(cx, |editor, cx| {
-                let (unmarked_text, selection_ranges) = marked_text_ranges(&base_buffer, true);
-                editor.set_text(unmarked_text, window, cx);
-                editor.change_selections(Default::default(), window, cx, |s| {
-                    s.select_ranges(
-                        selection_ranges.into_iter().map(|range| {
+        let (_editor, buffer) =
+            cx.update(|window, cx| {
+                let buffer = cx.new(|cx| Buffer::local("", cx));
+                let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+                let editor = cx.new(|cx| Editor::for_multibuffer(multibuffer, None, window, cx));
+                editor.update(cx, |editor, cx| {
+                    let (unmarked_text, selection_ranges) = marked_text_ranges(&base_buffer, true);
+                    editor.set_text(unmarked_text, window, cx);
+                    editor.change_selections(Default::default(), window, cx, |s| {
+                        s.select_ranges(selection_ranges.into_iter().map(|range| {
                             MultiBufferOffset(range.start)..MultiBufferOffset(range.end)
-                        }),
-                    )
-                })
+                        }))
+                    })
+                });
+
+                let thread_store = cx.new(|cx| ThreadStore::new(cx));
+
+                // Add editor to workspace
+                Workspace::add_item_to_active_pane(
+                    &workspace,
+                    Box::new(editor.clone()),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
+
+                // Call assist method
+                InlineAssistant::update_global(cx, |inline_assistant, cx| {
+                    let assist_id = inline_assistant
+                        .assist(
+                            &editor,
+                            workspace.downgrade(),
+                            project.downgrade(),
+                            thread_store,
+                            Some(prompt),
+                            window,
+                            cx,
+                        )
+                        .unwrap();
+
+                    inline_assistant.start_assist(assist_id, window, cx);
+                });
+
+                (editor, buffer)
             });
-
-            let thread_store = cx.new(|cx| ThreadStore::new(cx));
-
-            // Add editor to workspace
-            workspace.update(cx, |workspace, cx| {
-                workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
-            });
-
-            // Call assist method
-            InlineAssistant::update_global(cx, |inline_assistant, cx| {
-                let assist_id = inline_assistant
-                    .assist(
-                        &editor,
-                        workspace.downgrade(),
-                        project.downgrade(),
-                        thread_store,
-                        Some(prompt),
-                        window,
-                        cx,
-                    )
-                    .unwrap();
-
-                inline_assistant.start_assist(assist_id, window, cx);
-            });
-
-            (editor, buffer)
-        });
 
         cx.run_until_parked();
 

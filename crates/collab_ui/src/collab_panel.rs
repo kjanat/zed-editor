@@ -1318,13 +1318,11 @@ impl CollabPanel {
                     ),
             )
             .child(Label::new("Screen"))
-            .when_some(peer_id, |this, _| {
+            .when_some(peer_id, |this, peer_id| {
                 this.on_click(cx.listener(move |this, _, window, cx| {
-                    this.workspace
-                        .update(cx, |workspace, cx| {
-                            workspace.open_shared_screen(peer_id.unwrap(), window, cx)
-                        })
-                        .ok();
+                    if let Some(workspace) = this.workspace.upgrade() {
+                        Workspace::open_shared_screen(&workspace, peer_id, window, cx);
+                    }
                 }))
                 .tooltip(Tooltip::text("Open Shared Screen"))
             })
@@ -1873,9 +1871,7 @@ impl CollabPanel {
                         return;
                     };
                     if let Some(workspace) = self.workspace.upgrade() {
-                        workspace.update(cx, |workspace, cx| {
-                            workspace.open_shared_screen(*peer_id, window, cx)
-                        });
+                        Workspace::open_shared_screen(&workspace, *peer_id, window, cx);
                     }
                 }
                 ListEntry::Channel { channel, .. } => {

@@ -390,7 +390,7 @@ async fn test_project_diff(cx_a: &mut TestAppContext, cx_b: &mut TestAppContext)
             .unwrap()
             .dispatch_action(&git_ui::project_diff::Diff, window, cx)
     });
-    let diff = workspace_b.update(cx_b, |workspace, cx| {
+    let diff = workspace_b.read_with(cx_b, |workspace, cx| {
         workspace.active_item(cx).unwrap().act_as::<ProjectDiff>(cx)
     });
     let diff = diff.unwrap();

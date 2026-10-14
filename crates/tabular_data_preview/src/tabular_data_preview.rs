@@ -61,21 +61,25 @@ pub fn init(cx: &mut App) {
 impl TabularDataPreviewPane {
     pub fn register(workspace: &mut Workspace) {
         workspace.register_action_renderer(|div, _, _, cx| {
-            div.on_action(cx.listener(|workspace, _: &OpenPreview, window, cx| {
-                if let Some(editor) =
-                    Self::resolve_active_item_as_tabular_data_editor(workspace, cx)
-                {
-                    let pane = workspace.active_pane().clone();
-                    Self::open_preview_in_pane(editor, pane, window, cx);
-                }
-            }))
-            .on_action(cx.listener(
-                |workspace, _: &OpenPreviewToTheSide, window, cx| {
-                    if let Some(editor) =
-                        Self::resolve_active_item_as_tabular_data_editor(workspace, cx)
-                    {
-                        let pane = workspace.active_pane().clone();
-                        Self::open_preview_to_the_side_of_pane(workspace, editor, pane, window, cx);
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &OpenPreview, window, cx| {
+                    let editor =
+                        Self::resolve_active_item_as_tabular_data_editor(workspace.read(cx), cx);
+                    if let Some(editor) = editor {
+                        let pane = workspace.read(cx).active_pane().clone();
+                        Self::open_preview_in_pane(editor, pane, window, cx);
+                    }
+                },
+            ))
+            .on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &OpenPreviewToTheSide, window, cx| {
+                    let editor =
+                        Self::resolve_active_item_as_tabular_data_editor(workspace.read(cx), cx);
+                    if let Some(editor) = editor {
+                        let pane = workspace.read(cx).active_pane().clone();
+                        Self::open_preview_to_the_side_of_pane(
+                            &workspace, editor, pane, window, cx,
+                        );
                     }
                 },
             ))
@@ -86,19 +90,19 @@ impl TabularDataPreviewPane {
         editor: Entity<Editor>,
         pane: Entity<Pane>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         Self::activate_or_add_preview(editor, pane, true, window, cx);
     }
 
     pub fn open_preview_to_the_side_of_pane(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         editor: Entity<Editor>,
         origin_pane: Entity<Pane>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
-        let target_pane = workspace.adjacent_pane_of(&origin_pane, window, cx);
+        let target_pane = Workspace::adjacent_pane_of(workspace, &origin_pane, window, cx);
         Self::activate_or_add_preview(editor.clone(), target_pane, false, window, cx);
         editor.focus_handle(cx).focus(window, cx);
     }
@@ -108,7 +112,7 @@ impl TabularDataPreviewPane {
         pane: Entity<Pane>,
         focus: bool,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         let existing_view_idx = Self::find_existing_preview_item_idx(pane.read(cx), &editor, cx);
         if let Some(existing_view_idx) = existing_view_idx {
@@ -117,11 +121,16 @@ impl TabularDataPreviewPane {
             });
         } else {
             let preview_pane = Self::new(&editor, window, cx);
-            pane.update(cx, |pane, cx| {
-                pane.add_item(Box::new(preview_pane), focus, focus, None, window, cx);
-            });
+            Pane::add_item(
+                &pane,
+                Box::new(preview_pane),
+                focus,
+                focus,
+                None,
+                window,
+                cx,
+            );
         }
-        cx.notify();
     }
 
     fn find_existing_preview_item_idx(
@@ -134,7 +143,7 @@ impl TabularDataPreviewPane {
             .and_then(|view| pane.index_for_item(&view))
     }
 
-    fn new(editor: &Entity<Editor>, window: &Window, cx: &mut Context<Workspace>) -> Entity<Self> {
+    fn new(editor: &Entity<Editor>, window: &Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let subscription = cx.subscribe(
                 editor,
@@ -176,7 +185,7 @@ impl TabularDataPreviewPane {
 
     pub fn resolve_active_item_as_tabular_data_editor(
         workspace: &Workspace,
-        cx: &mut Context<Workspace>,
+        cx: &App,
     ) -> Option<Entity<Editor>> {
         let editor = workspace
             .active_item(cx)
@@ -243,12 +252,150 @@ impl Item for TabularDataPreviewPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, VisualTestContext};
     use project::{FakeFs, Project};
     use serde_json::json;
     use std::path::Path;
     use util::path;
-    use workspace::AppState;
+    use util::rel_path::rel_path;
+    use workspace::item::test::{HookBits, TestItem};
+    use workspace::{AppState, MultiWorkspace};
+
+    #[gpui::test]
+    async fn test_open_preview_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let (workspace, cx) = csv_workspace(cx).await;
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let reader = add_container_reader(&workspace, &pane, cx);
+        let editor = open_csv(&workspace, &pane, cx).await;
+        read_containers_on_add(&reader, cx);
+
+        cx.dispatch_action(OpenPreview);
+        cx.run_until_parked();
+
+        assert!(reader.read_with(cx, |reader, _| reader.container_reads.get()) > 0);
+        assert_eq!(previewed_editors_in(&pane, cx), vec![editor]);
+    }
+
+    #[gpui::test]
+    async fn test_open_preview_to_the_side_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, cx) = csv_workspace(cx).await;
+        let source_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let target_pane = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(
+                source_pane.clone(),
+                workspace::SplitDirection::Right,
+                window,
+                cx,
+            )
+        });
+        let reader = add_container_reader(&workspace, &target_pane, cx);
+        let editor = open_csv(&workspace, &source_pane, cx).await;
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(workspace.active_pane(), &source_pane);
+        });
+        read_containers_on_add(&reader, cx);
+
+        cx.dispatch_action(OpenPreviewToTheSide);
+        cx.run_until_parked();
+
+        assert!(reader.read_with(cx, |reader, _| reader.container_reads.get()) > 0);
+        assert_eq!(previewed_editors_in(&target_pane, cx), vec![editor]);
+        assert!(previewed_editors_in(&source_pane, cx).is_empty());
+    }
+
+    async fn csv_workspace(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+        init_test(cx);
+        cx.update(init);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({ "records.csv": "id,note\n1,first\n" }),
+        )
+        .await;
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        (workspace, cx)
+    }
+
+    async fn open_csv(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<Pane>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<Editor> {
+        let worktree_id = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .project()
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .id()
+        });
+        let item = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(
+                    (worktree_id, rel_path("records.csv")),
+                    Some(pane.downgrade()),
+                    true,
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        item.downcast::<Editor>().unwrap()
+    }
+
+    fn add_container_reader(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<Pane>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TestItem> {
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let reader = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(
+                pane,
+                Box::new(reader.clone()),
+                false,
+                false,
+                None,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        reader
+    }
+
+    fn read_containers_on_add(reader: &Entity<TestItem>, cx: &mut VisualTestContext) {
+        reader.read_with(cx, |reader, _| {
+            reader.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+        });
+    }
+
+    fn previewed_editors_in(
+        pane: &Entity<Pane>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<Entity<Editor>> {
+        pane.read_with(cx, |pane, cx| {
+            pane.items_of_type::<TabularDataPreviewPane>()
+                .map(|preview| preview.read(cx).editor_state().editor.clone())
+                .collect()
+        })
+    }
 
     #[gpui::test]
     async fn test_detects_tabular_files_outside_the_project(cx: &mut TestAppContext) {
@@ -314,8 +461,8 @@ mod tests {
             let editor = cx.update(|window, cx| {
                 cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx))
             });
-            let preview = workspace.update_in(cx, |workspace, window, cx| {
-                let pane = workspace.active_pane().clone();
+            let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+            let preview = cx.update(|window, cx| {
                 TabularDataPreviewPane::open_preview_in_pane(
                     editor.clone(),
                     pane.clone(),
@@ -411,8 +558,8 @@ mod tests {
             let editor = cx.update(|window, cx| {
                 cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx))
             });
-            let preview = workspace.update_in(cx, |workspace, window, cx| {
-                let pane = workspace.active_pane().clone();
+            let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+            let preview = cx.update(|window, cx| {
                 TabularDataPreviewPane::open_preview_in_pane(
                     editor.clone(),
                     pane.clone(),

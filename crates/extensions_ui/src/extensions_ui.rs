@@ -248,59 +248,14 @@ pub fn init(cx: &mut App) {
                 cx,
             )
         });
-        workspace
-            .register_action(
-                move |workspace, action: &zed_actions::Extensions, window, cx| {
-                    let provides_filter = action.category_filter.map(|category| match category {
-                        ExtensionCategoryFilter::Themes => ExtensionProvides::Themes,
-                        ExtensionCategoryFilter::IconThemes => ExtensionProvides::IconThemes,
-                        ExtensionCategoryFilter::Languages => ExtensionProvides::Languages,
-                        ExtensionCategoryFilter::Grammars => ExtensionProvides::Grammars,
-                        ExtensionCategoryFilter::LanguageServers => {
-                            ExtensionProvides::LanguageServers
-                        }
-                        ExtensionCategoryFilter::ContextServers => {
-                            ExtensionProvides::ContextServers
-                        }
-                        ExtensionCategoryFilter::Snippets => ExtensionProvides::Snippets,
-                        ExtensionCategoryFilter::DebugAdapters => ExtensionProvides::DebugAdapters,
-                    });
-
-                    let existing = workspace
-                        .active_pane()
-                        .read(cx)
-                        .items()
-                        .find_map(|item| item.downcast::<ExtensionsPage>());
-
-                    if let Some(existing) = existing {
-                        existing.update(cx, |extensions_page, cx| {
-                            if provides_filter.is_some() {
-                                extensions_page.change_provides_filter(provides_filter, cx);
-                            }
-                            if let Some(id) = action.id.as_ref() {
-                                extensions_page.focus_extension(id, window, cx);
-                            }
-                        });
-
-                        workspace.activate_item(&existing, true, true, window, cx);
-                    } else {
-                        let extensions_page = ExtensionsPage::new(
-                            workspace,
-                            provides_filter,
-                            action.id.as_deref(),
-                            window,
-                            cx,
-                        );
-                        workspace.add_item_to_active_pane(
-                            Box::new(extensions_page),
-                            None,
-                            true,
-                            window,
-                            cx,
-                        )
-                    }
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &zed_actions::Extensions, window, cx| {
+                    open_extensions_page(&workspace, action, window, cx);
                 },
-            )
+            ))
+        });
+        workspace
             .register_action(move |workspace, _: &InstallDevExtension, window, cx| {
                 let store = ExtensionStore::global(cx);
                 let prompt = workspace.prompt_for_open_path(
@@ -420,6 +375,58 @@ pub fn init(cx: &mut App) {
             });
     })
     .detach();
+}
+
+fn open_extensions_page(
+    workspace: &Entity<Workspace>,
+    action: &zed_actions::Extensions,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let provides_filter = action.category_filter.map(|category| match category {
+        ExtensionCategoryFilter::Themes => ExtensionProvides::Themes,
+        ExtensionCategoryFilter::IconThemes => ExtensionProvides::IconThemes,
+        ExtensionCategoryFilter::Languages => ExtensionProvides::Languages,
+        ExtensionCategoryFilter::Grammars => ExtensionProvides::Grammars,
+        ExtensionCategoryFilter::LanguageServers => ExtensionProvides::LanguageServers,
+        ExtensionCategoryFilter::ContextServers => ExtensionProvides::ContextServers,
+        ExtensionCategoryFilter::Snippets => ExtensionProvides::Snippets,
+        ExtensionCategoryFilter::DebugAdapters => ExtensionProvides::DebugAdapters,
+    });
+
+    let existing = workspace
+        .read(cx)
+        .active_pane()
+        .read(cx)
+        .items()
+        .find_map(|item| item.downcast::<ExtensionsPage>());
+
+    if let Some(existing) = existing {
+        existing.update(cx, |extensions_page, cx| {
+            if provides_filter.is_some() {
+                extensions_page.change_provides_filter(provides_filter, cx);
+            }
+            if let Some(id) = action.id.as_ref() {
+                extensions_page.focus_extension(id, window, cx);
+            }
+        });
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate_item(&existing, true, true, window, cx);
+        });
+    } else {
+        let extensions_page = workspace.update(cx, |workspace, cx| {
+            ExtensionsPage::new(workspace, provides_filter, action.id.as_deref(), window, cx)
+        });
+        Workspace::add_item_to_active_pane(
+            workspace,
+            Box::new(extensions_page),
+            None,
+            true,
+            window,
+            cx,
+        );
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]

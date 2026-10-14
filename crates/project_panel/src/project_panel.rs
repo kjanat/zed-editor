@@ -596,18 +596,12 @@ pub fn init(cx: &mut App) {
             }
             let workspace = workspace.weak_handle();
             div.capture_action(move |_: &git::FileHistory, window, cx| {
-                workspace
-                    .update(cx, |workspace, cx| {
-                        let Some(panel) = workspace.panel::<ProjectPanel>(cx) else {
-                            return;
-                        };
-                        let Some(project_path) = panel.read(cx).selected_entry_project_path(cx)
-                        else {
-                            return;
-                        };
-                        git_ui_core::open_file_history(workspace, &project_path, window, cx);
-                    })
-                    .log_err();
+                if let Some(workspace) = workspace.upgrade()
+                    && let Some(panel) = workspace.read(cx).panel::<ProjectPanel>(cx)
+                    && let Some(project_path) = panel.read(cx).selected_entry_project_path(cx)
+                {
+                    git_ui_core::open_file_history(&workspace, &project_path, window, cx);
+                }
                 cx.stop_propagation();
             })
         });

@@ -111,7 +111,7 @@ async fn test_channel_guest_promotion(cx_a: &mut TestAppContext, cx_b: &mut Test
     cx_a.run_until_parked();
     cx_b.simulate_keystrokes("1 enter");
 
-    let (project_b, editor_b) = workspace_b.update(cx_b, |workspace, cx| {
+    let (project_b, editor_b) = workspace_b.read_with(cx_b, |workspace, cx| {
         (
             workspace.project().clone(),
             workspace.active_item_as::<Editor>(cx).unwrap(),

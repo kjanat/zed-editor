@@ -26,7 +26,7 @@ use ui::{Color, Icon, IconName, SharedString};
 use util::paths::PathExt;
 
 use workspace::{
-    Item, ItemNavHistory, Workspace,
+    Item, ItemNavHistory, Pane, Workspace,
     item::{ItemEvent, SaveOptions},
     searchable::SearchableItemHandle,
 };
@@ -131,7 +131,7 @@ impl TextDiffView {
         let task = window.spawn(cx, async move |cx| {
             update_diff_buffer(&diff_buffer, &source_buffer, &clipboard_buffer, cx).await;
 
-            workspace.update_in(cx, |workspace, window, cx| {
+            let (pane, diff_view) = workspace.update_in(cx, |workspace, window, cx| {
                 let source_range = expanded_selection_range.to_point(source_buffer.read(cx));
 
                 let project = workspace.project().clone();
@@ -150,13 +150,21 @@ impl TextDiffView {
                     )
                 });
 
-                let pane = workspace.active_pane();
-                pane.update(cx, |pane, cx| {
-                    pane.add_item(Box::new(diff_view.clone()), true, true, None, window, cx);
-                });
+                (workspace.active_pane().clone(), diff_view)
+            })?;
+            cx.update(|window, cx| {
+                Pane::add_item(
+                    &pane,
+                    Box::new(diff_view.clone()),
+                    true,
+                    true,
+                    None,
+                    window,
+                    cx,
+                )
+            })?;
 
-                diff_view
-            })
+            Ok(diff_view)
         });
 
         Some(task)

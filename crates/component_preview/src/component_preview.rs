@@ -30,36 +30,43 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
         let project = workspace.project().clone();
         let weak_workspace = cx.entity().downgrade();
 
-        workspace.register_action(
-            move |workspace, _: &workspace::OpenComponentPreview, window, cx| {
-                let app_state = app_state.clone();
+        workspace.register_action_renderer(move |div, _, _, cx| {
+            let app_state = app_state.clone();
+            let project = project.clone();
+            let weak_workspace = weak_workspace.clone();
+            div.on_action(cx.entity_listener(
+                move |workspace: Entity<Workspace>,
+                      _: &workspace::OpenComponentPreview,
+                      window,
+                      cx| {
+                    let language_registry = app_state.languages.clone();
+                    let user_store = app_state.user_store.clone();
 
-                let language_registry = app_state.languages.clone();
-                let user_store = app_state.user_store.clone();
+                    let component_preview = cx.new(|cx| {
+                        ComponentPreview::new(
+                            weak_workspace.clone(),
+                            project.clone(),
+                            language_registry,
+                            user_store,
+                            None,
+                            None,
+                            window,
+                            cx,
+                        )
+                        .expect("Failed to create component preview")
+                    });
 
-                let component_preview = cx.new(|cx| {
-                    ComponentPreview::new(
-                        weak_workspace.clone(),
-                        project.clone(),
-                        language_registry,
-                        user_store,
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
+                        Box::new(component_preview),
                         None,
-                        None,
+                        true,
                         window,
                         cx,
                     )
-                    .expect("Failed to create component preview")
-                });
-
-                workspace.add_item_to_active_pane(
-                    Box::new(component_preview),
-                    None,
-                    true,
-                    window,
-                    cx,
-                )
-            },
-        );
+                },
+            ))
+        });
     })
     .detach();
 }

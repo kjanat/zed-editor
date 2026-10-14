@@ -243,9 +243,7 @@ impl Render for ActiveToolchain {
                 .tab_index(0isize)
                 .on_click(cx.listener(|this, _, window, cx| {
                     if let Some(workspace) = this.workspace.upgrade() {
-                        workspace.update(cx, |workspace, cx| {
-                            ToolchainSelector::toggle(workspace, window, cx)
-                        });
+                        ToolchainSelector::toggle(&workspace, window, cx);
                     }
                 }))
                 .tooltip(Tooltip::text(format!("Select {}", self.term))),

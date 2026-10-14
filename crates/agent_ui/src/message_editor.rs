@@ -2321,7 +2321,7 @@ mod tests {
     use text::Point;
     use ui::{App, Context, IntoElement, Render, SharedString, Window};
     use util::{path, paths::PathStyle, rel_path::rel_path};
-    use workspace::{AppState, Item, MultiWorkspace, Workspace};
+    use workspace::{AppState, Item, MultiWorkspace, Pane, Workspace};
 
     use crate::completion_provider::{AgentContextSelection, AvailableSkill, PromptContextType};
     use crate::{
@@ -2825,6 +2825,28 @@ mod tests {
         }
     }
 
+    fn add_message_editor_to_active_pane(
+        workspace: &Entity<Workspace>,
+        message_editor: &Entity<MessageEditor>,
+        cx: &mut VisualTestContext,
+    ) {
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.update(|window, cx| {
+            let item = Box::new(cx.new(|_| MessageEditorItem(message_editor.clone())));
+            Pane::add_item(&pane, item, true, true, None, window, cx);
+        });
+    }
+
+    fn focus_message_editor(
+        message_editor: &Entity<MessageEditor>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<Editor> {
+        cx.update(|window, cx| {
+            message_editor.read(cx).focus_handle(cx).focus(window, cx);
+            message_editor.read(cx).editor().clone()
+        })
+    }
+
     #[gpui::test]
     async fn test_completion_provider_commands(cx: &mut TestAppContext) {
         init_test(cx);
@@ -2856,9 +2878,9 @@ mod tests {
             ],
         )));
 
-        let editor = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -2873,20 +2895,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            message_editor.read(cx).editor().clone()
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         cx.simulate_input("/");
 
@@ -3020,9 +3032,9 @@ mod tests {
             Vec::new(),
         )));
 
-        let (message_editor, editor) = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -3037,21 +3049,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            let editor = message_editor.read(cx).editor().clone();
-            (message_editor, editor)
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         message_editor.read_with(&cx, |message_editor, _| {
             message_editor.set_local_commands(vec![
@@ -3140,9 +3141,9 @@ mod tests {
         let received_events: Arc<parking_lot::Mutex<Vec<MessageEditorEvent>>> =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
 
-        let editor = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -3157,18 +3158,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-
+            })
+        });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        workspace.update(&mut cx, |_, cx| {
             let received_events = received_events.clone();
             cx.subscribe(
                 &message_editor,
@@ -3177,10 +3170,8 @@ mod tests {
                 },
             )
             .detach();
-
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            message_editor.read(cx).editor().clone()
         });
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         cx.simulate_input("/");
 
@@ -3288,9 +3279,9 @@ mod tests {
             vec![],
         )));
 
-        let (message_editor, editor) = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -3305,21 +3296,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            let editor = message_editor.read(cx).editor().clone();
-            (message_editor, editor)
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         cx.simulate_input("Lorem @");
 
@@ -3729,9 +3709,9 @@ mod tests {
         project: &Entity<Project>,
         cx: &mut VisualTestContext,
     ) -> Entity<Editor> {
-        let editor = workspace.update_in(cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -3746,20 +3726,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            message_editor.read(cx).editor().clone()
+            })
         });
+        add_message_editor_to_active_pane(workspace, &message_editor, cx);
+        let editor = focus_message_editor(&message_editor, cx);
 
         editor.update_in(cx, |editor, window, cx| {
             editor.set_text("@", window, cx);
@@ -4301,9 +4271,9 @@ mod tests {
 
         let thread_store = Some(cx.new(|cx| ThreadStore::new(cx)));
 
-        let (message_editor, editor) = workspace.update_in(cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -4318,21 +4288,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            let editor = message_editor.read(cx).editor().clone();
-            (message_editor, editor)
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, cx);
+        let editor = focus_message_editor(&message_editor, cx);
 
         cx.simulate_input("What is in @file main");
 
@@ -4463,9 +4422,9 @@ mod tests {
         // Create a new `MessageEditor`. The `EditorMode::full()` has to be used
         // to ensure we have a fixed viewport, so we can eventually actually
         // place the cursor outside of the visible area.
-        let message_editor = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -4477,20 +4436,9 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-
-            message_editor
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
 
         message_editor.update_in(&mut cx, |message_editor, window, cx| {
             message_editor.editor.update(cx, |editor, cx| {
@@ -4582,9 +4530,9 @@ mod tests {
 
         let thread_store = cx.new(|cx| ThreadStore::new(cx));
 
-        let (message_editor, editor) = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -4599,21 +4547,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            let editor = message_editor.read(cx).editor().clone();
-            (message_editor, editor)
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         editor.update_in(&mut cx, |editor, window, cx| {
             editor.set_text("😄😄", window, cx);
@@ -4660,9 +4597,9 @@ mod tests {
 
         let thread_store = cx.new(|cx| ThreadStore::new(cx));
 
-        let (message_editor, editor) = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -4677,21 +4614,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            let editor = message_editor.read(cx).editor().clone();
-            (message_editor, editor)
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         editor.update_in(&mut cx, |editor, window, cx| {
             editor.set_text(
@@ -4836,10 +4762,10 @@ mod tests {
         );
         assert_eq!(copied_text, expected_text);
 
-        let target_message_editor = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let target_message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
             let thread_store = cx.new(|cx| ThreadStore::new(cx));
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -4854,19 +4780,14 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            message_editor
+            })
+        });
+        add_message_editor_to_active_pane(&workspace, &target_message_editor, &mut cx);
+        cx.update(|window, cx| {
+            target_message_editor
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx)
         });
 
         cx.write_to_clipboard(ClipboardItem::new_string(copied_text));
@@ -5247,9 +5168,9 @@ mod tests {
 
         let thread_store = cx.new(|cx| ThreadStore::new(cx));
 
-        let (_message_editor, editor) = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -5264,21 +5185,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            let editor = message_editor.read(cx).editor().clone();
-            (message_editor, editor)
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         cx.simulate_input("@");
 
@@ -5585,9 +5495,9 @@ mod tests {
 
         let thread_store = cx.new(|cx| ThreadStore::new(cx));
 
-        let (message_editor, editor) = workspace.update_in(&mut cx, |workspace, window, cx| {
+        let message_editor = workspace.update_in(&mut cx, |_, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| {
+            cx.new(|cx| {
                 MessageEditor::new(
                     workspace_handle,
                     project.downgrade(),
@@ -5602,21 +5512,10 @@ mod tests {
                     window,
                     cx,
                 )
-            });
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-            message_editor.read(cx).focus_handle(cx).focus(window, cx);
-            let editor = message_editor.read(cx).editor().clone();
-            (message_editor, editor)
+            })
         });
+        add_message_editor_to_active_pane(&workspace, &message_editor, &mut cx);
+        let editor = focus_message_editor(&message_editor, &mut cx);
 
         (message_editor, editor, cx)
     }
@@ -5768,18 +5667,7 @@ mod tests {
         let workspace = message_editor.read_with(cx, |editor, _| {
             editor.workspace.upgrade().expect("message workspace")
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.add_item(
-                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
-                    true,
-                    true,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-        });
+        add_message_editor_to_active_pane(&workspace, &message_editor, cx);
         cx.focus(&message_editor);
         cx.simulate_input("edited");
         assert!(

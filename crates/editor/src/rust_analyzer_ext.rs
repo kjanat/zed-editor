@@ -15,6 +15,7 @@ use project::{
 use rpc::proto;
 use text::ToPointUtf16;
 use url::Url;
+use workspace::Workspace;
 
 use crate::{
     CancelFlycheck, ClearFlycheck, Editor, ExpandMacroRecursively, GoToParentModule,
@@ -213,14 +214,15 @@ pub fn expand_macro_recursively(
                 project.create_buffer(Some(rust_language), false, cx)
             })
             .await?;
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             buffer.update(cx, |buffer, cx| {
                 buffer.set_text(macro_expansion.expansion, cx);
                 buffer.set_capability(Capability::ReadOnly, cx);
             });
             let multibuffer =
                 cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(macro_expansion.name));
-            workspace.add_item_to_active_pane(
+            Workspace::add_item_to_active_pane(
+                &workspace,
                 Box::new(cx.new(|cx| {
                     let mut editor = Editor::for_multibuffer(multibuffer, None, window, cx);
                     editor.set_read_only(true);

@@ -341,9 +341,23 @@ async fn test_tab_switcher_selection_runs_item_hooks_with_nothing_leased(
         tab_switcher_reads: tab_switcher_reads.clone(),
     });
     let other = cx.new(|cx| TestItem::new(cx).with_label("other"));
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(reader.clone()), None, true, window, cx);
-        workspace.add_item_to_active_pane(Box::new(other.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(reader.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
+        Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(other.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
 
     cx.simulate_modifiers_change(Modifiers::control());
@@ -604,8 +618,17 @@ async fn test_open_in_active_pane_clones_items_that_read_the_tab_switcher(
                 }
             })
     });
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(item.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
+    });
     workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(item.clone()), None, true, window, cx);
         workspace.split_pane(
             workspace.active_pane().clone(),
             workspace::SplitDirection::Right,
@@ -650,8 +673,15 @@ async fn test_open_in_active_pane_moves_terminals_to_current_pane(cx: &mut gpui:
     let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
 
     let test_item = cx.new(|cx| TestItem::new(cx).with_label("terminal"));
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.add_item_to_active_pane(Box::new(test_item.clone()), None, true, window, cx);
+    cx.update(|window, cx| {
+        Workspace::add_item_to_active_pane(
+            &workspace,
+            Box::new(test_item.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
     });
 
     workspace.update_in(cx, |workspace, window, cx| {

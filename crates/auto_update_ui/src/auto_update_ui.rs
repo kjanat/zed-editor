@@ -242,28 +242,29 @@ fn view_release_notes_locally(
             let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(body.title));
 
             let ws_handle = workspace.clone();
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    let editor =
-                        cx.new(|cx| Editor::for_multibuffer(buffer, Some(project), window, cx));
-                    let markdown_preview: Entity<MarkdownPreviewView> = MarkdownPreviewView::new(
-                        MarkdownPreviewMode::Default,
-                        editor,
-                        ws_handle,
-                        language_registry,
-                        window,
-                        cx,
-                    );
-                    workspace.add_item_to_active_pane(
-                        Box::new(markdown_preview),
-                        None,
-                        true,
-                        window,
-                        cx,
-                    );
-                    cx.notify();
-                })
-                .ok()
+            let workspace = workspace.upgrade()?;
+            cx.update(|window, cx| {
+                let editor =
+                    cx.new(|cx| Editor::for_multibuffer(buffer, Some(project), window, cx));
+                let markdown_preview: Entity<MarkdownPreviewView> = MarkdownPreviewView::new(
+                    MarkdownPreviewMode::Default,
+                    editor,
+                    ws_handle,
+                    language_registry,
+                    window,
+                    cx,
+                );
+                Workspace::add_item_to_active_pane(
+                    &workspace,
+                    Box::new(markdown_preview),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
+                workspace.update(cx, |_, cx| cx.notify());
+            })
+            .ok()
         })
         .await;
         if res.is_none() {
@@ -470,6 +471,8 @@ mod tests {
     use http_client::{AsyncBody, HttpClient, Response};
     use project::Project;
     use std::{pin::Pin, task::Poll};
+    use workspace::Pane;
+    use workspace::item::test::{HookBits, TestItem};
 
     struct FailingReader;
 
@@ -546,6 +549,70 @@ mod tests {
     #[gpui::test]
     async fn release_notes_malformed_json_shows_error(cx: &mut TestAppContext) {
         assert_release_notes_failure(200, "{".into(), cx).await;
+    }
+
+    #[gpui::test]
+    async fn test_view_release_notes_locally_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = cx.update(|cx| {
+            cx.set_global(db::AppDatabase::test_new());
+            release_channel::init_test(Version::new(1, 3, 10), ReleaseChannel::Stable, cx);
+            let app_state = workspace::AppState::test(cx);
+            client::Client::set_global(app_state.client.clone(), cx);
+            editor::init(cx);
+            app_state
+        });
+        app_state
+            .client
+            .http_client()
+            .as_fake()
+            .replace_handler(move |_, _| async move {
+                Ok(Response::builder().status(200).body(AsyncBody::from(
+                    r#"{"title":"Release notes","release_notes":"Changes"}"#,
+                ))?)
+            });
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let reader = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(
+                &pane,
+                Box::new(reader.clone()),
+                true,
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        reader.read_with(cx, |reader, _| {
+            reader.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+        });
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            view_release_notes_locally(workspace, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(reader.read_with(cx, |reader, _| reader.container_reads.get()) > 0);
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.notification_ids().is_empty());
+            assert!(
+                workspace
+                    .active_item_as::<MarkdownPreviewView>(cx)
+                    .is_some()
+            );
+        });
     }
 
     #[test]

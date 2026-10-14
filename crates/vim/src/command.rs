@@ -3244,7 +3244,8 @@ mod test {
 
         for normal_command in [true, false] {
             for keep_match in [false, true] {
-                let editor = cx.workspace(|workspace, window, cx| {
+                let workspace = cx.workspace.clone();
+                let editor = cx.update(|window, cx| {
                     let (remaining_text, remaining_rows) = if keep_match {
                         ("keep\nmatch survives\nlast\n", 3)
                     } else {
@@ -3257,15 +3258,11 @@ mod test {
                         ],
                         cx,
                     );
-                    let editor = cx.new(|cx| {
-                        Editor::for_multibuffer(
-                            multibuffer,
-                            Some(workspace.project().clone()),
-                            window,
-                            cx,
-                        )
-                    });
-                    workspace.add_item_to_active_pane(
+                    let project = workspace.read(cx).project().clone();
+                    let editor = cx
+                        .new(|cx| Editor::for_multibuffer(multibuffer, Some(project), window, cx));
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
                         Box::new(editor.clone()),
                         None,
                         true,

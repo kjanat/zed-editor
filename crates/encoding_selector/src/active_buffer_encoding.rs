@@ -94,9 +94,7 @@ impl Render for ActiveBufferEncoding {
                         return;
                     }
                     if let Some(workspace) = this.workspace.upgrade() {
-                        workspace.update(cx, |workspace, cx| {
-                            EncodingSelector::toggle(workspace, window, cx)
-                        });
+                        EncodingSelector::toggle(&workspace, window, cx);
                     }
                 }))
                 .tooltip(move |_window, cx| {

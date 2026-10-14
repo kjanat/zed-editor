@@ -17,10 +17,7 @@ use ui::{
     ButtonStyle, ScrollableHandle, ToggleButtonGroup, ToggleButtonGroupSize,
     ToggleButtonGroupStyle, ToggleButtonSimple, Tooltip, WithScrollbar, prelude::*,
 };
-use workspace::{
-    Workspace,
-    item::{Item, ItemEvent},
-};
+use workspace::item::{Item, ItemEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RegistryFilter {
@@ -85,11 +82,7 @@ pub struct AgentRegistryPage {
 }
 
 impl AgentRegistryPage {
-    pub fn new(
-        _workspace: &Workspace,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) -> Entity<Self> {
+    pub fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let registry_store = AgentRegistryStore::global(cx);
             let query_editor = cx.new(|cx| {

@@ -239,3 +239,27 @@ pub(crate) fn show_no_more_matches(window: &mut Window, cx: &mut App) {
         })
     });
 }
+
+#[cfg(test)]
+pub(crate) fn add_focused_test_item_reading_containers(
+    workspace: &Entity<Workspace>,
+    hooks: workspace::item::test::HookBits,
+    cx: &mut gpui::VisualTestContext,
+) -> Entity<workspace::item::test::TestItem> {
+    let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let workspace_handle = workspace.downgrade();
+    let pane_handle = pane.downgrade();
+    let item = cx.new(|cx| {
+        workspace::item::test::TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        workspace::Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item.update_in(cx, |_, window, cx| cx.focus_self(window));
+    cx.run_until_parked();
+    item.read_with(cx, |item, _| item.read_containers_in(hooks));
+    item
+}

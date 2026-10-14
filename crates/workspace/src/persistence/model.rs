@@ -390,8 +390,9 @@ impl SerializedPane {
             items.push(item_handle.clone());
 
             if let Some(item_handle) = item_handle {
-                pane.update_in(cx, |pane, window, cx| {
-                    pane.add_item(item_handle.clone(), true, true, None, window, cx);
+                let pane = pane.upgrade().context("pane was released")?;
+                cx.update(|window, cx| {
+                    Pane::add_item(&pane, item_handle.clone(), true, true, None, window, cx);
                 })?;
             }
         }

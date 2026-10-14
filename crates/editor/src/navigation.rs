@@ -1472,25 +1472,22 @@ impl Editor {
                     } else {
                         let pane = workspace.read(cx).active_pane().clone();
                         window.defer(cx, move |window, cx| {
-                            let target_editor: Entity<Self> =
-                                workspace.update(cx, |workspace, cx| {
-                                    let preview_tabs_settings = PreviewTabsSettings::get_global(cx);
-                                    let keep_old_preview = preview_tabs_settings
-                                        .enable_keep_preview_on_code_navigation;
-                                    let allow_new_preview = preview_tabs_settings
-                                        .enable_preview_file_from_code_navigation;
-
-                                    workspace.open_project_item(
-                                        None,
-                                        target_buffer.clone(),
-                                        true,
-                                        true,
-                                        keep_old_preview,
-                                        allow_new_preview,
-                                        window,
-                                        cx,
-                                    )
-                                });
+                            let preview_tabs_settings = PreviewTabsSettings::get_global(cx);
+                            let keep_old_preview =
+                                preview_tabs_settings.enable_keep_preview_on_code_navigation;
+                            let allow_new_preview =
+                                preview_tabs_settings.enable_preview_file_from_code_navigation;
+                            let target_editor: Entity<Self> = Workspace::open_project_item(
+                                &workspace,
+                                None,
+                                target_buffer.clone(),
+                                true,
+                                true,
+                                keep_old_preview,
+                                allow_new_preview,
+                                window,
+                                cx,
+                            );
                             target_editor.update(cx, |target_editor, cx| {
                                 // When selecting a definition in a different buffer, disable the nav history
                                 // to avoid creating a history entry at the previous cursor location.
@@ -1504,7 +1501,7 @@ impl Editor {
                 });
             }
 
-            workspace.update_in(cx, |workspace, window, cx| {
+            cx.update(|window, cx| {
                 let target = locations
                     .iter()
                     .flat_map(|(k, v)| iter::repeat(k.clone()).zip(v))
@@ -1526,10 +1523,10 @@ impl Editor {
                 let allow_preview = PreviewTabsSettings::get_global(cx)
                     .enable_preview_multibuffer_from_code_navigation;
                 Self::open_locations_in_multibuffer(
-                    workspace,
+                    &workspace,
                     locations,
                     title,
-                    false,
+                    None,
                     allow_preview,
                     MultibufferSelectionMode::First,
                     window,
@@ -1815,16 +1812,22 @@ impl Editor {
                     return Ok(Navigated::No);
                 };
 
-                let opened = workspace
-                    .update_in(cx, |workspace, window, cx| {
+                let split_pane = if split {
+                    cx.update(|window, cx| Workspace::adjacent_pane(&workspace, window, cx))
+                        .ok()
+                } else {
+                    None
+                };
+                let opened = cx
+                    .update(|window, cx| {
                         let allow_preview = PreviewTabsSettings::get_global(cx)
                             .enable_preview_multibuffer_from_code_navigation;
                         if let Some((target_editor, target_pane)) =
                             Self::open_locations_in_multibuffer(
-                                workspace,
+                                &workspace,
                                 locations,
                                 title,
-                                split,
+                                split_pane,
                                 allow_preview,
                                 MultibufferSelectionMode::First,
                                 window,
@@ -1950,35 +1953,31 @@ impl Editor {
                         let offset = editor.cursor_top_offset(cx);
 
                         window.defer(cx, move |window, cx| {
-                            let (target_editor, target_pane): (Entity<Self>, Entity<Pane>) =
-                                workspace.update(cx, |workspace, cx| {
-                                    let requested_pane = if split {
-                                        workspace.adjacent_pane(window, cx)
-                                    } else {
-                                        workspace.active_pane().clone()
-                                    };
-
-                                    let preview_tabs_settings = PreviewTabsSettings::get_global(cx);
-                                    let keep_old_preview = preview_tabs_settings
-                                        .enable_keep_preview_on_code_navigation;
-                                    let allow_new_preview = preview_tabs_settings
-                                        .enable_preview_file_from_code_navigation;
-
-                                    let editor = workspace.open_project_item(
-                                        split.then_some(requested_pane.clone()),
-                                        target_buffer.clone(),
-                                        true,
-                                        true,
-                                        keep_old_preview,
-                                        allow_new_preview,
-                                        window,
-                                        cx,
-                                    );
-                                    let target_pane = workspace
-                                        .pane_for_item_id(editor.entity_id())
-                                        .unwrap_or(requested_pane);
-                                    (editor, target_pane)
-                                });
+                            let requested_pane = if split {
+                                Workspace::adjacent_pane(&workspace, window, cx)
+                            } else {
+                                workspace.read(cx).active_pane().clone()
+                            };
+                            let preview_tabs_settings = PreviewTabsSettings::get_global(cx);
+                            let keep_old_preview =
+                                preview_tabs_settings.enable_keep_preview_on_code_navigation;
+                            let allow_new_preview =
+                                preview_tabs_settings.enable_preview_file_from_code_navigation;
+                            let target_editor: Entity<Self> = Workspace::open_project_item(
+                                &workspace,
+                                split.then_some(requested_pane.clone()),
+                                target_buffer.clone(),
+                                true,
+                                true,
+                                keep_old_preview,
+                                allow_new_preview,
+                                window,
+                                cx,
+                            );
+                            let target_pane: Entity<Pane> = workspace
+                                .read(cx)
+                                .pane_for_item_id(target_editor.entity_id())
+                                .unwrap_or(requested_pane);
                             // We create our own nav history instead of using
                             // `target_editor.nav_history` because `nav_history`
                             // seems to be populated asynchronously when an item
@@ -2195,21 +2194,23 @@ impl Editor {
 
     /// Opens a multibuffer with the given project locations in it.
     pub(super) fn open_locations_in_multibuffer(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         locations: std::collections::HashMap<Entity<Buffer>, Vec<Range<Point>>>,
         title: String,
-        split: bool,
+        split_pane: Option<Entity<Pane>>,
         allow_preview: bool,
         multibuffer_selection_mode: MultibufferSelectionMode,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Option<(Entity<Editor>, Entity<Pane>)> {
         if locations.is_empty() {
             log::error!("bug: open_locations_in_multibuffer called with empty list of locations");
             return None;
         }
 
-        let capability = workspace.project().read(cx).capability();
+        let project = workspace.read(cx).project().clone();
+        let active_pane = workspace.read(cx).active_pane().clone();
+        let capability = project.read(cx).capability();
         let mut ranges = <Vec<Range<Anchor>>>::new();
 
         // a key to find existing multibuffer editors with the same set of locations
@@ -2245,29 +2246,24 @@ impl Editor {
 
             multibuffer.with_title(title)
         });
-        let existing = workspace.active_pane().update(cx, |pane, cx| {
-            pane.items()
-                .filter_map(|item| item.downcast::<Editor>())
-                .find(|editor| {
-                    editor
-                        .read(cx)
-                        .lookup_key
-                        .as_ref()
-                        .and_then(|it| {
-                            it.downcast_ref::<(String, Vec<(BufferId, Vec<Range<Point>>)>)>()
-                        })
-                        .is_some_and(|it| *it == key)
-                })
-        });
+        let existing = active_pane
+            .read(cx)
+            .items()
+            .filter_map(|item| item.downcast::<Editor>())
+            .find(|editor| {
+                editor
+                    .read(cx)
+                    .lookup_key
+                    .as_ref()
+                    .and_then(|it| {
+                        it.downcast_ref::<(String, Vec<(BufferId, Vec<Range<Point>>)>)>()
+                    })
+                    .is_some_and(|it| *it == key)
+            });
         let was_existing = existing.is_some();
         let editor = existing.unwrap_or_else(|| {
             cx.new(|cx| {
-                let mut editor = Editor::for_multibuffer(
-                    excerpt_buffer,
-                    Some(workspace.project().clone()),
-                    window,
-                    cx,
-                );
+                let mut editor = Editor::for_multibuffer(excerpt_buffer, Some(project), window, cx);
                 editor.lookup_key = Some(Box::new(key));
                 editor
             })
@@ -2307,12 +2303,8 @@ impl Editor {
 
         let item = Box::new(editor.clone());
 
-        let pane = if split {
-            workspace.adjacent_pane(window, cx)
-        } else {
-            workspace.active_pane().clone()
-        };
-        let activate_pane = split;
+        let activate_pane = split_pane.is_some();
+        let pane = split_pane.unwrap_or(active_pane);
 
         let mut destination_index = None;
         pane.update(cx, |pane, cx| {
@@ -2327,8 +2319,16 @@ impl Editor {
             if was_existing && !allow_preview {
                 pane.unpreview_item_if_preview(item.item_id());
             }
-            pane.add_item(item, activate_pane, true, destination_index, window, cx);
         });
+        Pane::add_item(
+            &pane,
+            item,
+            activate_pane,
+            true,
+            destination_index,
+            window,
+            cx,
+        );
 
         Some((editor, pane))
     }

@@ -1529,17 +1529,20 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_click(screen_coord, Modifiers::secondary_key());
         cx.run_until_parked();
-        cx.update_workspace(|workspace, _, cx| {
-            let path = workspace
-                .active_item(cx)
-                .and_then(|item| item.project_path(cx))
-                .expect("cmd-click should have opened a file");
-            assert_eq!(
-                path.path.as_unix_str(),
-                "dir/file2.rs",
-                "cmd-click on a file path should open that file"
-            );
-        });
+        let workspace = cx.workspace.clone();
+        let path = cx
+            .read(|cx| {
+                workspace
+                    .read(cx)
+                    .active_item(cx)
+                    .and_then(|item| item.project_path(cx))
+            })
+            .expect("cmd-click should have opened a file");
+        assert_eq!(
+            path.path.as_unix_str(),
+            "dir/file2.rs",
+            "cmd-click on a file path should open that file"
+        );
 
         assert_eq!(
             references_count.load(Ordering::SeqCst),

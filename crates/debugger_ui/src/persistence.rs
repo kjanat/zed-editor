@@ -336,18 +336,18 @@ pub(crate) fn deserialize_pane_layout(
                 })
                 .collect();
 
-            pane.update(cx, |pane, cx| {
-                let mut active_idx = 0;
-                for (idx, sub_view) in sub_views.into_iter().enumerate() {
-                    if serialized_pane
-                        .active_item
-                        .is_some_and(|active| active == sub_view.read(cx).view_kind())
-                    {
-                        active_idx = idx;
-                    }
-                    pane.add_item(sub_view, false, false, None, window, cx);
+            let mut active_idx = 0;
+            for (idx, sub_view) in sub_views.into_iter().enumerate() {
+                if serialized_pane
+                    .active_item
+                    .is_some_and(|active| active == sub_view.read(cx).view_kind())
+                {
+                    active_idx = idx;
                 }
+                Pane::add_item(&pane, sub_view, false, false, None, window, cx);
+            }
 
+            pane.update(cx, |pane, cx| {
                 pane.activate_item(active_idx, false, false, window, cx);
             });
 

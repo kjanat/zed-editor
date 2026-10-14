@@ -15,14 +15,19 @@ use zed_actions::dev::OpenKeyContextView;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
-        workspace.register_action(|workspace, _: &OpenKeyContextView, window, cx| {
-            let key_context_view = cx.new(|cx| KeyContextView::new(window, cx));
-            workspace.split_item(
-                SplitDirection::Right,
-                Box::new(key_context_view),
-                window,
-                cx,
-            )
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &OpenKeyContextView, window, cx| {
+                    let key_context_view = cx.new(|cx| KeyContextView::new(window, cx));
+                    Workspace::split_item(
+                        &workspace,
+                        SplitDirection::Right,
+                        Box::new(key_context_view),
+                        window,
+                        cx,
+                    );
+                },
+            ))
         });
     })
     .detach();

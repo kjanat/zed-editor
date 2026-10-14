@@ -533,7 +533,7 @@ mod tests {
         ConfiguredLanguageServer, GlobalLspSettingsContent, LanguageSettingsContent,
         SemanticTokenRule, SemanticTokenRules, SemanticTokens, SettingsStore,
     };
-    use workspace::{MultiWorkspace, WorkspaceHandle as _};
+    use workspace::{MultiWorkspace, Workspace, WorkspaceHandle as _};
 
     use crate::{
         Capability,
@@ -1623,9 +1623,16 @@ mod tests {
             multibuffer
         });
 
-        let editor = workspace.update_in(cx, |workspace, window, cx| {
+        let editor = cx.update(|window, cx| {
             let editor = cx.new(|cx| build_editor_with_project(project, multibuffer, window, cx));
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             editor
         });
         editor.update_in(cx, |editor, window, cx| {
@@ -1869,10 +1876,17 @@ mod tests {
             multibuffer
         });
 
-        let mb_editor = workspace.update_in(cx, |workspace, window, cx| {
+        let mb_editor = cx.update(|window, cx| {
             let editor =
                 cx.new(|cx| build_editor_with_project(project.clone(), multibuffer, window, cx));
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             editor
         });
         mb_editor.update_in(cx, |editor, window, cx| {

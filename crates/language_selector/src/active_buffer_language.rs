@@ -59,9 +59,7 @@ impl Render for ActiveBufferLanguage {
                     .aria_label(format!("Language: {active_language_text}"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(workspace) = this.workspace.upgrade() {
-                            workspace.update(cx, |workspace, cx| {
-                                LanguageSelector::toggle(workspace, window, cx)
-                            });
+                            LanguageSelector::toggle(&workspace, window, cx);
                         }
                     }))
                     .tooltip(|_window, cx| Tooltip::for_action("Select Language", &Toggle, cx)),

@@ -1179,7 +1179,7 @@ async fn test_collaborating_with_renames(cx_a: &mut TestAppContext, cx_b: &mut T
         .unwrap();
     confirm_rename.await.unwrap();
 
-    let rename_editor = workspace_b.update(cx_b, |workspace, cx| {
+    let rename_editor = workspace_b.read_with(cx_b, |workspace, cx| {
         workspace.active_item_as::<Editor>(cx).unwrap()
     });
 
@@ -4258,7 +4258,7 @@ async fn test_lsp_document_links(cx_a: &mut TestAppContext, cx_b: &mut TestAppCo
     );
     executor.run_until_parked();
 
-    let other_editor = workspace_b.update(cx_b, |workspace, cx| {
+    let other_editor = workspace_b.read_with(cx_b, |workspace, cx| {
         workspace.active_item_as::<Editor>(cx).unwrap()
     });
     other_editor.update(cx_b, |editor, cx| {
