@@ -55,8 +55,10 @@ pub(crate) fn supports_disabling_thinking(model_id: &str) -> bool {
 ///
 /// Google documents media nested under `functionResponse.parts` for Gemini 3 and later, which
 /// reject sibling media with "Requests ending with a model turn are not supported".
+/// `-latest` aliases track Google's current generation.
 pub(crate) fn uses_sibling_function_response_media(model_id: &str) -> bool {
-    model_version(model_id).is_some_and(|(major, _)| major < 3)
+    let is_latest_alias = model_id.split('-').any(|segment| segment == "latest");
+    !is_latest_alias && !model_version(model_id).is_some_and(|(major, _)| major >= 3)
 }
 
 /// Level-based models that accept `MINIMAL`; the others reject it and start at `LOW`.
@@ -91,7 +93,7 @@ pub(crate) fn lowest_thinking_level(model_id: &str) -> Option<ThinkingLevel> {
     }
 }
 
-fn model_version(model_id: &str) -> Option<(u32, u32)> {
+pub fn model_version(model_id: &str) -> Option<(u32, u32)> {
     let (version, _) = model_id.strip_prefix("gemini-")?.split_once('-')?;
     let (major, minor) = version.split_once('.').unwrap_or((version, "0"));
     Some((major.parse().ok()?, minor.parse().ok()?))
@@ -966,6 +968,7 @@ mod tests {
             "gemini-2.5-flash-preview-05-20",
             "gemini-2.0-flash",
             "gemini-1.5-pro-002",
+            "my-gemini-2-alias",
         ] {
             assert!(uses_sibling_function_response_media(id), "{id}");
         }
