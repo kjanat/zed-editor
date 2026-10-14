@@ -6583,6 +6583,41 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_open_svg_preview_for_project_path_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(svg_preview::init);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "image.svg": "<svg></svg>" }))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+        let (workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project.clone(), add_item_hooks(), cx);
+        let project_path = project
+            .read_with(&cx, |project, cx| {
+                project.find_project_path(path!("root/image.svg"), cx)
+            })
+            .expect("the svg file should be in the project");
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            svg_preview::svg_preview_view::SvgPreviewView::open_for_project_path(
+                project_path,
+                workspace,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<svg_preview::svg_preview_view::SvgPreviewView>(
+            &reader, &pane, 2, &mut cx,
+        );
+    }
+
+    #[gpui::test]
     async fn test_open_following_svg_preview_next_to_items_that_read_their_containers(
         cx: &mut TestAppContext,
     ) {

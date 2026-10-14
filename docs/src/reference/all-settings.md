@@ -6564,6 +6564,11 @@ about AI setup.
 
 `boolean` values
 
+### Subagent Model {#agent-subagent-model}
+
+- Description: The model, reasoning, and speed settings for new Zed Agent subagents. This setting does not configure external agents. See [Subagent Models](../ai/agent-settings.md#subagent-models).
+- Setting: `agent.subagent_model`
+
 ## Collaboration Panel
 
 - Description: Customizations for the collaboration panel.

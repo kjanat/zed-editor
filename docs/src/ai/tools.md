@@ -158,6 +158,9 @@ Useful for running parallel investigations, completing self-contained tasks, or
 performing research where only the outcome matters. Each subagent has access to
 the same tools as the parent agent.
 
+To configure a subagent's model, reasoning effort, and speed, see
+[Subagent Models](./agent-settings.md#subagent-models).
+
 **Example:** While refactoring the authentication module, spawn a subagent to
 investigate how session tokens are validated elsewhere in the codebase. The
 parent agent continues its work and reviews the subagent's findings when it

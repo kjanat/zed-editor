@@ -2218,6 +2218,7 @@ impl ConversationView {
                 cx.notify();
             }
             AcpThreadEvent::ConfigOptionsUpdated(_) => {
+                self.attach_late_config_options_view(thread, &session_id, window, cx);
                 // The watch task in ConfigOptionsView handles rebuilding selectors
                 cx.notify();
             }
@@ -2237,6 +2238,35 @@ impl ConversationView {
             }
         }
         cx.notify();
+    }
+
+    fn attach_late_config_options_view(
+        &mut self,
+        thread: &Entity<AcpThread>,
+        session_id: &acp_v2::SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread_view) = self.thread_view(session_id) else {
+            return;
+        };
+        if thread_view.read(cx).config_options_view.is_some() {
+            return;
+        }
+        let connection = thread.read(cx).connection().clone();
+        let Some(config_options) = connection.session_config_options(session_id, cx) else {
+            return;
+        };
+        let agent_server = self.agent.clone();
+        let fs = self.project.read(cx).fs().clone();
+        let config_options_view =
+            cx.new(|cx| ConfigOptionsView::new(config_options, agent_server, fs, window, cx));
+        thread_view.update(cx, |thread_view, cx| {
+            thread_view.config_options_view = Some(config_options_view);
+            thread_view.mode_selector = None;
+            thread_view.model_selector = None;
+            cx.notify();
+        });
     }
 
     fn schedule_draft_prompt_persist(&mut self, cx: &mut Context<Self>) {
@@ -6240,6 +6270,132 @@ pub(crate) mod tests {
         fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
             self
         }
+    }
+
+    struct StaticSessionConfigOptions(Vec<acp_v2::SessionConfigOption>);
+
+    impl acp_thread::AgentSessionConfigOptions for StaticSessionConfigOptions {
+        fn config_options(&self) -> Vec<acp_v2::SessionConfigOption> {
+            self.0.clone()
+        }
+
+        fn set_config_option(
+            &self,
+            _config_id: acp_v2::SessionConfigId,
+            _value: acp_v2::SessionConfigOptionValue,
+            _cx: &mut App,
+        ) -> Task<gpui::Result<Vec<acp_v2::SessionConfigOption>>> {
+            Task::ready(Ok(self.0.clone()))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct LateConfigOptionsConnection {
+        config_options: Arc<Mutex<Option<Vec<acp_v2::SessionConfigOption>>>>,
+    }
+
+    impl AgentConnection for LateConfigOptionsConnection {
+        fn agent_id(&self) -> AgentId {
+            AgentId::new("late-config-options")
+        }
+
+        fn telemetry_id(&self) -> SharedString {
+            "late-config-options".into()
+        }
+
+        fn new_session(
+            self: Rc<Self>,
+            project: Entity<Project>,
+            _work_dirs: PathList,
+            cx: &mut App,
+        ) -> Task<gpui::Result<Entity<AcpThread>>> {
+            let thread = build_test_thread(
+                self,
+                project,
+                "LateConfigOptionsConnection",
+                acp_v2::SessionId::new("late-config-options-session"),
+                cx,
+            );
+            Task::ready(Ok(thread))
+        }
+
+        fn auth_methods(&self) -> &[acp_v2::AuthMethod] {
+            &[]
+        }
+
+        fn authenticate(
+            &self,
+            _method_id: acp_v2::AuthMethodId,
+            _cx: &mut App,
+        ) -> Task<gpui::Result<()>> {
+            Task::ready(Ok(()))
+        }
+
+        fn prompt(
+            &self,
+            _params: acp_v2::PromptRequest,
+            _cx: &mut App,
+        ) -> Task<gpui::Result<acp_v1::PromptResponse>> {
+            Task::ready(Ok(acp_v1::PromptResponse::new(acp_v1::StopReason::EndTurn)))
+        }
+
+        fn cancel(&self, _session_id: &acp_v2::SessionId, _cx: &mut App) {}
+
+        fn session_config_options(
+            &self,
+            _session_id: &acp_v2::SessionId,
+            _cx: &App,
+        ) -> Option<Rc<dyn acp_thread::AgentSessionConfigOptions>> {
+            let config_options = self.config_options.lock().clone()?;
+            Some(Rc::new(StaticSessionConfigOptions(config_options)))
+        }
+
+        fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
+            self
+        }
+    }
+
+    #[gpui::test]
+    async fn test_config_options_announced_after_the_session_starts_replace_the_fallback_selectors(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let connection = LateConfigOptionsConnection::default();
+        let (conversation_view, cx) =
+            setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
+        let thread_view = active_thread(&conversation_view, cx);
+        thread_view.read_with(cx, |view, _| {
+            assert!(view.config_options_view.is_none());
+        });
+
+        *connection.config_options.lock() = Some(vec![acp_v2::SessionConfigOption::boolean(
+            "web_search",
+            "Web Search",
+            false,
+        )]);
+        let thread = thread_view.read_with(cx, |view, _| view.thread.clone());
+        thread
+            .update(cx, |thread, cx| {
+                thread.handle_session_update(
+                    acp_v1::SessionUpdate::ConfigOptionUpdate(acp_v1::ConfigOptionUpdate::new(
+                        vec![acp_v1::SessionConfigOption::boolean(
+                            "web_search",
+                            "Web Search",
+                            false,
+                        )],
+                    )),
+                    cx,
+                )
+            })
+            .expect("config option update should succeed");
+        cx.run_until_parked();
+
+        thread_view.read_with(cx, |view, _| {
+            assert!(view.config_options_view.is_some());
+            assert!(view.mode_selector.is_none());
+            assert!(view.model_selector.is_none());
+        });
     }
 
     #[gpui::test]
