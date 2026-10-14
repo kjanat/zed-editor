@@ -43,15 +43,12 @@ fn is_excluded_model(model_id: &str) -> bool {
 
 /// Models that budget thinking in tokens rather than accepting thinking levels.
 fn uses_thinking_budget(model_id: &str) -> bool {
-    matches!(
-        model_id,
-        "gemini-2.5-pro" | "gemini-2.5-flash" | "gemini-2.5-flash-lite"
-    )
+    model_version(model_id) == Some((2, 5))
 }
 
 /// Thinking-budget models whose thinking can be turned off with a zero budget.
 pub(crate) fn supports_disabling_thinking(model_id: &str) -> bool {
-    matches!(model_id, "gemini-2.5-flash" | "gemini-2.5-flash-lite")
+    uses_thinking_budget(model_id) && model_id.starts_with("gemini-2.5-flash")
 }
 
 /// Models that take tool result media as sibling parts of the function response.
@@ -59,10 +56,7 @@ pub(crate) fn supports_disabling_thinking(model_id: &str) -> bool {
 /// Google documents media nested under `functionResponse.parts` for Gemini 3 and later, which
 /// reject sibling media with "Requests ending with a model turn are not supported".
 pub(crate) fn uses_sibling_function_response_media(model_id: &str) -> bool {
-    matches!(
-        model_id,
-        "gemini-2.5-pro" | "gemini-2.5-flash" | "gemini-2.5-flash-lite"
-    )
+    model_version(model_id).is_some_and(|(major, _)| major < 3)
 }
 
 /// Level-based models that accept `MINIMAL`; the others reject it and start at `LOW`.
@@ -95,6 +89,12 @@ pub(crate) fn lowest_thinking_level(model_id: &str) -> Option<ThinkingLevel> {
     } else {
         Some(ThinkingLevel::Low)
     }
+}
+
+fn model_version(model_id: &str) -> Option<(u32, u32)> {
+    let (version, _) = model_id.strip_prefix("gemini-")?.split_once('-')?;
+    let (major, minor) = version.split_once('.').unwrap_or((version, "0"));
+    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 /// Whether the ID has a version after `gemini-`, as in `gemini-3.1-pro-preview`.
@@ -921,6 +921,61 @@ mod tests {
             Some(ThinkingLevel::Low)
         );
         assert_eq!(lowest_thinking_level("gemini-2.5-flash"), None);
+    }
+
+    #[test]
+    fn test_gemini_2_5_variants_budget_thinking() {
+        for id in [
+            "gemini-2.5-pro",
+            "gemini-2.5-pro-preview-06-05",
+            "gemini-2.5-flash-preview-05-20",
+            "gemini-2.5-flash-lite-preview-06-17",
+        ] {
+            assert_eq!(lowest_thinking_level(id), None, "{id}");
+        }
+        assert!(supports_disabling_thinking(
+            "gemini-2.5-flash-preview-05-20"
+        ));
+        assert!(supports_disabling_thinking(
+            "gemini-2.5-flash-lite-preview-06-17"
+        ));
+        assert!(!supports_disabling_thinking("gemini-2.5-pro-preview-06-05"));
+        assert!(!supports_disabling_thinking("gemini-3.5-flash"));
+    }
+
+    #[test]
+    fn test_listed_gemini_2_5_variant_budgets_thinking() {
+        let model = Model::from_listed(ListModelEntry {
+            name: "models/gemini-2.5-flash-preview-05-20".to_string(),
+            display_name: None,
+            input_token_limit: Some(1_048_576),
+            output_token_limit: Some(65_536),
+            supported_generation_methods: vec!["generateContent".to_string()],
+            thinking: true,
+        })
+        .expect("a versioned text model should be offered");
+        assert!(model.supported_thinking_levels.is_empty());
+        assert_eq!(model.default_thinking_level, None);
+        assert!(model.supports_disabling_thinking());
+    }
+
+    #[test]
+    fn test_pre_gemini_3_models_use_sibling_function_response_media() {
+        for id in [
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-preview-05-20",
+            "gemini-2.0-flash",
+            "gemini-1.5-pro-002",
+        ] {
+            assert!(uses_sibling_function_response_media(id), "{id}");
+        }
+        for id in [
+            "gemini-3.1-pro-preview",
+            "gemini-4-argon",
+            "gemini-flash-latest",
+        ] {
+            assert!(!uses_sibling_function_response_media(id), "{id}");
+        }
     }
 
     #[test]
