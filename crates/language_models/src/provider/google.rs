@@ -21,13 +21,15 @@ use serde::{Deserialize, Serialize};
 pub use settings::GoogleAvailableModel as AvailableModel;
 use settings::{Settings, SettingsStore};
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use ui::IconName;
-use util::ResultExt as _;
 
 use language_model::ApiKeyState;
 
 const PROVIDER_ID: LanguageModelProviderId = GOOGLE_PROVIDER_ID;
 const PROVIDER_NAME: LanguageModelProviderName = GOOGLE_PROVIDER_NAME;
+const FIRST_FETCH_MODELS_RETRY_DELAY: Duration = Duration::from_secs(5);
+const MAX_FETCH_MODELS_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct GoogleSettings {
@@ -134,12 +136,26 @@ impl State {
             .clone();
 
         self.fetch_models_task = Some(cx.spawn(async move |this, cx| {
-            let Some(models) =
-                google_ai::list_models(http_client.as_ref(), &api_url, &api_key, &extra_headers)
-                    .await
-                    .log_err()
-            else {
-                return;
+            let mut retry_delay = FIRST_FETCH_MODELS_RETRY_DELAY;
+            let models = loop {
+                match google_ai::list_models(
+                    http_client.as_ref(),
+                    &api_url,
+                    &api_key,
+                    &extra_headers,
+                )
+                .await
+                {
+                    Ok(models) => break models,
+                    Err(error) => {
+                        log::warn!(
+                            "Failed to fetch Google models, retrying in {}s: {error}",
+                            retry_delay.as_secs()
+                        );
+                        cx.background_executor().timer(retry_delay).await;
+                        retry_delay = (retry_delay * 2).min(MAX_FETCH_MODELS_RETRY_DELAY);
+                    }
+                }
             };
             this.update(cx, |this, cx| {
                 this.fetched_models = models;
@@ -434,5 +450,98 @@ fn available_model_to_google_model(available: &AvailableModel) -> google_ai::Mod
         mode: available.mode.unwrap_or_default(),
         supported_thinking_levels: Vec::new(),
         default_thinking_level: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_client::{AsyncBody, FakeHttpClient};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const CATALOG: &str = r#"{"models": [{
+        "name": "models/gemini-3.5-flash",
+        "displayName": "Gemini 3.5 Flash",
+        "inputTokenLimit": 1048576,
+        "outputTokenLimit": 65536,
+        "supportedGenerationMethods": ["generateContent"],
+        "thinking": true
+    }]}"#;
+
+    #[gpui::test]
+    async fn test_model_catalog_fetch_retries_after_a_failure(cx: &mut gpui::TestAppContext) {
+        let catalog_requests = Arc::new(AtomicUsize::new(0));
+        let http_client = FakeHttpClient::create({
+            let catalog_requests = catalog_requests.clone();
+            move |_request| {
+                let attempt = catalog_requests.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    let (status, body) = if attempt == 0 {
+                        (503, "unavailable")
+                    } else {
+                        (200, CATALOG)
+                    };
+                    Ok(http_client::Response::builder()
+                        .status(status)
+                        .body(AsyncBody::from(body))?)
+                }
+            }
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+        assert_eq!(catalog_requests.load(Ordering::SeqCst), 1);
+        assert!(cx.update(|cx| provider.provided_models(cx)).is_empty());
+
+        cx.executor().advance_clock(FIRST_FETCH_MODELS_RETRY_DELAY);
+        cx.run_until_parked();
+        assert_eq!(catalog_requests.load(Ordering::SeqCst), 2);
+        let model_ids = cx.update(|cx| {
+            provider
+                .provided_models(cx)
+                .into_iter()
+                .map(|model| model.id.0.to_string())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(model_ids, ["gemini-3.5-flash"]);
+    }
+
+    struct TestCredentialsProvider;
+
+    impl CredentialsProvider for TestCredentialsProvider {
+        fn read_credentials<'a>(
+            &'a self,
+            _url: &'a str,
+            _cx: &'a AsyncApp,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Option<(String, Vec<u8>)>>> + 'a>,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn write_credentials<'a>(
+            &'a self,
+            _url: &'a str,
+            _username: &'a str,
+            _password: &'a [u8],
+            _cx: &'a AsyncApp,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete_credentials<'a>(
+            &'a self,
+            _url: &'a str,
+            _cx: &'a AsyncApp,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 }
