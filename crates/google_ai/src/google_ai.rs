@@ -512,6 +512,7 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextPart {
+    #[serde(default)]
     pub text: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub thought: bool,

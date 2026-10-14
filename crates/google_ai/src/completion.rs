@@ -822,6 +822,40 @@ mod tests {
     }
 
     #[test]
+    fn thought_part_without_text_maps_to_signed_thinking_event() {
+        let part: Part = serde_json::from_value(json!({
+            "thought": true,
+            "thoughtSignature": "thought-signature"
+        }))
+        .expect("a thought part may omit its text");
+
+        let mut mapper = GoogleEventMapper::new();
+        let response = GenerateContentResponse {
+            candidates: Some(vec![GenerateContentCandidate {
+                index: Some(0),
+                content: Content {
+                    parts: vec![part],
+                    role: GoogleRole::Model,
+                },
+                finish_reason: None,
+                finish_message: None,
+                safety_ratings: None,
+                citation_metadata: None,
+            }]),
+            prompt_feedback: None,
+            usage_metadata: None,
+        };
+
+        let events = mapper.map_event(response);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            Ok(LanguageModelCompletionEvent::Thinking { text, signature })
+                if text.is_empty() && signature.as_deref() == Some("thought-signature")
+        ));
+    }
+
+    #[test]
     fn usage_is_reported_only_once_prompt_tokens_are_known() {
         let mut mapper = GoogleEventMapper::new();
         let chunks = [
