@@ -41,8 +41,9 @@ fn is_excluded_model(model_id: &str) -> bool {
     })
 }
 
-/// Models that budget thinking in tokens rather than accepting thinking levels.
-fn uses_thinking_budget(model_id: &str) -> bool {
+/// Models that budget thinking in tokens rather than accepting thinking levels. Gemini 2.5
+/// Flash-Lite thinks only when the request sets a budget.
+pub(crate) fn uses_thinking_budget(model_id: &str) -> bool {
     model_version(model_id) == Some((2, 5))
 }
 
@@ -599,11 +600,44 @@ pub struct UsageMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct ThinkingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_budget: Option<u32>,
+    pub thinking_budget: Option<ThinkingBudget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_thoughts: Option<bool>,
+}
+
+/// Google encodes dynamic thinking as a `thinkingBudget` of `-1`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThinkingBudget {
+    Tokens(u32),
+    Dynamic,
+}
+
+impl Serialize for ThinkingBudget {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Tokens(tokens) => serializer.serialize_u32(*tokens),
+            Self::Dynamic => serializer.serialize_i32(-1),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThinkingBudget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match i64::deserialize(deserializer)? {
+            -1 => Ok(Self::Dynamic),
+            tokens => u32::try_from(tokens)
+                .map(Self::Tokens)
+                .map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

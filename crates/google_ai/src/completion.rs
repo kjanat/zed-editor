@@ -13,8 +13,8 @@ use std::sync::atomic::{self, AtomicU64};
 use crate::{
     Content, FunctionCallingConfig, FunctionCallingMode, FunctionDeclaration,
     GenerateContentResponse, GenerationConfig, GenerativeContentBlob, GoogleModelMode,
-    InlineDataPart, ModelName, Part, SystemInstruction, TextPart, ThinkingConfig, ThinkingLevel,
-    ToolConfig, UsageMetadata,
+    InlineDataPart, ModelName, Part, SystemInstruction, TextPart, ThinkingBudget, ThinkingConfig,
+    ThinkingLevel, ToolConfig, UsageMetadata,
 };
 
 pub fn into_google(
@@ -229,17 +229,19 @@ fn thinking_config_for_request(
             .as_deref()
             .and_then(ThinkingLevel::from_effort);
 
-        if config.thinking_level.is_none()
-            && let GoogleModelMode::Thinking {
-                budget_tokens: Some(budget_tokens),
-            } = mode
-        {
-            config.thinking_budget = Some(budget_tokens);
+        if config.thinking_level.is_none() {
+            config.thinking_budget = match mode {
+                GoogleModelMode::Thinking {
+                    budget_tokens: Some(budget_tokens),
+                } => Some(ThinkingBudget::Tokens(budget_tokens)),
+                _ if crate::uses_thinking_budget(model_id) => Some(ThinkingBudget::Dynamic),
+                _ => None,
+            };
         }
     } else if let Some(thinking_level) = crate::lowest_thinking_level(model_id) {
         config.thinking_level = Some(thinking_level);
     } else if crate::supports_disabling_thinking(model_id) {
-        config.thinking_budget = Some(0);
+        config.thinking_budget = Some(ThinkingBudget::Tokens(0));
     }
 
     (!config.is_empty()).then_some(config)
@@ -730,8 +732,74 @@ mod tests {
             0
         );
         let thinking_config = request.generation_config.unwrap().thinking_config.unwrap();
-        assert_eq!(thinking_config.thinking_budget, Some(0));
+        assert_eq!(
+            thinking_config.thinking_budget,
+            Some(ThinkingBudget::Tokens(0))
+        );
         assert_eq!(thinking_config.include_thoughts, None);
+    }
+
+    #[test]
+    fn into_google_requests_dynamic_thinking_for_budget_models_without_a_budget() {
+        for model_id in [
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+        ] {
+            let mut request = text_request();
+            request.thinking_allowed = true;
+
+            let request = into_google(
+                request,
+                model_id.to_string(),
+                GoogleModelMode::Thinking {
+                    budget_tokens: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                serde_json::to_value(&request).unwrap()["generationConfig"]["thinkingConfig"],
+                json!({"thinkingBudget": -1, "includeThoughts": true}),
+                "{model_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn into_google_keeps_an_explicit_thinking_budget() {
+        let mut request = text_request();
+        request.thinking_allowed = true;
+
+        let request = into_google(
+            request,
+            "gemini-2.5-flash-lite".to_string(),
+            GoogleModelMode::Thinking {
+                budget_tokens: Some(2048),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["generationConfig"]["thinkingConfig"],
+            json!({"thinkingBudget": 2048, "includeThoughts": true})
+        );
+    }
+
+    #[test]
+    fn thinking_budget_round_trips_dynamic_and_token_counts() {
+        for (budget, value) in [
+            (ThinkingBudget::Dynamic, json!(-1)),
+            (ThinkingBudget::Tokens(0), json!(0)),
+            (ThinkingBudget::Tokens(24576), json!(24576)),
+        ] {
+            assert_eq!(serde_json::to_value(budget).unwrap(), value);
+            assert_eq!(
+                serde_json::from_value::<ThinkingBudget>(value).unwrap(),
+                budget
+            );
+        }
+        assert!(serde_json::from_value::<ThinkingBudget>(json!(-2)).is_err());
     }
 
     #[test]
