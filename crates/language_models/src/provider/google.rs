@@ -60,6 +60,7 @@ pub struct State {
     credentials_provider: Arc<dyn CredentialsProvider>,
     http_client: Arc<dyn HttpClient>,
     fetched_models: Vec<google_ai::Model>,
+    fetch_models_error: Option<SharedString>,
     fetch_models_task: Option<Task<()>>,
 }
 
@@ -121,6 +122,7 @@ impl State {
     /// Drops models fetched with an outdated key or endpoint, cancelling any fetch in flight.
     fn clear_fetched_models(&mut self) {
         self.fetched_models.clear();
+        self.fetch_models_error = None;
         self.fetch_models_task = None;
     }
 
@@ -135,9 +137,10 @@ impl State {
             .custom_headers
             .clone();
 
+        self.fetch_models_error = None;
         self.fetch_models_task = Some(cx.spawn(async move |this, cx| {
             let mut retry_delay = FIRST_FETCH_MODELS_RETRY_DELAY;
-            let models = loop {
+            let result = loop {
                 match google_ai::list_models(
                     http_client.as_ref(),
                     &api_url,
@@ -146,8 +149,8 @@ impl State {
                 )
                 .await
                 {
-                    Ok(models) => break models,
-                    Err(error) => {
+                    Ok(models) => break Ok(models),
+                    Err(error) if error.is_transient() => {
                         log::warn!(
                             "Failed to fetch Google models, retrying in {}s: {error}",
                             retry_delay.as_secs()
@@ -155,10 +158,19 @@ impl State {
                         cx.background_executor().timer(retry_delay).await;
                         retry_delay = (retry_delay * 2).min(MAX_FETCH_MODELS_RETRY_DELAY);
                     }
+                    Err(error) => {
+                        log::error!("Failed to fetch Google models: {error}");
+                        break Err(SharedString::from(format!(
+                            "Failed to load Google models: {error}"
+                        )));
+                    }
                 }
             };
             this.update(cx, |this, cx| {
-                this.fetched_models = models;
+                match result {
+                    Ok(models) => this.fetched_models = models,
+                    Err(error) => this.fetch_models_error = Some(error),
+                }
                 cx.notify();
             })
             .ok();
@@ -203,6 +215,7 @@ impl GoogleLanguageModelProvider {
                 credentials_provider,
                 http_client: http_client.clone(),
                 fetched_models: Vec::new(),
+                fetch_models_error: None,
                 fetch_models_task: None,
             }
         });
@@ -357,12 +370,15 @@ impl LanguageModelProvider for GoogleLanguageModelProvider {
 
     fn settings_view(&self, cx: &mut App) -> Option<ProviderSettingsView> {
         let state = self.state.read(cx);
-        Some(ProviderSettingsView::ApiKey(ApiKeyConfiguration::new(
-            state.api_key_state.has_key(),
-            state.api_key_state.is_from_env_var(),
-            state.api_key_state.env_var_name().clone(),
-            "https://aistudio.google.com/app/apikey".into(),
-        )))
+        Some(ProviderSettingsView::ApiKey(
+            ApiKeyConfiguration::new(
+                state.api_key_state.has_key(),
+                state.api_key_state.is_from_env_var(),
+                state.api_key_state.env_var_name().clone(),
+                "https://aistudio.google.com/app/apikey".into(),
+            )
+            .error(state.fetch_models_error.clone()),
+        ))
     }
 
     fn set_api_key(&self, api_key: Option<String>, cx: &mut App) -> Task<Result<()>> {
@@ -514,6 +530,42 @@ mod tests {
                 .collect::<Vec<_>>()
         });
         assert_eq!(model_ids, ["gemini-3.5-flash"]);
+    }
+
+    #[gpui::test]
+    async fn test_model_catalog_fetch_stops_on_a_permanent_failure(cx: &mut gpui::TestAppContext) {
+        let catalog_requests = Arc::new(AtomicUsize::new(0));
+        let http_client = FakeHttpClient::create({
+            let catalog_requests = catalog_requests.clone();
+            move |_request| {
+                catalog_requests.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Ok(http_client::Response::builder()
+                        .status(401)
+                        .body(AsyncBody::from("invalid api key"))?)
+                }
+            }
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+        cx.executor().advance_clock(MAX_FETCH_MODELS_RETRY_DELAY);
+        cx.run_until_parked();
+
+        assert_eq!(catalog_requests.load(Ordering::SeqCst), 1);
+        assert!(cx.update(|cx| provider.provided_models(cx)).is_empty());
+        assert!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.fetch_models_error.is_some())
+        );
     }
 
     #[gpui::test]

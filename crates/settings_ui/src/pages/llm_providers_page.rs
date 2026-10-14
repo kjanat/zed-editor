@@ -13,8 +13,8 @@ use settings::{
     OpenAiCompatibleModelCapabilities, OpenAiCompatibleSettingsContent, OpenAiReasoningEffort,
 };
 use ui::{
-    ButtonLink, Checkbox, ConfiguredApiCard, ContextMenu, Divider, DividerColor, DropdownMenu,
-    DropdownStyle, IconPosition, PopoverMenu, ToggleState, prelude::*,
+    Banner, ButtonLink, Checkbox, ConfiguredApiCard, ContextMenu, Divider, DividerColor,
+    DropdownMenu, DropdownStyle, IconPosition, PopoverMenu, Severity, ToggleState, prelude::*,
 };
 use util::ResultExt as _;
 
@@ -220,6 +220,11 @@ fn render_api_key_providers_item(
     let is_from_env_var = config.is_from_env_var;
     let env_var_name = config.env_var_name;
     let api_key_url = config.api_key_url;
+    let error_banner = config.error.map(|error| {
+        Banner::new()
+            .severity(Severity::Error)
+            .child(Label::new(error))
+    });
 
     if has_key {
         let configured_label = if is_from_env_var {
@@ -246,7 +251,11 @@ fn render_api_key_providers_item(
             })
             .into_any_element();
 
-        return v_flex().gap_2().child(card).into_any_element();
+        return v_flex()
+            .gap_2()
+            .child(card)
+            .children(error_banner)
+            .into_any_element();
     }
 
     let input_id = format!("{}-api-key-input", provider_id.0);
@@ -317,6 +326,7 @@ fn render_api_key_providers_item(
                         }),
                 ),
         )
+        .children(error_banner)
         .into_any_element()
 }
 
