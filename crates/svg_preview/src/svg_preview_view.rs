@@ -144,14 +144,15 @@ impl SvgPreviewView {
             else {
                 return;
             };
-
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
-                    let pane = workspace.active_pane().clone();
-                    Self::open_preview_in_pane(workspace, buffer, pane, window, cx);
-                })
-                .ok();
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            cx.update(|window, cx| {
+                let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+                let pane = workspace.read(cx).active_pane().clone();
+                Self::open_preview_in_pane(&workspace, buffer, pane, window, cx);
+            })
+            .ok();
         })
         .detach();
     }
