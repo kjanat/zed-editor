@@ -3270,7 +3270,13 @@ impl RenderOnce for PaneTab {
                     cx.stop_propagation();
                 },
             ))
-            .on_drag(dragged_tab, |tab, _, _, cx| cx.new(|_| tab.clone()))
+            .on_drag(dragged_tab, |tab, _, _, cx| {
+                let project_path = tab.item.project_path(cx);
+                cx.new(|_| DraggedTab {
+                    project_path,
+                    ..tab.clone()
+                })
+            })
             .drag_over::<DraggedTab>(move |tab, dragged_tab: &DraggedTab, _, cx| {
                 let mut styled_tab = tab
                     .bg(cx.theme().colors().drop_target_background)
@@ -5463,7 +5469,12 @@ impl Render for DraggedTab {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, iter::zip, num::NonZero, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        iter::zip,
+        num::NonZero,
+        rc::Rc,
+    };
 
     use super::*;
     use crate::{
@@ -5488,6 +5499,7 @@ mod tests {
     struct CustomDropHandlingItem {
         focus_handle: gpui::FocusHandle,
         drop_call_count: Cell<usize>,
+        dropped_project_paths: RefCell<Vec<Option<ProjectPath>>>,
     }
 
     impl CustomDropHandlingItem {
@@ -5495,6 +5507,7 @@ mod tests {
             Self {
                 focus_handle: cx.focus_handle(),
                 drop_call_count: Cell::new(0),
+                dropped_project_paths: RefCell::new(Vec::new()),
             }
         }
 
@@ -5535,11 +5548,14 @@ mod tests {
             _window: &mut Window,
             _cx: &mut App,
         ) -> bool {
-            let is_dragged_tab = dropped.downcast_ref::<DraggedTab>().is_some();
-            if is_dragged_tab {
-                self.drop_call_count.set(self.drop_call_count.get() + 1);
-            }
-            is_dragged_tab
+            let Some(dragged_tab) = dropped.downcast_ref::<DraggedTab>() else {
+                return false;
+            };
+            self.drop_call_count.set(self.drop_call_count.get() + 1);
+            self.dropped_project_paths
+                .borrow_mut()
+                .push(dragged_tab.project_path.clone());
+            true
         }
     }
 
@@ -6420,6 +6436,88 @@ mod tests {
             pane.unpin_tab_at(ix, window, cx);
         });
         assert_item_labels(&pane, ["C", "A", "B*"], cx);
+    }
+
+    #[gpui::test]
+    async fn test_dragged_tab_carries_the_project_path_at_drag_start(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_label("A")
+                .with_project_items(&[TestProjectItem::new(1, "a.txt", cx)])
+        });
+        let drop_target = cx.new(CustomDropHandlingItem::new);
+        cx.update(|window, cx| {
+            Pane::add_item(
+                &pane,
+                Box::new(item.clone()),
+                false,
+                false,
+                None,
+                window,
+                cx,
+            );
+            Pane::add_item(
+                &pane,
+                Box::new(drop_target.clone()),
+                true,
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let tab_bounds = cx
+            .debug_bounds("TAB-0")
+            .expect("the first tab should be rendered");
+        let drop_position = cx.update(|window, _| {
+            let size = window.viewport_size();
+            gpui::point(size.width / 2., size.height / 2.)
+        });
+
+        cx.simulate_event(MouseDownEvent {
+            position: tab_bounds.center(),
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+
+        let moved_project_item = cx.update(|_, cx| TestProjectItem::new(2, "b.txt", cx));
+        let moved_project_path =
+            moved_project_item.read_with(cx, |project_item, _| project_item.project_path.clone());
+        item.update(cx, |item, _| item.project_items = vec![moved_project_item]);
+
+        cx.simulate_event(MouseMoveEvent {
+            position: drop_position,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        });
+        cx.run_until_parked();
+        cx.simulate_event(MouseUpEvent {
+            position: drop_position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        cx.run_until_parked();
+
+        drop_target.read_with(cx, |drop_target, _| {
+            assert_eq!(
+                *drop_target.dropped_project_paths.borrow(),
+                vec![moved_project_path],
+                "the dragged tab should carry the item's project path from when the drag started"
+            );
+        });
     }
 
     #[gpui::test]
