@@ -198,7 +198,7 @@ jobs:
 
   # Preserve the check names required by branch protection after splitting the suites.
   tests:
-    if: always() && github.repository == 'kjanat/zed-editor'
+    if: ${{ !cancelled() && github.repository == 'kjanat/zed-editor' }}
     needs: test_suites
     strategy:
       matrix: { os: [ubuntu-26.04, windows-2025-vs2026, macos-latest] }
