@@ -224,6 +224,16 @@ fn render_api_key_providers_item(
         Banner::new()
             .severity(Severity::Error)
             .child(Label::new(error))
+            .action_slot(
+                Button::new(format!("retry-{}", provider_id.0), "Retry")
+                    .style(ButtonStyle::Tinted(ui::TintColor::Error))
+                    .on_click({
+                        let provider = provider.clone();
+                        move |_, _, cx| {
+                            provider.authenticate(cx).detach_and_log_err(cx);
+                        }
+                    }),
+            )
     });
 
     if has_key {

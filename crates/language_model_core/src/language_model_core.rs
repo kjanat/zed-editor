@@ -487,6 +487,8 @@ fn is_retryable_provider_status(provider: &LanguageModelProviderName, status: St
         || (provider == &OPEN_AI_PROVIDER_NAME && status == StatusCode::NOT_FOUND)
 }
 
+pub const MAX_RETRY_ATTEMPTS: u8 = 4;
+
 fn exponential_backoff(attempt: usize) -> Option<Duration> {
     const INITIAL_BACKOFF: Duration = Duration::from_secs(5);
     const MAXIMUM_BACKOFF: Duration = Duration::from_secs(40);

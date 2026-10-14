@@ -14,22 +14,19 @@ use language_model::{
     GOOGLE_PROVIDER_ID, GOOGLE_PROVIDER_NAME, IconOrSvg, LanguageModel, LanguageModelClient,
     LanguageModelEffortLevel, LanguageModelId, LanguageModelName, LanguageModelProvider,
     LanguageModelProviderId, LanguageModelProviderName, LanguageModelProviderState,
-    LanguageModelRequest, ModelRateLimiters, ProviderSettingsView,
+    LanguageModelRequest, MAX_RETRY_ATTEMPTS, ModelRateLimiters, ProviderSettingsView,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 pub use settings::GoogleAvailableModel as AvailableModel;
 use settings::{Settings, SettingsStore};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 use ui::IconName;
 
 use language_model::ApiKeyState;
 
 const PROVIDER_ID: LanguageModelProviderId = GOOGLE_PROVIDER_ID;
 const PROVIDER_NAME: LanguageModelProviderName = GOOGLE_PROVIDER_NAME;
-const FIRST_FETCH_MODELS_RETRY_DELAY: Duration = Duration::from_secs(5);
-const MAX_FETCH_MODELS_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct GoogleSettings {
@@ -139,9 +136,9 @@ impl State {
 
         self.fetch_models_error = None;
         self.fetch_models_task = Some(cx.spawn(async move |this, cx| {
-            let mut retry_delay = FIRST_FETCH_MODELS_RETRY_DELAY;
+            let mut attempt = 0;
             let result = loop {
-                match google_ai::list_models(
+                let error = match google_ai::list_models(
                     http_client.as_ref(),
                     &api_url,
                     &api_key,
@@ -150,21 +147,23 @@ impl State {
                 .await
                 {
                     Ok(models) => break Ok(models),
-                    Err(error) if error.is_transient() => {
-                        log::warn!(
-                            "Failed to fetch Google models, retrying in {}s: {error}",
-                            retry_delay.as_secs()
-                        );
-                        cx.background_executor().timer(retry_delay).await;
-                        retry_delay = (retry_delay * 2).min(MAX_FETCH_MODELS_RETRY_DELAY);
-                    }
-                    Err(error) => {
-                        log::error!("Failed to fetch Google models: {error}");
-                        break Err(SharedString::from(format!(
-                            "Failed to load Google models: {error}"
-                        )));
-                    }
-                }
+                    Err(error) => error,
+                };
+                attempt += 1;
+                let retry_delay = error
+                    .retry_delay(attempt)
+                    .filter(|_| attempt <= usize::from(MAX_RETRY_ATTEMPTS));
+                let Some(retry_delay) = retry_delay else {
+                    log::error!("Failed to fetch Google models: {error}");
+                    break Err(SharedString::from(format!(
+                        "Failed to load Google models: {error}"
+                    )));
+                };
+                log::warn!(
+                    "Failed to fetch Google models, retrying in {}s: {error}",
+                    retry_delay.as_secs()
+                );
+                cx.background_executor().timer(retry_delay).await;
             };
             this.update(cx, |this, cx| {
                 match result {
@@ -475,8 +474,20 @@ fn available_model_to_google_model(available: &AvailableModel) -> google_ai::Mod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_client::{AsyncBody, FakeHttpClient};
+    use http_client::{AsyncBody, FakeHttpClient, StatusCode};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    fn longest_retry_delay() -> Duration {
+        LanguageModelCompletionError::from_http_status(
+            PROVIDER_NAME,
+            StatusCode::SERVICE_UNAVAILABLE,
+            String::new(),
+            None,
+        )
+        .retry_delay(usize::from(MAX_RETRY_ATTEMPTS))
+        .expect("a 503 response is retried")
+    }
 
     const CATALOG: &str = r#"{"models": [{
         "name": "models/gemini-3.5-flash",
@@ -519,7 +530,7 @@ mod tests {
         assert_eq!(catalog_requests.load(Ordering::SeqCst), 1);
         assert!(cx.update(|cx| provider.provided_models(cx)).is_empty());
 
-        cx.executor().advance_clock(FIRST_FETCH_MODELS_RETRY_DELAY);
+        cx.executor().advance_clock(longest_retry_delay());
         cx.run_until_parked();
         assert_eq!(catalog_requests.load(Ordering::SeqCst), 2);
         let model_ids = cx.update(|cx| {
@@ -556,7 +567,7 @@ mod tests {
             .await
             .expect("store the api key");
         cx.run_until_parked();
-        cx.executor().advance_clock(MAX_FETCH_MODELS_RETRY_DELAY);
+        cx.executor().advance_clock(longest_retry_delay());
         cx.run_until_parked();
 
         assert_eq!(catalog_requests.load(Ordering::SeqCst), 1);
@@ -565,6 +576,62 @@ mod tests {
             provider
                 .state
                 .read_with(cx, |state, _| state.fetch_models_error.is_some())
+        );
+    }
+
+    #[gpui::test]
+    async fn test_model_catalog_fetch_gives_up_after_the_retry_limit(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let catalog_requests = Arc::new(AtomicUsize::new(0));
+        let http_client = FakeHttpClient::create({
+            let catalog_requests = catalog_requests.clone();
+            move |_request| {
+                catalog_requests.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Ok(http_client::Response::builder()
+                        .status(503)
+                        .body(AsyncBody::from("unavailable"))?)
+                }
+            }
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+        for _ in 0..=MAX_RETRY_ATTEMPTS {
+            cx.executor().advance_clock(longest_retry_delay());
+            cx.run_until_parked();
+        }
+
+        assert_eq!(
+            catalog_requests.load(Ordering::SeqCst),
+            1 + usize::from(MAX_RETRY_ATTEMPTS)
+        );
+        assert!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.fetch_models_error.is_some())
+        );
+
+        cx.update(|cx| provider.authenticate(cx))
+            .await
+            .expect("authenticate with the stored key");
+        cx.run_until_parked();
+        assert_eq!(
+            catalog_requests.load(Ordering::SeqCst),
+            2 + usize::from(MAX_RETRY_ATTEMPTS)
+        );
+        assert!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.fetch_models_error.is_none())
         );
     }
 
