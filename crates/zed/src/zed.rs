@@ -6792,9 +6792,9 @@ mod tests {
     ) {
         let app_state = init_test(cx);
         cx.update(encoding_selector::init);
-        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let project = project_with_markdown_file(&app_state, cx).await;
         let (workspace, _pane, reader, mut cx) = window_with_item_reading_containers(
-            project,
+            project.clone(),
             workspace::item::test::HookBits::ACT_AS_TYPE,
             cx,
         );
@@ -6813,15 +6813,35 @@ mod tests {
         reader.read_with(&cx, |reader, _| {
             assert!(reader.container_reads.get() > 0);
         });
+
+        let editor = markdown_editor(&project, &mut cx).await;
+        reader.update(&mut cx, |reader, _| {
+            reader.acts_as = Some(editor.into());
+            reader.container_reads.set(0);
+        });
+        cx.dispatch_action(encoding_selector::Toggle);
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<encoding_selector::EncodingSelector>(cx)
+                    .is_some(),
+                "an item acting as an editor should open the encoding selector"
+            );
+        });
+        reader.read_with(&cx, |reader, _| {
+            assert!(reader.container_reads.get() > 0);
+        });
     }
 
     #[gpui::test]
     async fn test_select_toolchain_with_items_that_read_their_containers(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         cx.update(toolchain_selector::init);
-        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let project = project_with_markdown_file(&app_state, cx).await;
         let (workspace, _pane, reader, mut cx) = window_with_item_reading_containers(
-            project,
+            project.clone(),
             workspace::item::test::HookBits::ACT_AS_TYPE,
             cx,
         );
@@ -6840,6 +6860,62 @@ mod tests {
         reader.read_with(&cx, |reader, _| {
             assert!(reader.container_reads.get() > 0);
         });
+
+        let editor = markdown_editor(&project, &mut cx).await;
+        reader.update(&mut cx, |reader, _| {
+            reader.acts_as = Some(editor.into());
+            reader.container_reads.set(0);
+        });
+        cx.dispatch_action(toolchain_selector::Select);
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<toolchain_selector::ToolchainSelector>(cx)
+                    .is_some(),
+                "an item acting as an editor should open the toolchain selector"
+            );
+        });
+        reader.read_with(&cx, |reader, _| {
+            assert!(reader.container_reads.get() > 0);
+        });
+    }
+
+    async fn project_with_markdown_file(
+        app_state: &Arc<AppState>,
+        cx: &mut TestAppContext,
+    ) -> Entity<Project> {
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "notes.md": "# Notes\n" }))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+        project.update(cx, |project, _| project.languages().add(markdown_lang()));
+        project
+    }
+
+    async fn markdown_editor(
+        project: &Entity<Project>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<Editor> {
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/root/notes.md"), cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        buffer.read_with(cx, |buffer, _| {
+            assert!(
+                buffer.language().is_some(),
+                "the markdown file should have a language"
+            );
+        });
+        cx.update(|window, cx| {
+            cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx))
+        })
     }
 
     #[gpui::test]
