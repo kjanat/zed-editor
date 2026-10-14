@@ -194,6 +194,7 @@ pub struct EditPredictionStore {
 }
 
 struct TrackedWorkspace {
+    workspace: WeakEntity<Workspace>,
     followed_project: Option<EntityId>,
     _subscriptions: [gpui::Subscription; 3],
 }
@@ -2308,6 +2309,7 @@ impl EditPredictionStore {
         self.tracked_workspaces.insert(
             workspace_id,
             TrackedWorkspace {
+                workspace: workspace.downgrade(),
                 followed_project: None,
                 _subscriptions: subscriptions,
             },
@@ -2333,6 +2335,17 @@ impl EditPredictionStore {
             .map(|_| workspace_state.project().entity_id());
         if let Some(tracked_workspace) = self.tracked_workspaces.get_mut(&workspace.entity_id()) {
             tracked_workspace.followed_project = followed_project;
+        }
+    }
+
+    fn refresh_tracked_workspaces_following(&mut self, cx: &App) {
+        let workspaces = self
+            .tracked_workspaces
+            .values()
+            .filter_map(|tracked_workspace| tracked_workspace.workspace.upgrade())
+            .collect::<Vec<_>>();
+        for workspace in workspaces {
+            self.update_workspace_following(&workspace, cx);
         }
     }
 
@@ -2372,15 +2385,19 @@ impl EditPredictionStore {
             move |this, cx| {
                 let Some(request_task) = this
                     .update(cx, |this, cx| {
-                        this.request_prediction_internal(
-                            project.clone(),
-                            buffer.clone(),
-                            position,
-                            trigger,
-                            cx,
-                        )
+                        this.refresh_tracked_workspaces_following(cx);
+                        (!this.is_following(&project)).then(|| {
+                            this.request_prediction_internal(
+                                project.clone(),
+                                buffer.clone(),
+                                position,
+                                trigger,
+                                cx,
+                            )
+                        })
                     })
                     .log_err()
+                    .flatten()
                 else {
                     return Task::ready(anyhow::Ok(None));
                 };

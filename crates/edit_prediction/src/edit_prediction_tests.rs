@@ -367,6 +367,73 @@ async fn test_refresh_prediction_from_buffer_after_following_stops(cx: &mut Test
 }
 
 #[gpui::test]
+async fn test_refresh_prediction_from_buffer_in_the_update_that_starts_following(
+    cx: &mut TestAppContext,
+) {
+    let (ep_store, mut requests) = init_test_with_fake_client(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/root",
+        json!({
+            "foo.md":  "Hello!\nHow\nBye\n"
+        }),
+    )
+    .await;
+    let project = Project::test(fs, vec![path!("/root").as_ref()], cx).await;
+
+    let app_state = cx.update(|cx| {
+        let app_state = AppState::test(cx);
+        AppState::set_global(app_state.clone(), cx);
+        app_state
+    });
+    let multi_workspace =
+        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    cx.update(|cx| {
+        AppState::set_global(workspace.read(cx).app_state().clone(), cx);
+    });
+    drop(app_state);
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            let path = project.find_project_path(path!("root/foo.md"), cx).unwrap();
+            project.open_buffer(path, cx)
+        })
+        .await
+        .unwrap();
+    let snapshot = buffer.read_with(cx, |buffer, _cx| buffer.snapshot());
+    let position = snapshot.anchor_before(language::Point::new(1, 3));
+    ep_store.update(cx, |ep_store, cx| {
+        ep_store.register_project(&project, cx);
+        ep_store.register_buffer(&buffer, &project, cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                workspace.start_following(CollaboratorId::Agent, window, cx);
+            });
+            ep_store.update(cx, |ep_store, cx| {
+                ep_store.refresh_prediction_from_buffer(
+                    project.clone(),
+                    buffer.clone(),
+                    position,
+                    Duration::ZERO,
+                    EditPredictionRequestTrigger::Other,
+                    cx,
+                );
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_no_predict_request_ready(&mut requests.predict);
+}
+
+#[gpui::test]
 async fn test_refresh_prediction_from_buffer_inside_workspace_update(cx: &mut TestAppContext) {
     let (ep_store, mut requests) = init_test_with_fake_client(cx);
     let fs = FakeFs::new(cx.executor());
