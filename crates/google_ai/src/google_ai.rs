@@ -66,17 +66,29 @@ fn supports_minimal_thinking(model_id: &str) -> bool {
     matches!(
         model_id,
         "gemini-3-flash-preview"
+            | "gemini-3.1-flash-lite"
+            | "gemini-3.1-flash-lite-preview"
             | "gemini-3.5-flash"
             | "gemini-3.5-flash-lite"
             | "gemini-3.6-flash"
     )
 }
 
+/// Whether a level-based model accepts `MEDIUM`. Google lists only `LOW` and `HIGH` for
+/// `gemini-3-pro-preview`.
+fn supports_medium_thinking(model_id: &str) -> bool {
+    model_id != "gemini-3-pro-preview"
+}
+
 /// The thinking level Zed selects for a level-based model until the user picks another.
 fn default_thinking_level(model_id: &str) -> ThinkingLevel {
     match model_id {
-        "gemini-3.5-flash-lite" => ThinkingLevel::Minimal,
-        "gemini-3-flash-preview" | "gemini-3.1-pro-preview" => ThinkingLevel::High,
+        "gemini-3.1-flash-lite" | "gemini-3.1-flash-lite-preview" | "gemini-3.5-flash-lite" => {
+            ThinkingLevel::Minimal
+        }
+        "gemini-3-flash-preview" | "gemini-3-pro-preview" | "gemini-3.1-pro-preview" => {
+            ThinkingLevel::High
+        }
         _ => ThinkingLevel::Medium,
     }
 }
@@ -863,6 +875,7 @@ impl Model {
                     ]
                     .into_iter()
                     .skip_while(|level| *level != lowest)
+                    .filter(|level| *level != ThinkingLevel::Medium || supports_medium_thinking(id))
                     .collect(),
                     Some(default_thinking_level(id)),
                 ),
@@ -959,6 +972,49 @@ mod tests {
         assert!(model.supported_thinking_levels.is_empty());
         assert_eq!(model.default_thinking_level, None);
         assert!(model.supports_disabling_thinking());
+    }
+
+    #[test]
+    fn test_listed_models_offer_only_their_supported_thinking_levels() {
+        for (id, expected_levels, expected_default) in [
+            (
+                "gemini-3-pro-preview",
+                vec![ThinkingLevel::Low, ThinkingLevel::High],
+                ThinkingLevel::High,
+            ),
+            (
+                "gemini-3.1-flash-lite",
+                vec![
+                    ThinkingLevel::Minimal,
+                    ThinkingLevel::Low,
+                    ThinkingLevel::Medium,
+                    ThinkingLevel::High,
+                ],
+                ThinkingLevel::Minimal,
+            ),
+            (
+                "gemini-3.1-flash-lite-preview",
+                vec![
+                    ThinkingLevel::Minimal,
+                    ThinkingLevel::Low,
+                    ThinkingLevel::Medium,
+                    ThinkingLevel::High,
+                ],
+                ThinkingLevel::Minimal,
+            ),
+        ] {
+            let model = Model::from_listed(ListModelEntry {
+                name: format!("models/{id}"),
+                display_name: None,
+                input_token_limit: Some(1_048_576),
+                output_token_limit: Some(65_536),
+                supported_generation_methods: vec!["generateContent".to_string()],
+                thinking: true,
+            })
+            .expect("a versioned text model should be offered");
+            assert_eq!(model.supported_thinking_levels, expected_levels, "{id}");
+            assert_eq!(model.default_thinking_level, Some(expected_default), "{id}");
+        }
     }
 
     #[test]
