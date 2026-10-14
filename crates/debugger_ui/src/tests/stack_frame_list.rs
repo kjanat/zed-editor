@@ -12,13 +12,16 @@ use dap::{
 };
 use db::kvp::KeyValueStore;
 use editor::{Editor, ToPoint as _};
-use gpui::{BackgroundExecutor, TestAppContext, VisualTestContext};
+use gpui::{AppContext as _, BackgroundExecutor, TestAppContext, VisualTestContext};
 use project::{FakeFs, Project};
 use serde_json::json;
 use std::sync::Arc;
 use unindent::Unindent as _;
 use util::{path, rel_path::rel_path};
-use workspace::Item;
+use workspace::{
+    Item, Pane,
+    item::test::{HookBits, TestItem},
+};
 
 #[gpui::test]
 async fn test_fetch_initial_stack_frames_and_go_to_stack_frame(
@@ -1269,5 +1272,120 @@ async fn test_stack_frame_filter_persistence(
             StackFrameFilter::OnlyUserFrames,
             "Filter should be restored from KVP store in new session"
         );
+    });
+}
+
+#[gpui::test]
+async fn test_go_to_stack_frame_beside_items_that_read_their_containers(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    let test_file_content = "console.log('hi');\n";
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+           "src": {
+               "test.js": test_file_content,
+           }
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    let inner_workspace = workspace
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    let pane = inner_workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let pane_handle = pane.downgrade();
+    let workspace_handle = inner_workspace.downgrade();
+    let item = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::ACTIVE_PROJECT_PATH)
+    });
+
+    let session = start_debug_session(&workspace, cx, |_| {}).unwrap();
+    let client = session.update(cx, |session, _| session.adapter_client().unwrap());
+    client.on_request::<Scopes, _>(move |_, _| Ok(dap::ScopesResponse { scopes: vec![] }));
+    client.on_request::<Threads, _>(move |_, _| {
+        Ok(dap::ThreadsResponse {
+            threads: vec![dap::Thread {
+                id: 1,
+                name: "Thread 1".into(),
+            }],
+        })
+    });
+    client.on_request::<StackTrace, _>(move |_, _| {
+        Ok(dap::StackTraceResponse {
+            stack_frames: vec![StackFrame {
+                id: 1,
+                name: "Stack Frame 1".into(),
+                source: Some(dap::Source {
+                    name: Some("test.js".into()),
+                    path: Some(path!("/project/src/test.js").into()),
+                    source_reference: None,
+                    presentation_hint: None,
+                    origin: None,
+                    sources: None,
+                    adapter_data: None,
+                    checksums: None,
+                }),
+                line: 1,
+                column: 1,
+                end_line: None,
+                end_column: None,
+                can_restart: None,
+                instruction_pointer_reference: None,
+                module_id: None,
+                presentation_hint: None,
+            }],
+            total_frames: None,
+        })
+    });
+
+    client
+        .fake_event(dap::messages::Events::Stopped(dap::StoppedEvent {
+            reason: dap::StoppedEventReason::Pause,
+            description: None,
+            thread_id: Some(1),
+            preserve_focus_hint: None,
+            text: None,
+            all_threads_stopped: None,
+            hit_breakpoint_ids: None,
+        }))
+        .await;
+    cx.run_until_parked();
+
+    active_debug_session_panel(workspace, cx).update_in(cx, |session, window, cx| {
+        session.running_state().update(cx, |running_state, cx| {
+            running_state.select_current_thread(
+                &running_state
+                    .session()
+                    .update(cx, |session, cx| session.threads(cx)),
+                window,
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+
+    assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+    inner_workspace.read_with(cx, |workspace, cx| {
+        let editors = workspace.items_of_type::<Editor>(cx).collect::<Vec<_>>();
+        assert_eq!(editors.len(), 1);
+        assert_eq!(editors[0].read(cx).text(cx), test_file_content);
     });
 }

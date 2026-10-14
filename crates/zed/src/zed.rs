@@ -904,7 +904,9 @@ async fn initialize_agent_panel(
                 .register_action(agent_ui::AgentPanel::toggle_focus)
                 .register_action(agent_ui::AgentPanel::focus)
                 .register_action(agent_ui::AgentPanel::toggle)
-                .register_action(agent_ui::InlineAssistant::inline_assist);
+                .register_action_renderer(|div, _, _, cx| {
+                    div.on_action(cx.entity_listener(agent_ui::InlineAssistant::inline_assist))
+                });
         }
     })?;
 
@@ -957,11 +959,18 @@ fn register_actions(
                     buffer.update(cx, |buffer, cx| {
                         buffer.set_text(report, cx);
                     });
-                    workspace.update_in(cx, |workspace, window, cx| {
+                    let workspace = workspace.upgrade().context("workspace was dropped")?;
+                    cx.update(|window, cx| {
                         let editor = cx
                             .new(|cx| Editor::for_buffer(buffer, Some(project), window, cx));
-                        workspace
-                            .add_item_to_active_pane(Box::new(editor), None, true, window, cx);
+                        Workspace::add_item_to_active_pane(
+                            &workspace,
+                            Box::new(editor),
+                            None,
+                            true,
+                            window,
+                            cx,
+                        );
                     })
                 })
                 .detach_and_log_err(cx);
@@ -985,7 +994,8 @@ fn register_actions(
                     buffer.update(cx, |buffer, cx| {
                         buffer.set_text(json, cx);
                     });
-                    workspace.update_in(cx, |workspace, window, cx| {
+                    let workspace = workspace.upgrade().context("workspace was dropped")?;
+                    cx.update(|window, cx| {
                         let title = "Accessibility Tree".to_string();
                         let buffer = cx.new(|cx| {
                             MultiBuffer::singleton(buffer, cx).with_title(title.clone())
@@ -1000,7 +1010,8 @@ fn register_actions(
                             editor.set_breadcrumb_header(title);
                             editor
                         });
-                        workspace.add_item_to_active_pane(
+                        Workspace::add_item_to_active_pane(
+                            &workspace,
                             Box::new(editor),
                             None,
                             true,
@@ -1054,9 +1065,11 @@ fn register_actions(
             })
         })
         .register_action(|workspace, _: &OpenUrlPrompt, window, cx| {
-            workspace.toggle_modal(window, cx, |window, cx| {
-                open_url_modal::OpenUrlModal::new(window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    open_url_modal::OpenUrlModal::new(window, cx)
+                })
+                .detach();
         })
         .register_action(|workspace, action: &OpenBrowser, _window, cx| {
             // Parse and validate the URL to ensure it's properly formatted
@@ -1902,11 +1915,18 @@ fn open_log_file(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
                 })
                 .ok()?;
 
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
-                })
-                .ok()
+            let workspace = workspace.upgrade()?;
+            cx.update(|window, cx| {
+                Workspace::add_item_to_active_pane(
+                    &workspace,
+                    Box::new(editor),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
+            })
+            .ok()
         })
         .await;
     })
@@ -2431,7 +2451,19 @@ fn initialize_new_window(
         buffer.set_content_language_detection_enabled(true);
     });
     let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx));
-    workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
+    let workspace_handle = cx.weak_entity();
+    window.defer(cx, move |window, cx| {
+        if let Some(workspace) = workspace_handle.upgrade() {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor),
+                None,
+                true,
+                window,
+                cx,
+            );
+        }
+    });
 }
 
 pub fn open_new_ssh_project_from_project(
@@ -2693,20 +2725,19 @@ fn open_bundled_file(
                     });
                     let buffer =
                         cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(title.into()));
-                    workspace.update_in(cx, |workspace, window, cx| {
-                        workspace.add_item_to_active_pane(
-                            Box::new(cx.new(|cx| {
-                                let mut editor = Editor::for_multibuffer(
-                                    buffer,
-                                    Some(project.clone()),
-                                    window,
-                                    cx,
-                                );
-                                editor.set_read_only(true);
-                                editor.set_should_serialize(false, cx);
-                                editor.set_breadcrumb_header(title.into());
-                                editor
-                            })),
+                    let workspace = workspace.upgrade().context("workspace was dropped")?;
+                    cx.update(|window, cx| {
+                        let editor = cx.new(|cx| {
+                            let mut editor =
+                                Editor::for_multibuffer(buffer, Some(project.clone()), window, cx);
+                            editor.set_read_only(true);
+                            editor.set_should_serialize(false, cx);
+                            editor.set_breadcrumb_header(title.into());
+                            editor
+                        });
+                        Workspace::add_item_to_active_pane(
+                            &workspace,
+                            Box::new(editor),
                             None,
                             true,
                             window,
@@ -3047,7 +3078,7 @@ mod tests {
         let multi_workspace = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
-                multi_workspace.workspace().update(cx, |workspace, cx| {
+                multi_workspace.workspace().read_with(cx, |workspace, cx| {
                     assert!(workspace.active_item_as::<Editor>(cx).is_some())
                 });
             })
@@ -3723,21 +3754,21 @@ mod tests {
             "the workspace must keep the same database id across a close/reopen cycle"
         );
 
-        window
-            .update(cx, |multi_workspace, _, cx| {
-                multi_workspace.workspace().update(cx, |workspace, cx| {
-                    let editor = workspace
-                        .active_item(cx)
-                        .unwrap()
-                        .downcast::<editor::Editor>()
-                        .unwrap();
-                    editor.update(cx, |editor, cx| {
-                        assert_eq!(editor.text(cx), "EDIThey");
-                        assert!(editor.is_dirty(cx));
-                    });
-                });
+        let editor = window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .active_item(cx)
+                    .unwrap()
+                    .downcast::<editor::Editor>()
+                    .unwrap()
             })
             .unwrap();
+        editor.read_with(cx, |editor, cx| {
+            assert_eq!(editor.text(cx), "EDIThey");
+            assert!(editor.is_dirty(cx));
+        });
     }
 
     #[gpui::test]
@@ -3762,22 +3793,20 @@ mod tests {
             .unwrap();
 
         let editor = multi_workspace
-            .update(cx, |multi_workspace, _, cx| {
-                multi_workspace.workspace().update(cx, |workspace, cx| {
-                    let editor = workspace
-                        .active_item(cx)
-                        .unwrap()
-                        .downcast::<editor::Editor>()
-                        .unwrap();
-                    editor.update(cx, |editor, cx| {
-                        assert!(editor.text(cx).is_empty());
-                        assert!(!editor.is_dirty(cx));
-                    });
-
-                    editor
-                })
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .active_item(cx)
+                    .unwrap()
+                    .downcast::<editor::Editor>()
+                    .unwrap()
             })
             .unwrap();
+        editor.read_with(cx, |editor, cx| {
+            assert!(editor.text(cx).is_empty());
+            assert!(!editor.is_dirty(cx));
+        });
 
         let save_task = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
@@ -3840,6 +3869,71 @@ mod tests {
                         "launchpad window should have an empty pane so the launchpad is shown"
                     );
                 });
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_new_window_empty_tab_adds_editor_after_building_workspace(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.on_new_window = Some(settings::OnNewWindow::EmptyTab);
+                });
+            });
+        });
+
+        cx.update(|cx| {
+            open_new(
+                Default::default(),
+                app_state.clone(),
+                cx,
+                |workspace, window, cx| initialize_new_window(workspace, window, cx),
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx
+            .update(|cx| cx.windows().first().unwrap().downcast::<MultiWorkspace>())
+            .unwrap();
+        multi_workspace
+            .read_with(cx, |multi_workspace, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                assert_eq!(workspace.active_pane().read(cx).items_len(), 1);
+                assert!(
+                    workspace.active_item_as::<Editor>(cx).is_some(),
+                    "an empty-tab window should open an empty editor"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_show_onboarding_view_adds_page_after_building_workspace(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        load_bundled_themes(cx);
+        cx.update(|cx| client::Client::set_global(app_state.client.clone(), cx));
+
+        cx.update(|cx| onboarding::show_onboarding_view(app_state.clone(), cx))
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx
+            .update(|cx| cx.windows().first().unwrap().downcast::<MultiWorkspace>())
+            .unwrap();
+        multi_workspace
+            .read_with(cx, |multi_workspace, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let pane = workspace.active_pane().read(cx);
+                assert_eq!(pane.items_len(), 1);
+                let page = pane.active_item().expect("onboarding page should be open");
+                assert_eq!(page.tab_content_text(0, cx), "Onboarding");
             })
             .unwrap();
     }
@@ -6053,7 +6147,8 @@ mod tests {
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace
                     .workspace()
-                    .update(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
+                    .read(cx)
+                    .active_item_as::<Editor>(cx)
             })
             .unwrap();
         assert!(
@@ -6120,6 +6215,709 @@ mod tests {
         assert_eq!(item_count, 1);
     }
 
+    pub(crate) fn window_with_item_reading_containers(
+        project: Entity<Project>,
+        hooks: workspace::item::test::HookBits,
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Workspace>,
+        Entity<pane::Pane>,
+        Entity<workspace::item::test::TestItem>,
+        VisualTestContext,
+    ) {
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+        let reader = add_item_reading_containers(&workspace, &pane, hooks, &mut cx);
+        (workspace, pane, reader, cx)
+    }
+
+    pub(crate) fn add_item_reading_containers(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<pane::Pane>,
+        hooks: workspace::item::test::HookBits,
+        cx: &mut VisualTestContext,
+    ) -> Entity<workspace::item::test::TestItem> {
+        let pane_handle = pane.downgrade();
+        let workspace_handle = workspace.downgrade();
+        let reader = cx.new(|cx| {
+            workspace::item::test::TestItem::new(cx)
+                .with_label("reader")
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            pane::Pane::add_item(pane, Box::new(reader.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        reader.read_with(cx, |reader, _| {
+            reader.read_containers_in(hooks);
+            reader.container_reads.set(0);
+        });
+        reader
+    }
+
+    pub(crate) fn assert_item_added_next_to_reader<T: 'static>(
+        reader: &Entity<workspace::item::test::TestItem>,
+        pane: &Entity<pane::Pane>,
+        expected_items: usize,
+        cx: &mut VisualTestContext,
+    ) {
+        reader.read_with(cx, |reader, _| {
+            assert!(
+                reader.container_reads.get() > 0,
+                "adding the new item should run the existing item's hooks"
+            );
+        });
+        pane.read_with(cx, |pane, _| {
+            assert_eq!(pane.items_len(), expected_items);
+            assert!(
+                pane.active_item()
+                    .and_then(|item| item.downcast::<T>())
+                    .is_some(),
+                "the new item should be active next to the existing item"
+            );
+        });
+    }
+
+    pub(crate) fn add_item_hooks() -> workspace::item::test::HookBits {
+        workspace::item::test::HookBits::BUFFER_KIND
+            | workspace::item::test::HookBits::PROJECT_ITEMS
+    }
+
+    #[gpui::test]
+    async fn test_open_bundled_file_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(init);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(OpenDefaultSettings);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<Editor>(&reader, &pane, 2, &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_dump_accessibility_tree_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(DumpAccessibilityTree);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<Editor>(&reader, &pane, 2, &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_dump_input_latency_histogram_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(input_latency_ui::DumpInputLatencyHistogram);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<Editor>(&reader, &pane, 2, &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_open_telemetry_log_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(|cx| {
+            client::Client::set_global(app_state.client.clone(), cx);
+            super::telemetry_log::init(cx);
+        });
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(zed_actions::OpenTelemetryLog);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<super::telemetry_log::TelemetryLogView>(
+            &reader, &pane, 2, &mut cx,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_activity_indicator_show_status_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+        let indicator = workspace.update_in(&mut cx, |workspace, window, cx| {
+            activity_indicator::ActivityIndicator::new(workspace, window, cx)
+        });
+        cx.run_until_parked();
+        reader.read_with(&cx, |reader, _| reader.container_reads.set(0));
+
+        indicator.update(&mut cx, |_, cx| {
+            cx.emit(activity_indicator::Event::ShowStatus {
+                server_name: language::LanguageServerName::new_static("test-server"),
+                status: "failed to start".into(),
+            })
+        });
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<Editor>(&reader, &pane, 2, &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_open_component_preview_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(|cx| component_preview::init(app_state.clone(), cx));
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(workspace::OpenComponentPreview);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<component_preview::ComponentPreview>(
+            &reader, &pane, 2, &mut cx,
+        );
+    }
+
+    fn assert_tab_added_next_to_reader(
+        reader: &Entity<workspace::item::test::TestItem>,
+        pane: &Entity<pane::Pane>,
+        expected_tab_prefix: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        reader.read_with(cx, |reader, _| {
+            assert!(
+                reader.container_reads.get() > 0,
+                "adding the new item should run the existing item's hooks"
+            );
+        });
+        let active_item = pane.read_with(cx, |pane, _| {
+            assert_eq!(pane.items_len(), 2);
+            pane.active_item()
+                .expect("the new item should be active next to the existing item")
+        });
+        assert_ne!(active_item.item_id(), reader.entity_id());
+        let tab_text = cx.update(|_, cx| active_item.tab_content_text(0, cx));
+        assert!(
+            tab_text.starts_with(expected_tab_prefix),
+            "unexpected tab text {tab_text:?}"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_open_acp_logs_next_to_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        cx.update(acp_tools::init);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(acp_tools::OpenAcpLogs);
+        cx.run_until_parked();
+
+        assert_tab_added_next_to_reader(&reader, &pane, "ACP", &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_open_debug_adapter_logs_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(debugger_tools::init);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(debugger_tools::OpenDebugAdapterLogs);
+        cx.run_until_parked();
+
+        assert_tab_added_next_to_reader(&reader, &pane, "DAP Logs", &mut cx);
+    }
+
+    fn open_onboarding_next_to_reader(
+        app_state: &Arc<AppState>,
+        project: Entity<Project>,
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<pane::Pane>,
+        Entity<workspace::item::test::TestItem>,
+        VisualTestContext,
+    ) {
+        load_bundled_themes(cx);
+        cx.update(|cx| {
+            client::Client::set_global(app_state.client.clone(), cx);
+            onboarding::init(cx);
+        });
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(zed_actions::OpenOnboarding);
+        cx.run_until_parked();
+
+        reader.read_with(&cx, |reader, _| {
+            assert!(
+                reader.container_reads.get() > 0,
+                "adding the onboarding page should run the existing item's hooks"
+            );
+        });
+        pane.read_with(&cx, |pane, _| {
+            assert_eq!(pane.items_len(), 2);
+            assert_ne!(
+                pane.active_item().map(|item| item.item_id()),
+                Some(reader.entity_id()),
+                "the onboarding page should be active next to the existing item"
+            );
+        });
+        (pane, reader, cx)
+    }
+
+    #[gpui::test]
+    async fn test_open_onboarding_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        open_onboarding_next_to_reader(&app_state, project, cx);
+    }
+
+    #[gpui::test]
+    async fn test_finish_onboarding_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (pane, reader, mut cx) = open_onboarding_next_to_reader(&app_state, project, cx);
+        reader.read_with(&cx, |reader, _| reader.container_reads.set(0));
+
+        cx.dispatch_action(onboarding::Finish);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<workspace::welcome::WelcomePage>(
+            &reader, &pane, 2, &mut cx,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_show_welcome_next_to_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        cx.update(onboarding::init);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.dispatch_action(onboarding::ShowWelcome);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<workspace::welcome::WelcomePage>(
+            &reader, &pane, 2, &mut cx,
+        );
+    }
+
+    async fn open_svg_next_to_reader(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<pane::Pane>,
+        Entity<workspace::item::test::TestItem>,
+        VisualTestContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(svg_preview::init);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "image.svg": "<svg></svg>" }))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+        let (workspace, pane, reader, mut cx) = window_with_item_reading_containers(
+            project,
+            add_item_hooks() | workspace::item::test::HookBits::FOCUS_HANDLE,
+            cx,
+        );
+        workspace
+            .update_in(&mut cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    PathBuf::from(path!("/root/image.svg")),
+                    OpenOptions::default(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        reader.read_with(&cx, |reader, _| reader.container_reads.set(0));
+        (pane, reader, cx)
+    }
+
+    #[gpui::test]
+    async fn test_open_svg_preview_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (pane, reader, mut cx) = open_svg_next_to_reader(cx).await;
+
+        cx.dispatch_action(svg_preview::OpenPreview);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<svg_preview::svg_preview_view::SvgPreviewView>(
+            &reader, &pane, 3, &mut cx,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_open_following_svg_preview_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (pane, reader, mut cx) = open_svg_next_to_reader(cx).await;
+
+        cx.dispatch_action(svg_preview::OpenFollowingPreview);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<svg_preview::svg_preview_view::SvgPreviewView>(
+            &reader, &pane, 3, &mut cx,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_open_svg_preview_to_the_side_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(svg_preview::init);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "image.svg": "<svg></svg>" }))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+        let worktree_id = project.read_with(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let source_pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+        let target_pane = workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.split_pane(source_pane.clone(), SplitDirection::Right, window, cx)
+        });
+        let reader = add_item_reading_containers(
+            &workspace,
+            &target_pane,
+            add_item_hooks() | workspace::item::test::HookBits::ACTIVE_PROJECT_PATH,
+            &mut cx,
+        );
+        workspace
+            .update_in(&mut cx, |workspace, window, cx| {
+                workspace.open_path(
+                    (worktree_id, rel_path("image.svg")),
+                    Some(source_pane.downgrade()),
+                    true,
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, _| {
+            assert_eq!(workspace.active_pane(), &source_pane);
+        });
+        reader.read_with(&cx, |reader, _| reader.container_reads.set(0));
+
+        cx.dispatch_action(svg_preview::OpenPreviewToTheSide);
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<svg_preview::svg_preview_view::SvgPreviewView>(
+            &reader,
+            &target_pane,
+            2,
+            &mut cx,
+        );
+        source_pane.read_with(&cx, |pane, _| {
+            assert_eq!(
+                pane.items_len(),
+                1,
+                "the source pane keeps only the svg editor"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_log_file_next_to_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .create_dir(paths::log_file().parent().unwrap())
+            .await
+            .unwrap();
+        app_state
+            .fs
+            .as_fake()
+            .insert_file(paths::log_file(), b"first line\nsecond line\n".to_vec())
+            .await;
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            open_log_file(workspace, window, cx)
+        });
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<Editor>(&reader, &pane, 2, &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_open_builtin_json_schema_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (_workspace, pane, reader, mut cx) =
+            window_with_item_reading_containers(project, add_item_hooks(), cx);
+
+        cx.update(|_, cx| {
+            crate::handle_open_request(
+                super::open_listener::OpenRequest {
+                    kind: Some(super::open_listener::OpenRequestKind::BuiltinJsonSchema {
+                        schema_path: "jsonc".to_string(),
+                    }),
+                    ..Default::default()
+                },
+                app_state.clone(),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        assert_item_added_next_to_reader::<Editor>(&reader, &pane, 2, &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_open_edit_prediction_context_view_beside_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(edit_prediction_ui::init);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (workspace, source_pane, reader, mut cx) = window_with_item_reading_containers(
+            project,
+            add_item_hooks()
+                | workspace::item::test::HookBits::ACTIVE_PROJECT_PATH
+                | workspace::item::test::HookBits::FOCUS_HANDLE,
+            cx,
+        );
+
+        cx.dispatch_action(edit_prediction_ui::OpenEditPredictionContextView);
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.panes().len(), 2);
+            assert_ne!(workspace.active_pane(), &source_pane);
+            let context_view = workspace
+                .active_item(cx)
+                .expect("the context view should be open in the new pane");
+            assert_eq!(
+                context_view.tab_content_text(0, cx),
+                "Edit Prediction Context"
+            );
+        });
+        source_pane.read_with(&cx, |pane, _| {
+            assert_eq!(
+                pane.active_item().map(|item| item.item_id()),
+                Some(reader.entity_id()),
+                "the source pane keeps its item"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_inline_assist_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let (workspace, pane, reader, mut cx) = window_with_item_reading_containers(
+            project,
+            workspace::item::test::HookBits::ACT_AS_TYPE,
+            cx,
+        );
+
+        cx.update(|window, cx| {
+            agent_ui::InlineAssistant::inline_assist(
+                workspace.clone(),
+                &zed_actions::assistant::InlineAssist::default(),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        reader.read_with(&cx, |reader, _| {
+            assert!(
+                reader.container_reads.get() > 0,
+                "resolving the inline assist target should ask the active item for an editor"
+            );
+        });
+        pane.read_with(&cx, |pane, _| {
+            assert_eq!(
+                pane.items_len(),
+                1,
+                "an item that is not an editor gets no inline assist"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_toggle_encoding_selector_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(encoding_selector::init);
+        let project = project_with_markdown_file(&app_state, cx).await;
+        let (workspace, _pane, reader, mut cx) = window_with_item_reading_containers(
+            project.clone(),
+            workspace::item::test::HookBits::ACT_AS_TYPE,
+            cx,
+        );
+
+        cx.dispatch_action(encoding_selector::Toggle);
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<encoding_selector::EncodingSelector>(cx)
+                    .is_none(),
+                "an item that is not an editor should not open the encoding selector"
+            );
+        });
+        reader.read_with(&cx, |reader, _| {
+            assert!(reader.container_reads.get() > 0);
+        });
+
+        let editor = markdown_editor(&project, &mut cx).await;
+        reader.update(&mut cx, |reader, _| {
+            reader.acts_as = Some(editor.into());
+            reader.container_reads.set(0);
+        });
+        cx.dispatch_action(encoding_selector::Toggle);
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<encoding_selector::EncodingSelector>(cx)
+                    .is_some(),
+                "an item acting as an editor should open the encoding selector"
+            );
+        });
+        reader.read_with(&cx, |reader, _| {
+            assert!(reader.container_reads.get() > 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_select_toolchain_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        cx.update(toolchain_selector::init);
+        let project = project_with_markdown_file(&app_state, cx).await;
+        let (workspace, _pane, reader, mut cx) = window_with_item_reading_containers(
+            project.clone(),
+            workspace::item::test::HookBits::ACT_AS_TYPE,
+            cx,
+        );
+
+        cx.dispatch_action(toolchain_selector::Select);
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<toolchain_selector::ToolchainSelector>(cx)
+                    .is_none(),
+                "an item that is not an editor should not open the toolchain selector"
+            );
+        });
+        reader.read_with(&cx, |reader, _| {
+            assert!(reader.container_reads.get() > 0);
+        });
+
+        let editor = markdown_editor(&project, &mut cx).await;
+        reader.update(&mut cx, |reader, _| {
+            reader.acts_as = Some(editor.into());
+            reader.container_reads.set(0);
+        });
+        cx.dispatch_action(toolchain_selector::Select);
+        cx.run_until_parked();
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .active_modal::<toolchain_selector::ToolchainSelector>(cx)
+                    .is_some(),
+                "an item acting as an editor should open the toolchain selector"
+            );
+        });
+        reader.read_with(&cx, |reader, _| {
+            assert!(reader.container_reads.get() > 0);
+        });
+    }
+
+    async fn project_with_markdown_file(
+        app_state: &Arc<AppState>,
+        cx: &mut TestAppContext,
+    ) -> Entity<Project> {
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "notes.md": "# Notes\n" }))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+        project.update(cx, |project, _| project.languages().add(markdown_lang()));
+        project
+    }
+
+    async fn markdown_editor(
+        project: &Entity<Project>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<Editor> {
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/root/notes.md"), cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        buffer.read_with(cx, |buffer, _| {
+            assert!(
+                buffer.language().is_some(),
+                "the markdown file should have a language"
+            );
+        });
+        cx.update(|window, cx| {
+            cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx))
+        })
+    }
+
     #[gpui::test]
     async fn test_bundled_languages(cx: &mut TestAppContext) {
         let fs = fs::FakeFs::new(cx.background_executor.clone());
@@ -6144,6 +6942,13 @@ mod tests {
 
     pub(crate) fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         init_test_with_state(cx, cx.update(AppState::test))
+    }
+
+    fn load_bundled_themes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            theme::init(theme::LoadThemes::All(Box::new(Assets)), cx);
+            theme_settings::load_bundled_themes(&ThemeRegistry::global(cx));
+        });
     }
 
     fn set_file_scan_depth(cx: &mut TestAppContext, depth: u32) {

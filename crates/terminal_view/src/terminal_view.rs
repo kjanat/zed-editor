@@ -1830,8 +1830,8 @@ impl Item for TerminalView {
 
                 return true;
             } else {
-                if let Some(project_path) = item.project_path(cx)
-                    && let Some(path) = project.read(cx).absolute_path(&project_path, cx)
+                if let Some(project_path) = &tab.project_path
+                    && let Some(path) = project.read(cx).absolute_path(project_path, cx)
                 {
                     self.add_paths_to_terminal(&[path], window, cx);
                     return true;
@@ -2316,7 +2316,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use util::paths::PathStyle;
     use util::rel_path::RelPath;
-    use workspace::item::test::{TestItem, TestProjectItem};
+    use workspace::item::test::{HookBits, TestItem, TestProjectItem};
     use workspace::{AppState, MultiWorkspace, SelectedEntry};
 
     fn expected_drop_text(paths: &[PathBuf]) -> String {
@@ -2973,16 +2973,15 @@ mod tests {
                     .with_read_only(read_only)
                 });
 
-                active_pane.update(cx, |pane, cx| {
-                    pane.add_item(
-                        Box::new(terminal_view.clone()),
-                        true,
-                        false,
-                        None,
-                        window,
-                        cx,
-                    );
-                });
+                Pane::add_item(
+                    &active_pane,
+                    Box::new(terminal_view.clone()),
+                    true,
+                    false,
+                    None,
+                    window,
+                    cx,
+                );
 
                 if focus {
                     let focus_handle = terminal_view.read(cx).focus_handle.clone();
@@ -3209,9 +3208,15 @@ mod tests {
                 });
                 let tab_item =
                     cx.new(|cx| TestItem::new(cx).with_project_items(&[tab_project_item]));
-                active_pane.update(cx, |pane, cx| {
-                    pane.add_item(Box::new(tab_item.clone()), true, false, None, window, cx);
-                });
+                Pane::add_item(
+                    &active_pane,
+                    Box::new(tab_item.clone()),
+                    true,
+                    false,
+                    None,
+                    window,
+                    cx,
+                );
                 tab_item
             })
             .unwrap();
@@ -3249,6 +3254,10 @@ mod tests {
                     ix: dragged_tab_index,
                     detail: 0,
                     is_active: false,
+                    project_path: Some(ProjectPath {
+                        worktree_id,
+                        path: second_entry.path.clone(),
+                    }),
                 };
                 assert_drop_writes_to_terminal(
                     &active_pane,
@@ -3298,6 +3307,94 @@ mod tests {
                     window,
                     cx,
                 );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_handle_drop_of_a_tab_whose_item_reads_its_pane(cx: &mut TestAppContext) {
+        let (project, _workspace, window_handle) = init_test_with_window(cx).await;
+
+        let (worktree, _) = create_folder_wt(project.clone(), "/root/", cx).await;
+        let entry = create_file_in_worktree(worktree.clone(), "dragged.txt", cx).await;
+        let worktree_id = worktree.read_with(cx, |worktree, _| worktree.id());
+        let project_path = ProjectPath {
+            worktree_id,
+            path: entry.path.clone(),
+        };
+        let abs_path = project
+            .read_with(cx, |project, cx| project.absolute_path(&project_path, cx))
+            .unwrap();
+
+        let (active_pane, terminal, terminal_view) =
+            add_display_only_terminal(&project, window_handle, false, false, cx);
+
+        let tab_item = window_handle
+            .update(cx, |_, window, cx| {
+                let tab_project_item = cx.new(|_| TestProjectItem {
+                    entry_id: Some(entry.id),
+                    project_path: Some(project_path.clone()),
+                    is_dirty: false,
+                });
+                let pane_handle = active_pane.downgrade();
+                let tab_item = cx.new(|cx| {
+                    TestItem::new(cx)
+                        .with_pane_reader(pane_handle)
+                        .with_project_items(&[tab_project_item])
+                });
+                Pane::add_item(
+                    &active_pane,
+                    Box::new(tab_item.clone()),
+                    true,
+                    false,
+                    None,
+                    window,
+                    cx,
+                );
+                tab_item
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window_handle
+            .update(cx, |_, window, cx| {
+                let terminal_view_index =
+                    active_pane.read(cx).index_for_item(&terminal_view).unwrap();
+                active_pane.update(cx, |pane, cx| {
+                    pane.activate_item(terminal_view_index, false, false, window, cx)
+                });
+                tab_item
+                    .read(cx)
+                    .read_containers_in(HookBits::ACTIVE_PROJECT_PATH);
+                terminal.update(cx, |terminal, _| terminal.take_input_log());
+
+                let dragged_tab_index = active_pane.read(cx).index_for_item(&tab_item).unwrap();
+                let dragged_tab = DraggedTab::new(
+                    active_pane.clone(),
+                    Box::new(tab_item.clone()),
+                    dragged_tab_index,
+                    0,
+                    false,
+                    cx,
+                );
+                active_pane.update(cx, |pane, cx| {
+                    pane.handle_tab_drop(&dragged_tab, terminal_view_index, true, window, cx)
+                });
+
+                let input_log = terminal.update(cx, |terminal, _| terminal.take_input_log());
+                assert_eq!(
+                    input_log
+                        .into_iter()
+                        .map(|input| String::from_utf8(input).unwrap())
+                        .collect::<Vec<_>>(),
+                    vec![expected_drop_text(std::slice::from_ref(&abs_path))],
+                    "dropping the tab onto the terminal should write the item's path"
+                );
+                assert!(
+                    tab_item.read(cx).container_reads.get() > 0,
+                    "the dragged tab should read the item's project path"
+                );
+                tab_item.read(cx).read_containers_in(HookBits::default());
             })
             .unwrap();
     }

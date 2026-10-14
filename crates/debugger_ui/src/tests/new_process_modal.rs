@@ -1,7 +1,7 @@
 #![expect(clippy::result_large_err)]
 use dap::DapRegistry;
 use editor::Editor;
-use gpui::{BackgroundExecutor, TestAppContext, VisualTestContext};
+use gpui::{AppContext as _, BackgroundExecutor, TestAppContext, VisualTestContext};
 use project::{FakeFs, Fs as _, Project};
 use serde_json::json;
 use std::sync::Arc;
@@ -12,6 +12,10 @@ use task::{
 };
 use text::Point;
 use util::path;
+use workspace::{
+    Pane,
+    item::test::{HookBits, TestItem},
+};
 
 use crate::NewProcessMode;
 use crate::new_process_modal::NewProcessModal;
@@ -168,6 +172,65 @@ async fn test_debug_session_substitutes_variables_and_relativizes_paths(
 }
 
 #[gpui::test]
+async fn test_new_process_modal_task_contexts_items_that_read_their_containers(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+            "main.rs": "fn main() {}"
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    let inner_workspace = workspace
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    let pane = inner_workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let pane_handle = pane.downgrade();
+    let workspace_handle = inner_workspace.downgrade();
+    let item = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::ACTIVE_PROJECT_PATH | HookBits::ACT_AS_TYPE)
+    });
+
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                NewProcessModal::show(workspace, window, NewProcessMode::Debug, None, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+    let modal = workspace
+        .read_with(cx, |multi_workspace, cx| {
+            multi_workspace
+                .workspace()
+                .read(cx)
+                .active_modal::<NewProcessModal>(cx)
+        })
+        .unwrap();
+    assert!(modal.is_some());
+}
+
+#[gpui::test]
 async fn test_save_debug_scenario_to_file(executor: BackgroundExecutor, cx: &mut TestAppContext) {
     init_test(cx);
 
@@ -209,7 +272,7 @@ async fn test_save_debug_scenario_to_file(executor: BackgroundExecutor, cx: &mut
     cx.executor().run_until_parked();
 
     let editor = workspace
-        .update(cx, |workspace, _window, cx| {
+        .read_with(cx, |workspace, cx| {
             workspace.active_item_as::<Editor>(cx).unwrap()
         })
         .unwrap();
@@ -355,6 +418,88 @@ async fn test_debug_modal_subtitles_with_multiple_worktrees(
         subtitles.as_slice(),
         [path!(".zed/debug.json"), path!(".zed/debug.json")]
     );
+}
+
+#[gpui::test]
+async fn test_start_new_session_starts_debug_and_launch_scenarios(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+            ".zed": {
+                "debug.json": r#"[
+                    {
+                        "adapter": "fake-adapter",
+                        "label": "Debug App",
+                        "request": "launch",
+                        "program": "./app",
+                        "cwd": "."
+                    }
+                ]"#
+            },
+            "main.rs": "fn main() {}"
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    let called_launch = Arc::new(AtomicBool::new(false));
+    let _subscription = project::debugger::test::intercept_debug_sessions(cx, {
+        let called_launch = called_launch.clone();
+        move |client| {
+            client.on_request::<dap::requests::Launch, _>({
+                let called_launch = called_launch.clone();
+                move |_, _| {
+                    called_launch.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+        }
+    });
+
+    for mode in [NewProcessMode::Debug, NewProcessMode::Launch] {
+        workspace
+            .update(cx, |multi, window, cx| {
+                multi.workspace().update(cx, |workspace, cx| {
+                    NewProcessModal::show(workspace, window, NewProcessMode::Debug, None, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let modal = workspace
+            .update(cx, |workspace, _, cx| {
+                workspace.active_modal::<NewProcessModal>(cx)
+            })
+            .unwrap()
+            .expect("Modal should be active");
+
+        modal.update_in(cx, |modal, window, cx| {
+            modal.set_configure("/project/main", "/project", false, window, cx);
+            modal.set_mode(mode);
+        });
+        cx.update(|window, cx| NewProcessModal::start_new_session(modal, window, cx));
+        cx.run_until_parked();
+
+        assert!(
+            called_launch.swap(false, Ordering::SeqCst),
+            "starting a session in {mode} mode should launch the debuggee"
+        );
+        let modal_open = workspace
+            .update(cx, |workspace, _, cx| {
+                workspace.active_modal::<NewProcessModal>(cx).is_some()
+            })
+            .unwrap();
+        assert!(!modal_open, "starting a session should dismiss the modal");
+    }
 }
 
 #[gpui::test]

@@ -97,8 +97,7 @@ impl SoloDiffView {
                 })
                 .await?;
 
-            workspace_entity.update_in(cx, |workspace, window, cx| {
-                let workspace_handle = cx.entity();
+            cx.update(|window, cx| {
                 let view = cx.new(|cx| {
                     Self::new(
                         project,
@@ -106,13 +105,20 @@ impl SoloDiffView {
                         repo_path,
                         buffer,
                         diff,
-                        workspace_handle,
+                        workspace_entity.clone(),
                         window,
                         cx,
                     )
                 });
 
-                workspace.add_item_to_active_pane(Box::new(view.clone()), None, true, window, cx);
+                Workspace::add_item_to_active_pane(
+                    &workspace_entity,
+                    Box::new(view.clone()),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
                 view
             })
         })

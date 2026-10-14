@@ -365,7 +365,7 @@ impl SerializedPane {
         let mut preview_item_index = None;
         for (index, item) in self.children.iter().enumerate() {
             let project = project.clone();
-            item_tasks.push(pane.update_in(cx, |_, window, cx| {
+            item_tasks.push(cx.update(|window, cx| {
                 SerializableItemRegistry::deserialize(
                     &item.kind,
                     project,
@@ -390,8 +390,9 @@ impl SerializedPane {
             items.push(item_handle.clone());
 
             if let Some(item_handle) = item_handle {
-                pane.update_in(cx, |pane, window, cx| {
-                    pane.add_item(item_handle.clone(), true, true, None, window, cx);
+                let pane = pane.upgrade().context("pane was released")?;
+                cx.update(|window, cx| {
+                    Pane::add_item(&pane, item_handle.clone(), true, true, None, window, cx);
                 })?;
             }
         }

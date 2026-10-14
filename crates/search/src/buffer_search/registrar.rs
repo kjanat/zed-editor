@@ -40,20 +40,23 @@ impl<T: 'static> SearchActionsRegistrar for DivRegistrar<'_, '_, T> {
     fn register_handler<A: Action>(&mut self, callback: impl ActionExecutor<A>) {
         let getter = self.search_getter;
         self.div = self.div.take().map(|div| {
-            div.on_action(self.cx.listener(move |this, action, window, cx| {
-                let should_notify = (getter)(this, window, cx)
-                    .map(|search_bar| {
-                        search_bar.update(cx, |search_bar, cx| {
-                            callback.execute(search_bar, action, window, cx)
+            div.on_action(self.cx.entity_listener(
+                move |this: Entity<T>, action: &A, window, cx| {
+                    let search_bar = this.update(cx, |this, cx| (getter)(this, window, cx));
+                    let should_notify = search_bar
+                        .map(|search_bar| {
+                            search_bar.update(cx, |search_bar, cx| {
+                                callback.execute(search_bar, action, window, cx)
+                            })
                         })
-                    })
-                    .unwrap_or(false);
-                if should_notify {
-                    cx.notify();
-                } else {
-                    cx.propagate();
-                }
-            }))
+                        .unwrap_or(false);
+                    if should_notify {
+                        this.update(cx, |_, cx| cx.notify());
+                    } else {
+                        cx.propagate();
+                    }
+                },
+            ))
         });
     }
 }
@@ -112,28 +115,33 @@ pub fn register_pane_search_actions(div: Div, pane: Entity<Pane>) -> Div {
 /// Register actions for an active pane.
 impl SearchActionsRegistrar for Workspace {
     fn register_handler<A: Action>(&mut self, callback: impl ActionExecutor<A>) {
-        self.register_action(move |workspace, action: &A, window, cx| {
-            if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-                cx.propagate();
-                return;
-            }
-
-            let pane = workspace.active_pane();
+        self.register_action_renderer(move |div, _, _, cx| {
             let callback = callback.clone();
-            pane.update(cx, |this, cx| {
-                this.toolbar().update(cx, move |this, cx| {
-                    if let Some(search_bar) = this.item_of_type::<BufferSearchBar>() {
-                        let should_notify = search_bar.update(cx, move |search_bar, cx| {
-                            callback.execute(search_bar, action, window, cx)
-                        });
-                        if should_notify {
-                            cx.notify();
-                        } else {
-                            cx.propagate();
-                        }
+            div.on_action(cx.entity_listener(
+                move |workspace: Entity<Workspace>, action: &A, window, cx| {
+                    let modal_blocks_action = workspace.update(cx, |workspace, cx| {
+                        workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx)
+                    });
+                    if modal_blocks_action {
+                        cx.propagate();
+                        return;
                     }
-                })
-            });
+
+                    let toolbar = workspace.read(cx).active_pane().read(cx).toolbar().clone();
+                    let Some(search_bar) = toolbar.read(cx).item_of_type::<BufferSearchBar>()
+                    else {
+                        return;
+                    };
+                    let should_notify = search_bar.update(cx, |search_bar, cx| {
+                        callback.execute(search_bar, action, window, cx)
+                    });
+                    if should_notify {
+                        toolbar.update(cx, |_, cx| cx.notify());
+                    } else {
+                        cx.propagate();
+                    }
+                },
+            ))
         });
     }
 }

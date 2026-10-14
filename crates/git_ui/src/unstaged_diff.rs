@@ -131,10 +131,10 @@ impl UnstagedDiff {
     }
 
     pub fn deploy_at(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         entry: Option<GitStatusEntry>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         telemetry::event!(
             "Git Unstaged Diff Opened",
@@ -144,16 +144,18 @@ impl UnstagedDiff {
                 "Action"
             }
         );
-        let intended_repo = workspace.project().read(cx).active_repository(cx);
-        let existing = workspace.items_of_type::<Self>(cx).next();
+        let project = workspace.read(cx).project().clone();
+        let intended_repo = project.read(cx).active_repository(cx);
+        let existing = workspace.read(cx).items_of_type::<Self>(cx).next();
         let unstaged_diff = if let Some(existing) = existing {
-            workspace.activate_item(&existing, true, true, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing, true, true, window, cx);
+            });
             existing
         } else {
-            let workspace_handle = cx.entity();
-            let unstaged_diff =
-                cx.new(|cx| Self::new(workspace.project().clone(), workspace_handle, window, cx));
-            workspace.add_item_to_active_pane(
+            let unstaged_diff = cx.new(|cx| Self::new(project, workspace.clone(), window, cx));
+            Workspace::add_item_to_active_pane(
+                workspace,
                 Box::new(unstaged_diff.clone()),
                 None,
                 true,

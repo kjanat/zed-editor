@@ -4,14 +4,18 @@ use client::proto;
 use collections::HashSet;
 use editor::Editor;
 use fs::{FakeFs, Fs};
-use gpui::{App, BorrowAppContext, Context, Entity, VisualTestContext, Window};
+use gpui::{App, AppContext as _, BorrowAppContext, Context, Entity, VisualTestContext, Window};
 use project::{Project, ProjectPath};
 use serde_json::{Value, json};
 use settings::{SettingsStore, SplicingVec};
 use std::path::Path;
 use std::sync::Arc;
 use util::rel_path::rel_path;
-use workspace::{Item, MultiWorkspace, register_project_item};
+use workspace::{
+    Item, MultiWorkspace, Pane,
+    item::test::{HookBits, TestItem},
+    register_project_item,
+};
 
 use crate::project_panel_tests::{self, TestProjectItemView, find_project_entry, select_path};
 use crate::{NewDirectory, NewFile, Open, ProjectPanel, Redo, Rename, Trash, Undo};
@@ -438,6 +442,52 @@ async fn undo_create_dirty_file(cx: &mut gpui::TestAppContext) {
     cx.undo().await;
     cx.answer("Don't Save");
     cx.assert_not_exists("c.txt");
+}
+
+#[gpui::test]
+async fn test_undo_create_next_to_items_that_read_their_containers(cx: &mut gpui::TestAppContext) {
+    let mut cx = TestContext::new(cx).await;
+
+    cx.create_file("c.txt").await;
+
+    let workspace = cx
+        .panel
+        .read_with(&cx.cx, |panel, _| panel.workspace.upgrade())
+        .expect("workspace should still exist");
+    let pane = workspace.read_with(&cx.cx, |workspace, _| workspace.active_pane().clone());
+    let pane_handle = pane.downgrade();
+    let workspace_handle = workspace.downgrade();
+    let reader = cx.cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.cx.update(|window, cx| {
+        Pane::add_item(
+            &pane,
+            Box::new(reader.clone()),
+            false,
+            false,
+            None,
+            window,
+            cx,
+        );
+    });
+    cx.cx.run_until_parked();
+    reader.read_with(&cx.cx, |reader, _| {
+        reader.read_containers_in(HookBits::IS_DIRTY | HookBits::PROJECT_ITEMS);
+        reader.container_reads.set(0);
+    });
+
+    cx.undo().await;
+    cx.answer("Trash");
+    cx.assert_not_exists("c.txt");
+    reader.read_with(&cx.cx, |reader, _| {
+        assert!(
+            reader.container_reads.get() > 0,
+            "confirming the trash should check whether open items are dirty"
+        );
+    });
 }
 
 #[gpui::test]

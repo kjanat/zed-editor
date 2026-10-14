@@ -15,7 +15,7 @@ use text::{Bias, Point};
 use theme::ActiveTheme;
 use ui::prelude::*;
 use util::paths::FILE_ROW_COLUMN_DELIMITER;
-use workspace::{DismissDecision, ModalView};
+use workspace::ModalView;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(GoToLine::register).detach();
@@ -32,13 +32,8 @@ pub struct GoToLine {
 }
 
 impl ModalView for GoToLine {
-    fn on_before_dismiss(
-        &mut self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> DismissDecision {
+    fn on_dismissed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         self.prev_scroll_position.take();
-        DismissDecision::Dismiss(true)
     }
 }
 
@@ -67,9 +62,11 @@ impl GoToLine {
                     return;
                 };
                 workspace.update(cx, |workspace, cx| {
-                    workspace.toggle_modal(window, cx, move |window, cx| {
-                        GoToLine::new(editor_handle, buffer, window, cx)
-                    });
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            GoToLine::new(editor_handle, buffer, window, cx)
+                        })
+                        .detach();
                 })
             })
             .detach();
@@ -361,7 +358,10 @@ mod tests {
     use serde_json::json;
     use std::{num::NonZeroU32, sync::Arc, time::Duration};
     use util::{path, rel_path::rel_path};
-    use workspace::{AppState, MultiWorkspace, Workspace};
+    use workspace::{
+        AppState, MultiWorkspace, Pane, Workspace,
+        item::test::{HookBits, TestItem},
+    };
 
     #[gpui::test]
     async fn test_go_to_line_view_row_highlights(cx: &mut TestAppContext) {
@@ -943,6 +943,79 @@ mod tests {
             "Expected a single caret selection, but got: {selection:?}"
         );
         selection
+    }
+
+    #[gpui::test]
+    async fn test_cursor_position_click_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/dir"), json!({ "a.rs": "fn main() {}\n" }))
+            .await;
+        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let worktree_id = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .project()
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .id()
+        });
+        let editor = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path((worktree_id, rel_path("a.rs")), None, true, window, cx)
+            })
+            .await
+            .unwrap()
+            .downcast::<Editor>()
+            .unwrap();
+
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| item.read_containers_in(HookBits::ACT_AS_TYPE));
+
+        cx.update(|window, cx| {
+            cursor_position::toggle_go_to_line_for_active_item(&workspace, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .active_modal::<GoToLine>(cx)
+                .is_none()),
+            "an item that is not an editor should not open the go to line modal"
+        );
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&editor, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            cursor_position::toggle_go_to_line_for_active_item(&workspace, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .active_modal::<GoToLine>(cx)
+                .is_some()),
+            "the active editor should open the go to line modal"
+        );
     }
 
     fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {

@@ -4,11 +4,13 @@ use crate::lsp_log_view::LogMenuItem;
 
 use super::*;
 use futures::StreamExt;
-use gpui::{AppContext as _, TestAppContext, VisualContext as _, VisualTestContext};
+use gpui::{
+    AppContext as _, Focusable as _, TestAppContext, VisualContext as _, VisualTestContext,
+};
 use language::{
     FakeLspAdapter, Language, LanguageConfig, LanguageMatcher, LanguageServerId, tree_sitter_rust,
 };
-use lsp::LanguageServerName;
+use lsp::{LanguageServerName, LanguageServerSelector};
 use project::{
     Event as ProjectEvent, FakeFs, Project,
     lsp_store::log_store::{LanguageServerKind, LanguageServerLogKey, LogKind, LogStore},
@@ -17,6 +19,10 @@ use proto::PeerId;
 use serde_json::json;
 use settings::SettingsStore;
 use util::path;
+use workspace::{
+    AppState, MultiWorkspace, Pane,
+    item::test::{HookBits, TestItem},
+};
 
 #[gpui::test]
 async fn test_lsp_log_view_filters_servers_from_other_projects(cx: &mut TestAppContext) {
@@ -929,6 +935,101 @@ async fn test_lsp_log_view(cx: &mut TestAppContext) {
         assert!(!view.stream_enabled_for_test(&unavailable_server_key, LogKind::Rpc));
         assert!(view.stream_enabled_for_test(&server_key, LogKind::Rpc));
     });
+}
+
+#[gpui::test]
+async fn test_open_lsp_log_view_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        AppState::test(cx);
+        editor::init(cx);
+    });
+
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(path!("/the-root"), json!({ "test.rs": "" }))
+        .await;
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let log_store = cx.new(|cx| LogStore::new(false, cx));
+    log_store.update(cx, |store, cx| store.add_project(&project, cx));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let left_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let right_pane = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.split_pane(left_pane.clone(), SplitDirection::Right, window, cx)
+    });
+    let right_item = add_item_reading_containers(&workspace, &right_pane, cx);
+    let left_item = add_item_reading_containers(&workspace, &left_pane, cx);
+    left_item.update_in(cx, |_, window, cx| cx.focus_self(window));
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.active_pane().clone()),
+        left_pane
+    );
+    left_item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::PIXEL_POSITION_OF_CURSOR)
+    });
+    right_item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+    });
+
+    cx.update(|window, cx| {
+        crate::lsp_log_view::open(
+            &log_store,
+            workspace.downgrade(),
+            LanguageServerSelector::Id(LanguageServerId(0)),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.panes().len()),
+        2
+    );
+    let log_view = right_pane
+        .read_with(cx, |pane, _| pane.active_item())
+        .and_then(|item| item.downcast::<LspLogView>());
+    assert!(
+        log_view.is_some(),
+        "the log view should open in the pane to the right"
+    );
+    assert!(left_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+    assert!(right_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+
+    cx.update(|window, cx| window.focus(&right_pane.read(cx).focus_handle(cx), cx));
+    cx.run_until_parked();
+    let editor_focused = cx.update(|window, cx| {
+        log_view
+            .as_ref()
+            .is_some_and(|log_view| log_view.read(cx).editor.focus_handle(cx).is_focused(window))
+    });
+    assert!(
+        editor_focused,
+        "focusing the pane should focus the log view's editor"
+    );
+}
+
+fn add_item_reading_containers(
+    workspace: &Entity<Workspace>,
+    pane: &Entity<Pane>,
+    cx: &mut VisualTestContext,
+) -> Entity<TestItem> {
+    let workspace_handle = workspace.downgrade();
+    let pane_handle = pane.downgrade();
+    let item = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        Pane::add_item(pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item
 }
 
 fn init_test(cx: &mut gpui::TestAppContext) {

@@ -191,19 +191,15 @@ fn handle_definition_locations(
         GotoDefinitionKind::Declaration => LspPickerKind::Declaration,
         GotoDefinitionKind::Implementation => LspPickerKind::Implementation,
     };
+    let weak_editor = action.editor.clone();
+    let origin = action.origin.clone();
     workspace.update(cx, |workspace, cx| {
         let project = workspace.project().clone();
-        workspace.toggle_modal(window, cx, |window, cx| {
-            LspLocationsPicker::new(
-                kind,
-                matches,
-                project,
-                action.editor.clone(),
-                action.origin.clone(),
-                window,
-                cx,
-            )
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                LspLocationsPicker::new(kind, matches, project, weak_editor, origin, window, cx)
+            })
+            .detach();
     });
 }
 
@@ -414,9 +410,11 @@ impl LspLocationsPicker {
 
             workspace
                 .update_in(cx, |workspace, window, cx| {
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        Self::new(kind, matches, project, editor, None, window, cx)
-                    });
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            Self::new(kind, matches, project, editor, None, window, cx)
+                        })
+                        .detach();
                 })
                 .log_err();
         })

@@ -41,54 +41,56 @@ pub fn open(
             let Some(log_store) = log_store.upgrade() else {
                 return;
             };
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    let project = workspace.project().clone();
-                    let weak_project = project.downgrade();
-                    let project_is_local = project.read(cx).is_local();
-                    let weak_lsp_store = project.read(cx).lsp_store().downgrade();
-                    let tool_log_store = log_store.clone();
-                    let log_view = get_or_create_tool(
-                        workspace,
-                        SplitDirection::Right,
-                        window,
-                        cx,
-                        move |window, cx| LspLogView::new(project, tool_log_store, window, cx),
-                    );
-                    log_view.update(cx, |log_view, cx| {
-                        let key_priority = |key: &LanguageServerLogKey| match &key.kind {
-                            LanguageServerKind::Local { .. } if project_is_local => 0,
-                            LanguageServerKind::Remote { .. } if !project_is_local => 0,
-                            _ => 1,
-                        };
-                        let server_key = match server {
-                            LanguageServerSelector::Id(id) => log_store
-                                .read(cx)
-                                .language_servers
-                                .keys()
-                                .filter(|key| {
-                                    key.server_id == id
-                                        && key.is_for_project(&weak_project, &weak_lsp_store)
-                                })
-                                .min_by_key(|key| key_priority(key))
-                                .cloned(),
-                            LanguageServerSelector::Name(name) => log_store
-                                .read(cx)
-                                .language_servers
-                                .iter()
-                                .filter(|(key, state)| {
-                                    key.is_for_project(&weak_project, &weak_lsp_store)
-                                        && state.name.as_ref() == Some(&name)
-                                })
-                                .min_by_key(|(key, _)| key_priority(key))
-                                .map(|(key, _)| key.clone()),
-                        };
-                        if let Some(server_key) = server_key {
-                            log_view.show_logs_for_server(server_key, window, cx);
-                        }
-                    });
-                })
-                .ok();
+            cx.update(|window, cx| {
+                let Some(workspace) = workspace.upgrade() else {
+                    return;
+                };
+                let project = workspace.read(cx).project().clone();
+                let weak_project = project.downgrade();
+                let project_is_local = project.read(cx).is_local();
+                let weak_lsp_store = project.read(cx).lsp_store().downgrade();
+                let tool_log_store = log_store.clone();
+                let log_view = get_or_create_tool(
+                    &workspace,
+                    SplitDirection::Right,
+                    window,
+                    cx,
+                    move |window, cx| LspLogView::new(project, tool_log_store, window, cx),
+                );
+                log_view.update(cx, |log_view, cx| {
+                    let key_priority = |key: &LanguageServerLogKey| match &key.kind {
+                        LanguageServerKind::Local { .. } if project_is_local => 0,
+                        LanguageServerKind::Remote { .. } if !project_is_local => 0,
+                        _ => 1,
+                    };
+                    let server_key = match server {
+                        LanguageServerSelector::Id(id) => log_store
+                            .read(cx)
+                            .language_servers
+                            .keys()
+                            .filter(|key| {
+                                key.server_id == id
+                                    && key.is_for_project(&weak_project, &weak_lsp_store)
+                            })
+                            .min_by_key(|key| key_priority(key))
+                            .cloned(),
+                        LanguageServerSelector::Name(name) => log_store
+                            .read(cx)
+                            .language_servers
+                            .iter()
+                            .filter(|(key, state)| {
+                                key.is_for_project(&weak_project, &weak_lsp_store)
+                                    && state.name.as_ref() == Some(&name)
+                            })
+                            .min_by_key(|(key, _)| key_priority(key))
+                            .map(|(key, _)| key.clone()),
+                    };
+                    if let Some(server_key) = server_key {
+                        log_view.show_logs_for_server(server_key, window, cx);
+                    }
+                });
+            })
+            .ok();
         })
         .detach();
     })
@@ -150,16 +152,21 @@ pub fn init(on_headless_host: bool, cx: &mut App) {
         });
 
         let log_store = log_store.clone();
-        workspace.register_action(move |workspace, _: &OpenLanguageServerLogs, window, cx| {
+        workspace.register_action_renderer(move |div, _, _, cx| {
             let log_store = log_store.clone();
-            let project = workspace.project().clone();
-            get_or_create_tool(
-                workspace,
-                SplitDirection::Right,
-                window,
-                cx,
-                move |window, cx| LspLogView::new(project, log_store, window, cx),
-            );
+            div.on_action(cx.entity_listener(
+                move |workspace: Entity<Workspace>, _: &OpenLanguageServerLogs, window, cx| {
+                    let log_store = log_store.clone();
+                    let project = workspace.read(cx).project().clone();
+                    get_or_create_tool(
+                        &workspace,
+                        SplitDirection::Right,
+                        window,
+                        cx,
+                        move |window, cx| LspLogView::new(project, log_store, window, cx),
+                    );
+                },
+            ))
         });
     })
     .detach();
@@ -820,9 +827,11 @@ fn log_contents<T: Message>(lines: &VecDeque<T>, level: <T as Message>::Level) -
 
 impl Render for LspLogView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.editor.update(cx, |editor, cx| {
-            editor.render(window, cx).into_any_element()
-        })
+        div().size_full().track_focus(&self.focus_handle).child(
+            self.editor.update(cx, |editor, cx| {
+                editor.render(window, cx).into_any_element()
+            }),
+        )
     }
 }
 

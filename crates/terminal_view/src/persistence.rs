@@ -6,7 +6,7 @@ use gpui::{AppContext as _, AsyncWindowContext, Axis, Entity, Task, WeakEntity};
 use project::Project;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use ui::{App, Context, Window};
+use ui::{App, Window};
 use util::ResultExt as _;
 
 use db::{
@@ -109,10 +109,10 @@ pub(crate) fn deserialize_terminal_panel(
                 .await;
                 let restored_items = items.len();
                 let active_item = serialized_panel.active_item_id;
-                terminal_panel.update_in(cx, |terminal_panel, window, cx| {
-                    terminal_panel.active_pane.update(cx, |pane, cx| {
-                        populate_pane_items(pane, items, active_item, window, cx);
-                    });
+                let pane = terminal_panel
+                    .read_with(cx, |terminal_panel, _| terminal_panel.active_pane.clone())?;
+                cx.update(|window, cx| {
+                    populate_pane_items(&pane, items, active_item, window, cx);
                 })?;
                 restored_items
             }
@@ -173,27 +173,36 @@ pub(crate) fn deserialize_terminal_panel(
 }
 
 fn populate_pane_items(
-    pane: &mut Pane,
+    pane: &Entity<Pane>,
     items: Vec<Entity<TerminalView>>,
     active_item: Option<u64>,
     window: &mut Window,
-    cx: &mut Context<Pane>,
+    cx: &mut App,
 ) {
-    let interim_active_item = (pane.items_len() > 0).then(|| pane.active_item()).flatten();
+    let (interim_active_item, first_item_index) = {
+        let pane = pane.read(cx);
+        let items_len = pane.items_len();
+        (
+            (items_len > 0).then(|| pane.active_item()).flatten(),
+            items_len,
+        )
+    };
     let mut active_item_index = None;
-    for (item_index, item) in (pane.items_len()..).zip(items) {
+    for (item_index, item) in (first_item_index..).zip(items) {
         if Some(item.item_id().as_u64()) == active_item {
             active_item_index = Some(item_index);
         }
-        pane.add_item(Box::new(item), false, false, None, window, cx);
+        Pane::add_item(pane, Box::new(item), false, false, None, window, cx);
     }
-    if let Some(interim_active_item) = interim_active_item {
-        if let Some(index) = pane.index_for_item(interim_active_item.as_ref()) {
+    pane.update(cx, |pane, cx| {
+        if let Some(interim_active_item) = interim_active_item {
+            if let Some(index) = pane.index_for_item(interim_active_item.as_ref()) {
+                pane.activate_item(index, false, false, window, cx);
+            }
+        } else if let Some(index) = active_item_index {
             pane.activate_item(index, false, false, window, cx);
         }
-    } else if let Some(index) = active_item_index {
-        pane.activate_item(index, false, false, window, cx);
-    }
+    });
 }
 
 #[async_recursion(?Send)]
@@ -270,13 +279,16 @@ async fn deserialize_pane_group(
                 async move |cx| {
                     let new_items = new_items.await;
 
-                    let items = pane.update_in(cx, |pane, window, cx| {
-                        populate_pane_items(pane, new_items, active_item, window, cx);
-                        pane.set_pinned_count(pinned_count.min(pane.items_len()));
-                        pane.items_len()
+                    let items = cx.update(|window, cx| {
+                        let pane = pane.upgrade()?;
+                        populate_pane_items(&pane, new_items, active_item, window, cx);
+                        Some(pane.update(cx, |pane, _| {
+                            pane.set_pinned_count(pinned_count.min(pane.items_len()));
+                            pane.items_len()
+                        }))
                     });
                     // Avoid blank panes in splits
-                    if items.is_ok_and(|items| items == 0) {
+                    if items.is_ok_and(|items| items == Some(0)) {
                         let working_directory = workspace
                             .update(cx, |workspace, cx| default_working_directory(workspace, cx))
                             .ok()
@@ -290,7 +302,10 @@ async fn deserialize_pane_group(
                         let Some(terminal) = terminal else {
                             return;
                         };
-                        pane.update_in(cx, |pane, window, cx| {
+                        let Some(pane) = pane.upgrade() else {
+                            return;
+                        };
+                        cx.update(|window, cx| {
                             let terminal_view = Box::new(cx.new(|cx| {
                                 TerminalView::new(
                                     terminal,
@@ -301,7 +316,7 @@ async fn deserialize_pane_group(
                                     cx,
                                 )
                             }));
-                            pane.add_item(terminal_view, true, false, None, window, cx);
+                            Pane::add_item(&pane, terminal_view, true, false, None, window, cx);
                         })
                         .ok();
                     }

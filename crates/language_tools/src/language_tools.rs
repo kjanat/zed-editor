@@ -23,23 +23,25 @@ pub fn init(cx: &mut App) {
 }
 
 fn get_or_create_tool<T>(
-    workspace: &mut Workspace,
+    workspace: &Entity<Workspace>,
     destination: SplitDirection,
     window: &mut Window,
-    cx: &mut Context<Workspace>,
+    cx: &mut App,
     new_tool: impl FnOnce(&mut Window, &mut Context<T>) -> T,
 ) -> Entity<T>
 where
     T: Item,
 {
-    if let Some(item) = workspace.item_of_type::<T>(cx) {
+    let existing_tool = workspace.read(cx).item_of_type::<T>(cx);
+    if let Some(item) = existing_tool {
         return item;
     }
 
     let new_tool = cx.new(|cx| new_tool(window, cx));
-    match workspace.find_pane_in_direction(destination, cx) {
+    let destination_pane = Workspace::find_pane_in_direction(workspace, destination, cx);
+    match destination_pane {
         Some(right_pane) => {
-            workspace.add_item(
+            Workspace::add_item(
                 right_pane,
                 new_tool.boxed_clone(),
                 None,
@@ -50,7 +52,7 @@ where
             );
         }
         None => {
-            workspace.split_item(destination, new_tool.boxed_clone(), window, cx);
+            Workspace::split_item(workspace, destination, new_tool.boxed_clone(), window, cx);
         }
     }
     new_tool

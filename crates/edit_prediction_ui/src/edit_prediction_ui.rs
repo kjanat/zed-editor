@@ -6,7 +6,7 @@ use command_palette_hooks::CommandPaletteFilter;
 use edit_prediction::ResetOnboarding;
 use edit_prediction_context_view::EditPredictionContextView;
 use feature_flags::FeatureFlagAppExt as _;
-use gpui::actions;
+use gpui::{Entity, actions};
 use project::DisableAiSettings;
 use rate_prediction_modal::RatePredictionsModal;
 use settings::{Settings as _, SettingsStore};
@@ -47,20 +47,26 @@ pub fn init(cx: &mut App) {
         });
 
         workspace.register_action_renderer(|div, _, _, cx| {
-            div.on_action(cx.listener(
-                move |workspace, _: &OpenEditPredictionContextView, window, cx| {
-                    let project = workspace.project();
-                    workspace.split_item(
+            div.on_action(cx.entity_listener(
+                move |workspace: Entity<Workspace>,
+                      _: &OpenEditPredictionContextView,
+                      window,
+                      cx| {
+                    let (project, client, user_store) = {
+                        let workspace = workspace.read(cx);
+                        (
+                            workspace.project().clone(),
+                            workspace.client().clone(),
+                            workspace.user_store().clone(),
+                        )
+                    };
+                    let context_view = cx.new(|cx| {
+                        EditPredictionContextView::new(project, &client, &user_store, window, cx)
+                    });
+                    Workspace::split_item(
+                        &workspace,
                         SplitDirection::Right,
-                        Box::new(cx.new(|cx| {
-                            EditPredictionContextView::new(
-                                project.clone(),
-                                workspace.client(),
-                                workspace.user_store(),
-                                window,
-                                cx,
-                            )
-                        })),
+                        Box::new(context_view),
                         window,
                         cx,
                     );

@@ -29,19 +29,23 @@ actions!(dev, [OpenAcpLogs]);
 pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
-            workspace.register_action(|workspace, _: &OpenAcpLogs, window, cx| {
-                let connection_store = workspace
-                    .panel::<AgentPanel>(cx)
-                    .map(|panel| panel.read(cx).connection_store().clone());
-                let acp_tools = Box::new(cx.new(|cx| {
-                    AcpTools::new(
-                        workspace.weak_handle(),
-                        workspace.project().clone(),
-                        connection_store,
-                        cx,
-                    )
-                }));
-                workspace.add_item_to_active_pane(acp_tools, None, true, window, cx);
+            workspace.register_action_renderer(|div, _, _, cx| {
+                div.on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>, _: &OpenAcpLogs, window, cx| {
+                        let connection_store = workspace
+                            .read(cx)
+                            .panel::<AgentPanel>(cx)
+                            .map(|panel| panel.read(cx).connection_store().clone());
+                        let project = workspace.read(cx).project().clone();
+                        let weak_workspace = workspace.downgrade();
+                        let acp_tools = Box::new(cx.new(|cx| {
+                            AcpTools::new(weak_workspace, project, connection_store, cx)
+                        }));
+                        Workspace::add_item_to_active_pane(
+                            &workspace, acp_tools, None, true, window, cx,
+                        );
+                    },
+                ))
             });
         },
     )

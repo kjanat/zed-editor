@@ -564,32 +564,35 @@ impl ToolchainSelector {
         _window: Option<&mut Window>,
         _: &mut Context<Workspace>,
     ) {
-        workspace.register_action(move |workspace, _: &Select, window, cx| {
-            Self::toggle(workspace, window, cx);
-        });
-        workspace.register_action(move |workspace, _: &AddToolchain, window, cx| {
-            let Some(toolchain_selector) = workspace.active_modal::<Self>(cx) else {
-                Self::toggle(workspace, window, cx);
-                return;
-            };
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &Select, window, cx| {
+                    Self::toggle(&workspace, window, cx);
+                },
+            ))
+            .on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &AddToolchain, window, cx| {
+                    let Some(toolchain_selector) = workspace.read(cx).active_modal::<Self>(cx)
+                    else {
+                        Self::toggle(&workspace, window, cx);
+                        return;
+                    };
 
-            toolchain_selector.update(cx, |toolchain_selector, cx| {
-                toolchain_selector.handle_add_toolchain(&AddToolchain, window, cx);
-            });
+                    toolchain_selector.update(cx, |toolchain_selector, cx| {
+                        toolchain_selector.handle_add_toolchain(&AddToolchain, window, cx);
+                    });
+                },
+            ))
         });
     }
 
-    fn toggle(
-        workspace: &mut Workspace,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) -> Option<()> {
-        let buffer = workspace
-            .active_item(cx)?
+    fn toggle(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) -> Option<()> {
+        let active_item = workspace.read(cx).active_item(cx)?;
+        let buffer = active_item
             .act_as::<Editor>(cx)?
             .read(cx)
             .active_buffer(cx)?;
-        let project = workspace.project().clone();
+        let project = workspace.read(cx).project().clone();
 
         let language_name = buffer.read(cx).language()?.name();
         let worktree_id = buffer.read(cx).file()?.worktree_id(cx);
@@ -599,40 +602,43 @@ impl ToolchainSelector {
             .worktree_for_id(worktree_id, cx)?
             .read(cx)
             .abs_path();
-        let weak = workspace.weak_handle();
-        cx.spawn_in(window, async move |workspace, cx| {
-            let active_toolchain = project
-                .read_with(cx, |this, cx| {
-                    this.active_toolchain(
-                        ProjectPath {
-                            worktree_id,
-                            path: relative_path.clone(),
-                        },
-                        language_name.clone(),
-                        cx,
-                    )
-                })
-                .await;
-            workspace
-                .update_in(cx, |this, window, cx| {
-                    this.toggle_modal(window, cx, move |window, cx| {
-                        ToolchainSelector::new(
-                            weak,
-                            project,
-                            active_toolchain,
-                            worktree_id,
-                            worktree_root_path,
-                            relative_path,
-                            language_name,
-                            window,
+        let workspace = workspace.downgrade();
+        let weak = workspace.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let active_toolchain = project
+                    .read_with(cx, |this, cx| {
+                        this.active_toolchain(
+                            ProjectPath {
+                                worktree_id,
+                                path: relative_path.clone(),
+                            },
+                            language_name.clone(),
                             cx,
                         )
-                    });
-                })
-                .ok();
-            anyhow::Ok(())
-        })
-        .detach();
+                    })
+                    .await;
+                workspace
+                    .update_in(cx, |this, window, cx| {
+                        this.toggle_modal(window, cx, move |window, cx| {
+                            ToolchainSelector::new(
+                                weak,
+                                project,
+                                active_toolchain,
+                                worktree_id,
+                                worktree_root_path,
+                                relative_path,
+                                language_name,
+                                window,
+                                cx,
+                            )
+                        })
+                        .detach();
+                    })
+                    .ok();
+                anyhow::Ok(())
+            })
+            .detach();
 
         Some(())
     }

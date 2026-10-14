@@ -1548,12 +1548,13 @@ impl MultiWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
         build: B,
-    ) where
-        B: FnOnce(&mut Window, &mut gpui::Context<V>) -> V,
+    ) -> Task<Option<Entity<V>>>
+    where
+        B: FnOnce(&mut Window, &mut gpui::Context<V>) -> V + 'static,
     {
         self.workspace().update(cx, |workspace, cx| {
-            workspace.toggle_modal(window, cx, build);
-        });
+            workspace.toggle_modal(window, cx, build)
+        })
     }
 
     pub fn toggle_dock(
@@ -2083,7 +2084,7 @@ impl Render for MultiWorkspace {
 
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
-        let root = workspace.update(cx, |workspace, cx| workspace.actions(h_flex(), window, cx));
+        let root = Workspace::actions(&workspace, h_flex(), window, cx);
 
         client_side_decorations(
             root.key_context(workspace_key_context)

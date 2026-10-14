@@ -40,26 +40,29 @@ impl LanguageSelector {
         _window: Option<&mut Window>,
         _: &mut Context<Workspace>,
     ) {
-        workspace.register_action(move |workspace, _: &Toggle, window, cx| {
-            Self::toggle(workspace, window, cx);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &Toggle, window, cx| {
+                    Self::toggle(&workspace, window, cx);
+                },
+            ))
         });
     }
 
-    fn toggle(
-        workspace: &mut Workspace,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) -> Option<()> {
-        let registry = workspace.app_state().languages.clone();
-        let buffer = workspace
-            .active_item(cx)?
+    fn toggle(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) -> Option<()> {
+        let active_item = workspace.read(cx).active_item(cx)?;
+        let buffer = active_item
             .act_as::<Editor>(cx)?
             .read(cx)
             .active_buffer(cx)?;
-        let project = workspace.project().clone();
-
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            LanguageSelector::new(buffer, project, registry, window, cx)
+        workspace.update(cx, |workspace, cx| {
+            let registry = workspace.app_state().languages.clone();
+            let project = workspace.project().clone();
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    LanguageSelector::new(buffer, project, registry, window, cx)
+                })
+                .detach();
         });
         Some(())
     }
@@ -354,7 +357,10 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use util::{path, rel_path::rel_path};
-    use workspace::{AppState, MultiWorkspace, Workspace};
+    use workspace::{
+        AppState, MultiWorkspace, Pane, Workspace,
+        item::test::{HookBits, TestItem},
+    };
 
     fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         cx.update(|cx| {
@@ -452,8 +458,8 @@ mod tests {
         let editor = cx.new_window_entity(|window, cx| {
             Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx)
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_center(Box::new(editor.clone()), window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_center(workspace, Box::new(editor.clone()), window, cx);
         });
         editor
     }
@@ -558,6 +564,47 @@ mod tests {
             }
         });
         close_selector(workspace, cx);
+    }
+
+    #[gpui::test]
+    async fn test_toggle_language_selector_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/test"), json!({}))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/test").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| item.read_containers_in(HookBits::ACT_AS_TYPE));
+
+        cx.dispatch_action(Toggle);
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace.active_modal::<LanguageSelector>(cx).is_none(),
+                "an item that is not an editor should not open the language selector"
+            );
+        });
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
     }
 
     #[gpui::test]

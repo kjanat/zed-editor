@@ -255,7 +255,7 @@ impl PaneGroup {
     }
 
     pub fn find_pane_in_direction(
-        &mut self,
+        &self,
         active_pane: &Entity<Pane>,
         direction: SplitDirection,
         cx: &App,

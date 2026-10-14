@@ -673,52 +673,55 @@ impl Vim {
             return;
         };
         let prior_selections = self.editor_selections(window, cx);
-        pane.update(cx, |pane, cx| {
-            if let Some(search_bar) = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>() {
-                search_bar.update(cx, |search_bar, cx| {
-                    if !search_bar.show(window, cx) {
-                        return;
-                    }
+        let search_bar = pane
+            .read(cx)
+            .toolbar()
+            .read(cx)
+            .item_of_type::<BufferSearchBar>();
+        if let Some(search_bar) = search_bar {
+            search_bar.update(cx, |search_bar, cx| {
+                if !search_bar.show(window, cx) {
+                    return;
+                }
 
-                    search_bar.select_query(window, cx);
-                    cx.focus_self(window);
+                search_bar.select_query(window, cx);
+                cx.focus_self(window);
 
-                    search_bar.set_replacement(None, cx);
-                    let mut options = SearchOptions::NONE;
-                    options |= SearchOptions::REGEX;
-                    if EditorSettings::get_global(cx).search.case_sensitive {
-                        options |= SearchOptions::CASE_SENSITIVE;
-                    }
-                    search_bar.set_search_options(options, cx);
-                    if let Some(search) = search_bar.set_search_within_selection(
-                        Some(FilteredSearchRange::Selection),
-                        window,
-                        cx,
-                    ) {
-                        cx.spawn_in(window, async move |search_bar, cx| {
-                            if search.await.is_ok() {
-                                search_bar.update_in(cx, |search_bar, window, cx| {
-                                    search_bar.activate_current_match(window, cx)
-                                })
-                            } else {
-                                Ok(())
-                            }
-                        })
-                        .detach_and_log_err(cx);
-                    }
-                    self.search = SearchState {
-                        direction: searchable::Direction::Next,
-                        count: 1,
-                        cmd_f_search: false,
-                        prior_selections,
-                        prior_operator: self.operator_stack.last().cloned(),
-                        prior_mode: self.mode,
-                        helix_select: true,
-                        _dismiss_subscription: None,
-                    }
-                });
-            }
-        });
+                search_bar.set_replacement(None, cx);
+                let mut options = SearchOptions::NONE;
+                options |= SearchOptions::REGEX;
+                if EditorSettings::get_global(cx).search.case_sensitive {
+                    options |= SearchOptions::CASE_SENSITIVE;
+                }
+                search_bar.set_search_options(options, cx);
+                if let Some(search) = search_bar.set_search_within_selection(
+                    Some(FilteredSearchRange::Selection),
+                    window,
+                    cx,
+                ) {
+                    cx.spawn_in(window, async move |search_bar, cx| {
+                        if search.await.is_ok() {
+                            search_bar.update_in(cx, |search_bar, window, cx| {
+                                search_bar.activate_current_match(window, cx)
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .detach_and_log_err(cx);
+                }
+                self.search = SearchState {
+                    direction: searchable::Direction::Next,
+                    count: 1,
+                    cmd_f_search: false,
+                    prior_selections,
+                    prior_operator: self.operator_stack.last().cloned(),
+                    prior_mode: self.mode,
+                    helix_select: true,
+                    _dismiss_subscription: None,
+                }
+            });
+        }
         self.start_recording(cx);
     }
 
@@ -1100,10 +1103,12 @@ impl Vim {
         Vim::take_forced_motion(cx);
         let prior_selections = self.editor_selections(window, cx);
 
-        let success = pane.update(cx, |pane, cx| {
-            let Some(search_bar) = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>() else {
-                return false;
-            };
+        let search_bar = pane
+            .read(cx)
+            .toolbar()
+            .read(cx)
+            .item_of_type::<BufferSearchBar>();
+        let success = search_bar.is_some_and(|search_bar| {
             search_bar.update(cx, |search_bar, cx| {
                 if !search_bar.has_active_match() || !search_bar.show(window, cx) {
                     return false;
@@ -4173,8 +4178,8 @@ mod test {
 
         let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx)
+        cx.update(|window, cx| {
+            ProjectSearchView::deploy_search(&workspace, &DeploySearch::default(), window, cx)
         });
 
         let search_view = workspace.update_in(cx, |workspace, _, cx| {

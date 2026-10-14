@@ -1766,7 +1766,7 @@ mod tests {
         let multi_workspace = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
-                multi_workspace.workspace().update(cx, |workspace, cx| {
+                multi_workspace.workspace().read_with(cx, |workspace, cx| {
                     assert!(workspace.active_item_as::<Editor>(cx).is_none())
                 });
             })
@@ -1784,7 +1784,7 @@ mod tests {
         assert_eq!(cx.windows().len(), 1);
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
-                multi_workspace.workspace().update(cx, |workspace, cx| {
+                multi_workspace.workspace().read_with(cx, |workspace, cx| {
                     assert!(workspace.active_item_as::<Editor>(cx).is_some());
                 });
             })
@@ -1886,7 +1886,7 @@ mod tests {
         let multi_workspace_1 = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
         multi_workspace_1
             .update(cx, |multi_workspace, _, cx| {
-                multi_workspace.workspace().update(cx, |workspace, cx| {
+                multi_workspace.workspace().read_with(cx, |workspace, cx| {
                     assert!(workspace.active_item_as::<Editor>(cx).is_some())
                 });
             })

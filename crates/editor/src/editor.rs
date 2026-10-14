@@ -371,8 +371,10 @@ pub fn init(cx: &mut App) {
             workspace.register_action(Editor::new_file_split);
             workspace.register_action(Editor::new_file_vertical);
             workspace.register_action(Editor::new_file_horizontal);
-            workspace.register_action(Editor::cancel_language_server_work);
-            workspace.register_action(Editor::toggle_focus);
+            workspace.register_action_renderer(|div, _, _, cx| {
+                div.on_action(cx.entity_listener(Editor::cancel_language_server_work))
+                    .on_action(cx.entity_listener(Editor::toggle_focus))
+            });
             workspace.register_action(Editor::view_bookmarks);
             if let Some(window) = window {
                 cx.subscribe_in(
@@ -3012,10 +3014,18 @@ impl Editor {
             buffer.update(cx, |buffer, _| {
                 buffer.set_content_language_detection_enabled(true);
             });
-            workspace.update_in(cx, |workspace, window, cx| {
+            let workspace = workspace.upgrade().context("workspace was dropped")?;
+            cx.update(|window, cx| {
                 let editor =
                     cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
-                workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+                Workspace::add_item_to_active_pane(
+                    &workspace,
+                    Box::new(editor.clone()),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
                 editor
             })
         })
@@ -3062,15 +3072,11 @@ impl Editor {
             buffer.update(cx, |buffer, _| {
                 buffer.set_content_language_detection_enabled(true);
             });
-            workspace.update_in(cx, move |workspace, window, cx| {
-                workspace.split_item(
-                    direction,
-                    Box::new(
-                        cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx)),
-                    ),
-                    window,
-                    cx,
-                )
+            let workspace = workspace.upgrade().context("workspace was dropped")?;
+            cx.update(move |window, cx| {
+                let editor =
+                    cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+                Workspace::split_item(&workspace, direction, Box::new(editor), window, cx)
             })?;
             anyhow::Ok(())
         })
@@ -3723,11 +3729,19 @@ impl Editor {
             multibuffer
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            let project = workspace.project().clone();
+        let workspace = workspace.upgrade().context("workspace was dropped")?;
+        cx.update(|window, cx| {
+            let project = workspace.read(cx).project().clone();
             let editor =
                 cx.new(|cx| Editor::for_multibuffer(excerpt_buffer, Some(project), window, cx));
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             editor.update(cx, |editor, cx| {
                 editor.highlight_background(
                     HighlightKey::Editor,
@@ -8068,7 +8082,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_first(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_first(self.completion_provider.as_ref(), window, cx);
         }
     }
 
@@ -8079,7 +8093,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_prev(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_prev(self.completion_provider.as_ref(), window, cx);
         }
     }
 
@@ -8090,7 +8104,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_next(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_next(self.completion_provider.as_ref(), window, cx);
         }
     }
 
@@ -8101,7 +8115,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let Some(context_menu) = self.context_menu.borrow_mut().as_mut() {
-            context_menu.select_last(self.completion_provider.as_deref(), window, cx);
+            context_menu.select_last(self.completion_provider.as_ref(), window, cx);
         }
     }
 
@@ -8724,13 +8738,14 @@ impl Editor {
     }
 
     fn cancel_language_server_work(
-        workspace: &mut Workspace,
+        workspace: Entity<Workspace>,
         _: &actions::CancelLanguageServerWork,
         _: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
-        let project = workspace.project();
+        let project = workspace.read(cx).project().clone();
         let buffers = workspace
+            .read(cx)
             .active_item(cx)
             .and_then(|item| item.act_as::<Editor>(cx))
             .map_or(HashSet::default(), |editor| {
@@ -8848,15 +8863,17 @@ impl Editor {
     }
 
     pub fn toggle_focus(
-        workspace: &mut Workspace,
+        workspace: Entity<Workspace>,
         _: &actions::ToggleFocus,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
-        let Some(item) = workspace.recent_active_item_by_type::<Self>(cx) else {
+        let Some(item) = workspace.read(cx).recent_active_item_by_type::<Self>(cx) else {
             return;
         };
-        workspace.activate_item(&item, true, true, window, cx);
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate_item(&item, true, true, window, cx);
+        });
     }
 
     pub fn set_gutter_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
@@ -9265,12 +9282,12 @@ impl Editor {
             .into_group_map();
 
         cx.spawn_in(window, async move |_, cx| {
-            workspace.update_in(cx, |workspace, window, cx| {
+            cx.update(|window, cx| {
                 Self::open_locations_in_multibuffer(
-                    workspace,
+                    &workspace,
                     locations,
                     format!("Selections for '{title}'"),
-                    false,
+                    None,
                     false,
                     MultibufferSelectionMode::All,
                     window,
@@ -10676,103 +10693,101 @@ impl Editor {
         // and activating a new item causes the pane to call a method on us reentrantly,
         // which panics if we're on the stack.
         window.defer(cx, move |window, cx| {
-            workspace
-                .update(cx, |workspace, cx| {
-                    let pane = if split {
-                        workspace.adjacent_pane(window, cx)
-                    } else {
-                        workspace.active_pane().clone()
-                    };
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            let pane = if split {
+                Workspace::adjacent_pane(&workspace, window, cx)
+            } else {
+                workspace.read(cx).active_pane().clone()
+            };
+            for (buffer, (ranges, scroll_offset)) in new_selections_by_buffer {
+                let buffer_read = buffer.read(cx);
+                let (has_file, is_project_file) = if let Some(file) = buffer_read.file() {
+                    (true, project::File::from_dyn(Some(file)).is_some())
+                } else {
+                    (false, false)
+                };
 
-                    for (buffer, (ranges, scroll_offset)) in new_selections_by_buffer {
-                        let buffer_read = buffer.read(cx);
-                        let (has_file, is_project_file) = if let Some(file) = buffer_read.file() {
-                            (true, project::File::from_dyn(Some(file)).is_some())
-                        } else {
-                            (false, false)
-                        };
-
-                        // If project file is none workspace.open_project_item will fail to open the excerpt
-                        // in a pre existing workspace item if one exists, because Buffer entity_id will be None
-                        // so we check if there's a tab match in that case first
-                        let editor = (!has_file || !is_project_file)
-                            .then(|| {
-                                // Handle file-less buffers separately: those are not really the project items, so won't have a project path or entity id,
-                                // so `workspace.open_project_item` will never find them, always opening a new editor.
-                                // Instead, we try to activate the existing editor in the pane first.
-                                let (editor, pane_item_index, pane_item_id) =
-                                    pane.read(cx).items().enumerate().find_map(|(i, item)| {
-                                        let editor = item.downcast::<Editor>()?;
-                                        let singleton_buffer =
-                                            editor.read(cx).buffer().read(cx).as_singleton()?;
-                                        if singleton_buffer == buffer {
-                                            Some((editor, i, item.item_id()))
-                                        } else {
-                                            None
-                                        }
-                                    })?;
-                                pane.update(cx, |pane, cx| {
-                                    pane.activate_item(pane_item_index, true, true, window, cx);
-                                    if !PreviewTabsSettings::get_global(cx)
-                                        .enable_preview_from_multibuffer
-                                    {
-                                        pane.unpreview_item_if_preview(pane_item_id);
-                                    }
-                                });
-                                Some(editor)
-                            })
-                            .flatten()
-                            .unwrap_or_else(|| {
-                                let keep_old_preview = PreviewTabsSettings::get_global(cx)
-                                    .enable_keep_preview_on_code_navigation;
-                                let allow_new_preview = PreviewTabsSettings::get_global(cx)
-                                    .enable_preview_from_multibuffer;
-                                workspace.open_project_item::<Self>(
-                                    split.then_some(pane.clone()),
-                                    buffer,
-                                    true,
-                                    true,
-                                    keep_old_preview,
-                                    allow_new_preview,
-                                    window,
-                                    cx,
-                                )
-                            });
-
-                        editor.update(cx, |editor, cx| {
-                            if has_file && !is_project_file {
-                                editor.set_read_only(true);
-                            }
-                            let autoscroll = match scroll_offset {
-                                Some(scroll_offset) => {
-                                    Autoscroll::top_relative(scroll_offset as ScrollOffset)
+                // If project file is none workspace.open_project_item will fail to open the excerpt
+                // in a pre existing workspace item if one exists, because Buffer entity_id will be None
+                // so we check if there's a tab match in that case first
+                let editor = (!has_file || !is_project_file)
+                    .then(|| {
+                        // Handle file-less buffers separately: those are not really the project items, so won't have a project path or entity id,
+                        // so `workspace.open_project_item` will never find them, always opening a new editor.
+                        // Instead, we try to activate the existing editor in the pane first.
+                        let (editor, pane_item_index, pane_item_id) =
+                            pane.read(cx).items().enumerate().find_map(|(i, item)| {
+                                let editor = item.downcast::<Editor>()?;
+                                let singleton_buffer =
+                                    editor.read(cx).buffer().read(cx).as_singleton()?;
+                                if singleton_buffer == buffer {
+                                    Some((editor, i, item.item_id()))
+                                } else {
+                                    None
                                 }
-                                None => Autoscroll::newest(),
-                            };
-                            let nav_history = editor.nav_history.take();
-                            let multibuffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-                            let Some(buffer_snapshot) = multibuffer_snapshot.as_singleton() else {
-                                return;
-                            };
-                            editor.change_selections(
-                                SelectionEffects::scroll(autoscroll),
-                                window,
-                                cx,
-                                |s| {
-                                    s.select_ranges(ranges.into_iter().map(|range| {
-                                        let range = buffer_snapshot.anchor_before(range.start)
-                                            ..buffer_snapshot.anchor_after(range.end);
-                                        multibuffer_snapshot
-                                            .buffer_anchor_range_to_anchor_range(range)
-                                            .unwrap()
-                                    }));
-                                },
-                            );
-                            editor.nav_history = nav_history;
+                            })?;
+                        pane.update(cx, |pane, cx| {
+                            pane.activate_item(pane_item_index, true, true, window, cx);
+                            if !PreviewTabsSettings::get_global(cx).enable_preview_from_multibuffer
+                            {
+                                pane.unpreview_item_if_preview(pane_item_id);
+                            }
                         });
+                        Some(editor)
+                    })
+                    .flatten()
+                    .unwrap_or_else(|| {
+                        let keep_old_preview = PreviewTabsSettings::get_global(cx)
+                            .enable_keep_preview_on_code_navigation;
+                        let allow_new_preview =
+                            PreviewTabsSettings::get_global(cx).enable_preview_from_multibuffer;
+                        Workspace::open_project_item::<Self>(
+                            &workspace,
+                            split.then_some(pane.clone()),
+                            buffer,
+                            true,
+                            true,
+                            keep_old_preview,
+                            allow_new_preview,
+                            window,
+                            cx,
+                        )
+                    });
+
+                editor.update(cx, |editor, cx| {
+                    if has_file && !is_project_file {
+                        editor.set_read_only(true);
                     }
-                })
-                .ok();
+                    let autoscroll = match scroll_offset {
+                        Some(scroll_offset) => {
+                            Autoscroll::top_relative(scroll_offset as ScrollOffset)
+                        }
+                        None => Autoscroll::newest(),
+                    };
+                    let nav_history = editor.nav_history.take();
+                    let multibuffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+                    let Some(buffer_snapshot) = multibuffer_snapshot.as_singleton() else {
+                        return;
+                    };
+                    editor.change_selections(
+                        SelectionEffects::scroll(autoscroll),
+                        window,
+                        cx,
+                        |s| {
+                            s.select_ranges(ranges.into_iter().map(|range| {
+                                let range = buffer_snapshot.anchor_before(range.start)
+                                    ..buffer_snapshot.anchor_after(range.end);
+                                multibuffer_snapshot
+                                    .buffer_anchor_range_to_anchor_range(range)
+                                    .unwrap()
+                            }));
+                        },
+                    );
+                    editor.nav_history = nav_history;
+                });
+            }
         });
     }
 

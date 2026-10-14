@@ -49,8 +49,8 @@ use editor::{Editor, scroll::Autoscroll};
 use feature_flags::FeatureFlagAppExt as _;
 use fs::Fs;
 use gpui::{
-    Action, App, Context, Entity, ImageSource, ReadGlobal as _, Resource, SharedString, SharedUri,
-    TaskExt, Window, actions,
+    Action, App, Context, Entity, ImageSource, InteractiveElement as _, ReadGlobal as _, Resource,
+    SharedString, SharedUri, TaskExt, Window, actions,
 };
 use language::{
     LanguageRegistry,
@@ -186,6 +186,38 @@ pub(crate) fn project_path_for_file_link(
                 )
             })
         })
+    }
+}
+
+pub(crate) fn open_agent_registry(
+    workspace: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let existing = workspace
+        .read(cx)
+        .active_pane()
+        .read(cx)
+        .items()
+        .find_map(|item| item.downcast::<AgentRegistryPage>());
+
+    if let Some(existing) = existing {
+        existing.update(cx, |_, cx| {
+            project::AgentRegistryStore::global(cx).update(cx, |store, cx| store.refresh(cx));
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate_item(&existing, true, true, window, cx);
+        });
+    } else {
+        let registry_page = AgentRegistryPage::new(window, cx);
+        Workspace::add_item_to_active_pane(
+            workspace,
+            Box::new(registry_page),
+            None,
+            true,
+            window,
+            cx,
+        );
     }
 }
 
@@ -716,35 +748,13 @@ pub fn init(
     inline_assistant::init(fs.clone(), prompt_builder.clone(), cx);
     terminal_inline_assistant::init(fs.clone(), prompt_builder, cx);
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
-        workspace.register_action(
-            move |workspace: &mut Workspace,
-                  _: &zed_actions::AcpRegistry,
-                  window: &mut Window,
-                  cx: &mut Context<Workspace>| {
-                let existing = workspace
-                    .active_pane()
-                    .read(cx)
-                    .items()
-                    .find_map(|item| item.downcast::<AgentRegistryPage>());
-
-                if let Some(existing) = existing {
-                    existing.update(cx, |_, cx| {
-                        project::AgentRegistryStore::global(cx)
-                            .update(cx, |store, cx| store.refresh(cx));
-                    });
-                    workspace.activate_item(&existing, true, true, window, cx);
-                } else {
-                    let registry_page = AgentRegistryPage::new(workspace, window, cx);
-                    workspace.add_item_to_active_pane(
-                        Box::new(registry_page),
-                        None,
-                        true,
-                        window,
-                        cx,
-                    );
-                }
-            },
-        );
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &zed_actions::AcpRegistry, window, cx| {
+                    open_agent_registry(&workspace, window, cx);
+                },
+            ))
+        });
     })
     .detach();
     cx.observe_new(ManageProfilesModal::register).detach();

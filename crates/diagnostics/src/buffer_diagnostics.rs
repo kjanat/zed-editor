@@ -210,37 +210,42 @@ impl BufferDiagnosticsEditor {
     }
 
     fn deploy(
-        workspace: &mut Workspace,
+        workspace: Entity<Workspace>,
         _: &DeployCurrentFile,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         // Determine the currently opened path by finding the active editor and
         // finding the project path for the buffer.
         // If there's no active editor with a project path, avoiding deploying
         // the buffer diagnostics view.
-        if let Some(editor) = workspace.active_item_as::<Editor>(cx)
+        let active_editor = workspace.read(cx).active_item_as::<Editor>(cx);
+        if let Some(editor) = active_editor
             && let Some(project_path) = editor.read(cx).active_project_path(cx)
         {
             // Check if there's already a `BufferDiagnosticsEditor` tab for this
             // same path, and if so, focus on that one instead of creating a new
             // one.
             let existing_editor = workspace
+                .read(cx)
                 .items_of_type::<BufferDiagnosticsEditor>(cx)
                 .find(|editor| editor.read(cx).project_path == project_path);
 
             if let Some(editor) = existing_editor {
-                workspace.activate_item(&editor, true, true, window, cx);
+                workspace.update(cx, |workspace, cx| {
+                    workspace.activate_item(&editor, true, true, window, cx);
+                });
             } else {
                 let include_warnings = match cx.try_global::<IncludeWarnings>() {
                     Some(include_warnings) => include_warnings.0,
                     None => ProjectSettings::get_global(cx).diagnostics.include_warnings,
                 };
+                let project = workspace.read(cx).project().clone();
 
                 let item = cx.new(|cx| {
                     Self::new(
                         project_path,
-                        workspace.project().clone(),
+                        project,
                         editor.read(cx).buffer().read(cx).as_singleton(),
                         include_warnings,
                         window,
@@ -248,7 +253,14 @@ impl BufferDiagnosticsEditor {
                     )
                 });
 
-                workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx);
+                Workspace::add_item_to_active_pane(
+                    &workspace,
+                    Box::new(item),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
             }
         }
     }
@@ -258,7 +270,13 @@ impl BufferDiagnosticsEditor {
         _window: Option<&mut Window>,
         _: &mut Context<Workspace>,
     ) {
-        workspace.register_action(Self::deploy);
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &DeployCurrentFile, window, cx| {
+                    Self::deploy(workspace, action, window, cx);
+                },
+            ))
+        });
     }
 
     fn update_all_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {

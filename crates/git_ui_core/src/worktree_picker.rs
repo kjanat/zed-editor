@@ -952,18 +952,16 @@ impl PickerDelegate for WorktreePickerDelegate {
                     return;
                 }
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| {
-                        crate::worktree_service::handle_create_worktree(
-                            workspace,
-                            &CreateWorktree {
-                                worktree_name: None,
-                                branch_target: NewWorktreeBranchTarget::CurrentBranch,
-                            },
-                            window,
-                            self.focused_dock,
-                            cx,
-                        );
-                    });
+                    crate::worktree_service::handle_create_worktree(
+                        &workspace,
+                        &CreateWorktree {
+                            worktree_name: None,
+                            branch_target: NewWorktreeBranchTarget::CurrentBranch,
+                        },
+                        window,
+                        self.focused_dock,
+                        cx,
+                    );
                 }
             }
             WorktreeEntry::CreateFromDefaultBranch { default_branch } => {
@@ -971,21 +969,19 @@ impl PickerDelegate for WorktreePickerDelegate {
                     return;
                 }
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| {
-                        crate::worktree_service::handle_create_worktree(
-                            workspace,
-                            &CreateWorktree {
-                                worktree_name: None,
-                                branch_target: NewWorktreeBranchTarget::RemoteBranch {
-                                    remote_name: default_branch.remote_name.clone(),
-                                    branch_name: default_branch.branch_name.clone(),
-                                },
+                    crate::worktree_service::handle_create_worktree(
+                        &workspace,
+                        &CreateWorktree {
+                            worktree_name: None,
+                            branch_target: NewWorktreeBranchTarget::RemoteBranch {
+                                remote_name: default_branch.remote_name.clone(),
+                                branch_name: default_branch.branch_name.clone(),
                             },
-                            window,
-                            self.focused_dock,
-                            cx,
-                        );
-                    });
+                        },
+                        window,
+                        self.focused_dock,
+                        cx,
+                    );
                 }
             }
             WorktreeEntry::Worktree { worktree, .. } => {
@@ -1005,19 +1001,17 @@ impl PickerDelegate for WorktreePickerDelegate {
                         );
                     } else {
                         if let Some(workspace) = self.workspace.upgrade() {
-                            workspace.update(cx, |workspace, cx| {
-                                crate::worktree_service::handle_switch_worktree(
-                                    workspace,
-                                    &SwitchWorktree {
-                                        path: worktree.path.clone(),
-                                        display_name: worktree
-                                            .directory_name(self.worktree_name_anchor()),
-                                    },
-                                    window,
-                                    self.focused_dock,
-                                    cx,
-                                );
-                            });
+                            crate::worktree_service::handle_switch_worktree(
+                                &workspace,
+                                &SwitchWorktree {
+                                    path: worktree.path.clone(),
+                                    display_name: worktree
+                                        .directory_name(self.worktree_name_anchor()),
+                                },
+                                window,
+                                self.focused_dock,
+                                cx,
+                            );
                         }
                     }
                 }
@@ -1035,18 +1029,16 @@ impl PickerDelegate for WorktreePickerDelegate {
                     None => NewWorktreeBranchTarget::CurrentBranch,
                 };
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| {
-                        crate::worktree_service::handle_create_worktree(
-                            workspace,
-                            &CreateWorktree {
-                                worktree_name: Some(name.clone()),
-                                branch_target,
-                            },
-                            window,
-                            self.focused_dock,
-                            cx,
-                        );
-                    });
+                    crate::worktree_service::handle_create_worktree(
+                        &workspace,
+                        &CreateWorktree {
+                            worktree_name: Some(name.clone()),
+                            branch_target,
+                        },
+                        window,
+                        self.focused_dock,
+                        cx,
+                    );
                 }
             }
             WorktreeEntry::CreateNamed {
@@ -1564,23 +1556,25 @@ pub async fn open_remote_worktree(
     workspace: gpui::WeakEntity<Workspace>,
     cx: &mut gpui::AsyncWindowContext,
 ) -> anyhow::Result<()> {
-    let connect_task = workspace.update_in(cx, |workspace, window, cx| {
-        workspace.toggle_modal(window, cx, |window, cx| {
-            remote_connection::RemoteConnectionModal::new(
+    let (prompt, modal) = workspace.update_in(cx, |workspace, window, cx| {
+        let prompt = cx.new(|cx| {
+            remote_connection::RemoteConnectionPrompt::for_connection(
                 &connection_options,
-                Vec::new(),
                 window,
                 cx,
             )
         });
+        let modal = workspace.toggle_modal(window, cx, {
+            let prompt = prompt.clone();
+            move |_, _| remote_connection::RemoteConnectionModal::with_prompt(prompt, Vec::new())
+        });
+        (prompt, modal)
+    })?;
+    if modal.await.is_none() {
+        return Ok(());
+    }
 
-        let prompt = workspace
-            .active_modal::<remote_connection::RemoteConnectionModal>(cx)
-            .expect("Modal just created")
-            .read(cx)
-            .prompt
-            .clone();
-
+    let connect_task = workspace.update_in(cx, |_, window, cx| {
         remote_connection::connect(
             remote::remote_client::ConnectionIdentifier::setup(),
             connection_options.clone(),

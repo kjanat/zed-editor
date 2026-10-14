@@ -37,7 +37,7 @@ use workspace::{
     move_active_item, pane,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use zed_actions::assistant::InlineAssist;
 
 const TERMINAL_PANEL_KEY: &str = "TerminalPanel";
@@ -469,9 +469,13 @@ impl TerminalPanel {
             }
             pane::Event::AddItem { item } => {
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| {
-                        item.added_to_pane(workspace, pane.clone(), window, cx)
-                    })
+                    let item = item.boxed_clone();
+                    let pane = pane.clone();
+                    window.defer(cx, move |window, cx| {
+                        if pane.read(cx).index_for_item(item.as_ref()).is_some() {
+                            item.added_to_pane(&workspace, pane, window, cx)
+                        }
+                    });
                 }
                 self.serialize(cx);
             }
@@ -508,9 +512,7 @@ impl TerminalPanel {
                         };
                         let new_pane =
                             new_terminal_pane(self.workspace.clone(), project, false, window, cx);
-                        new_pane.update(cx, |pane, cx| {
-                            pane.add_item(item, true, true, None, window, cx);
-                        });
+                        Pane::add_item(&new_pane, item, true, true, None, window, cx);
                         self.center.split(&pane, &new_pane, direction, cx);
                         window.focus(&new_pane.focus_handle(cx), cx);
                     }
@@ -596,9 +598,7 @@ impl TerminalPanel {
                     }));
                     let pane = new_terminal_pane(weak_workspace, project, is_zoomed, window, cx);
                     terminal_panel.apply_tab_bar_buttons(&pane, cx);
-                    pane.update(cx, |pane, cx| {
-                        pane.add_item(terminal_view, true, true, None, window, cx);
-                    });
+                    Pane::add_item(&pane, terminal_view, true, true, None, window, cx);
                     Some(pane)
                 })
                 .ok()
@@ -851,22 +851,27 @@ impl TerminalPanel {
         cx.spawn_in(window, async move |workspace, cx| {
             let terminal = project.update(cx, create_terminal)?.await?;
 
-            workspace.update_in(cx, |workspace, window, cx| {
-                let terminal_view = cx.new(|cx| {
-                    TerminalView::new(
-                        terminal.clone(),
-                        workspace.weak_handle(),
-                        workspace.database_id(),
-                        workspace.project().downgrade(),
-                        window,
-                        cx,
-                    )
+            let workspace = workspace.upgrade().context("workspace was dropped")?;
+            cx.update(|window, cx| {
+                let (terminal_view, focus_item) = workspace.update(cx, |workspace, cx| {
+                    let terminal_view = cx.new(|cx| {
+                        TerminalView::new(
+                            terminal.clone(),
+                            workspace.weak_handle(),
+                            workspace.database_id(),
+                            workspace.project().downgrade(),
+                            window,
+                            cx,
+                        )
+                    });
+                    // Don't steal focus from an open modal (e.g. the command palette):
+                    // a background terminal can finish starting up after the user has
+                    // moved on, and focusing it would dismiss whatever they opened.
+                    let focus_item = !workspace.has_active_modal(window, cx);
+                    (terminal_view, focus_item)
                 });
-                // Don't steal focus from an open modal (e.g. the command palette):
-                // a background terminal can finish starting up after the user has
-                // moved on, and focusing it would dismiss whatever they opened.
-                let focus_item = !workspace.has_active_modal(window, cx);
-                workspace.add_item_to_active_pane(
+                Workspace::add_item_to_active_pane(
+                    &workspace,
                     Box::new(terminal_view),
                     None,
                     focus_item,
@@ -896,36 +901,37 @@ impl TerminalPanel {
                 .await?;
             let pane = terminal_panel
                 .read_with(cx, |terminal_panel, _| terminal_panel.active_pane.clone())?;
-            workspace.update_in(cx, |workspace, window, cx| {
-                let terminal_view = Box::new(cx.new(|cx| {
-                    TerminalView::new(
-                        terminal.clone(),
-                        workspace.weak_handle(),
-                        workspace.database_id(),
-                        workspace.project().downgrade(),
-                        window,
-                        cx,
-                    )
-                }));
+            let (terminal_view, take_focus) =
+                workspace.update_in(cx, |workspace, window, cx| {
+                    let terminal_view = Box::new(cx.new(|cx| {
+                        TerminalView::new(
+                            terminal.clone(),
+                            workspace.weak_handle(),
+                            workspace.database_id(),
+                            workspace.project().downgrade(),
+                            window,
+                            cx,
+                        )
+                    }));
 
-                let take_focus = reveal_strategy == RevealStrategy::Always
-                    && !workspace.has_active_modal(window, cx);
-                match reveal_strategy {
-                    RevealStrategy::Always if take_focus => {
-                        workspace.focus_panel::<Self>(window, cx);
+                    let take_focus = reveal_strategy == RevealStrategy::Always
+                        && !workspace.has_active_modal(window, cx);
+                    match reveal_strategy {
+                        RevealStrategy::Always if take_focus => {
+                            workspace.focus_panel::<Self>(window, cx);
+                        }
+                        RevealStrategy::Always | RevealStrategy::NoFocus => {
+                            workspace.open_panel::<Self>(window, cx);
+                        }
+                        RevealStrategy::Never => {}
                     }
-                    RevealStrategy::Always | RevealStrategy::NoFocus => {
-                        workspace.open_panel::<Self>(window, cx);
-                    }
-                    RevealStrategy::Never => {}
-                }
 
-                pane.update(cx, |pane, cx| {
-                    pane.add_item(terminal_view, true, take_focus, None, window, cx);
-                });
-
-                terminal.downgrade()
-            })
+                    (terminal_view, take_focus)
+                })?;
+            cx.update(|window, cx| {
+                Pane::add_item(&pane, terminal_view, true, take_focus, None, window, cx);
+            })?;
+            Ok(terminal.downgrade())
         })
     }
 
@@ -956,44 +962,55 @@ impl TerminalPanel {
             let pane = terminal_panel
                 .read_with(cx, |terminal_panel, _| terminal_panel.active_pane.clone())?;
             match terminal {
-                Ok(terminal) => workspace.update_in(cx, |workspace, window, cx| {
-                    let terminal_view = Box::new(cx.new(|cx| {
-                        TerminalView::new(
-                            terminal.clone(),
-                            workspace.weak_handle(),
-                            workspace.database_id(),
-                            workspace.project().downgrade(),
-                            window,
-                            cx,
-                        )
-                    }));
+                Ok(terminal) => {
+                    let (terminal_view, take_focus) =
+                        workspace.update_in(cx, |workspace, window, cx| {
+                            let terminal_view = Box::new(cx.new(|cx| {
+                                TerminalView::new(
+                                    terminal.clone(),
+                                    workspace.weak_handle(),
+                                    workspace.database_id(),
+                                    workspace.project().downgrade(),
+                                    window,
+                                    cx,
+                                )
+                            }));
 
-                    let take_focus = reveal_strategy == RevealStrategy::Always
-                        && !workspace.has_active_modal(window, cx);
-                    match reveal_strategy {
-                        RevealStrategy::Always if take_focus => {
-                            workspace.focus_panel::<Self>(window, cx);
-                        }
-                        RevealStrategy::Always | RevealStrategy::NoFocus => {
-                            workspace.open_panel::<Self>(window, cx);
-                        }
-                        RevealStrategy::Never => {}
-                    }
+                            let take_focus = reveal_strategy == RevealStrategy::Always
+                                && !workspace.has_active_modal(window, cx);
+                            match reveal_strategy {
+                                RevealStrategy::Always if take_focus => {
+                                    workspace.focus_panel::<Self>(window, cx);
+                                }
+                                RevealStrategy::Always | RevealStrategy::NoFocus => {
+                                    workspace.open_panel::<Self>(window, cx);
+                                }
+                                RevealStrategy::Never => {}
+                            }
 
-                    pane.update(cx, |pane, cx| {
-                        pane.add_item(terminal_view, true, take_focus, None, window, cx);
-                    });
-
-                    terminal.downgrade()
-                }),
+                            (terminal_view, take_focus)
+                        })?;
+                    cx.update(|window, cx| {
+                        Pane::add_item(&pane, terminal_view, true, take_focus, None, window, cx);
+                    })?;
+                    Ok(terminal.downgrade())
+                }
                 Err(error) => {
-                    pane.update_in(cx, |pane, window, cx| {
-                        let focus = pane.has_focus(window, cx);
+                    cx.update(|window, cx| {
+                        let focus = pane.read(cx).has_focus(window, cx);
                         let failed_to_spawn = cx.new(|cx| FailedToSpawnTerminal {
                             error: error.to_string(),
                             focus_handle: cx.focus_handle(),
                         });
-                        pane.add_item(Box::new(failed_to_spawn), true, focus, None, window, cx);
+                        Pane::add_item(
+                            &pane,
+                            Box::new(failed_to_spawn),
+                            true,
+                            focus,
+                            None,
+                            window,
+                            cx,
+                        );
                     })?;
                     Err(error)
                 }
@@ -1249,12 +1266,8 @@ impl TerminalPanel {
             .find_pane_in_direction(&self.active_pane, direction, cx)
         {
             window.focus(&pane.focus_handle(cx), cx);
-        } else {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.activate_pane_in_direction(direction, window, cx)
-                })
-                .ok();
+        } else if let Some(workspace) = self.workspace.upgrade() {
+            Workspace::activate_pane_in_direction(&workspace, direction, window, cx);
         }
     }
 
@@ -1882,7 +1895,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use project::FakeFs;
     use settings::SettingsStore;
-    use workspace::{MultiWorkspace, WorkspaceId};
+    use workspace::{
+        MultiWorkspace, WorkspaceId,
+        item::test::{HookBits, TestItem},
+    };
 
     #[test]
     fn test_prepare_empty_task() {
@@ -1947,6 +1963,178 @@ mod tests {
             item_count, 5,
             "Terminal panel should bypass max_tabs limit and have all 5 terminals"
         );
+    }
+
+    #[gpui::test]
+    async fn test_items_added_to_the_panel_can_read_the_panel_and_workspace(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let terminal_panel = window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    cx.new(|cx| TerminalPanel::new(workspace, window, cx))
+                })
+            })
+            .unwrap();
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
+
+        let workspace_handle = workspace.downgrade();
+        let terminal_panel_handle = terminal_panel.downgrade();
+        let item = cx.new(|cx| {
+            let item = TestItem::new(cx)
+                .with_workspace_reader(workspace_handle)
+                .with_container_reader(move |cx| {
+                    if let Some(terminal_panel) = terminal_panel_handle.upgrade() {
+                        terminal_panel.read(cx);
+                    }
+                });
+            item.read_containers_in(HookBits::SET_NAV_HISTORY);
+            item
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+
+        item.read_with(cx, |item, _| {
+            assert!(item.nav_history.is_some());
+            assert!(
+                item.container_reads.get() > 0,
+                "adding the item should give it the terminal pane's history"
+            );
+        });
+    }
+
+    fn add_item_reading_containers(
+        pane: &Entity<Pane>,
+        workspace: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TestItem> {
+        let pane_handle = pane.downgrade();
+        let workspace_handle = workspace.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(pane, Box::new(item.clone()), true, false, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS);
+            item.container_reads.set(0);
+        });
+        item
+    }
+
+    fn assert_terminal_added_next_to(
+        reader: &Entity<TestItem>,
+        pane: &Entity<Pane>,
+        cx: &mut VisualTestContext,
+    ) {
+        reader.read_with(cx, |reader, _| {
+            assert!(
+                reader.container_reads.get() > 0,
+                "adding the terminal should read the existing item's entry ids"
+            );
+        });
+        pane.read_with(cx, |pane, _| {
+            assert_eq!(pane.items_len(), 2);
+            assert!(
+                pane.active_item()
+                    .and_then(|item| item.downcast::<TerminalView>())
+                    .is_some(),
+                "the new terminal should be the active item"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_add_center_terminal_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let reader = add_item_reading_containers(&pane, &workspace, cx);
+
+        open_center_display_terminal(&workspace, cx).await;
+
+        assert_terminal_added_next_to(&reader, &pane, cx);
+    }
+
+    #[gpui::test]
+    async fn test_add_terminal_shell_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        init_test(cx);
+
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let pane =
+            terminal_panel.read_with(cx, |terminal_panel, _| terminal_panel.active_pane.clone());
+        let reader = add_item_reading_containers(&pane, &workspace, cx);
+
+        terminal_panel
+            .update_in(cx, |terminal_panel, window, cx| {
+                terminal_panel.add_terminal_shell(false, None, RevealStrategy::Always, window, cx)
+            })
+            .await
+            .expect("Failed to spawn a panel terminal");
+        cx.run_until_parked();
+
+        assert_terminal_added_next_to(&reader, &pane, cx);
+    }
+
+    #[gpui::test]
+    async fn test_add_terminal_task_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        init_test(cx);
+
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let pane =
+            terminal_panel.read_with(cx, |terminal_panel, _| terminal_panel.active_pane.clone());
+        let reader = add_item_reading_containers(&pane, &workspace, cx);
+
+        terminal_panel
+            .update_in(cx, |terminal_panel, window, cx| {
+                terminal_panel.add_terminal_task(echo_task(), RevealStrategy::Always, window, cx)
+            })
+            .await
+            .expect("Failed to spawn a task terminal");
+        cx.run_until_parked();
+
+        assert_terminal_added_next_to(&reader, &pane, cx);
     }
 
     #[cfg(unix)]
@@ -2547,10 +2735,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
 
@@ -2620,10 +2810,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
 
@@ -2699,10 +2891,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
 
@@ -2789,10 +2983,12 @@ mod tests {
 
         let modal_focus_handle = workspace.update_in(cx, |workspace, window, cx| {
             let focus_handle = cx.focus_handle();
-            workspace.toggle_modal(window, cx, {
-                let focus_handle = focus_handle.clone();
-                move |_, _| FocusOnlyModal { focus_handle }
-            });
+            workspace
+                .toggle_modal(window, cx, {
+                    let focus_handle = focus_handle.clone();
+                    move |_, _| FocusOnlyModal { focus_handle }
+                })
+                .detach();
             focus_handle
         });
         workspace.update_in(cx, |workspace, window, cx| {

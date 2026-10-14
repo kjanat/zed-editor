@@ -18,7 +18,7 @@ use gpui::{
 };
 use menu::{Cancel, Confirm};
 use notifications::status_toast::StatusToast;
-use project::git_store::Repository;
+use project::{ProjectPath, git_store::Repository};
 use project_diff::ProjectDiff;
 use time::OffsetDateTime;
 use ui::{ButtonLike, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*};
@@ -87,14 +87,14 @@ pub fn init(cx: &mut App) {
         |workspace, project_path, window, cx| {
             let Some((repo_id, log_source)) =
                 git_graph::resolve_file_history_target_from_project_path(
-                    workspace,
+                    workspace.read(cx),
                     project_path,
                     cx,
                 )
             else {
                 return;
             };
-            let git_store = workspace.project().read(cx).git_store().clone();
+            let git_store = workspace.read(cx).project().read(cx).git_store().clone();
             git_graph::open_or_reuse_graph(
                 workspace, repo_id, git_store, log_source, None, window, cx,
             );
@@ -107,7 +107,7 @@ pub fn init(cx: &mut App) {
     })
     .detach();
 
-    cx.observe_new(|workspace: &mut Workspace, _, cx| {
+    cx.observe_new(|workspace: &mut Workspace, window, cx| {
         ProjectDiff::register(workspace, cx);
         staged_diff::StagedDiff::register(workspace, cx);
         unstaged_diff::UnstagedDiff::register(workspace, cx);
@@ -117,34 +117,38 @@ pub fn init(cx: &mut App) {
         repository_selector::register(workspace);
         git_picker::register(workspace);
 
-        workspace.register_action(
-            |workspace, action: &zed_actions::CreateWorktree, window, cx| {
-                git_ui_core::worktree_service::handle_create_worktree(
-                    workspace, action, window, None, cx,
-                );
-            },
-        );
-        workspace.register_action(
-            |workspace, action: &zed_actions::SwitchWorktree, window, cx| {
-                git_ui_core::worktree_service::handle_switch_worktree(
-                    workspace, action, window, None, cx,
-                );
-            },
-        );
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &zed_actions::CreateWorktree, window, cx| {
+                    git_ui_core::worktree_service::handle_create_worktree(
+                        &workspace, action, window, None, cx,
+                    );
+                },
+            ))
+            .on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &zed_actions::SwitchWorktree, window, cx| {
+                    git_ui_core::worktree_service::handle_switch_worktree(
+                        &workspace, action, window, None, cx,
+                    );
+                },
+            ))
+        });
 
         workspace.register_action(|workspace, _: &zed_actions::git::Worktree, window, cx| {
             let focused_dock = workspace.focused_dock_position(window, cx);
             let project = workspace.project().clone();
             let workspace_handle = workspace.weak_handle();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                git_ui_core::worktree_picker::WorktreePicker::new_modal(
-                    project,
-                    workspace_handle,
-                    focused_dock,
-                    window,
-                    cx,
-                )
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    git_ui_core::worktree_picker::WorktreePicker::new_modal(
+                        project,
+                        workspace_handle,
+                        focused_dock,
+                        window,
+                        cx,
+                    )
+                })
+                .detach();
         });
 
         workspace.register_action(
@@ -327,17 +331,24 @@ pub fn init(cx: &mut App) {
                 return;
             };
 
-            workspace.toggle_modal(window, cx, |window, cx| {
-                GitCloneModal::show(panel, window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    GitCloneModal::show(panel, window, cx)
+                })
+                .detach();
         });
         workspace.register_action(|workspace, _: &git::OpenModifiedFiles, window, cx| {
             open_modified_files(workspace, window, cx);
         });
-        workspace.register_action_renderer(|div, workspace, _window, cx| {
-            div.when_some(
-                file_diff_entry(workspace, cx),
-                |div, (entry, repository)| {
+        if let Some(window) = window {
+            let active_project_path =
+                Workspace::track_active_item_target(window, cx, |item, cx| item.project_path(cx));
+            workspace.register_action_renderer(move |div, workspace, _window, cx| {
+                let entry = active_project_path
+                    .read(cx)
+                    .target()
+                    .and_then(|project_path| file_diff_entry(workspace, project_path, cx));
+                div.when_some(entry, |div, (entry, repository)| {
                     let workspace = workspace.weak_handle();
                     div.on_action(move |_: &git::OpenFileDiff, window, cx| {
                         open_file_diff(
@@ -348,9 +359,9 @@ pub fn init(cx: &mut App) {
                             cx,
                         );
                     })
-                },
-            )
-        });
+                })
+            });
+        }
         workspace.register_action(|workspace, _: &git::RenameBranch, window, cx| {
             rename_current_branch(workspace, window, cx);
         });
@@ -387,10 +398,9 @@ fn open_file_diff(
 
 fn file_diff_entry(
     workspace: &Workspace,
+    project_path: &ProjectPath,
     cx: &App,
 ) -> Option<(GitStatusEntry, Entity<Repository>)> {
-    let project_path = workspace.active_item(cx)?.project_path(cx)?;
-
     workspace
         .project()
         .read(cx)
@@ -399,7 +409,7 @@ fn file_diff_entry(
         .find_map(|repository| {
             let repo_path = repository
                 .read(cx)
-                .project_path_to_repo_path(&project_path, cx)?;
+                .project_path_to_repo_path(project_path, cx)?;
             let status_entry = repository.read(cx).status_for_path(&repo_path)?;
             Some((
                 GitStatusEntry {
@@ -664,9 +674,11 @@ fn rename_current_branch(
         return;
     };
 
-    workspace.toggle_modal(window, cx, |window, cx| {
-        RenameBranchModal::new(current_branch_name, repo, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            RenameBranchModal::new(current_branch_name, repo, window, cx)
+        })
+        .detach();
 }
 
 fn create_tag_at_head(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -693,9 +705,11 @@ pub(crate) fn create_tag_at_commit(
     cx: &mut Context<Workspace>,
 ) {
     let workspace_handle = cx.weak_entity();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        CreateTagModal::new(commit, at_head, repo, workspace_handle, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            CreateTagModal::new(commit, at_head, repo, workspace_handle, window, cx)
+        })
+        .detach();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
@@ -936,9 +950,11 @@ fn show_ref_picker(
     };
 
     let workspace_entity = cx.entity();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        RefPickerModal::new(repo, workspace_entity, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            RefPickerModal::new(repo, workspace_entity, window, cx)
+        })
+        .detach();
 }
 
 fn render_remote_button(
@@ -1495,6 +1511,36 @@ impl EventEmitter<DismissEvent> for GitCloneModal {}
 impl ModalView for GitCloneModal {}
 
 #[cfg(test)]
+pub(crate) fn add_test_item_reading_containers(
+    workspace: &Entity<Workspace>,
+    hooks: workspace::item::test::HookBits,
+    cx: &mut gpui::VisualTestContext,
+) -> Entity<workspace::item::test::TestItem> {
+    let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+    let workspace_handle = workspace.downgrade();
+    let pane_handle = pane.downgrade();
+    let item = cx.new(|cx| {
+        workspace::item::test::TestItem::new(cx)
+            .with_pane_reader(pane_handle)
+            .with_workspace_reader(workspace_handle)
+    });
+    cx.update(|window, cx| {
+        workspace::Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+    });
+    cx.run_until_parked();
+    item.read_with(cx, |item, _| item.read_containers_in(hooks));
+    item
+}
+
+#[cfg(test)]
+pub(crate) fn container_reads(
+    item: &Entity<workspace::item::test::TestItem>,
+    cx: &mut gpui::VisualTestContext,
+) -> usize {
+    item.read_with(cx, |item, _| item.container_reads.get())
+}
+
+#[cfg(test)]
 mod view_commit_tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext, WindowHandle};
@@ -1680,8 +1726,8 @@ mod view_commit_tests {
             menu.select_first(&menu::SelectFirst, window, cx);
             menu.select_next(&menu::SelectNext, window, cx);
             menu.select_next(&menu::SelectNext, window, cx);
-            menu.confirm(&Confirm, window, cx);
         });
+        cx.update(|window, cx| ContextMenu::confirm(context_menu.clone(), &Confirm, window, cx));
 
         let modal = workspace
             .update(cx, |workspace, _, cx| {
@@ -1709,5 +1755,247 @@ mod view_commit_tests {
             })
             .expect("fake git state should exist");
         assert_eq!(tagged_commit, Some(selected_commit.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod item_hook_tests {
+    use super::*;
+    use fs::Fs;
+    use gpui::{TestAppContext, VisualTestContext};
+    use project::{FakeFs, Project};
+    use serde_json::json;
+    use settings::SettingsStore;
+    use std::path::{Path, PathBuf};
+    use util::path;
+    use workspace::{MultiWorkspace, item::test::HookBits};
+
+    fn init_test(cx: &mut TestAppContext) {
+        zlog::init_test();
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+    }
+
+    async fn add_git_workspace(
+        cx: &mut TestAppContext,
+    ) -> (Entity<Workspace>, &mut VisualTestContext) {
+        let fs = FakeFs::new(cx.executor());
+        cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "file.txt": "content\n",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("file.txt", "head\n".into())],
+        );
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        (workspace, cx)
+    }
+
+    #[gpui::test]
+    async fn test_stash_actions_items_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (workspace, cx) = add_git_workspace(cx).await;
+        let item = crate::add_test_item_reading_containers(
+            &workspace,
+            HookBits::ACT_AS_TYPE | HookBits::ACTIVE_PROJECT_PATH,
+            cx,
+        );
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+
+        let dispatches: [fn(&mut VisualTestContext); 3] = [
+            |cx| cx.dispatch_action(commit_view::ApplyCurrentStash),
+            |cx| cx.dispatch_action(commit_view::PopCurrentStash),
+            |cx| cx.dispatch_action(commit_view::DropCurrentStash),
+        ];
+        let mut reads = crate::container_reads(&item, cx);
+        for dispatch in dispatches {
+            dispatch(cx);
+            cx.run_until_parked();
+            let reads_after = crate::container_reads(&item, cx);
+            assert!(reads_after > reads);
+            reads = reads_after;
+        }
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items(cx).count(), 1);
+            assert_eq!(
+                workspace.active_item(cx).map(|active| active.item_id()),
+                Some(item.entity_id())
+            );
+        });
+    }
+
+    fn open_file_diff_is_available(cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| window.is_action_available(&git::OpenFileDiff, cx))
+    }
+
+    #[gpui::test]
+    async fn test_open_file_diff_registration_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let (workspace, cx) = add_git_workspace(cx).await;
+        let item_without_path =
+            crate::add_test_item_reading_containers(&workspace, HookBits::ACTIVE_PROJECT_PATH, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&item_without_path, true, true, window, cx);
+        });
+        item_without_path.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item_without_path, cx) > 0);
+        assert!(
+            !open_file_diff_is_available(cx),
+            "an active item without a changed path should not register the action"
+        );
+
+        let worktree_id = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .project()
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .expect("the project should have a worktree")
+                .read(cx)
+                .id()
+        });
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item_with_path = cx.new(|cx| {
+            workspace::item::test::TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+                .with_project_items(&[workspace::item::test::TestProjectItem::new_in_worktree(
+                    1,
+                    "file.txt",
+                    worktree_id,
+                    cx,
+                )])
+        });
+        item_with_path.read_with(cx, |item, _| {
+            item.read_containers_in(HookBits::ACTIVE_PROJECT_PATH)
+        });
+        cx.update(|window, cx| {
+            workspace::Pane::add_item(
+                &pane,
+                Box::new(item_with_path.clone()),
+                true,
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
+        item_with_path.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item_with_path, cx) > 0);
+        assert!(
+            open_file_diff_is_available(cx),
+            "an active item with a changed path should register the action"
+        );
+
+        cx.dispatch_action(git::OpenFileDiff);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<SoloDiffView>(cx).is_some());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_file_diff_follows_active_item_notifications(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (workspace, cx) = add_git_workspace(cx).await;
+        let item =
+            crate::add_test_item_reading_containers(&workspace, HookBits::ACTIVE_PROJECT_PATH, cx);
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert!(
+            !open_file_diff_is_available(cx),
+            "an active item without a changed path should not register the action"
+        );
+
+        let worktree_id = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .project()
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .expect("the project should have a worktree")
+                .read(cx)
+                .id()
+        });
+        let reads_before_notify = crate::container_reads(&item, cx);
+        item.update(cx, |item, cx| {
+            item.project_items
+                .push(workspace::item::test::TestProjectItem::new_in_worktree(
+                    1,
+                    "file.txt",
+                    worktree_id,
+                    cx,
+                ));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_before_notify);
+        assert!(
+            open_file_diff_is_available(cx),
+            "the action should follow a path change that the active item only notifies about"
+        );
+
+        cx.dispatch_action(git::OpenFileDiff);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item_as::<SoloDiffView>(cx).is_some());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_worktree_actions_items_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (workspace, cx) = add_git_workspace(cx).await;
+        let item = crate::add_test_item_reading_containers(
+            &workspace,
+            HookBits::ACTIVE_PROJECT_PATH | HookBits::PROJECT_ITEMS,
+            cx,
+        );
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+
+        let reads_before_switch = crate::container_reads(&item, cx);
+        cx.dispatch_action(zed_actions::SwitchWorktree {
+            path: PathBuf::from(path!("/project")),
+            display_name: "project".to_string(),
+        });
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_before_switch);
+
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        let reads_before_create = crate::container_reads(&item, cx);
+        cx.dispatch_action(zed_actions::CreateWorktree {
+            worktree_name: Some("feature".to_string()),
+            branch_target: zed_actions::NewWorktreeBranchTarget::CurrentBranch,
+        });
+        cx.run_until_parked();
+        assert!(crate::container_reads(&item, cx) > reads_before_create);
     }
 }

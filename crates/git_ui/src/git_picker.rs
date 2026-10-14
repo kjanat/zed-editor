@@ -512,9 +512,11 @@ fn open_with_tab(
     let workspace_handle = workspace.weak_handle();
     let repository = workspace.project().read(cx).active_repository(cx);
 
-    workspace.toggle_modal(window, cx, |window, cx| {
-        GitPicker::new(workspace_handle, repository, tab, rems(34.), window, cx)
-    })
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            GitPicker::new(workspace_handle, repository, tab, rems(34.), window, cx)
+        })
+        .detach();
 }
 
 pub fn popover(

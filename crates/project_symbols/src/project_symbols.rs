@@ -24,11 +24,13 @@ pub fn init(cx: &mut App) {
                 |workspace, _: &workspace::ToggleProjectSymbols, window, cx| {
                     let project = workspace.project().clone();
                     let handle = cx.entity().downgrade();
-                    workspace.toggle_modal(window, cx, move |window, cx| {
-                        let delegate = ProjectSymbolsDelegate::new(handle, project.clone());
-                        let preview = picker_preview::editor_preview(project, window, cx);
-                        Picker::uniform_list_with_preview(delegate, preview, window, cx)
-                    })
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            let delegate = ProjectSymbolsDelegate::new(handle, project.clone());
+                            let preview = picker_preview::editor_preview(project, window, cx);
+                            Picker::uniform_list_with_preview(delegate, preview, window, cx)
+                        })
+                        .detach();
                 },
             );
         },
@@ -130,25 +132,17 @@ impl PickerDelegate for ProjectSymbolsDelegate {
             let workspace = self.workspace.clone();
             cx.spawn_in(window, async move |_, cx| {
                 let buffer = buffer.await?;
-                workspace.update_in(cx, |workspace, window, cx| {
+                cx.update(|window, cx| {
+                    let Some(workspace) = workspace.upgrade() else {
+                        return;
+                    };
+                    let split_pane =
+                        secondary.then(|| Workspace::adjacent_pane(&workspace, window, cx));
                     let position = buffer
                         .read(cx)
                         .clip_point_utf16(symbol.range.start, Bias::Left);
-                    let pane = if secondary {
-                        workspace.adjacent_pane(window, cx)
-                    } else {
-                        workspace.active_pane().clone()
-                    };
-
-                    let editor = workspace.open_project_item::<Editor>(
-                        secondary.then_some(pane),
-                        buffer,
-                        true,
-                        true,
-                        true,
-                        true,
-                        window,
-                        cx,
+                    let editor = Workspace::open_project_item::<Editor>(
+                        &workspace, split_pane, buffer, true, true, true, true, window, cx,
                     );
 
                     editor.update(cx, |editor, cx| {
@@ -341,7 +335,7 @@ impl PickerDelegate for ProjectSymbolsDelegate {
 mod tests {
     use super::*;
     use futures::StreamExt;
-    use gpui::{TestAppContext, VisualContext};
+    use gpui::{TestAppContext, VisualContext, VisualTestContext};
     use language::{FakeLspAdapter, Language, LanguageConfig, LanguageMatcher};
     use lsp::OneOf;
     use project::FakeFs;
@@ -349,7 +343,10 @@ mod tests {
     use settings::SettingsStore;
     use std::{path::Path, sync::Arc};
     use util::path;
-    use workspace::MultiWorkspace;
+    use workspace::{
+        MultiWorkspace, Pane, SplitDirection,
+        item::test::{HookBits, TestItem},
+    };
 
     #[gpui::test]
     async fn test_project_symbols(cx: &mut TestAppContext) {
@@ -604,6 +601,160 @@ mod tests {
         symbols.update_in(cx, |p, window, cx| {
             assert!(p.delegate.render_match(0, false, window, cx).is_some());
         });
+    }
+
+    #[gpui::test]
+    async fn test_project_symbols_confirm_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        confirm_symbol_with_items_that_read_their_containers(false, cx).await;
+    }
+
+    #[gpui::test]
+    async fn test_project_symbols_secondary_confirm_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        confirm_symbol_with_items_that_read_their_containers(true, cx).await;
+    }
+
+    async fn confirm_symbol_with_items_that_read_their_containers(
+        secondary: bool,
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/dir"), json!({ "test.rs": "" }))
+            .await;
+
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+
+        let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+        language_registry.add(Arc::new(Language::new(
+            LanguageConfig {
+                name: "Rust".into(),
+                matcher: (LanguageMatcher {
+                    path_suffixes: vec!["rs".into()],
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            },
+            None,
+        )));
+        let mut fake_servers = language_registry.register_fake_lsp(
+            "Rust",
+            FakeLspAdapter {
+                capabilities: lsp::ServerCapabilities {
+                    workspace_symbol_provider: Some(OneOf::Left(true)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let _buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer_with_lsp(path!("/dir/test.rs"), cx)
+            })
+            .await
+            .unwrap();
+
+        let fake_server = fake_servers.next().await.unwrap();
+        fake_server.set_request_handler::<lsp::WorkspaceSymbolRequest, _, _>(
+            move |_: lsp::WorkspaceSymbolParams, _| async move {
+                Ok(Some(lsp::WorkspaceSymbolResponse::Flat(vec![symbol(
+                    "uno",
+                    path!("/dir/test.rs"),
+                )])))
+            },
+        );
+
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let left_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let right_pane = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(left_pane.clone(), SplitDirection::Right, window, cx)
+        });
+        let right_item = add_item_reading_containers(&workspace, &right_pane, cx);
+        let left_item = add_item_reading_containers(&workspace, &left_pane, cx);
+        left_item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.active_pane().clone()),
+            left_pane
+        );
+        let destination_pane = if secondary {
+            left_item.read_with(cx, |item, _| {
+                item.read_containers_in(HookBits::PIXEL_POSITION_OF_CURSOR)
+            });
+            right_item.read_with(cx, |item, _| {
+                item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+            });
+            right_pane.clone()
+        } else {
+            left_item.read_with(cx, |item, _| {
+                item.read_containers_in(HookBits::BUFFER_KIND | HookBits::PROJECT_ITEMS)
+            });
+            left_pane.clone()
+        };
+
+        let symbols = cx.new_window_entity(|window, cx| {
+            Picker::uniform_list(
+                ProjectSymbolsDelegate::new(workspace.downgrade(), project.clone()),
+                window,
+                cx,
+            )
+        });
+        symbols.update_in(cx, |p, window, cx| {
+            p.update_matches("uno".to_string(), window, cx);
+        });
+        cx.run_until_parked();
+        symbols.read_with(cx, |symbols, _| {
+            assert_eq!(symbols.delegate.matches.len(), 1);
+        });
+
+        symbols.update_in(cx, |p, window, cx| {
+            p.delegate.confirm(secondary, window, cx);
+        });
+        cx.run_until_parked();
+
+        let (pane_count, active_pane) = workspace.read_with(cx, |workspace, _| {
+            (workspace.panes().len(), workspace.active_pane().clone())
+        });
+        assert_eq!(pane_count, 2);
+        assert_eq!(active_pane, destination_pane);
+        let active_editor = destination_pane
+            .read_with(cx, |pane, _| pane.active_item())
+            .and_then(|item| item.downcast::<Editor>());
+        assert!(
+            active_editor.is_some(),
+            "confirming a symbol should open its file in an editor"
+        );
+        assert!(left_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        if secondary {
+            assert!(right_item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        }
+    }
+
+    fn add_item_reading_containers(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<Pane>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TestItem> {
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item
     }
 
     fn init_test(cx: &mut TestAppContext) {

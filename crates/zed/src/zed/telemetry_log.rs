@@ -33,26 +33,37 @@ const MAX_EVENTS: usize = 10_000;
 pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
-            workspace.register_action(
-                |workspace, _: &zed_actions::OpenTelemetryLog, window, cx| {
-                    let telemetry_log =
-                        cx.new(|cx| TelemetryLogView::new(workspace.project().clone(), window, cx));
+            workspace.register_action_renderer(|div, _, _, cx| {
+                div.on_action(cx.entity_listener(
+                    |workspace: Entity<Workspace>,
+                     _: &zed_actions::OpenTelemetryLog,
+                     window,
+                     cx| {
+                        let telemetry_log = workspace.update(cx, |workspace, cx| {
+                            let telemetry_log = cx.new(|cx| {
+                                TelemetryLogView::new(workspace.project().clone(), window, cx)
+                            });
 
-                    cx.subscribe(&telemetry_log, |workspace, _, event, cx| {
-                        let TelemetryLogEvent::ShowToast(toast) = event;
-                        workspace.show_toast(toast.clone(), cx);
-                    })
-                    .detach();
+                            cx.subscribe(&telemetry_log, |workspace, _, event, cx| {
+                                let TelemetryLogEvent::ShowToast(toast) = event;
+                                workspace.show_toast(toast.clone(), cx);
+                            })
+                            .detach();
 
-                    workspace.add_item_to_active_pane(
-                        Box::new(telemetry_log),
-                        None,
-                        true,
-                        window,
-                        cx,
-                    );
-                },
-            );
+                            telemetry_log
+                        });
+
+                        Workspace::add_item_to_active_pane(
+                            &workspace,
+                            Box::new(telemetry_log),
+                            None,
+                            true,
+                            window,
+                            cx,
+                        );
+                    },
+                ))
+            });
         },
     )
     .detach();

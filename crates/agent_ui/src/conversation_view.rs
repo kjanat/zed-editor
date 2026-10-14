@@ -8325,20 +8325,20 @@ pub(crate) mod tests {
         let workspace =
             conversation_view.read_with(cx, |thread_view, _cx| thread_view.workspace.clone());
 
-        workspace
-            .update_in(cx, |workspace, window, cx| {
-                workspace.add_item_to_active_pane(
-                    Box::new(cx.new(|_| ThreadViewItem {
-                        conversation_view: conversation_view.clone(),
-                        fill_space,
-                    })),
-                    None,
-                    true,
-                    window,
-                    cx,
-                );
-            })
-            .unwrap();
+        let workspace = workspace.upgrade().unwrap();
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(cx.new(|_| ThreadViewItem {
+                    conversation_view: conversation_view.clone(),
+                    fill_space,
+                })),
+                None,
+                true,
+                window,
+                cx,
+            );
+        });
     }
 
     struct ThreadViewItem {
@@ -13856,35 +13856,40 @@ pub(crate) mod tests {
             project.create_local_buffer("let a = 10 + 10;", None, false, cx)
         });
 
-        workspace
-            .update_in(cx, |workspace, window, cx| {
-                let editor = cx.new(|cx| {
-                    let mut editor =
-                        Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx);
+        let workspace = workspace.upgrade().unwrap();
+        cx.update(|window, cx| {
+            let editor = cx.new(|cx| {
+                let mut editor =
+                    Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx);
 
-                    editor.change_selections(Default::default(), window, cx, |selections| {
-                        selections.select_ranges([MultiBufferOffset(8)..MultiBufferOffset(15)]);
-                    });
-
-                    editor
+                editor.change_selections(Default::default(), window, cx, |selections| {
+                    selections.select_ranges([MultiBufferOffset(8)..MultiBufferOffset(15)]);
                 });
-                workspace.add_item_to_active_pane(Box::new(editor), None, false, window, cx);
+
+                editor
+            });
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor),
+                None,
+                false,
+                window,
+                cx,
+            );
+        });
+
+        let selection = cx
+            .update(|_, cx| {
+                AgentContextSource::from_active(workspace.read(cx), cx)
+                    .and_then(|source| source.read_selection(&workspace, false, cx))
             })
             .unwrap();
-
         conversation_view.update_in(cx, |view, window, cx| {
             assert_eq!(
                 view.active_thread()
                     .and_then(|active| active.read(cx).editing_message),
                 Some(0)
             );
-            let workspace = workspace.upgrade().unwrap();
-            let selection = workspace
-                .update(cx, |workspace, cx| {
-                    AgentContextSource::from_active(workspace, cx)?
-                        .read_selection(workspace, false, cx)
-                })
-                .unwrap();
             view.insert_selection(selection, window, cx);
         });
 
@@ -13926,35 +13931,40 @@ pub(crate) mod tests {
             project.create_local_buffer("let a = 10 + 10;", None, false, cx)
         });
 
-        workspace
-            .update_in(cx, |workspace, window, cx| {
-                let editor = cx.new(|cx| {
-                    let mut editor =
-                        Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx);
+        let workspace = workspace.upgrade().unwrap();
+        cx.update(|window, cx| {
+            let editor = cx.new(|cx| {
+                let mut editor =
+                    Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx);
 
-                    editor.change_selections(Default::default(), window, cx, |selections| {
-                        selections.select_ranges([MultiBufferOffset(8)..MultiBufferOffset(15)]);
-                    });
-
-                    editor
+                editor.change_selections(Default::default(), window, cx, |selections| {
+                    selections.select_ranges([MultiBufferOffset(8)..MultiBufferOffset(15)]);
                 });
-                workspace.add_item_to_active_pane(Box::new(editor), None, false, window, cx);
+
+                editor
+            });
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor),
+                None,
+                false,
+                window,
+                cx,
+            );
+        });
+
+        let selection = cx
+            .update(|_, cx| {
+                AgentContextSource::from_active(workspace.read(cx), cx)
+                    .and_then(|source| source.read_selection(&workspace, false, cx))
             })
             .unwrap();
-
         conversation_view.update_in(cx, |view, window, cx| {
             assert_eq!(
                 view.active_thread()
                     .and_then(|active| active.read(cx).editing_message),
                 None
             );
-            let workspace = view.workspace.upgrade().unwrap();
-            let selection = workspace
-                .update(cx, |workspace, cx| {
-                    AgentContextSource::from_active(workspace, cx)?
-                        .read_selection(workspace, false, cx)
-                })
-                .unwrap();
             view.insert_selection(selection, window, cx);
         });
 

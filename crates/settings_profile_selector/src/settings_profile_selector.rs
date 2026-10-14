@@ -20,10 +20,13 @@ fn toggle_settings_profile_selector(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    workspace.toggle_modal(window, cx, |window, cx| {
-        let delegate = SettingsProfileSelectorDelegate::new(cx.entity().downgrade(), window, cx);
-        SettingsProfileSelector::new(delegate, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            let delegate =
+                SettingsProfileSelectorDelegate::new(cx.entity().downgrade(), window, cx);
+            SettingsProfileSelector::new(delegate, window, cx)
+        })
+        .detach();
 }
 
 pub struct SettingsProfileSelector {

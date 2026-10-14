@@ -49,9 +49,11 @@ impl LineEndingSelector {
 
         workspace.update(cx, |workspace, cx| {
             let project = workspace.project().clone();
-            workspace.toggle_modal(window, cx, move |window, cx| {
-                LineEndingSelector::new(buffer, project, window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    LineEndingSelector::new(buffer, project, window, cx)
+                })
+                .detach();
         })
     }
 

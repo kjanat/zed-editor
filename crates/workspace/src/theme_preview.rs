@@ -23,9 +23,20 @@ actions!(
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
-        workspace.register_action(|workspace, _: &OpenThemePreview, window, cx| {
-            let theme_preview = cx.new(|cx| ThemePreview::new(window, cx));
-            workspace.add_item_to_active_pane(Box::new(theme_preview), None, true, window, cx)
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &OpenThemePreview, window, cx| {
+                    let theme_preview = cx.new(|cx| ThemePreview::new(window, cx));
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
+                        Box::new(theme_preview),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    )
+                },
+            ))
         });
     })
     .detach();

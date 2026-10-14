@@ -47,37 +47,12 @@ pub fn init(cx: &mut App) {
     });
 
     cx.observe_new(move |workspace: &mut Workspace, _, _| {
-        workspace.register_action(move |workspace, _: &OpenSyntaxTreeView, window, cx| {
-            CommandPaletteFilter::update_global(cx, |this, _| {
-                this.show_action_types(&syntax_tree_actions);
-            });
-
-            let active_item = workspace.active_item(cx);
-            let workspace_handle = workspace.weak_handle();
-            let syntax_tree_view = cx.new(|cx| {
-                cx.on_release(move |view: &mut SyntaxTreeView, cx| {
-                    if view
-                        .workspace_handle
-                        .read_with(cx, |workspace, cx| {
-                            workspace.item_of_type::<SyntaxTreeView>(cx).is_none()
-                        })
-                        .unwrap_or_default()
-                    {
-                        CommandPaletteFilter::update_global(cx, |this, _| {
-                            this.hide_action_types(&syntax_tree_actions);
-                        });
-                    }
-                })
-                .detach();
-
-                SyntaxTreeView::new(workspace_handle, active_item, window, cx)
-            });
-            workspace.split_item(
-                SplitDirection::Right,
-                Box::new(syntax_tree_view),
-                window,
-                cx,
-            )
+        workspace.register_action_renderer(move |div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                move |workspace: Entity<Workspace>, _: &OpenSyntaxTreeView, window, cx| {
+                    open_syntax_tree_view(&workspace, syntax_tree_actions, window, cx);
+                },
+            ))
         });
         workspace.register_action(|workspace, _: &UseActiveEditor, window, cx| {
             if let Some(tree_view) = workspace.item_of_type::<SyntaxTreeView>(cx) {
@@ -88,6 +63,45 @@ pub fn init(cx: &mut App) {
         });
     })
     .detach();
+}
+
+fn open_syntax_tree_view(
+    workspace: &Entity<Workspace>,
+    syntax_tree_actions: [TypeId; 1],
+    window: &mut Window,
+    cx: &mut App,
+) {
+    CommandPaletteFilter::update_global(cx, |this, _| {
+        this.show_action_types(&syntax_tree_actions);
+    });
+
+    let active_item = workspace.read(cx).active_item(cx);
+    let workspace_handle = workspace.downgrade();
+    let syntax_tree_view = cx.new(|cx| {
+        cx.on_release(move |view: &mut SyntaxTreeView, cx| {
+            if view
+                .workspace_handle
+                .read_with(cx, |workspace, cx| {
+                    workspace.item_of_type::<SyntaxTreeView>(cx).is_none()
+                })
+                .unwrap_or_default()
+            {
+                CommandPaletteFilter::update_global(cx, |this, _| {
+                    this.hide_action_types(&syntax_tree_actions);
+                });
+            }
+        })
+        .detach();
+
+        SyntaxTreeView::new(workspace_handle, active_item, window, cx)
+    });
+    Workspace::split_item(
+        workspace,
+        SplitDirection::Right,
+        Box::new(syntax_tree_view),
+        window,
+        cx,
+    );
 }
 
 pub struct SyntaxTreeView {

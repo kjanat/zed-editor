@@ -179,11 +179,13 @@ impl Workspace {
     ) {
         let save_action = match save_strategy {
             SaveStrategy::All => {
-                let save_all = workspace.update_in(cx, |workspace, window, cx| {
-                    let task = workspace.save_all_internal(SaveIntent::SaveAll, true, window, cx);
-                    cx.background_spawn(async { task.await.map(|_| ()) })
+                let save_all = cx.update(|window, cx| {
+                    let workspace = workspace.upgrade()?;
+                    let task =
+                        Self::save_all_internal(&workspace, SaveIntent::SaveAll, true, window, cx);
+                    Some(cx.background_spawn(async { task.await.map(|_| ()) }))
                 });
-                save_all.ok()
+                save_all.ok().flatten()
             }
             SaveStrategy::Current => {
                 let save_current = workspace.update_in(cx, |workspace, window, cx| {
@@ -500,9 +502,9 @@ mod tests {
                 .with_dirty(true)
                 .with_project_items(&[TestProjectItem::new(1, name, cx)])
         });
-        workspace.update_in(cx, |workspace, window, cx| {
-            let pane = workspace.active_pane().clone();
-            workspace.add_item(pane, Box::new(item.clone()), None, true, active, window, cx);
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.update(|window, cx| {
+            Workspace::add_item(pane, Box::new(item.clone()), None, true, active, window, cx);
         });
         item
     }

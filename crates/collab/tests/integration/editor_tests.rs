@@ -536,10 +536,13 @@ async fn test_collaborating_with_completion(cx_a: &mut TestAppContext, cx_b: &mu
     });
 
     // Confirm a completion on the guest.
-    editor_b.update_in(cx_b, |editor, window, cx| {
+    let confirm_completion = editor_b.update_in(cx_b, |editor, window, cx| {
         assert!(editor.context_menu_visible());
-        editor.confirm_completion(&ConfirmCompletion { item_ix: Some(0) }, window, cx);
+        let confirm_completion = editor
+            .confirm_completion(&ConfirmCompletion { item_ix: Some(0) }, window, cx)
+            .unwrap();
         assert_eq!(editor.text(cx), "fn main() { a.first_method() }");
+        confirm_completion
     });
 
     // Return a resolved completion from the host's language server.
@@ -567,6 +570,7 @@ async fn test_collaborating_with_completion(cx_a: &mut TestAppContext, cx_b: &mu
     // The additional edit is applied.
     cx_a.executor().run_until_parked();
     cx_b.executor().run_until_parked();
+    confirm_completion.await.unwrap();
 
     buffer_a.read_with(cx_a, |buffer, _| {
         assert_eq!(
@@ -1175,7 +1179,7 @@ async fn test_collaborating_with_renames(cx_a: &mut TestAppContext, cx_b: &mut T
         .unwrap();
     confirm_rename.await.unwrap();
 
-    let rename_editor = workspace_b.update(cx_b, |workspace, cx| {
+    let rename_editor = workspace_b.read_with(cx_b, |workspace, cx| {
         workspace.active_item_as::<Editor>(cx).unwrap()
     });
 
@@ -4254,7 +4258,7 @@ async fn test_lsp_document_links(cx_a: &mut TestAppContext, cx_b: &mut TestAppCo
     );
     executor.run_until_parked();
 
-    let other_editor = workspace_b.update(cx_b, |workspace, cx| {
+    let other_editor = workspace_b.read_with(cx_b, |workspace, cx| {
         workspace.active_item_as::<Editor>(cx).unwrap()
     });
     other_editor.update(cx_b, |editor, cx| {

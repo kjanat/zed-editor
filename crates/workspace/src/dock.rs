@@ -176,7 +176,10 @@ where
     }
 
     fn set_position(&self, position: DockPosition, window: &mut Window, cx: &mut App) {
-        self.update(cx, |this, cx| this.set_position(position, window, cx))
+        let panel = self.clone();
+        window.defer(cx, move |window, cx| {
+            panel.update(cx, |this, cx| this.set_position(position, window, cx))
+        });
     }
 
     fn is_zoomed(&self, window: &Window, cx: &App) -> bool {
@@ -188,7 +191,10 @@ where
     }
 
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App) {
-        self.update(cx, |this, cx| this.set_active(active, window, cx))
+        let panel = self.clone();
+        window.defer(cx, move |window, cx| {
+            panel.update(cx, |this, cx| this.set_active(active, window, cx))
+        });
     }
 
     fn pane(&self, cx: &App) -> Option<Entity<Pane>> {
@@ -212,7 +218,10 @@ where
     }
 
     fn size_state_changed(&self, window: &mut Window, cx: &mut App) {
-        self.update(cx, |this, cx| this.size_state_changed(window, cx))
+        let panel = self.clone();
+        window.defer(cx, move |window, cx| {
+            panel.update(cx, |this, cx| this.size_state_changed(window, cx))
+        });
     }
 
     fn supports_flexible_size(&self, cx: &App) -> bool {
@@ -224,7 +233,10 @@ where
     }
 
     fn set_flexible_size(&self, flexible: bool, window: &mut Window, cx: &mut App) {
-        self.update(cx, |this, cx| this.set_flexible_size(flexible, window, cx))
+        let panel = self.clone();
+        window.defer(cx, move |window, cx| {
+            panel.update(cx, |this, cx| this.set_flexible_size(flexible, window, cx))
+        });
     }
 
     fn icon(&self, window: &Window, cx: &App) -> Option<ui::IconName> {
@@ -600,15 +612,19 @@ impl Dock {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        for entry in &mut self.panel_entries {
-            if entry.panel.panel_id() == panel.entity_id() {
-                if zoomed != entry.panel.is_zoomed(window, cx) {
-                    entry.panel.set_zoomed(zoomed, window, cx);
+        let zoomed_panel_id = panel.entity_id();
+        let panels = self.panels();
+        window.defer(cx, move |window, cx| {
+            for panel in panels {
+                if panel.panel_id() == zoomed_panel_id {
+                    if zoomed != panel.is_zoomed(window, cx) {
+                        panel.set_zoomed(zoomed, window, cx);
+                    }
+                } else if panel.is_zoomed(window, cx) {
+                    panel.set_zoomed(false, window, cx);
                 }
-            } else if entry.panel.is_zoomed(window, cx) {
-                entry.panel.set_zoomed(false, window, cx);
             }
-        }
+        });
 
         self.workspace
             .update(cx, |workspace, cx| {
@@ -619,11 +635,21 @@ impl Dock {
     }
 
     pub fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for entry in &mut self.panel_entries {
-            if entry.panel.is_zoomed(window, cx) {
-                entry.panel.set_zoomed(false, window, cx);
+        let panels = self.panels();
+        window.defer(cx, move |window, cx| {
+            for panel in panels {
+                if panel.is_zoomed(window, cx) {
+                    panel.set_zoomed(false, window, cx);
+                }
             }
-        }
+        });
+    }
+
+    fn panels(&self) -> Vec<Arc<dyn PanelHandle>> {
+        self.panel_entries
+            .iter()
+            .map(|entry| entry.panel.clone())
+            .collect()
     }
 
     pub(crate) fn add_panel<T: Panel>(
@@ -881,9 +907,9 @@ impl Dock {
             self.activate_panel_internal(idx, window, cx);
         }
         if serialized.zoom
-            && let Some(panel) = self.active_panel()
+            && let Some(panel) = self.active_panel().cloned()
         {
-            panel.set_zoomed(true, window, cx)
+            window.defer(cx, move |window, cx| panel.set_zoomed(true, window, cx));
         }
         self.set_open_internal(serialized.visible, window, cx);
     }
@@ -1615,6 +1641,9 @@ pub mod test {
         pub default_size: Pixels,
         pub flexible: bool,
         pub activation_priority: u32,
+        pub workspace_reader: Option<WeakEntity<Workspace>>,
+        pub dock_reader: Option<WeakEntity<Dock>>,
+        pub container_reads: usize,
     }
     actions!(test_only, [ToggleTestPanel]);
 
@@ -1631,6 +1660,9 @@ pub mod test {
                 default_size: px(300.),
                 flexible: false,
                 activation_priority,
+                workspace_reader: None,
+                dock_reader: None,
+                container_reads: 0,
             }
         }
 
@@ -1653,6 +1685,17 @@ pub mod test {
             Self {
                 activation_focus_handle: Some(cx.focus_handle()),
                 ..Self::new(position, activation_priority, cx)
+            }
+        }
+
+        fn read_containers(&mut self, cx: &App) {
+            if let Some(workspace) = self.workspace_reader.as_ref().and_then(WeakEntity::upgrade) {
+                workspace.read(cx);
+                self.container_reads += 1;
+            }
+            if let Some(dock) = self.dock_reader.as_ref().and_then(WeakEntity::upgrade) {
+                dock.read(cx);
+                self.container_reads += 1;
             }
         }
     }
@@ -1692,6 +1735,7 @@ pub mod test {
         }
 
         fn set_position(&mut self, position: DockPosition, _: &mut Window, cx: &mut Context<Self>) {
+            self.read_containers(cx);
             self.position = position;
             cx.update_global::<SettingsStore, _>(|_, _| {});
         }
@@ -1719,9 +1763,14 @@ pub mod test {
             &mut self,
             flexible: bool,
             _window: &mut Window,
-            _cx: &mut Context<Self>,
+            cx: &mut Context<Self>,
         ) {
+            self.read_containers(cx);
             self.flexible = flexible;
+        }
+
+        fn size_state_changed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+            self.read_containers(cx);
         }
 
         fn icon(&self, _window: &Window, _: &App) -> Option<ui::IconName> {
@@ -1740,11 +1789,13 @@ pub mod test {
             self.zoomed
         }
 
-        fn set_zoomed(&mut self, zoomed: bool, _window: &mut Window, _cx: &mut Context<Self>) {
+        fn set_zoomed(&mut self, zoomed: bool, _window: &mut Window, cx: &mut Context<Self>) {
+            self.read_containers(cx);
             self.zoomed = zoomed;
         }
 
-        fn set_active(&mut self, active: bool, _window: &mut Window, _cx: &mut Context<Self>) {
+        fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+            self.read_containers(cx);
             self.active = active;
         }
 

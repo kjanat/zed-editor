@@ -15,8 +15,8 @@ use dap::{
 use editor::Editor;
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    Action, App, AppContext, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyContext, Render, Subscription, Task, TaskExt, WeakEntity, actions,
+    Action, App, AppContext, ClickEvent, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, KeyContext, Render, Subscription, Task, TaskExt, WeakEntity, actions,
 };
 use itertools::Itertools as _;
 use picker::{Picker, PickerDelegate, highlighted_match_with_paths::HighlightedMatch};
@@ -91,14 +91,15 @@ impl NewProcessModal {
         let languages = workspace.app_state().languages.clone();
 
         cx.spawn_in(window, async move |workspace, cx| {
-            let task_contexts = workspace.update_in(cx, |workspace, window, cx| {
+            let workspace_entity = workspace.upgrade().context("workspace was released")?;
+            let task_contexts = cx.update(|window, cx| {
                 // todo(debugger): get the buffer here (if the active item is an editor) and store it so we can pass it to start_session later
-                tasks_ui::task_contexts(workspace, window, cx)
+                tasks_ui::task_contexts(&workspace_entity, window, cx)
             })?;
             workspace.update_in(cx, |workspace, window, cx| {
                 let workspace_handle = workspace.weak_handle();
                 let project = workspace.project().clone();
-                workspace.toggle_modal(window, cx, |window, cx| {
+                let modal = workspace.toggle_modal(window, cx, move |window, cx| {
                     let attach_mode =
                         AttachMode::new(None, workspace_handle.clone(), project, window, cx);
 
@@ -273,6 +274,7 @@ impl NewProcessModal {
                         _subscriptions,
                     }
                 });
+                modal.detach();
             })?;
 
             anyhow::Ok(())
@@ -344,18 +346,26 @@ impl NewProcessModal {
         cx.spawn(async move |_| adapter?.config_from_zed_format(session_scenario).await.ok())
     }
 
-    fn start_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.debugger.as_ref().is_none() {
-            return;
-        }
+    pub(super) fn start_new_session(modal: Entity<Self>, window: &mut Window, cx: &mut App) {
+        let debug_picker = {
+            let state = modal.read(cx);
+            if state.debugger.is_none() {
+                return;
+            }
+            matches!(state.mode, NewProcessMode::Debug).then(|| state.debug_picker.clone())
+        };
 
-        if let NewProcessMode::Debug = &self.mode {
-            self.debug_picker.update(cx, |picker, cx| {
+        if let Some(debug_picker) = debug_picker {
+            debug_picker.update(cx, |picker, cx| {
                 picker.delegate.confirm(false, window, cx);
             });
             return;
         }
 
+        modal.update(cx, |modal, cx| modal.start_configured_session(window, cx));
+    }
+
+    fn start_configured_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let NewProcessMode::Launch = &self.mode
             && self.configure_mode.read(cx).save_to_debug_json.selected()
         {
@@ -751,9 +761,11 @@ impl Render for NewProcessModal {
                             )
                             .child(
                                 Button::new("debugger-spawn", "Start")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.start_new_session(window, cx)
-                                    }))
+                                    .on_click(cx.entity_listener(
+                                        |modal: Entity<Self>, _: &ClickEvent, window, cx| {
+                                            Self::start_new_session(modal, window, cx)
+                                        },
+                                    ))
                                     .disabled(
                                         self.debugger.is_none()
                                             || self
@@ -1652,6 +1664,10 @@ impl NewProcessModal {
                 _ => ToggleState::Unselected,
             }
         })
+    }
+
+    pub(crate) fn set_mode(&mut self, mode: NewProcessMode) {
+        self.mode = mode;
     }
 
     pub(crate) fn debug_picker_candidate_subtitles(&self, cx: &mut App) -> Vec<String> {

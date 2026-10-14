@@ -129,15 +129,19 @@ impl ManageProfilesModal {
                     .and_then(|thread| thread.read(cx).model().cloned());
 
                 let context_server_registry = panel.read(cx).context_server_registry().clone();
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    let mut this = Self::new(fs, active_model, context_server_registry, window, cx);
+                let customize_tools = action.customize_tools.clone();
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        let mut this =
+                            Self::new(fs, active_model, context_server_registry, window, cx);
 
-                    if let Some(profile_id) = action.customize_tools.clone() {
-                        this.configure_builtin_tools(profile_id, window, cx);
-                    }
+                        if let Some(profile_id) = customize_tools {
+                            this.configure_builtin_tools(profile_id, window, cx);
+                        }
 
-                    this
-                })
+                        this
+                    })
+                    .detach();
             }
         });
     }

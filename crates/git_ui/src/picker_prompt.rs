@@ -38,9 +38,11 @@ pub fn prompt(
 
         workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    PickerPrompt::new(delegate, 34., window, cx)
-                })
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        PickerPrompt::new(delegate, 34., window, cx)
+                    })
+                    .detach();
             })
             .ok();
 
@@ -78,9 +80,12 @@ impl Render for PickerPrompt {
         v_flex()
             .child(self.picker.clone())
             .on_mouse_down_out(cx.listener(|this, _, window, cx| {
-                this.picker.update(cx, |this, cx| {
-                    this.cancel(&Default::default(), window, cx);
-                })
+                let picker = this.picker.clone();
+                window.defer(cx, move |window, cx| {
+                    picker.update(cx, |picker, cx| {
+                        picker.cancel(&Default::default(), window, cx);
+                    })
+                });
             }))
     }
 }
@@ -236,5 +241,63 @@ impl PickerDelegate for PickerPromptDelegate {
                     el.child(HighlightedLabel::new(shortened_option, highlights))
                 }),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Modifiers, MouseButton, TestAppContext, point};
+    use settings::SettingsStore;
+    use std::{cell::Cell, rc::Rc};
+
+    struct PromptHost {
+        prompt: Entity<PickerPrompt>,
+    }
+
+    impl Render for PromptHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(div().w(px(600.)).h(px(400.)).child(self.prompt.clone()))
+        }
+    }
+
+    #[gpui::test]
+    async fn test_mouse_down_outside_dismisses_picker_prompt(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let (tx, _rx) = oneshot::channel();
+        let delegate = PickerPromptDelegate::new(
+            "Pick an option".into(),
+            vec!["first".into(), "second".into()],
+            tx,
+            70,
+        );
+        let (host, cx) = cx.add_window_view(|window, cx| PromptHost {
+            prompt: cx.new(|cx| PickerPrompt::new(delegate, 34., window, cx)),
+        });
+        let prompt = host.read_with(cx, |host, _| host.prompt.clone());
+        let dismissed = Rc::new(Cell::new(false));
+        let _subscription = cx.update(|_, cx| {
+            let dismissed = dismissed.clone();
+            cx.subscribe(&prompt, move |_, _: &DismissEvent, _| dismissed.set(true))
+        });
+        cx.run_until_parked();
+
+        let viewport = cx.update(|window, _| window.viewport_size());
+        cx.simulate_mouse_down(
+            point(viewport.width - px(1.), viewport.height - px(1.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+
+        assert!(dismissed.get());
     }
 }

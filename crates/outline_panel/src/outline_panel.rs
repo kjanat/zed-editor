@@ -1053,21 +1053,26 @@ impl OutlinePanel {
             None => None,
         };
 
-        workspace.update_in(&mut cx, |workspace, window, cx| {
-            let panel = Self::new(workspace, serialized_panel.as_ref(), window, cx);
+        cx.update(|window, cx| {
+            let workspace = workspace
+                .upgrade()
+                .context("outline panel workspace was released")?;
+            let panel = Self::new(&workspace, serialized_panel.as_ref(), window, cx);
             panel.update(cx, |_, cx| cx.notify());
-            panel
-        })
+            anyhow::Ok(panel)
+        })?
     }
 
     fn new(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         serialized: Option<&SerializedOutlinePanel>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Entity<Self> {
-        let project = workspace.project().clone();
-        let workspace_handle = cx.entity().downgrade();
+        let project = workspace.read(cx).project().clone();
+        let fs = workspace.read(cx).app_state().fs.clone();
+        let workspace_handle = workspace.downgrade();
+        let active_editor = workspace_active_editor(workspace.read(cx), cx);
 
         cx.new(|cx| {
             let filter_editor = cx.new(|cx| {
@@ -1088,10 +1093,7 @@ impl OutlinePanel {
             let focus_handle = cx.focus_handle();
             let focus_subscription = cx.on_focus(&focus_handle, window, Self::focus_in);
             let workspace_subscription = cx.subscribe_in(
-                &workspace
-                    .weak_handle()
-                    .upgrade()
-                    .expect("have a &mut Workspace"),
+                workspace,
                 window,
                 move |outline_panel, workspace, event, window, cx| {
                     if let workspace::Event::ActiveItemChanged = event {
@@ -1254,7 +1256,7 @@ impl OutlinePanel {
                 pinned: false,
                 workspace: workspace_handle,
                 project,
-                fs: workspace.app_state().fs.clone(),
+                fs,
                 max_width_item_index: None,
                 scroll_handle,
                 rendered_entries_len: 0,
@@ -1292,7 +1294,7 @@ impl OutlinePanel {
                 outline_children_cache: HashMap::default(),
                 hide_symbols_override: None,
             };
-            if let Some((item, editor)) = workspace_active_editor(workspace, cx) {
+            if let Some((item, editor)) = active_editor {
                 outline_panel.replace_active_editor(item, editor, window, cx);
             }
             outline_panel
@@ -6001,7 +6003,10 @@ mod tests {
     };
     use serde_json::json;
     use util::{path, rel_path::rel_path};
-    use workspace::{MultiWorkspace, OpenOptions, OpenVisible, ToolbarItemView};
+    use workspace::{
+        MultiWorkspace, OpenOptions, OpenVisible, Pane, ToolbarItemView,
+        item::test::{HookBits, TestItem},
+    };
 
     use super::*;
 
@@ -6107,9 +6112,9 @@ mod tests {
             outline_panel.set_active(true, window, cx)
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -6336,9 +6341,9 @@ mod tests {
             outline_panel.set_active(true, window, cx)
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -6469,9 +6474,9 @@ mod tests {
             outline_panel.set_active(true, window, cx)
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -6711,9 +6716,9 @@ outline: fn hints_lifetimes_named  <==== selected"
             "Directory should be opened successfully"
         );
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -9501,9 +9506,9 @@ outline: struct OutlineEntryExcerpt
             outline_panel.set_active(true, window, cx)
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -9773,6 +9778,51 @@ outline: struct OutlineEntryExcerpt
         (window, workspace)
     }
 
+    #[gpui::test]
+    async fn test_load_with_items_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/root"), json!({})).await;
+        let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| item.read_containers_in(HookBits::ACT_AS_TYPE));
+
+        let workspace_weak = workspace.downgrade();
+        let panel = cx
+            .update(|window, cx| {
+                window.spawn(cx, async move |cx| {
+                    OutlinePanel::load(workspace_weak, cx.clone()).await
+                })
+            })
+            .await
+            .expect("Failed to load outline panel");
+
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.active_item.is_none(),
+                "an item that is not an editor should not become the outline's active item"
+            );
+        });
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+    }
+
     fn outline_panel(
         workspace: &Entity<Workspace>,
         cx: &mut VisualTestContext,
@@ -9837,7 +9887,7 @@ outline: struct OutlineEntryExcerpt
         excerpts: &[(&Entity<language::Buffer>, Vec<Range<language::Point>>)],
         cx: &mut VisualTestContext,
     ) -> Entity<Editor> {
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             let multibuffer = cx.new(|cx| {
                 let mut multibuffer = editor::MultiBuffer::new(language::Capability::ReadWrite);
                 for (buffer, ranges) in excerpts {
@@ -9852,7 +9902,14 @@ outline: struct OutlineEntryExcerpt
             });
             let editor = cx
                 .new(|cx| Editor::for_multibuffer(multibuffer, Some(project.clone()), window, cx));
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             editor.update(cx, |editor, cx| {
                 window.focus(&editor.focus_handle(cx), cx);
             });
@@ -10330,7 +10387,7 @@ outline: struct OutlineEntryExcerpt
         entries: &[(&Entity<language::Buffer>, &str)],
         cx: &mut VisualTestContext,
     ) -> Entity<Editor> {
-        let (editor, diffs) = workspace.update_in(cx, |workspace, window, cx| {
+        let (editor, diffs) = cx.update(|window, cx| {
             let mut diffs = Vec::new();
             let multibuffer = cx.new(|cx| {
                 let mut multibuffer = editor::MultiBuffer::new(language::Capability::ReadWrite);
@@ -10366,7 +10423,14 @@ outline: struct OutlineEntryExcerpt
                 editor.set_expand_all_diff_hunks(cx);
                 editor
             });
-            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+            Workspace::add_item_to_active_pane(
+                workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
             (editor, diffs)
         });
         flush_outline_tasks(cx);
@@ -12416,9 +12480,9 @@ outline: fn main"
             outline_panel.set_active(true, window, cx)
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,

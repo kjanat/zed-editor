@@ -232,17 +232,7 @@ impl Render for CursorPosition {
                     ))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(workspace) = this.workspace.upgrade() {
-                            workspace.update(cx, |workspace, cx| {
-                                if let Some(editor) = workspace
-                                    .active_item(cx)
-                                    .and_then(|item| item.act_as::<Editor>(cx))
-                                    && let Some(buffer) = editor.read(cx).active_buffer(cx)
-                                {
-                                    workspace.toggle_modal(window, cx, |window, cx| {
-                                        crate::GoToLine::new(editor, buffer, window, cx)
-                                    })
-                                }
-                            });
+                            toggle_go_to_line_for_active_item(&workspace, window, cx);
                         }
                     }))
                     .tooltip(move |_window, cx| match context.as_ref() {
@@ -261,6 +251,30 @@ impl Render for CursorPosition {
             )
         })
     }
+}
+
+pub(crate) fn toggle_go_to_line_for_active_item(
+    workspace: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(editor) = workspace
+        .read(cx)
+        .active_item(cx)
+        .and_then(|item| item.act_as::<Editor>(cx))
+    else {
+        return;
+    };
+    let Some(buffer) = editor.read(cx).active_buffer(cx) else {
+        return;
+    };
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                crate::GoToLine::new(editor, buffer, window, cx)
+            })
+            .detach();
+    });
 }
 
 const UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);

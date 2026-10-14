@@ -1876,7 +1876,7 @@ impl BufferSearchBar {
 
 #[cfg(test)]
 mod tests {
-    use std::{ops::Range, time::Duration};
+    use std::{cell::Cell, ops::Range, rc::Rc, time::Duration};
 
     use super::*;
     use editor::{
@@ -2023,6 +2023,219 @@ mod tests {
         let cx = VisualTestContext::from_window(*window, cx).into_mut();
 
         (editor.unwrap(), search_bar, cx)
+    }
+
+    struct ContainerReadingItem {
+        focus_handle: FocusHandle,
+        read_containers: Box<dyn Fn(&App)>,
+        container_reads: Rc<Cell<usize>>,
+    }
+
+    impl EventEmitter<()> for ContainerReadingItem {}
+    impl EventEmitter<SearchEvent> for ContainerReadingItem {}
+
+    impl Focusable for ContainerReadingItem {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for ContainerReadingItem {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().track_focus(&self.focus_handle)
+        }
+    }
+
+    impl Item for ContainerReadingItem {
+        type Event = ();
+
+        fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+            "Container reader".into()
+        }
+
+        fn as_searchable(
+            &self,
+            handle: &Entity<Self>,
+            _: &App,
+        ) -> Option<Box<dyn SearchableItemHandle>> {
+            Some(Box::new(handle.clone()))
+        }
+    }
+
+    impl SearchableItem for ContainerReadingItem {
+        type Match = ();
+
+        fn search_bar_visibility_changed(
+            &mut self,
+            visible: bool,
+            _: &mut Window,
+            cx: &mut Context<Self>,
+        ) {
+            if visible {
+                let app: &App = cx;
+                (self.read_containers)(app);
+                self.container_reads.set(self.container_reads.get() + 1);
+            }
+        }
+
+        fn clear_matches(&mut self, _: &mut Window, _: &mut Context<Self>) {}
+        fn update_matches(
+            &mut self,
+            _: &[Self::Match],
+            _: Option<usize>,
+            _: SearchToken,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) {
+        }
+        fn query_suggestion(
+            &mut self,
+            _: Option<SeedQuerySetting>,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) -> String {
+            String::new()
+        }
+        fn activate_match(
+            &mut self,
+            _: usize,
+            _: &[Self::Match],
+            _: SearchToken,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) {
+        }
+        fn select_matches(
+            &mut self,
+            _: &[Self::Match],
+            _: SearchToken,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) {
+        }
+        fn replace(
+            &mut self,
+            _: &Self::Match,
+            _: &SearchQuery,
+            _: SearchToken,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) {
+        }
+        fn find_matches(
+            &mut self,
+            _: Arc<SearchQuery>,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) -> Task<Vec<Self::Match>> {
+            Task::ready(Vec::new())
+        }
+        fn active_match_index(
+            &mut self,
+            _: Direction,
+            _: &[Self::Match],
+            _: SearchToken,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) -> Option<usize> {
+            None
+        }
+    }
+
+    struct SearchHost {
+        search_bar: Entity<BufferSearchBar>,
+        item: Entity<ContainerReadingItem>,
+    }
+
+    impl Render for SearchHost {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let mut registrar = DivRegistrar::new(|host, _, _| Some(host.search_bar.clone()), cx);
+            BufferSearchBar::register(&mut registrar);
+            registrar.into_div().size_full().child(self.item.clone())
+        }
+    }
+
+    #[gpui::test]
+    async fn test_workspace_search_actions_run_with_containers_released(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let fs = project::FakeFs::new(cx.background_executor.clone());
+        let project = project::Project::test(fs, [], cx).await;
+        let window =
+            cx.add_window(|window, cx| workspace::MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let container_reads = Rc::new(Cell::new(0));
+        let item = cx.new(|cx| ContainerReadingItem {
+            focus_handle: cx.focus_handle(),
+            read_containers: Box::new({
+                let workspace = workspace.downgrade();
+                let pane = pane.downgrade();
+                move |cx: &App| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.read(cx);
+                    }
+                    if let Some(pane) = pane.upgrade() {
+                        pane.read(cx).toolbar().read(cx);
+                    }
+                }
+            }),
+            container_reads: container_reads.clone(),
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            let buffer_search_bar = cx.new(|cx| BufferSearchBar::new(None, window, cx));
+            let project_search_bar = cx.new(|_| crate::project_search::ProjectSearchBar::new());
+            workspace.active_pane().update(cx, |pane, cx| {
+                pane.toolbar().update(cx, |toolbar, cx| {
+                    toolbar.add_item(buffer_search_bar, window, cx);
+                    toolbar.add_item(project_search_bar, window, cx);
+                });
+            });
+        });
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(&workspace, Box::new(item), None, true, window, cx);
+        });
+        cx.run_until_parked();
+
+        cx.dispatch_action(Deploy::find());
+
+        assert_eq!(container_reads.get(), 1);
+    }
+
+    #[gpui::test]
+    async fn test_div_registrar_runs_search_actions_with_host_released(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let container_reads = Rc::new(Cell::new(0));
+        let window = cx.add_window(|window, cx| {
+            let host = cx.weak_entity();
+            let item = cx.new(|cx| ContainerReadingItem {
+                focus_handle: cx.focus_handle(),
+                read_containers: Box::new(move |cx: &App| {
+                    if let Some(host) = host.upgrade() {
+                        host.read(cx);
+                    }
+                }),
+                container_reads: container_reads.clone(),
+            });
+            let search_bar = cx.new(|cx| {
+                let mut search_bar = BufferSearchBar::new(None, window, cx);
+                search_bar.set_active_pane_item(Some(&item), window, cx);
+                search_bar
+            });
+            SearchHost { search_bar, item }
+        });
+        let host = window.root(cx).unwrap();
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+        let focus_handle = host.read_with(cx, |host, cx| host.item.read(cx).focus_handle.clone());
+        cx.update(|window, cx| window.focus(&focus_handle, cx));
+        cx.run_until_parked();
+
+        cx.dispatch_action(Deploy::find());
+
+        assert_eq!(container_reads.get(), 1);
     }
 
     #[perf]
@@ -3402,9 +3615,7 @@ mod tests {
                     cx,
                 )
             });
-            workspace.update(cx, |workspace, cx| {
-                workspace.add_item_to_center(Box::new(editor_handle.clone()), window, cx);
-            });
+            Workspace::add_item_to_center(&workspace, Box::new(editor_handle.clone()), window, cx);
             window.focus(&editor_handle.focus_handle(cx), cx);
             search_bar = Some(buffer_search_bar);
             editor = Some(editor_handle);

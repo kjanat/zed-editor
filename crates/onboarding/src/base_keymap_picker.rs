@@ -33,13 +33,15 @@ pub fn toggle(
     cx: &mut Context<Workspace>,
 ) {
     let fs = workspace.app_state().fs.clone();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        BaseKeymapSelector::new(
-            BaseKeymapSelectorDelegate::new(cx.entity().downgrade(), fs, cx),
-            window,
-            cx,
-        )
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            BaseKeymapSelector::new(
+                BaseKeymapSelectorDelegate::new(cx.entity().downgrade(), fs, cx),
+                window,
+                cx,
+            )
+        })
+        .detach();
 }
 
 pub struct BaseKeymapSelector {

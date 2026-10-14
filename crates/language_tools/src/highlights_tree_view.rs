@@ -45,20 +45,29 @@ actions!(
 
 pub fn init(cx: &mut App) {
     cx.observe_new(move |workspace: &mut Workspace, _, _| {
-        workspace.register_action(move |workspace, _: &OpenHighlightsTreeView, window, cx| {
-            let active_item = workspace.active_item(cx);
-            let workspace_handle = workspace.weak_handle();
-            let highlights_tree_view =
-                cx.new(|cx| HighlightsTreeView::new(workspace_handle, active_item, window, cx));
-            workspace.split_item(
-                SplitDirection::Right,
-                Box::new(highlights_tree_view),
-                window,
-                cx,
-            )
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, _: &OpenHighlightsTreeView, window, cx| {
+                    open_highlights_tree_view(&workspace, window, cx);
+                },
+            ))
         });
     })
     .detach();
+}
+
+fn open_highlights_tree_view(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    let active_item = workspace.read(cx).active_item(cx);
+    let workspace_handle = workspace.downgrade();
+    let highlights_tree_view =
+        cx.new(|cx| HighlightsTreeView::new(workspace_handle, active_item, window, cx));
+    Workspace::split_item(
+        workspace,
+        SplitDirection::Right,
+        Box::new(highlights_tree_view),
+        window,
+        cx,
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

@@ -479,23 +479,25 @@ impl LanguageServerState {
                                         buffer.set_capability(language::Capability::ReadOnly, cx);
                                     });
 
-                                    workspace.update(cx, |workspace, cx| {
-                                        window_handle.update(cx, |_, window, cx| {
-                                            workspace.add_item_to_active_pane(
-                                                Box::new(cx.new(|cx| {
-                                                    let mut editor = Editor::for_buffer(
-                                                        buffer, None, window, cx,
-                                                    );
-                                                    editor.set_read_only(true);
-                                                    editor
-                                                })),
-                                                None,
-                                                true,
-                                                window,
-                                                cx,
-                                            );
-                                        })
-                                    })??;
+                                    window_handle.update(cx, |_, window, cx| {
+                                        let Some(workspace) = workspace.upgrade() else {
+                                            return;
+                                        };
+                                        let editor = cx.new(|cx| {
+                                            let mut editor =
+                                                Editor::for_buffer(buffer, None, window, cx);
+                                            editor.set_read_only(true);
+                                            editor
+                                        });
+                                        Workspace::add_item_to_active_pane(
+                                            &workspace,
+                                            Box::new(editor),
+                                            None,
+                                            true,
+                                            window,
+                                            cx,
+                                        );
+                                    })?;
 
                                     anyhow::Ok(())
                                 })

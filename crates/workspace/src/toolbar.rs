@@ -42,6 +42,7 @@ pub trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
 
 trait ToolbarItemViewHandle: Send {
     fn id(&self) -> EntityId;
+    fn boxed_clone(&self) -> Box<dyn ToolbarItemViewHandle>;
     fn to_any(&self) -> AnyView;
     fn set_active_pane_item(
         &self,
@@ -49,7 +50,7 @@ trait ToolbarItemViewHandle: Send {
         window: &mut Window,
         cx: &mut App,
     ) -> ToolbarItemLocation;
-    fn focus_changed(&mut self, pane_focused: bool, window: &mut Window, cx: &mut App);
+    fn focus_changed(&self, pane_focused: bool, window: &mut Window, cx: &mut App);
     fn contribute_context(&self, context: &mut KeyContext, cx: &App);
 }
 
@@ -185,7 +186,6 @@ impl Toolbar {
     where
         T: 'static + ToolbarItemView,
     {
-        let location = item.set_active_pane_item(self.active_item.as_deref(), window, cx);
         cx.subscribe(&item, |this, item, event, cx| {
             if let Some((_, current_location)) = this
                 .items
@@ -203,35 +203,76 @@ impl Toolbar {
             }
         })
         .detach();
-        self.items.push((Box::new(item), location));
+        self.items
+            .push((Box::new(item.clone()), ToolbarItemLocation::Hidden));
+        let toolbar = cx.entity();
+        window.defer(cx, move |window, cx| {
+            let active_item = toolbar
+                .read(cx)
+                .active_item
+                .as_ref()
+                .map(|active_item| active_item.boxed_clone());
+            let location = item.set_active_pane_item(active_item.as_deref(), window, cx);
+            toolbar.update(cx, |toolbar, cx| {
+                toolbar.apply_locations([(item.entity_id(), location)], cx);
+            });
+        });
         cx.notify();
     }
 
-    pub fn set_active_item(
-        &mut self,
+    pub fn set_active_item_for(
+        toolbar: &Entity<Self>,
         item: Option<&dyn ItemHandle>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) {
-        self.active_item = item.map(|item| item.boxed_clone());
-        self.hidden = self
-            .active_item
-            .as_ref()
-            .map(|item| !item.show_toolbar(cx))
-            .unwrap_or(false);
+        let hidden = item.is_some_and(|item| !item.show_toolbar(cx));
+        let toolbar_items = toolbar.read(cx).item_handles();
+        let locations = toolbar_items
+            .iter()
+            .map(|toolbar_item| {
+                (
+                    toolbar_item.id(),
+                    toolbar_item.set_active_pane_item(item, window, cx),
+                )
+            })
+            .collect::<Vec<_>>();
+        toolbar.update(cx, |toolbar, cx| {
+            toolbar.active_item = item.map(|item| item.boxed_clone());
+            toolbar.hidden = hidden;
+            toolbar.apply_locations(locations, cx);
+        });
+    }
 
-        for (toolbar_item, current_location) in self.items.iter_mut() {
-            let new_location = toolbar_item.set_active_pane_item(item, window, cx);
-            if new_location != *current_location {
-                *current_location = new_location;
-                cx.notify();
-            }
+    pub fn focus_changed(toolbar: &Entity<Self>, focused: bool, window: &mut Window, cx: &mut App) {
+        let toolbar_items = toolbar.read(cx).item_handles();
+        for toolbar_item in toolbar_items {
+            toolbar_item.focus_changed(focused, window, cx);
         }
     }
 
-    pub fn focus_changed(&mut self, focused: bool, window: &mut Window, cx: &mut Context<Self>) {
-        for (toolbar_item, _) in self.items.iter_mut() {
-            toolbar_item.focus_changed(focused, window, cx);
+    fn item_handles(&self) -> Vec<Box<dyn ToolbarItemViewHandle>> {
+        self.items
+            .iter()
+            .map(|(toolbar_item, _)| toolbar_item.boxed_clone())
+            .collect()
+    }
+
+    fn apply_locations(
+        &mut self,
+        locations: impl IntoIterator<Item = (EntityId, ToolbarItemLocation)>,
+        cx: &mut Context<Self>,
+    ) {
+        for (item_id, new_location) in locations {
+            if let Some((_, current_location)) = self
+                .items
+                .iter_mut()
+                .find(|(toolbar_item, _)| toolbar_item.id() == item_id)
+                && *current_location != new_location
+            {
+                *current_location = new_location;
+                cx.notify();
+            }
         }
     }
 
@@ -259,6 +300,10 @@ impl<T: ToolbarItemView> ToolbarItemViewHandle for Entity<T> {
         self.entity_id()
     }
 
+    fn boxed_clone(&self) -> Box<dyn ToolbarItemViewHandle> {
+        Box::new(self.clone())
+    }
+
     fn to_any(&self) -> AnyView {
         self.clone().into()
     }
@@ -274,7 +319,7 @@ impl<T: ToolbarItemView> ToolbarItemViewHandle for Entity<T> {
         })
     }
 
-    fn focus_changed(&mut self, pane_focused: bool, window: &mut Window, cx: &mut App) {
+    fn focus_changed(&self, pane_focused: bool, window: &mut Window, cx: &mut App) {
         self.update(cx, |this, cx| {
             this.pane_focus_update(pane_focused, window, cx);
             cx.notify();

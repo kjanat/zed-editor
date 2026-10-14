@@ -84,44 +84,50 @@ impl Vim {
         let Some(workspace) = self.workspace(window, cx) else {
             return;
         };
-        workspace.update(cx, |workspace, cx| {
-            let item = workspace.items(cx).find(|item| {
+        let item = workspace
+            .read(cx)
+            .items(cx)
+            .find(|item| {
                 item.act_as::<Editor>(cx)
                     .is_some_and(|editor| editor.read(cx).buffer().entity_id() == entity_id)
+            })
+            .cloned();
+        let Some(item) = item else {
+            return;
+        };
+        let Some(editor) = item.act_as::<Editor>(cx) else {
+            return;
+        };
+        let pane = workspace.read(cx).pane_for(item.as_ref());
+        if let Some(pane) = pane {
+            pane.update(cx, |pane, cx| {
+                if let Some(index) = pane.index_for_item(item.as_ref()) {
+                    pane.activate_item(index, true, true, window, cx);
+                }
             });
-            let Some(item) = item.cloned() else {
-                return;
-            };
-            if let Some(pane) = workspace.pane_for(item.as_ref()) {
-                pane.update(cx, |pane, cx| {
-                    if let Some(index) = pane.index_for_item(item.as_ref()) {
-                        pane.activate_item(index, true, true, window, cx);
-                    }
-                });
-            };
+        };
 
-            item.act_as::<Editor>(cx).unwrap().update(cx, |editor, cx| {
-                let map = editor.snapshot(window, cx);
-                let mut ranges: Vec<Range<Anchor>> = Vec::new();
-                for mut anchor in anchors {
-                    if line {
-                        let mut point = anchor.to_display_point(&map.display_snapshot);
-                        point = motion::first_non_whitespace(&map.display_snapshot, false, point);
-                        anchor = map
-                            .display_snapshot
-                            .buffer_snapshot()
-                            .anchor_before(point.to_point(&map.display_snapshot));
-                    }
-
-                    if ranges.last() != Some(&(anchor..anchor)) {
-                        ranges.push(anchor..anchor);
-                    }
+        editor.update(cx, |editor, cx| {
+            let map = editor.snapshot(window, cx);
+            let mut ranges: Vec<Range<Anchor>> = Vec::new();
+            for mut anchor in anchors {
+                if line {
+                    let mut point = anchor.to_display_point(&map.display_snapshot);
+                    point = motion::first_non_whitespace(&map.display_snapshot, false, point);
+                    anchor = map
+                        .display_snapshot
+                        .buffer_snapshot()
+                        .anchor_before(point.to_point(&map.display_snapshot));
                 }
 
-                editor.change_selections(Default::default(), window, cx, |s| {
-                    s.select_anchor_ranges(ranges)
-                });
-            })
+                if ranges.last() != Some(&(anchor..anchor)) {
+                    ranges.push(anchor..anchor);
+                }
+            }
+
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_anchor_ranges(ranges)
+            });
         });
     }
 
@@ -374,10 +380,71 @@ pub fn jump_motion(
 mod test {
     use crate::test::{NeovimBackedTestContext, VimTestContext};
     use editor::Editor;
-    use gpui::TestAppContext;
+    use gpui::{AppContext as _, TestAppContext};
+    use multi_buffer::MultiBuffer;
     use std::path::Path;
     use util::path;
-    use workspace::{CloseActiveItem, OpenOptions};
+    use workspace::{
+        CloseActiveItem, OpenOptions, Pane, Workspace,
+        item::test::{HookBits, TestItem},
+    };
+
+    #[gpui::test]
+    async fn test_jump_to_buffer_mark_activates_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        let workspace = cx.workspace.clone();
+        let original_editor = cx.editor.clone();
+        let pane = cx.update(|_, cx| workspace.read(cx).active_pane().clone());
+        let item = cx.update(|_, cx| {
+            cx.new(|cx| {
+                TestItem::new(cx)
+                    .with_pane_reader(pane.downgrade())
+                    .with_workspace_reader(workspace.downgrade())
+            })
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, false, None, window, cx);
+        });
+        let marked_editor = cx.update(|window, cx| {
+            let project = workspace.read(cx).project().clone();
+            let multibuffer = MultiBuffer::build_simple("one\ntwo\n", cx);
+            let editor =
+                cx.new(|cx| Editor::for_multibuffer(multibuffer, Some(project), window, cx));
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
+            editor
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("j m A");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&original_editor, true, true, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| item.read(cx).read_containers_in(HookBits::ACT_AS_TYPE));
+
+        cx.simulate_keystrokes("' A");
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            let active_item_id = workspace
+                .read(cx)
+                .active_item(cx)
+                .map(|active_item| active_item.item_id());
+            assert_eq!(active_item_id, Some(marked_editor.entity_id()));
+            assert!(item.read(cx).container_reads.get() > 0);
+        });
+    }
 
     #[gpui::test]
     async fn test_quote_mark(cx: &mut TestAppContext) {

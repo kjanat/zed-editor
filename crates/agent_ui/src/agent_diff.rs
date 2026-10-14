@@ -26,6 +26,7 @@ use std::{
     any::{Any, TypeId},
     collections::hash_map::Entry,
     ops::Range,
+    rc::Rc,
     sync::Arc,
 };
 use ui::{CommonAnimationExt, Divider, IconButtonShape, KeyBinding, Tooltip, prelude::*};
@@ -54,28 +55,33 @@ impl AgentDiffPane {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<Entity<Self>> {
-        workspace.update(cx, |workspace, cx| {
-            Self::deploy_in_workspace(thread, workspace, window, cx)
-        })
+        let workspace = workspace
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("workspace was released"))?;
+        Ok(Self::deploy_in_workspace(thread, &workspace, window, cx))
     }
 
     pub fn deploy_in_workspace(
         thread: Entity<AcpThread>,
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) -> Entity<Self> {
         let existing_diff = workspace
+            .read(cx)
             .items_of_type::<AgentDiffPane>(cx)
             .find(|diff| diff.read(cx).thread == thread);
 
         if let Some(existing_diff) = existing_diff {
-            workspace.activate_item(&existing_diff, true, true, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing_diff, true, true, window, cx);
+            });
             existing_diff
         } else {
-            let agent_diff = cx
-                .new(|cx| AgentDiffPane::new(thread.clone(), workspace.weak_handle(), window, cx));
-            workspace.add_item_to_center(Box::new(agent_diff.clone()), window, cx);
+            let weak_workspace = workspace.downgrade();
+            let agent_diff =
+                cx.new(|cx| AgentDiffPane::new(thread.clone(), weak_workspace, window, cx));
+            Workspace::add_item_to_center(workspace, Box::new(agent_diff.clone()), window, cx);
             agent_diff
         }
     }
@@ -1419,17 +1425,23 @@ impl AgentDiff {
         this: &Entity<AgentDiff>,
     ) {
         let this = this.clone();
-        workspace.register_action(move |workspace, _: &T, window, cx| {
-            let review = &review;
-            let task = this.update(cx, |this, cx| {
-                this.review_in_active_editor(workspace, review, window, cx)
-            });
+        let review = Rc::new(review);
+        workspace.register_action_renderer(move |div, _, _, cx| {
+            let this = this.clone();
+            let review = review.clone();
+            div.on_action(cx.entity_listener(
+                move |workspace: Entity<Workspace>, _: &T, window, cx| {
+                    let task = this.update(cx, |this, cx| {
+                        this.review_in_active_editor(&workspace, &*review, window, cx)
+                    });
 
-            if let Some(task) = task {
-                task.detach_and_log_err(cx);
-            } else {
-                cx.propagate();
-            }
+                    if let Some(task) = task {
+                        task.detach_and_log_err(cx);
+                    } else {
+                        cx.propagate();
+                    }
+                },
+            ))
         });
     }
 
@@ -1785,7 +1797,7 @@ impl AgentDiff {
 
     fn review_in_active_editor(
         &mut self,
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         review: impl Fn(
             &Entity<Editor>,
             &Entity<AcpThread>,
@@ -1796,7 +1808,7 @@ impl AgentDiff {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<()>>> {
-        let active_item = workspace.active_item(cx)?;
+        let active_item = workspace.read(cx).active_item(cx)?;
         let editor = active_item.act_as::<Editor>(cx)?;
 
         if !matches!(
@@ -1806,12 +1818,12 @@ impl AgentDiff {
             return None;
         }
 
-        let WorkspaceThread { thread, .. } =
-            self.workspace_threads.get(&workspace.weak_handle())?;
+        let weak_workspace = workspace.downgrade();
+        let WorkspaceThread { thread, .. } = self.workspace_threads.get(&weak_workspace)?;
 
         let thread = thread.upgrade()?;
 
-        let review_result = review(&editor, &thread, &workspace.weak_handle(), window, cx);
+        let review_result = review(&editor, &thread, &weak_workspace, window, cx);
 
         if matches!(review_result, PostReviewState::AllReviewed)
             && let Some(curr_buffer) = editor.read(cx).buffer().read(cx).as_singleton()
@@ -1827,7 +1839,9 @@ impl AgentDiff {
             drop(keys);
 
             if let Some(path) = next_project_path {
-                let task = workspace.open_path(path, None, true, window, cx);
+                let task = workspace.update(cx, |workspace, cx| {
+                    workspace.open_path(path, None, true, window, cx)
+                });
                 let task = cx.spawn(async move |_, _cx| task.await.map(|_| ()));
                 return Some(task);
             }
@@ -1868,7 +1882,91 @@ mod tests {
     use settings::{DiffViewStyle, SettingsStore};
     use std::{path::Path, rc::Rc};
     use util::path;
-    use workspace::{MultiWorkspace, PathList};
+    use workspace::{
+        MultiWorkspace, Pane, PathList,
+        item::test::{HookBits, TestItem},
+    };
+
+    #[gpui::test]
+    async fn test_review_actions_and_diff_pane_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            prompt_store::init(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            language_model::init(cx);
+            workspace::register_project_item::<Editor>(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/test"), json!({"file1": "abc\n"}))
+            .await;
+        let project = Project::test(fs, [path!("/test").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let connection = Rc::new(acp_thread::StubAgentConnection::new());
+        let thread = cx
+            .update(|_, cx| {
+                connection.clone().new_session(
+                    project.clone(),
+                    PathList::new(&[Path::new(path!("/test"))]),
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.update(|window, cx| {
+            AgentDiff::set_active_thread(&workspace.downgrade(), thread.clone(), window, cx)
+        });
+        cx.run_until_parked();
+
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let pane_handle = pane.downgrade();
+        let workspace_handle = workspace.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            item.read_containers_in(HookBits::ACT_AS_TYPE | HookBits::BUFFER_KIND)
+        });
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+
+        let reads_before_keep = item.read_with(cx, |item, _| item.container_reads.get());
+        cx.dispatch_action(Keep);
+        cx.run_until_parked();
+        let reads_after_keep = item.read_with(cx, |item, _| item.container_reads.get());
+        assert!(reads_after_keep > reads_before_keep);
+
+        cx.dispatch_action(Reject);
+        cx.run_until_parked();
+        let reads_after_reject = item.read_with(cx, |item, _| item.container_reads.get());
+        assert!(reads_after_reject > reads_after_keep);
+
+        let diff_pane = cx
+            .update(|window, cx| {
+                AgentDiffPane::deploy(thread.clone(), workspace.downgrade(), window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(item.read_with(cx, |item, _| item.container_reads.get()) > reads_after_reject);
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_item(cx).map(|active| active.item_id()),
+                Some(diff_pane.entity_id())
+            );
+        });
+    }
 
     #[gpui::test]
     async fn test_multibuffer_agent_diff(cx: &mut TestAppContext) {
@@ -2127,8 +2225,15 @@ mod tests {
             Editor::for_buffer(buffer1.clone(), Some(project.clone()), window, cx)
         });
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(editor1.clone()), None, true, window, cx);
+        cx.update(|window, cx| {
+            Workspace::add_item_to_active_pane(
+                &workspace,
+                Box::new(editor1.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
         });
         cx.run_until_parked();
 
@@ -2290,19 +2395,18 @@ mod tests {
         );
 
         // Reviewing the last change opens the next changed buffer
-        workspace
-            .update_in(cx, |workspace, window, cx| {
-                AgentDiff::global(cx).update(cx, |agent_diff, cx| {
-                    agent_diff.review_in_active_editor(workspace, AgentDiff::keep, window, cx)
-                })
+        cx.update(|window, cx| {
+            AgentDiff::global(cx).update(cx, |agent_diff, cx| {
+                agent_diff.review_in_active_editor(&workspace, AgentDiff::keep, window, cx)
             })
-            .unwrap()
-            .await
-            .unwrap();
+        })
+        .unwrap()
+        .await
+        .unwrap();
 
         cx.run_until_parked();
 
-        let editor2 = workspace.update(cx, |workspace, cx| {
+        let editor2 = workspace.read_with(cx, |workspace, cx| {
             workspace.active_item_as::<Editor>(cx).unwrap()
         });
 

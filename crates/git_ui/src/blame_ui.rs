@@ -671,7 +671,7 @@ fn open_buffer_blame_at_revision(
 
                 let buffer = build_buffer(content, file, &language_registry, cx).await?;
 
-                workspace.update_in(cx, |workspace, window, cx| {
+                let project = workspace.update_in(cx, |workspace, window, cx| {
                     if activate_existing_blame_editor(
                         workspace,
                         &repository,
@@ -680,10 +680,16 @@ fn open_buffer_blame_at_revision(
                         window,
                         cx,
                     ) {
-                        return;
+                        return None;
                     }
+                    Some(workspace.project().clone())
+                })?;
+                let Some(project) = project else {
+                    return Ok(());
+                };
+                let workspace = workspace.upgrade().context("workspace was released")?;
 
-                    let project = workspace.project().clone();
+                cx.update(|window, cx| {
                     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
                     let editor = cx.new(|cx| {
                         let mut editor = Editor::for_multibuffer(
@@ -707,7 +713,14 @@ fn open_buffer_blame_at_revision(
                         )
                     });
                     editor.update(cx, |editor, cx| editor.set_blame(git_blame, window, cx));
-                    workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
+                    Workspace::add_item_to_active_pane(
+                        &workspace,
+                        Box::new(editor),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
                 })
             }
         })
@@ -772,5 +785,97 @@ fn blame_entry_relative_timestamp(blame_entry: &BlameEntry) -> String {
             )
         }
         Err(_) => "Error parsing date".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use project::{FakeFs, Project};
+    use serde_json::json;
+    use settings::SettingsStore;
+    use std::path::Path;
+    use util::path;
+    use workspace::{MultiWorkspace, item::test::HookBits};
+
+    #[gpui::test]
+    async fn test_open_buffer_blame_at_revision_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "file.txt": "current\n",
+            }),
+        )
+        .await;
+        let revision = "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
+            .parse::<Oid>()
+            .expect("revision should parse");
+        let repo_path = RepoPath::new(&"file.txt").expect("repo path should be valid");
+        fs.with_git_state(Path::new(path!("/project/.git")), true, |state| {
+            state.refs.insert("HEAD".into(), revision.to_string());
+            state
+                .head_contents
+                .insert(repo_path.clone(), b"old line\n".to_vec());
+            state.blames_at_revision.insert(
+                (repo_path.clone(), revision),
+                git::blame::Blame {
+                    entries: Vec::new(),
+                    messages: Default::default(),
+                    tag_names: Default::default(),
+                },
+            );
+        })
+        .expect("fake git state should exist");
+
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let repository = project.read_with(cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("the project should have a repository")
+        });
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let item = crate::add_test_item_reading_containers(&workspace, HookBits::BUFFER_KIND, cx);
+        let reads_before = crate::container_reads(&item, cx);
+
+        cx.update(|window, cx| {
+            open_buffer_blame_at_revision(
+                repository,
+                workspace.downgrade(),
+                repo_path,
+                revision,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert!(crate::container_reads(&item, cx) > reads_before);
+        workspace.read_with(cx, |workspace, cx| {
+            let editor = workspace
+                .active_item(cx)
+                .and_then(|active| active.downcast::<Editor>())
+                .expect("the blame should open in an editor");
+            let editor = editor.read(cx);
+            assert_eq!(editor.buffer().read(cx).read(cx).text(), "old line\n");
+            assert!(editor.blame().is_some());
+        });
     }
 }

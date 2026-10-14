@@ -184,6 +184,27 @@ impl Output {
     }
 }
 
+fn open_buffer_in_workspace(
+    buffer: &Entity<Buffer>,
+    title: &str,
+    workspace: &WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(workspace) = workspace.upgrade() else {
+        return;
+    };
+    let editor = cx.new(|cx| {
+        let multibuffer = cx.new(|cx| {
+            let mut multi_buffer = MultiBuffer::singleton(buffer.clone(), cx);
+            multi_buffer.set_title(title.to_string(), cx);
+            multi_buffer
+        });
+        Editor::for_multibuffer(multibuffer, None, window, cx)
+    });
+    Workspace::add_item_to_active_pane(&workspace, Box::new(editor), None, true, window, cx);
+}
+
 impl Output {
     fn render_output_controls<V: OutputContent + 'static>(
         v: Entity<V>,
@@ -227,25 +248,13 @@ impl Output {
                                     v.update(cx, |item, cx| item.buffer_content(window, cx));
 
                                 if let Some(buffer_content) = buffer_content.as_ref() {
-                                    let buffer = buffer_content.clone();
-                                    let editor = Box::new(cx.new(|cx| {
-                                        let multibuffer = cx.new(|cx| {
-                                            let mut multi_buffer =
-                                                MultiBuffer::singleton(buffer.clone(), cx);
-
-                                            multi_buffer.set_title("REPL Output".to_string(), cx);
-                                            multi_buffer
-                                        });
-
-                                        Editor::for_multibuffer(multibuffer, None, window, cx)
-                                    }));
-                                    workspace
-                                        .update(cx, |workspace, cx| {
-                                            workspace.add_item_to_active_pane(
-                                                editor, None, true, window, cx,
-                                            );
-                                        })
-                                        .ok();
+                                    open_buffer_in_workspace(
+                                        buffer_content,
+                                        "REPL Output",
+                                        &workspace,
+                                        window,
+                                        cx,
+                                    );
                                 }
                             }
                         }),
@@ -341,33 +350,22 @@ impl Output {
                                 let evalue = err.evalue.clone();
                                 let traceback = err.traceback.clone();
                                 move |_, window, cx| {
-                                    if let Some(workspace) = workspace.upgrade() {
-                                        let traceback_text = traceback.read(cx).full_text(cx);
-                                        let full_error =
-                                            format!("{}: {}\n{}", ename, evalue, traceback_text);
-                                        let buffer = cx.new(|cx| {
-                                            let mut buffer = Buffer::local(full_error, cx)
-                                                .with_language(language::PLAIN_TEXT.clone(), cx);
-                                            buffer
-                                                .set_capability(language::Capability::ReadOnly, cx);
-                                            buffer
-                                        });
-                                        let editor = Box::new(cx.new(|cx| {
-                                            let multibuffer = cx.new(|cx| {
-                                                let mut multi_buffer =
-                                                    MultiBuffer::singleton(buffer.clone(), cx);
-                                                multi_buffer
-                                                    .set_title("Full Error".to_string(), cx);
-                                                multi_buffer
-                                            });
-                                            Editor::for_multibuffer(multibuffer, None, window, cx)
-                                        }));
-                                        workspace.update(cx, |workspace, cx| {
-                                            workspace.add_item_to_active_pane(
-                                                editor, None, true, window, cx,
-                                            );
-                                        });
-                                    }
+                                    let traceback_text = traceback.read(cx).full_text(cx);
+                                    let full_error =
+                                        format!("{}: {}\n{}", ename, evalue, traceback_text);
+                                    let buffer = cx.new(|cx| {
+                                        let mut buffer = Buffer::local(full_error, cx)
+                                            .with_language(language::PLAIN_TEXT.clone(), cx);
+                                        buffer.set_capability(language::Capability::ReadOnly, cx);
+                                        buffer
+                                    });
+                                    open_buffer_in_workspace(
+                                        &buffer,
+                                        "Full Error",
+                                        &workspace,
+                                        window,
+                                        cx,
+                                    );
                                 }
                             }),
                         )
@@ -959,6 +957,46 @@ mod tests {
         cx.update(|_window, cx| {
             cx.new(|cx| ExecutionView::new(ExecutionStatus::Queued, weak_workspace, cx))
         })
+    }
+
+    #[gpui::test]
+    async fn test_open_buffer_in_workspace_beside_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (mut cx, weak_workspace) = init_test(cx).await;
+        cx.update(|_, cx| editor::init(cx));
+        let workspace = weak_workspace.upgrade().unwrap();
+        let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+        let pane_handle = pane.downgrade();
+        let workspace_handle = weak_workspace.clone();
+        let item = cx.new(|cx| {
+            workspace::item::test::TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            workspace::Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(&cx, |item, _| {
+            item.read_containers_in(workspace::item::test::HookBits::BUFFER_KIND)
+        });
+
+        let buffer = cx.update(|_, cx| cx.new(|cx| Buffer::local("output", cx)));
+        cx.update(|window, cx| {
+            open_buffer_in_workspace(&buffer, "REPL Output", &weak_workspace, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(item.read_with(&cx, |item, _| item.container_reads.get() > 0));
+        let editor = pane
+            .read_with(&cx, |pane, _| {
+                pane.active_item()
+                    .and_then(|active| active.downcast::<Editor>())
+            })
+            .unwrap();
+        let opened_buffer = cx.update(|_, cx| editor.read(cx).buffer().read(cx).as_singleton());
+        assert_eq!(opened_buffer, Some(buffer));
     }
 
     #[gpui::test]

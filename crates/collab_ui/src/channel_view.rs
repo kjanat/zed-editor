@@ -72,7 +72,7 @@ impl ChannelView {
         );
         window.spawn(cx, async move |cx| {
             let channel_view = channel_view.await?;
-            pane.update_in(cx, |pane, window, cx| {
+            cx.update(|window, cx| {
                 telemetry::event!(
                     "Channel Notes Opened",
                     channel_id,
@@ -81,7 +81,15 @@ impl ChannelView {
                         .room()
                         .map(|r| r.read(cx).id())
                 );
-                pane.add_item(Box::new(channel_view.clone()), true, true, None, window, cx);
+                Pane::add_item(
+                    &pane,
+                    Box::new(channel_view.clone()),
+                    true,
+                    true,
+                    None,
+                    window,
+                    cx,
+                );
             })?;
             anyhow::Ok(channel_view)
         })
@@ -99,10 +107,11 @@ impl ChannelView {
         window.spawn(cx, async move |cx| {
             let channel_view = channel_view.await?;
 
-            pane.update_in(cx, |pane, window, cx| {
+            cx.update(|window, cx| {
                 let buffer_id = channel_view.read(cx).channel_buffer.read(cx).remote_id(cx);
 
                 let existing_view = pane
+                    .read(cx)
                     .items_of_type::<Self>()
                     .find(|view| view.read(cx).channel_buffer.read(cx).remote_id(cx) == buffer_id);
 
@@ -121,11 +130,19 @@ impl ChannelView {
                 // If the pane contained a disconnected view for this channel buffer,
                 // replace that.
                 if let Some(existing_item) = existing_view
-                    && let Some(ix) = pane.index_for_item(&existing_item)
+                    && let Some(ix) = pane.read(cx).index_for_item(&existing_item)
                 {
-                    pane.close_item_by_id(existing_item.entity_id(), SaveIntent::Skip, window, cx)
-                        .detach();
-                    pane.add_item(
+                    pane.update(cx, |pane, cx| {
+                        pane.close_item_by_id(
+                            existing_item.entity_id(),
+                            SaveIntent::Skip,
+                            window,
+                            cx,
+                        )
+                    })
+                    .detach();
+                    Pane::add_item(
+                        &pane,
                         Box::new(channel_view.clone()),
                         true,
                         true,

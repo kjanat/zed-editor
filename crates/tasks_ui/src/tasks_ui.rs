@@ -128,8 +128,18 @@ pub fn init(cx: &mut App) {
                             if let Some(use_new_terminal) = action.use_new_terminal {
                                 original_task.use_new_terminal = use_new_terminal;
                             }
-                            let task_contexts = task_contexts(workspace, window, cx);
                             cx.spawn_in(window, async move |workspace, cx| {
+                                let Some(task_contexts) = cx
+                                    .update(|window, cx| {
+                                        workspace
+                                            .upgrade()
+                                            .map(|workspace| task_contexts(&workspace, window, cx))
+                                    })
+                                    .ok()
+                                    .flatten()
+                                else {
+                                    return None;
+                                };
                                 let task_contexts = task_contexts.await;
                                 let default_context = TaskContext::default();
                                 workspace
@@ -239,24 +249,36 @@ pub fn toggle_modal(
         .project()
         .read_with(cx, |project, _| !project.is_via_collab());
     if can_open_modal {
-        let task_contexts = task_contexts(workspace, window, cx);
         cx.spawn_in(window, async move |workspace, cx| {
+            let Some(task_contexts) = cx
+                .update(|window, cx| {
+                    workspace
+                        .upgrade()
+                        .map(|workspace| task_contexts(&workspace, window, cx))
+                })
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
             let task_contexts = Arc::new(task_contexts.await);
             workspace
                 .update_in(cx, |workspace, window, cx| {
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        TasksModal::new(
-                            task_store.clone(),
-                            task_contexts,
-                            reveal_target.map(|target| TaskOverrides {
-                                reveal_target: Some(target),
-                            }),
-                            true,
-                            workspace_handle,
-                            window,
-                            cx,
-                        )
-                    })
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            TasksModal::new(
+                                task_store,
+                                task_contexts,
+                                reveal_target.map(|target| TaskOverrides {
+                                    reveal_target: Some(target),
+                                }),
+                                true,
+                                workspace_handle,
+                                window,
+                                cx,
+                            )
+                        })
+                        .detach();
                 })
                 .ok();
         })
@@ -275,9 +297,12 @@ where
     F: FnMut((&TaskSourceKind, &TaskTemplate)) -> bool + 'static,
 {
     cx.spawn_in(window, async move |workspace, cx| {
-        let task_contexts = workspace.update_in(cx, |workspace, window, cx| {
-            task_contexts(workspace, window, cx)
-        })?;
+        let task_contexts = cx.update(|window, cx| {
+            let workspace = workspace
+                .upgrade()
+                .context("workspace was released before spawning tasks")?;
+            anyhow::Ok(task_contexts(&workspace, window, cx))
+        })??;
         let task_contexts = task_contexts.await;
         let mut tasks = workspace
             .update(cx, |workspace, cx| {
@@ -356,17 +381,18 @@ where
 }
 
 pub fn task_contexts(
-    workspace: &Workspace,
+    workspace: &Entity<Workspace>,
     window: &mut Window,
     cx: &mut App,
 ) -> Task<TaskContexts> {
-    let active_item = workspace.active_item(cx);
+    let active_item = workspace.read(cx).active_item(cx);
     let active_item_worktree = active_item
         .as_ref()
         .and_then(|item| item.project_path(cx))
         .map(|project_path| project_path.worktree_id)
         .filter(|worktree_id| {
             workspace
+                .read(cx)
                 .project()
                 .read(cx)
                 .worktree_for_id(*worktree_id, cx)
@@ -374,6 +400,7 @@ pub fn task_contexts(
         });
     let active_worktree = active_item_worktree.or_else(|| {
         workspace
+            .read(cx)
             .visible_worktrees(cx)
             .next()
             .map(|tree| tree.read(cx).id())
@@ -420,6 +447,7 @@ pub fn task_contexts(
     });
 
     let mut worktree_abs_paths = workspace
+        .read(cx)
         .worktrees(cx)
         .filter(|worktree| is_visible_directory(worktree, cx))
         .map(|worktree| {
@@ -485,16 +513,71 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use editor::{Editor, MultiBufferOffset, SelectionEffects};
-    use gpui::TestAppContext;
+    use gpui::{AppContext as _, TestAppContext};
     use language::{Language, LanguageConfig};
     use project::{BasicContextProvider, FakeFs, Project, task_store::TaskStore};
     use serde_json::json;
     use task::{TaskContext, TaskVariables, VariableName};
     use ui::VisualContext;
     use util::{path, rel_path::rel_path};
-    use workspace::{AppState, MultiWorkspace};
+    use workspace::{
+        AppState, MultiWorkspace, Pane, Workspace,
+        item::test::{HookBits, TestItem},
+    };
 
-    use crate::task_contexts;
+    use crate::{Spawn, TasksModal, task_contexts};
+
+    #[gpui::test]
+    async fn test_spawn_missing_task_by_name_with_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                ".zed": {
+                    "tasks.json": r#"[
+                        {
+                            "label": "example task",
+                            "command": "echo",
+                            "args": ["4"]
+                        },
+                    ]"#,
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle)
+        });
+        cx.update(|window, cx| {
+            Pane::add_item(&pane, Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| item.read_containers_in(HookBits::ACT_AS_TYPE));
+
+        cx.dispatch_action(Spawn::ByName {
+            task_name: "missing task".to_string(),
+            reveal_target: None,
+        });
+        cx.run_until_parked();
+
+        assert!(item.read_with(cx, |item, _| item.container_reads.get() > 0));
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_modal::<TasksModal>(cx).is_some());
+        });
+    }
 
     #[gpui::test]
     async fn test_non_project_active_editor_uses_visible_worktree_context(cx: &mut TestAppContext) {
@@ -520,10 +603,15 @@ mod tests {
         let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
         let global_tasks_editor = cx.new_window_entity(|window, cx| Editor::multi_line(window, cx));
 
-        let contexts = workspace
-            .update_in(cx, |workspace, window, cx| {
-                workspace.add_item_to_center(Box::new(global_tasks_editor), window, cx);
-                task_contexts(workspace, window, cx)
+        let contexts = cx
+            .update(|window, cx| {
+                Workspace::add_item_to_center(
+                    &workspace,
+                    Box::new(global_tasks_editor),
+                    window,
+                    cx,
+                );
+                task_contexts(&workspace, window, cx)
             })
             .await;
 
@@ -653,15 +741,15 @@ mod tests {
         let editor2 = cx
             .new_window_entity(|window, cx| Editor::for_buffer(buffer2, Some(project), window, cx));
 
-        let first_context = workspace
-            .update_in(cx, |workspace, window, cx| {
-                workspace.add_item_to_center(Box::new(editor1.clone()), window, cx);
-                workspace.add_item_to_center(Box::new(editor2.clone()), window, cx);
+        let first_context = cx
+            .update(|window, cx| {
+                Workspace::add_item_to_center(&workspace, Box::new(editor1.clone()), window, cx);
+                Workspace::add_item_to_center(&workspace, Box::new(editor2.clone()), window, cx);
                 assert_eq!(
-                    workspace.active_item(cx).unwrap().item_id(),
+                    workspace.read(cx).active_item(cx).unwrap().item_id(),
                     editor2.entity_id()
                 );
-                task_contexts(workspace, window, cx)
+                task_contexts(&workspace, window, cx)
             })
             .await;
 
@@ -695,10 +783,7 @@ mod tests {
         });
 
         assert_eq!(
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    task_contexts(workspace, window, cx)
-                })
+            cx.update(|window, cx| task_contexts(&workspace, window, cx))
                 .await
                 .active_context()
                 .expect("Should have an active context"),
@@ -723,15 +808,16 @@ mod tests {
         );
 
         assert_eq!(
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    // Now, let's switch the active item to .ts file.
+            cx.update(|window, cx| {
+                // Now, let's switch the active item to .ts file.
+                workspace.update(cx, |workspace, cx| {
                     workspace.activate_item(&editor1, true, true, window, cx);
-                    task_contexts(workspace, window, cx)
-                })
-                .await
-                .active_context()
-                .expect("Should have an active context"),
+                });
+                task_contexts(&workspace, window, cx)
+            })
+            .await
+            .active_context()
+            .expect("Should have an active context"),
             &TaskContext {
                 cwd: Some(path!("/dir").into()),
                 task_variables: TaskVariables::from_iter([

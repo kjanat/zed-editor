@@ -1,6 +1,7 @@
 #![expect(clippy::result_large_err)]
 use crate::{
     persistence::DebuggerPaneItem,
+    session::running::{RunningState, SubView},
     tests::{start_debug_session, start_debug_session_with},
     *,
 };
@@ -18,7 +19,10 @@ use editor::{
     ActiveDebugLine, Editor, EditorMode, MultiBuffer,
     actions::{self},
 };
-use gpui::{AppContext, BackgroundExecutor, TestAppContext, VisualTestContext};
+use gpui::{
+    AppContext, BackgroundExecutor, Context, EventEmitter, IntoElement, Render, TestAppContext,
+    VisualTestContext, WeakEntity, Window,
+};
 use project::{
     FakeFs, Project,
     debugger::session::{ThreadId, ThreadStatus},
@@ -34,9 +38,12 @@ use std::{
 use terminal_view::terminal_panel::TerminalPanel;
 use tests::{active_debug_session_panel, init_test, init_test_workspace};
 use util::{path, rel_path::rel_path};
-use workspace::item::SaveOptions;
+use workspace::item::{
+    SaveOptions,
+    test::{HookBits, TestItem},
+};
 use workspace::pane_group::SplitDirection;
-use workspace::{Item, dock::Panel, move_active_item};
+use workspace::{Item, Pane, dock::Panel, move_active_item};
 
 #[gpui::test]
 async fn test_basic_show_debug_panel(executor: BackgroundExecutor, cx: &mut TestAppContext) {
@@ -384,6 +391,111 @@ async fn test_handle_successful_run_in_terminal_reverse_request(
             assert!(running.read(cx).debug_terminal.read(cx).terminal.is_some());
         })
         .unwrap();
+}
+
+struct ToolbarItemReadingRunningState {
+    running_state: WeakEntity<RunningState>,
+    terminal_attached: Option<bool>,
+}
+
+impl EventEmitter<workspace::ToolbarItemEvent> for ToolbarItemReadingRunningState {}
+
+impl Render for ToolbarItemReadingRunningState {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
+impl workspace::ToolbarItemView for ToolbarItemReadingRunningState {
+    fn set_active_pane_item(
+        &mut self,
+        _active_pane_item: Option<&dyn workspace::ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> workspace::ToolbarItemLocation {
+        if let Some(running_state) = self.running_state.upgrade() {
+            self.terminal_attached = Some(
+                running_state
+                    .read(cx)
+                    .debug_terminal
+                    .read(cx)
+                    .terminal
+                    .is_some(),
+            );
+        }
+        workspace::ToolbarItemLocation::Hidden
+    }
+}
+
+#[gpui::test]
+async fn test_run_in_terminal_refreshes_toolbar_items_that_read_the_running_state(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(path!("/project"), json!({ "main.rs": "" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    let session = start_debug_session(&workspace, cx, |_| {}).unwrap();
+    let client = session.update(cx, |session, _| session.adapter_client().unwrap());
+    let running_state = active_debug_session_panel(workspace, cx)
+        .read_with(cx, |session, _| session.running_state().clone());
+
+    running_state.update_in(cx, |running_state, window, cx| {
+        running_state.activate_item(DebuggerPaneItem::Terminal, window, cx);
+    });
+    cx.run_until_parked();
+
+    let terminal_pane = running_state.read_with(cx, |running_state, cx| {
+        let terminal_pane = running_state.active_pane().clone();
+        let active_kind = terminal_pane
+            .read(cx)
+            .active_item()
+            .and_then(|item| item.act_as::<SubView>(cx))
+            .map(|sub_view| sub_view.read(cx).view_kind());
+        assert_eq!(active_kind, Some(DebuggerPaneItem::Terminal));
+        terminal_pane
+    });
+    let toolbar_item = cx.new(|_| ToolbarItemReadingRunningState {
+        running_state: running_state.downgrade(),
+        terminal_attached: None,
+    });
+    let toolbar = terminal_pane.read_with(cx, |pane, _| pane.toolbar().clone());
+    toolbar.update_in(cx, |toolbar, window, cx| {
+        toolbar.add_item(toolbar_item.clone(), window, cx);
+    });
+    cx.run_until_parked();
+    toolbar_item.read_with(cx, |toolbar_item, _| {
+        assert_eq!(toolbar_item.terminal_attached, Some(false));
+    });
+
+    client.on_response::<RunInTerminal, _>(|_| {}).await;
+    client
+        .fake_reverse_request::<RunInTerminal>(RunInTerminalRequestArguments {
+            kind: None,
+            title: None,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            args: vec![],
+            env: None,
+            args_can_be_interpreted_by_shell: None,
+        })
+        .await;
+    cx.run_until_parked();
+
+    toolbar_item.read_with(cx, |toolbar_item, _| {
+        assert_eq!(
+            toolbar_item.terminal_attached,
+            Some(true),
+            "attaching the debug terminal should refresh the terminal pane's toolbar"
+        );
+    });
 }
 
 #[gpui::test]
@@ -2883,4 +2995,143 @@ async fn test_failed_launch_console_message_hides_the_environment(
     assert!(output.contains("Tried to launch debugger with"), "{output}");
     assert!(output.contains("DATABASE_URL"), "{output}");
     assert!(!output.contains("hunter2"), "{output}");
+}
+
+#[gpui::test]
+async fn test_debugger_tab_bar_renders_items_that_read_their_pane(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(path!("/project"), json!({"main.rs": ""}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    start_debug_session(&workspace, cx, |_| {}).unwrap();
+    cx.run_until_parked();
+
+    let pane = workspace
+        .update(cx, |workspace, _, cx| {
+            let debug_panel = workspace.panel::<DebugPanel>(cx).unwrap();
+            let session = debug_panel
+                .read(cx)
+                .active_session()
+                .expect("active session");
+            let running_state = session.read(cx).running_state().clone();
+            running_state.read(cx).active_pane().clone()
+        })
+        .unwrap();
+
+    let pane_handle = pane.downgrade();
+    let item = cx.update(|window, cx| {
+        let item = Box::new(cx.new(|cx| {
+            TestItem::new(cx)
+                .with_label("Reader")
+                .with_pane_reader(pane_handle)
+        }));
+        Pane::add_item(&pane, item.clone(), false, false, None, window, cx);
+        item
+    });
+    item.read_with(cx, |item, _| item.read_containers_in(HookBits::TAB_CONTENT));
+    pane.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    let container_reads = item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::default());
+        item.container_reads.get()
+    });
+    assert!(
+        container_reads > 0,
+        "rendering the debugger tab bar should ask the item for its tab content"
+    );
+}
+
+#[gpui::test]
+async fn test_debugger_pane_items_are_added_beside_items_that_read_the_running_state(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(path!("/project"), json!({"main.rs": ""}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    start_debug_session(&workspace, cx, |_| {}).unwrap();
+    cx.run_until_parked();
+    let running_state = active_debug_session_panel(workspace, cx)
+        .read_with(cx, |session, _| session.running_state().clone());
+    running_state.update_in(cx, |running_state, window, cx| {
+        running_state.remove_pane_item(DebuggerPaneItem::BreakpointList, window, cx);
+    });
+    cx.run_until_parked();
+
+    let pane = running_state.read_with(cx, |running_state, _| running_state.last_pane());
+    let running_state_handle = running_state.downgrade();
+    let item = cx.update(|window, cx| {
+        let item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_label("Reader")
+                .with_container_reader(move |cx| {
+                    if let Some(running_state) = running_state_handle.upgrade() {
+                        running_state.read(cx);
+                    }
+                })
+        });
+        Pane::add_item(
+            &pane,
+            Box::new(item.clone()),
+            false,
+            false,
+            None,
+            window,
+            cx,
+        );
+        item
+    });
+    cx.run_until_parked();
+    item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::PROJECT_ITEMS | HookBits::DEACTIVATED)
+    });
+
+    running_state.update_in(cx, |running_state, window, cx| {
+        running_state.activate_item(DebuggerPaneItem::BreakpointList, window, cx);
+    });
+    cx.run_until_parked();
+    let reads_after_activation = item.read_with(cx, |item, _| item.container_reads.get());
+    assert!(
+        reads_after_activation > 0,
+        "adding and activating a pane item should run the hooks of the items beside it"
+    );
+    running_state.read_with(cx, |running_state, cx| {
+        assert_eq!(
+            running_state
+                .pane_items_status(cx)
+                .get(&DebuggerPaneItem::BreakpointList),
+            Some(&true)
+        );
+    });
+
+    let position = running_state
+        .read_with(cx, |running_state, _| running_state.pane_bounds(&pane))
+        .expect("the debugger pane should be laid out")
+        .center();
+    let items_before = pane.read_with(cx, |pane, _| pane.items_len());
+    running_state.update_in(cx, |running_state, window, cx| {
+        running_state.add_pane_item(DebuggerPaneItem::Variables, position, window, cx);
+    });
+    cx.run_until_parked();
+
+    pane.read_with(cx, |pane, _| assert_eq!(pane.items_len(), items_before + 1));
+    assert!(
+        item.read_with(cx, |item, _| item.container_reads.get()) > reads_after_activation,
+        "adding a pane item at a position should run the hooks of the items beside it"
+    );
 }

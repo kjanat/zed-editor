@@ -169,6 +169,7 @@ pub fn init(cx: &mut App) {
             workspace,
             |workspace, action: &ToggleAllSearchResults, window, cx| {
                 if let Some(search_view) = workspace
+                    .read(cx)
                     .active_item(cx)
                     .and_then(|item| item.downcast::<ProjectSearchView>())
                 {
@@ -183,6 +184,7 @@ pub fn init(cx: &mut App) {
             workspace,
             |workspace, _: &menu::Cancel, window, cx| {
                 if let Some(project_search_bar) = workspace
+                    .read(cx)
                     .active_pane()
                     .read(cx)
                     .toolbar()
@@ -214,35 +216,54 @@ pub fn init(cx: &mut App) {
         );
 
         // Both on present and dismissed search, we need to unconditionally handle those actions to focus from the editor.
-        workspace.register_action(move |workspace, action: &DeploySearch, window, cx| {
-            if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-                cx.propagate();
-                return;
-            }
-            ProjectSearchView::deploy_search(workspace, action, window, cx);
-            cx.notify();
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &DeploySearch, window, cx| {
+                    if modal_blocks_action(&workspace, window, cx) {
+                        cx.propagate();
+                        return;
+                    }
+                    ProjectSearchView::deploy_search(&workspace, action, window, cx);
+                    workspace.update(cx, |_, cx| cx.notify());
+                },
+            ))
         });
-        workspace.register_action(move |workspace, action: &NewSearch, window, cx| {
-            if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-                cx.propagate();
-                return;
-            }
-            ProjectSearchView::new_search(workspace, action, window, cx);
-            cx.notify();
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>, action: &NewSearch, window, cx| {
+                    if modal_blocks_action(&workspace, window, cx) {
+                        cx.propagate();
+                        return;
+                    }
+                    ProjectSearchView::new_search(&workspace, action, window, cx);
+                    workspace.update(cx, |_, cx| cx.notify());
+                },
+            ))
         });
-        workspace.register_action(
-            move |workspace, action: &zed_actions::search::NewSearchInDirectory, window, cx| {
-                ProjectSearchView::new_search_with_filter(
-                    workspace,
-                    action.directory.clone(),
-                    window,
-                    cx,
-                );
-                cx.notify();
-            },
-        );
+        workspace.register_action_renderer(|div, _, _, cx| {
+            div.on_action(cx.entity_listener(
+                |workspace: Entity<Workspace>,
+                 action: &zed_actions::search::NewSearchInDirectory,
+                 window,
+                 cx| {
+                    ProjectSearchView::new_search_with_filter(
+                        &workspace,
+                        action.directory.clone(),
+                        window,
+                        cx,
+                    );
+                    workspace.update(cx, |_, cx| cx.notify());
+                },
+            ))
+        });
     })
     .detach();
+}
+
+fn modal_blocks_action(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) -> bool {
+    workspace.update(cx, |workspace, cx| {
+        workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx)
+    })
 }
 
 fn contains_uppercase(str: &str) -> bool {
@@ -1669,17 +1690,24 @@ impl ProjectSearchView {
     }
 
     pub fn new_search_with_filter(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         filter_str: String,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
-        let weak_workspace = cx.entity().downgrade();
+        let weak_workspace = workspace.downgrade();
+        let project = workspace.read(cx).project().clone();
 
-        let entity = cx
-            .new(|cx| ProjectSearch::new(workspace.project().clone(), weak_workspace.clone(), cx));
+        let entity = cx.new(|cx| ProjectSearch::new(project, weak_workspace.clone(), cx));
         let search = cx.new(|cx| ProjectSearchView::new(weak_workspace, entity, window, cx, None));
-        workspace.add_item_to_active_pane(Box::new(search.clone()), None, true, window, cx);
+        Workspace::add_item_to_active_pane(
+            workspace,
+            Box::new(search.clone()),
+            None,
+            true,
+            window,
+            cx,
+        );
         search.update(cx, |search, cx| {
             search
                 .included_files_editor
@@ -1692,12 +1720,13 @@ impl ProjectSearchView {
     /// Re-activate the most recently activated search in this pane or the most recent if it has been closed.
     /// If no search exists in the workspace, create a new one.
     pub fn deploy_search(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         action: &workspace::DeploySearch,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         let existing = workspace
+            .read(cx)
             .active_pane()
             .read(cx)
             .items()
@@ -1707,21 +1736,21 @@ impl ProjectSearchView {
     }
 
     fn search_in_new(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         _: &SearchInNew,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
-        if let Some(search_view) = workspace
+        let active_search_view = workspace
+            .read(cx)
             .active_item(cx)
-            .and_then(|item| item.downcast::<ProjectSearchView>())
-        {
+            .and_then(|item| item.downcast::<ProjectSearchView>());
+        if let Some(search_view) = active_search_view {
+            let open_buffers = search_view.read(cx).included_opened_only.then(|| {
+                let workspace = workspace.read(cx);
+                search_view.read(cx).open_buffers(cx, workspace)
+            });
             let new_query = search_view.update(cx, |search_view, cx| {
-                let open_buffers = if search_view.included_opened_only {
-                    Some(search_view.open_buffers(cx, workspace))
-                } else {
-                    None
-                };
                 let new_query = search_view.build_search_query(cx, open_buffers);
                 if new_query.is_some()
                     && let Some(old_query) = search_view.entity.read(cx).active_query.clone()
@@ -1735,17 +1764,18 @@ impl ProjectSearchView {
                 new_query
             });
             if let Some(new_query) = new_query {
-                let weak_workspace = cx.entity().downgrade();
+                let weak_workspace = workspace.downgrade();
+                let project = workspace.read(cx).project().clone();
                 let entity = cx.new(|cx| {
-                    let mut entity =
-                        ProjectSearch::new(workspace.project().clone(), weak_workspace.clone(), cx);
+                    let mut entity = ProjectSearch::new(project, weak_workspace.clone(), cx);
                     entity.search(new_query, SearchMode::Manual, false, cx);
                     entity
                 });
-                workspace.add_item_to_active_pane(
-                    Box::new(cx.new(|cx| {
-                        ProjectSearchView::new(weak_workspace, entity, window, cx, None)
-                    })),
+                let new_search_view =
+                    cx.new(|cx| ProjectSearchView::new(weak_workspace, entity, window, cx, None));
+                Workspace::add_item_to_active_pane(
+                    workspace,
+                    Box::new(new_search_view),
                     None,
                     true,
                     window,
@@ -1757,23 +1787,26 @@ impl ProjectSearchView {
 
     // Add another search tab to the workspace.
     fn new_search(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         _: &workspace::NewSearch,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
         Self::existing_or_new_search(workspace, None, &DeploySearch::default(), window, cx)
     }
 
     fn existing_or_new_search(
-        workspace: &mut Workspace,
+        workspace: &Entity<Workspace>,
         existing: Option<Entity<ProjectSearchView>>,
         action: &workspace::DeploySearch,
         window: &mut Window,
-        cx: &mut Context<Workspace>,
+        cx: &mut App,
     ) {
-        let query_seed = workspace.active_item(cx).and_then(|item| {
-            if let Some(buffer_search_query) = buffer_search_query(workspace, item.as_ref(), cx) {
+        let active_item = workspace.read(cx).active_item(cx);
+        let query_seed = active_item.and_then(|item| {
+            if let Some(buffer_search_query) =
+                buffer_search_query(workspace.read(cx), item.as_ref(), cx)
+            {
                 return Some(QuerySeed::Query(buffer_search_query));
             }
 
@@ -1787,26 +1820,28 @@ impl ProjectSearchView {
         });
 
         let search = if let Some(existing) = existing {
-            workspace.activate_item(&existing, true, true, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing, true, true, window, cx);
+            });
             existing
         } else {
+            let project = workspace.read(cx).project().clone();
             let settings = cx
                 .global::<ActiveSettings>()
                 .0
-                .get(&workspace.project().downgrade());
+                .get(&project.downgrade())
+                .cloned();
 
-            let settings = settings.cloned();
+            let weak_workspace = workspace.downgrade();
 
-            let weak_workspace = cx.entity().downgrade();
-
-            let project_search = cx.new(|cx| {
-                ProjectSearch::new(workspace.project().clone(), weak_workspace.clone(), cx)
-            });
+            let project_search =
+                cx.new(|cx| ProjectSearch::new(project, weak_workspace.clone(), cx));
             let project_search_view = cx.new(|cx| {
                 ProjectSearchView::new(weak_workspace, project_search, window, cx, settings)
             });
 
-            workspace.add_item_to_active_pane(
+            Workspace::add_item_to_active_pane(
+                workspace,
                 Box::new(project_search_view.clone()),
                 None,
                 true,
@@ -2587,9 +2622,9 @@ impl QuerySeed {
 }
 
 pub(crate) fn buffer_search_query(
-    workspace: &mut Workspace,
+    workspace: &Workspace,
     item: &dyn ItemHandle,
-    cx: &mut Context<Workspace>,
+    cx: &App,
 ) -> Option<String> {
     let buffer_search_bar = workspace
         .pane_for(item)
@@ -3412,53 +3447,69 @@ fn register_workspace_action<A: Action>(
     workspace: &mut Workspace,
     callback: fn(&mut ProjectSearchBar, &A, &mut Window, &mut Context<ProjectSearchBar>),
 ) {
-    workspace.register_action(move |workspace, action: &A, window, cx| {
-        if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-            cx.propagate();
-            return;
-        }
-
-        workspace.active_pane().update(cx, |pane, cx| {
-            pane.toolbar().update(cx, move |workspace, cx| {
-                if let Some(search_bar) = workspace.item_of_type::<ProjectSearchBar>() {
-                    search_bar.update(cx, move |search_bar, cx| {
-                        if search_bar.active_project_search.is_some() {
-                            callback(search_bar, action, window, cx);
-                            cx.notify();
-                        } else {
-                            cx.propagate();
-                        }
-                    });
+    workspace.register_action_renderer(move |div, _, _, cx| {
+        div.on_action(cx.entity_listener(
+            move |workspace: Entity<Workspace>, action: &A, window, cx| {
+                let modal_blocks_action = workspace.update(cx, |workspace, cx| {
+                    workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx)
+                });
+                if modal_blocks_action {
+                    cx.propagate();
+                    return;
                 }
-            });
-        })
+
+                let Some(search_bar) = workspace
+                    .read(cx)
+                    .active_pane()
+                    .read(cx)
+                    .toolbar()
+                    .read(cx)
+                    .item_of_type::<ProjectSearchBar>()
+                else {
+                    return;
+                };
+                search_bar.update(cx, |search_bar, cx| {
+                    if search_bar.active_project_search.is_some() {
+                        callback(search_bar, action, window, cx);
+                        cx.notify();
+                    } else {
+                        cx.propagate();
+                    }
+                });
+            },
+        ))
     });
 }
 
 fn register_workspace_action_for_present_search<A: Action>(
     workspace: &mut Workspace,
-    callback: fn(&mut Workspace, &A, &mut Window, &mut Context<Workspace>),
+    callback: fn(&Entity<Workspace>, &A, &mut Window, &mut App),
 ) {
-    workspace.register_action(move |workspace, action: &A, window, cx| {
-        if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-            cx.propagate();
-            return;
-        }
+    workspace.register_action_renderer(move |div, _, _, cx| {
+        div.on_action(cx.entity_listener(
+            move |workspace: Entity<Workspace>, action: &A, window, cx| {
+                if modal_blocks_action(&workspace, window, cx) {
+                    cx.propagate();
+                    return;
+                }
 
-        let should_notify = workspace
-            .active_pane()
-            .read(cx)
-            .toolbar()
-            .read(cx)
-            .item_of_type::<ProjectSearchBar>()
-            .map(|search_bar| search_bar.read(cx).active_project_search.is_some())
-            .unwrap_or(false);
-        if should_notify {
-            callback(workspace, action, window, cx);
-            cx.notify();
-        } else {
-            cx.propagate();
-        }
+                let should_notify = workspace
+                    .read(cx)
+                    .active_pane()
+                    .read(cx)
+                    .toolbar()
+                    .read(cx)
+                    .item_of_type::<ProjectSearchBar>()
+                    .map(|search_bar| search_bar.read(cx).active_project_search.is_some())
+                    .unwrap_or(false);
+                if should_notify {
+                    callback(&workspace, action, window, cx);
+                    workspace.update(cx, |_, cx| cx.notify());
+                } else {
+                    cx.propagate();
+                }
+            },
+        ))
     });
 }
 
@@ -4028,9 +4079,7 @@ pub mod tests {
                         cx,
                     )
                 });
-                workspace.update(cx, |workspace, cx| {
-                    workspace.add_item_to_center(Box::new(editor.clone()), window, cx);
-                });
+                Workspace::add_item_to_center(&workspace, Box::new(editor.clone()), window, cx);
                 editor
             })
             .unwrap();
@@ -4316,6 +4365,74 @@ pub mod tests {
         );
     }
 
+    #[gpui::test]
+    async fn test_toggle_filters_from_results_editor_reaches_project_search_bar(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                "one.rs": "const ONE: usize = 1;",
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        let search_bar = window.build_entity(cx, |_, _| ProjectSearchBar::new());
+
+        workspace.update_in(cx, move |workspace, window, cx| {
+            workspace.panes()[0].update(cx, |pane, cx| {
+                pane.toolbar()
+                    .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
+            });
+        });
+        cx.update(|window, cx| {
+            ProjectSearchView::deploy_search(&workspace, &DeploySearch::default(), window, cx)
+        });
+        cx.run_until_parked();
+
+        let search_view = cx
+            .read(|cx| {
+                workspace
+                    .read(cx)
+                    .active_pane()
+                    .read(cx)
+                    .active_item()
+                    .and_then(|item| item.downcast::<ProjectSearchView>())
+            })
+            .expect("deploying a search should open a search view");
+        search_view.update_in(cx, |search_view, window, cx| {
+            search_view.query_editor.update(cx, |query_editor, cx| {
+                query_editor.set_text("ONE", window, cx)
+            });
+            search_view.search(SearchMode::Manual, cx);
+        });
+        cx.run_until_parked();
+
+        let filters_enabled = search_view.update_in(cx, |search_view, window, cx| {
+            assert!(search_view.has_matches());
+            search_view
+                .results_editor
+                .focus_handle(cx)
+                .focus(window, cx);
+            search_view.filters_enabled
+        });
+        cx.run_until_parked();
+
+        cx.dispatch_action(ToggleFilters);
+
+        search_view.read_with(cx, |search_view, _| {
+            assert_eq!(search_view.filters_enabled, !filters_enabled);
+        });
+    }
+
     #[perf]
     #[gpui::test]
     async fn test_deploy_project_search_focus(cx: &mut TestAppContext) {
@@ -4359,9 +4476,10 @@ pub mod tests {
                 pane.toolbar()
                     .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
             });
-
+        });
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -4510,9 +4628,9 @@ pub mod tests {
             });
         }).unwrap();
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -4583,9 +4701,10 @@ pub mod tests {
                 pane.toolbar()
                     .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
             });
-
+        });
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch::default(),
                 window,
                 cx,
@@ -4718,8 +4837,9 @@ pub mod tests {
                 pane.toolbar()
                     .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
             });
-
-            ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx)
+        });
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx)
         });
 
         let Some(search_view) = cx.read(|cx| {
@@ -4864,8 +4984,8 @@ pub mod tests {
                 });
         }).unwrap();
 
-        workspace.update_in(cx, |workspace, window, cx| {
-            ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx)
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx)
         });
         cx.background_executor.run_until_parked();
         let Some(search_view_2) = cx.read(|cx| {
@@ -5136,9 +5256,10 @@ pub mod tests {
                     pane.toolbar()
                         .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
                 });
-
-                ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx)
             }
+        });
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx)
         });
 
         let search_view = cx.read(|cx| {
@@ -5555,14 +5676,15 @@ pub mod tests {
         // Add a project search item to the first pane
         workspace.update_in(cx, {
             let search_bar = search_bar_1.clone();
-            |workspace, window, cx| {
+            |_, window, cx| {
                 first_pane.update(cx, |pane, cx| {
                     pane.toolbar()
                         .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
                 });
-
-                ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx)
             }
+        });
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx)
         });
         let search_view_1 = cx.read(|cx| {
             workspace
@@ -5598,9 +5720,10 @@ pub mod tests {
                     pane.toolbar()
                         .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
                 });
-
-                ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx)
             }
+        });
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx)
         });
 
         let search_view_2 = cx.read(|cx| {
@@ -5806,9 +5929,10 @@ pub mod tests {
                     pane.toolbar()
                         .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
                 });
-
-                ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx)
             }
+        });
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx)
         });
 
         cx.run_until_parked();
@@ -5823,7 +5947,14 @@ pub mod tests {
                 this.activate_previous_item(&Default::default(), window, cx);
                 assert_eq!(this.active_item_index(), 0);
             });
-            workspace.activate_pane_in_direction(workspace::SplitDirection::Left, window, cx);
+        });
+        cx.update(|window, cx| {
+            workspace::Workspace::activate_pane_in_direction(
+                &workspace,
+                workspace::SplitDirection::Left,
+                window,
+                cx,
+            );
         });
         workspace.update_in(cx, |workspace, _, cx| {
             assert_eq!(workspace.active_pane(), &first_pane);
@@ -6012,8 +6143,8 @@ pub mod tests {
             });
         });
 
-        workspace.update_in(&mut cx, |workspace, window, cx| {
-            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx)
+        cx.update(|window, cx| {
+            ProjectSearchView::deploy_search(&workspace, &DeploySearch::default(), window, cx)
         });
         cx.run_until_parked();
 
@@ -6036,9 +6167,9 @@ pub mod tests {
             assert_eq!(search_view.entity.read(cx).match_ranges.len(), 1);
         });
 
-        workspace.update_in(&mut cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &DeploySearch {
                     query: Some("z.d".into()),
                     regex: Some(true),
@@ -6121,8 +6252,8 @@ pub mod tests {
             .await
             .unwrap();
 
-        workspace.update_in(&mut cx, |workspace, window, cx| {
-            ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx)
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx)
         });
         cx.run_until_parked();
         let project_search_view = pane
@@ -6177,9 +6308,13 @@ pub mod tests {
         impl workspace::ModalView for EmptyModalView {}
 
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, |_, cx| EmptyModalView {
-                focus_handle: cx.focus_handle(),
-            });
+            workspace
+                .toggle_modal(window, cx, move |_, cx| EmptyModalView {
+                    focus_handle: cx.focus_handle(),
+                })
+                .detach();
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
             assert!(workspace.has_active_modal(window, cx));
         });
 
@@ -6187,9 +6322,13 @@ pub mod tests {
 
         workspace.update_in(cx, |workspace, window, cx| {
             assert!(!workspace.has_active_modal(window, cx));
-            workspace.toggle_modal(window, cx, |_, cx| EmptyModalView {
-                focus_handle: cx.focus_handle(),
-            });
+            workspace
+                .toggle_modal(window, cx, move |_, cx| EmptyModalView {
+                    focus_handle: cx.focus_handle(),
+                })
+                .detach();
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
             assert!(workspace.has_active_modal(window, cx));
         });
 
@@ -6530,9 +6669,10 @@ pub mod tests {
                 pane.toolbar()
                     .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
             });
-
+        });
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch {
                     regex: Some(true),
                     case_sensitive: Some(true),
@@ -6589,9 +6729,9 @@ pub mod tests {
 
         // Redeploy with only regex - unspecified options should be preserved.
         cx.dispatch_action(menu::Cancel);
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch {
                     regex: Some(true),
                     ..Default::default()
@@ -6628,9 +6768,9 @@ pub mod tests {
 
         // Redeploy explicitly turning off options.
         cx.dispatch_action(menu::Cancel);
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch {
                     regex: Some(true),
                     case_sensitive: Some(false),
@@ -6653,9 +6793,9 @@ pub mod tests {
 
         // Redeploy with an empty query - should not overwrite the existing query.
         cx.dispatch_action(menu::Cancel);
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch {
                     query: Some("".into()),
                     ..Default::default()
@@ -6784,9 +6924,10 @@ pub mod tests {
                 pane.toolbar()
                     .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
             });
-
+        });
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch {
                     case_sensitive: Some(true),
                     query: Some("lowercase_query".into()),
@@ -6823,9 +6964,9 @@ pub mod tests {
         });
 
         // Now deploy with an uppercase query - smartcase should enable case sensitivity.
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &workspace::DeploySearch {
                     query: Some("Uppercase_Query".into()),
                     ..Default::default()
@@ -6845,6 +6986,152 @@ pub mod tests {
             let query_text = search_view.query_editor.read(cx).text(cx);
             assert_eq!(query_text, "Uppercase_Query");
         });
+    }
+
+    async fn workspace_with_item_reading_containers(
+        hooks: workspace::item::test::HookBits,
+        cx: &mut TestAppContext,
+    ) -> (
+        WindowHandle<MultiWorkspace>,
+        Entity<Workspace>,
+        Entity<workspace::item::test::TestItem>,
+        VisualTestContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                "one.rs": "const ONE: usize = 1;",
+            }),
+        )
+        .await;
+        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let item = crate::add_focused_test_item_reading_containers(&workspace, hooks, &mut cx);
+        (window, workspace, item, cx)
+    }
+
+    fn active_project_search_view(
+        workspace: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+    ) -> Option<Entity<ProjectSearchView>> {
+        cx.read(|cx| {
+            workspace
+                .read(cx)
+                .active_item(cx)
+                .and_then(|item| item.downcast::<ProjectSearchView>())
+        })
+    }
+
+    #[gpui::test]
+    async fn test_deploy_search_seeds_from_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (_window, workspace, item, mut cx) = workspace_with_item_reading_containers(
+            workspace::item::test::HookBits::ACT_AS_TYPE
+                | workspace::item::test::HookBits::BUFFER_KIND
+                | workspace::item::test::HookBits::PROJECT_ITEMS,
+            cx,
+        )
+        .await;
+
+        cx.dispatch_action(DeploySearch::default());
+        cx.run_until_parked();
+
+        assert!(active_project_search_view(&workspace, &mut cx).is_some());
+        item.read_with(&cx, |item, _| assert!(item.container_reads.get() > 0));
+    }
+
+    #[gpui::test]
+    async fn test_new_search_opens_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (_window, workspace, item, mut cx) = workspace_with_item_reading_containers(
+            workspace::item::test::HookBits::ACT_AS_TYPE
+                | workspace::item::test::HookBits::BUFFER_KIND
+                | workspace::item::test::HookBits::PROJECT_ITEMS,
+            cx,
+        )
+        .await;
+
+        cx.dispatch_action(workspace::NewSearch);
+        cx.run_until_parked();
+
+        assert!(active_project_search_view(&workspace, &mut cx).is_some());
+        item.read_with(&cx, |item, _| assert!(item.container_reads.get() > 0));
+    }
+
+    #[gpui::test]
+    async fn test_new_search_in_directory_opens_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (_window, workspace, item, mut cx) = workspace_with_item_reading_containers(
+            workspace::item::test::HookBits::BUFFER_KIND
+                | workspace::item::test::HookBits::PROJECT_ITEMS,
+            cx,
+        )
+        .await;
+
+        cx.dispatch_action(zed_actions::search::NewSearchInDirectory {
+            directory: "dir".to_string(),
+        });
+        cx.run_until_parked();
+
+        let search_view = active_project_search_view(&workspace, &mut cx)
+            .expect("a project search view should be active");
+        search_view.read_with(&cx, |search_view, cx| {
+            assert!(search_view.filters_enabled);
+            assert_eq!(search_view.included_files_editor.read(cx).text(cx), "dir");
+        });
+        item.read_with(&cx, |item, _| assert!(item.container_reads.get() > 0));
+    }
+
+    #[gpui::test]
+    async fn test_search_in_new_opens_next_to_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, workspace, item, mut cx) =
+            workspace_with_item_reading_containers(Default::default(), cx).await;
+        let search_bar = window.build_entity(&mut cx, |_, _| ProjectSearchBar::new());
+        let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
+        pane.update_in(&mut cx, |pane, window, cx| {
+            pane.toolbar()
+                .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
+        });
+
+        cx.dispatch_action(DeploySearch::default());
+        cx.run_until_parked();
+        let first_search_view = active_project_search_view(&workspace, &mut cx)
+            .expect("deploying a search should open a search view");
+        first_search_view.update_in(&mut cx, |search_view, window, cx| {
+            search_view.query_editor.update(cx, |query_editor, cx| {
+                query_editor.set_text("ONE", window, cx)
+            });
+        });
+        item.read_with(&cx, |item, _| {
+            item.container_reads.set(0);
+            item.read_containers_in(
+                workspace::item::test::HookBits::BUFFER_KIND
+                    | workspace::item::test::HookBits::PROJECT_ITEMS,
+            );
+        });
+
+        cx.dispatch_action(SearchInNew);
+        cx.run_until_parked();
+
+        let second_search_view = active_project_search_view(&workspace, &mut cx)
+            .expect("searching in new should open a search view");
+        assert_ne!(
+            first_search_view.entity_id(),
+            second_search_view.entity_id()
+        );
+        assert_eq!(pane.read_with(&cx, |pane, _| pane.items_len()), 3);
+        item.read_with(&cx, |item, _| assert!(item.container_reads.get() > 0));
     }
 
     fn init_test(cx: &mut TestAppContext) {
@@ -9373,9 +9660,9 @@ pub mod tests {
             .read_with(cx, |mw, _| mw.workspace().clone())
             .unwrap();
 
-        workspace.update_in(cx, |workspace, window, cx| {
+        cx.update(|window, cx| {
             ProjectSearchView::deploy_search(
-                workspace,
+                &workspace,
                 &DeploySearch {
                     query: Some("ONE".to_string()),
                     ..Default::default()
@@ -9669,8 +9956,10 @@ pub mod tests {
                     pane.toolbar()
                         .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
                 });
-                ProjectSearchView::new_search(workspace, &workspace::NewSearch, window, cx);
             }
+        });
+        cx.update(|window, cx| {
+            ProjectSearchView::new_search(&workspace, &workspace::NewSearch, window, cx);
         });
         let search_view = active_search_view(&workspace, &mut cx);
         SearchBarTest {

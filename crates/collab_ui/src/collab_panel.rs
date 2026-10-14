@@ -1318,13 +1318,11 @@ impl CollabPanel {
                     ),
             )
             .child(Label::new("Screen"))
-            .when_some(peer_id, |this, _| {
+            .when_some(peer_id, |this, peer_id| {
                 this.on_click(cx.listener(move |this, _, window, cx| {
-                    this.workspace
-                        .update(cx, |workspace, cx| {
-                            workspace.open_shared_screen(peer_id.unwrap(), window, cx)
-                        })
-                        .ok();
+                    if let Some(workspace) = this.workspace.upgrade() {
+                        Workspace::open_shared_screen(&workspace, peer_id, window, cx);
+                    }
                 }))
                 .tooltip(Tooltip::text("Open Shared Screen"))
             })
@@ -1873,9 +1871,7 @@ impl CollabPanel {
                         return;
                     };
                     if let Some(workspace) = self.workspace.upgrade() {
-                        workspace.update(cx, |workspace, cx| {
-                            workspace.open_shared_screen(*peer_id, window, cx)
-                        });
+                        Workspace::open_shared_screen(&workspace, *peer_id, window, cx);
                     }
                 }
                 ListEntry::Channel { channel, .. } => {
@@ -2130,10 +2126,13 @@ impl CollabPanel {
 
     fn toggle_contact_finder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
+            let user_store = self.user_store.clone();
             workspace.update(cx, |workspace, cx| {
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    ContactFinder::new(self.user_store.clone(), window, cx)
-                });
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        ContactFinder::new(user_store, window, cx)
+                    })
+                    .detach();
             });
         }
     }
@@ -2501,16 +2500,11 @@ impl CollabPanel {
 
         cx.spawn_in(window, async move |_, cx| {
             workspace.update_in(cx, |workspace, window, cx| {
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    ChannelModal::new(
-                        user_store.clone(),
-                        channel_store.clone(),
-                        channel_id,
-                        mode,
-                        window,
-                        cx,
-                    )
-                });
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        ChannelModal::new(user_store, channel_store, channel_id, mode, window, cx)
+                    })
+                    .detach();
             })
         })
         .detach();
