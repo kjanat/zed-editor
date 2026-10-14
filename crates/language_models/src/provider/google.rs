@@ -239,7 +239,10 @@ impl GoogleLanguageModelProvider {
             models
                 .values()
                 .filter(|model| model.id.contains(family))
-                .max_by(|a, b| a.id.cmp(&b.id))
+                .max_by(|a, b| {
+                    (google_ai::model_version(&a.id), &a.id)
+                        .cmp(&(google_ai::model_version(&b.id), &b.id))
+                })
                 .map(language_model)
         })
     }
@@ -511,6 +514,49 @@ mod tests {
                 .collect::<Vec<_>>()
         });
         assert_eq!(model_ids, ["gemini-3.5-flash"]);
+    }
+
+    #[gpui::test]
+    async fn test_default_model_compares_versions_numerically(cx: &mut gpui::TestAppContext) {
+        let http_client = FakeHttpClient::create(|_request| async move {
+            Ok(http_client::Response::builder()
+                .status(200)
+                .body(AsyncBody::from(
+                    r#"{"models": [
+                        {
+                            "name": "models/gemini-3.10-flash-lite",
+                            "inputTokenLimit": 1048576,
+                            "outputTokenLimit": 65536,
+                            "supportedGenerationMethods": ["generateContent"],
+                            "thinking": true
+                        },
+                        {
+                            "name": "models/gemini-3.9-flash-lite",
+                            "inputTokenLimit": 1048576,
+                            "outputTokenLimit": 65536,
+                            "supportedGenerationMethods": ["generateContent"],
+                            "thinking": true
+                        }
+                    ]}"#,
+                ))?)
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+
+        let default_model_id = cx.update(|cx| {
+            provider
+                .default_model(cx)
+                .map(|model| model.id.0.to_string())
+        });
+        assert_eq!(default_model_id.as_deref(), Some("gemini-3.10-flash-lite"));
     }
 
     struct TestCredentialsProvider;
