@@ -668,7 +668,8 @@ mod tests {
     };
 
     use crate::profiler::{
-        ActionTiming, FrameTiming, PresentTiming, TaskTiming, ViewPhase, YieldTime,
+        ActionTiming, FrameTiming, PresentTiming, TaskTiming, VIEW_TIMING_FLOOR, ViewPhase,
+        YieldTime,
     };
 
     use super::super::journal::{
@@ -1713,10 +1714,10 @@ mod tests {
         assert!(child.self_duration >= SLOW_CHILD_RENDER);
         assert!(parent.self_duration >= SLOW_PARENT_RENDER);
         assert!(parent_duration >= child_duration + parent.self_duration);
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            ForegroundEvent::View(timing) if timing.phase == ViewPhase::Paint
-        )));
+        assert!(events.iter().all(|event| match event {
+            ForegroundEvent::View(timing) => timing.self_duration >= VIEW_TIMING_FLOOR,
+            _ => true,
+        }));
 
         let draw = events
             .iter()
