@@ -388,6 +388,30 @@ fn open_ai_request(
     Ok(request)
 }
 
+fn google_request(
+    config: &cloud_llm_client::LanguageModel,
+    mut request: LanguageModelRequest,
+) -> Result<google_ai::GenerateContentRequest> {
+    // Gemini answers 400 to a thinking level outside the model's list.
+    let effort_supported = request.thinking_effort.as_deref().is_some_and(|effort| {
+        config
+            .supported_effort_levels
+            .iter()
+            .any(|level| &*level.value == effort)
+    });
+    if !effort_supported {
+        request.thinking_effort = None;
+    }
+    let mode = if config.supports_thinking {
+        GoogleModelMode::Thinking {
+            budget_tokens: None,
+        }
+    } else {
+        GoogleModelMode::Default
+    };
+    into_google(request, config.id.to_string(), mode)
+}
+
 fn needs_llm_token_refresh(response: &Response<AsyncBody>) -> bool {
     response
         .headers()
@@ -1161,14 +1185,7 @@ impl<TP: CloudLlmTokenProvider + 'static> CloudModelProvider<TP> {
             cloud_llm_client::LanguageModelProvider::Google => {
                 let http_client = self.http_client.clone();
                 let token_provider = self.token_provider.clone();
-                let mode = if config.supports_thinking {
-                    GoogleModelMode::Thinking {
-                        budget_tokens: None,
-                    }
-                } else {
-                    GoogleModelMode::Default
-                };
-                let request = match into_google(request, config.id.to_string(), mode) {
+                let request = match google_request(&config, request) {
                     Ok(request) => request,
                     Err(error) => return async move { Err(error.into()) }.boxed(),
                 };
@@ -2404,6 +2421,7 @@ mod tests {
         config.provider = cloud_llm_client::LanguageModelProvider::Google;
         config.id = cloud_llm_client::LanguageModelId("future-google-model".into());
         config.supports_thinking = true;
+        config.supported_effort_levels = effort_levels(&["low", "medium", "high"]);
         let (provider, model) = bind_test_model(
             FakeHttpClient::create(|mut request| async move {
                 let mut body = String::new();
@@ -2450,6 +2468,40 @@ mod tests {
             }
         }
         assert_eq!(summaries, ["Summary"]);
+    }
+
+    #[test]
+    fn hosted_google_drops_effort_the_model_does_not_list() -> Result<()> {
+        let mut config = cloud_test_config();
+        config.provider = cloud_llm_client::LanguageModelProvider::Google;
+        config.id = cloud_llm_client::LanguageModelId("gemini-3-pro-preview".into());
+        config.supports_thinking = true;
+        config.supported_effort_levels = effort_levels(&["low", "high"]);
+        for (effort, expected) in [
+            ("medium", json!({"includeThoughts": true})),
+            (
+                "low",
+                json!({"thinkingLevel": "LOW", "includeThoughts": true}),
+            ),
+        ] {
+            let mut request = compact_test_request();
+            request.thinking_allowed = true;
+            request.thinking_effort = Some(effort.to_string());
+            let body = serde_json::to_value(google_request(&config, request)?)?;
+            assert_eq!(body["generationConfig"]["thinkingConfig"], expected);
+        }
+        Ok(())
+    }
+
+    fn effort_levels(values: &[&str]) -> Vec<cloud_llm_client::SupportedEffortLevel> {
+        values
+            .iter()
+            .map(|value| cloud_llm_client::SupportedEffortLevel {
+                name: Arc::from(*value),
+                value: Arc::from(*value),
+                is_default: None,
+            })
+            .collect()
     }
 
     fn cloud_google_test_model(
