@@ -3414,6 +3414,56 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn v2_session_info_reaches_the_list_after_its_thread_is_released(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use acp_thread::SessionListUpdate;
+
+        let harness = V2SessionHarness::new(cx).await;
+        let updates = harness.session_list_updates().await;
+        let V2SessionHarness {
+            connection,
+            thread,
+            _client_task,
+            _agent_task,
+            _legacy_agent_task,
+            ..
+        } = harness;
+        let _transport_tasks = (_client_task, _agent_task, _legacy_agent_task);
+        let weak_thread = thread.downgrade();
+        let session_id = thread.read_with(cx, |thread, _| thread.session_id().clone());
+        let expected_update = acp_v2::SessionInfoUpdate::new().title("Late title");
+        let notification =
+            InboundSessionNotification::try_from(acp_v2::UpdateSessionNotification::new(
+                session_id.clone(),
+                acp_v2::SessionUpdate::SessionInfoUpdate(expected_update.clone()),
+            ))
+            .expect("session-info notification");
+        cx.update(|_| {
+            enqueue_notification(
+                &connection.dispatch_tx,
+                notification,
+                handle_v2_session_notification,
+            );
+            drop(thread);
+        });
+        drain_foreground_queue(&connection.dispatch_tx)
+            .await
+            .expect("apply queued work after owner drop");
+
+        assert!(weak_thread.upgrade().is_none());
+        let SessionListUpdate::SessionInfo {
+            session_id: updated_id,
+            update,
+        } = updates.try_recv().expect("list projection update")
+        else {
+            panic!("session-info list update");
+        };
+        assert_eq!(updated_id, session_id);
+        assert_eq!(update, expected_update);
+    }
+
+    #[gpui::test]
     async fn v2_commands_sdk_preserves_source_and_replaces_the_list(cx: &mut gpui::TestAppContext) {
         use acp_thread::AcpThreadEvent;
         use serde_json::json;
@@ -8886,15 +8936,15 @@ fn handle_v2_session_notification(
             return;
         }
     };
-    let Some(thread) = thread.upgrade() else {
-        log::warn!("Received ACP v2 update for a released session");
-        return;
-    };
     if let InboundSessionUpdate::SessionInfo(update) = &notification.update
         && let Some(session_list) = context.session_list.borrow().as_ref()
     {
         session_list.send_info_update(notification.session_id.clone(), update.clone());
     }
+    let Some(thread) = thread.upgrade() else {
+        log::warn!("Received ACP v2 update for a released session");
+        return;
+    };
     if let InboundSessionUpdate::ConfigOptions(update) = &notification.update {
         let config_options = {
             let mut sessions = context.sessions.borrow_mut();
