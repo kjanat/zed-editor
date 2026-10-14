@@ -3270,13 +3270,7 @@ impl RenderOnce for PaneTab {
                     cx.stop_propagation();
                 },
             ))
-            .on_drag(dragged_tab, |tab, _, _, cx| {
-                let project_path = tab.item.project_path(cx);
-                cx.new(|_| DraggedTab {
-                    project_path,
-                    ..tab.clone()
-                })
-            })
+            .on_drag(dragged_tab, |tab, _, _, cx| cx.new(|_| tab.clone()))
             .drag_over::<DraggedTab>(move |tab, dragged_tab: &DraggedTab, _, cx| {
                 let mut styled_tab = tab
                     .bg(cx.theme().colors().drop_target_background)
@@ -5011,15 +5005,23 @@ impl Render for Pane {
                             .when_some(self.can_drop_predicate.clone(), |this, p| {
                                 this.can_drop(move |a, window, cx| p(a, window, cx))
                             })
-                            .on_drop(cx.listener(move |this, dragged_tab, window, cx| {
-                                this.handle_tab_drop(
-                                    dragged_tab,
-                                    this.active_item_index(),
-                                    true,
-                                    window,
-                                    cx,
-                                )
-                            }))
+                            .on_drop(cx.entity_listener(
+                                move |pane: Entity<Pane>, dragged_tab: &DraggedTab, window, cx| {
+                                    let dragged_tab = DraggedTab {
+                                        project_path: dragged_tab.item.project_path(cx),
+                                        ..dragged_tab.clone()
+                                    };
+                                    pane.update(cx, |pane, cx| {
+                                        pane.handle_tab_drop(
+                                            &dragged_tab,
+                                            pane.active_item_index(),
+                                            true,
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                },
+                            ))
                             .on_drop(cx.listener(
                                 move |this, selection: &DraggedSelection, window, cx| {
                                     this.handle_dragged_selection_drop(selection, None, window, cx)
@@ -6439,7 +6441,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_dragged_tab_carries_the_project_path_at_drag_start(cx: &mut TestAppContext) {
+    async fn test_dropped_tab_carries_the_project_path_at_drop_time(cx: &mut TestAppContext) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
         let project = Project::test(fs, None, cx).await;
@@ -6515,7 +6517,7 @@ mod tests {
             assert_eq!(
                 *drop_target.dropped_project_paths.borrow(),
                 vec![moved_project_path],
-                "the dragged tab should carry the item's project path from when the drag started"
+                "the dropped tab should carry the item's project path at drop time"
             );
         });
     }
