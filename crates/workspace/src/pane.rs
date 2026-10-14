@@ -413,6 +413,7 @@ pub struct Pane {
     last_focus_handle_by_item: HashMap<EntityId, WeakFocusHandle>,
     item_focus_request: usize,
     item_focus_handles: HashMap<EntityId, WeakFocusHandle>,
+    active_item_notifications: Option<(EntityId, Subscription)>,
     nav_history: NavHistory,
     toolbar: Entity<Toolbar>,
     toolbar_update_pending: bool,
@@ -611,6 +612,7 @@ impl Pane {
             last_focus_handle_by_item: Default::default(),
             item_focus_request: 0,
             item_focus_handles: HashMap::default(),
+            active_item_notifications: None,
             nav_history: NavHistory(Arc::new(Mutex::new(NavHistoryState {
                 mode: NavigationMode::Normal,
                 backward_stack: Default::default(),
@@ -708,6 +710,38 @@ impl Pane {
                 .and_then(|item| self.item_focus_handles.get(&item.item_id()))
                 .and_then(|focus_handle| focus_handle.upgrade())
                 .is_some_and(|focus_handle| focus_handle.contains_focused(window, cx))
+    }
+
+    fn observe_active_item(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.active_item() else {
+            self.active_item_notifications = None;
+            return;
+        };
+        let item_id = item.item_id();
+        if self
+            .active_item_notifications
+            .as_ref()
+            .is_some_and(|(observed_item_id, _)| *observed_item_id == item_id)
+        {
+            return;
+        }
+        let pane = cx.weak_entity();
+        let weak_item = item.downgrade_item();
+        let subscription = item.on_notify(
+            cx,
+            Box::new(move |cx: &mut App| {
+                let Some((pane, item)) = pane.upgrade().zip(weak_item.upgrade()) else {
+                    return;
+                };
+                let focus_handle = item.item_focus_handle(cx).downgrade();
+                pane.update(cx, |pane, _| {
+                    if pane.index_for_item_id(item.item_id()).is_some() {
+                        pane.item_focus_handles.insert(item.item_id(), focus_handle);
+                    }
+                });
+            }),
+        );
+        self.active_item_notifications = Some((item_id, subscription));
     }
 
     fn focus_item_after_update(
@@ -1295,6 +1329,7 @@ impl Pane {
         if item_idx < prev_active_item_index {
             self.active_item_index -= 1;
         }
+        self.observe_active_item(cx);
         self.nav_history.0.lock().preview_item_id = None;
 
         if item_idx < self.items.len() {
@@ -1453,6 +1488,7 @@ impl Pane {
         if activate {
             self.activate_item(insertion_index, activate_pane, focus_item, window, cx);
         }
+        self.observe_active_item(cx);
         cx.emit(Event::AddItem { item });
     }
 
@@ -1628,6 +1664,7 @@ impl Pane {
             });
 
             self.update_active_tab(index);
+            self.observe_active_item(cx);
             cx.notify();
         }
     }
@@ -2375,6 +2412,7 @@ impl Pane {
         if item_index < self.active_item_index {
             self.active_item_index -= 1;
         }
+        self.observe_active_item(cx);
 
         if self.is_active_preview_item(item.item_id()) {
             self.preview_item_id = None;
@@ -8719,6 +8757,85 @@ mod tests {
         assert_eq!(
             has_focus, item_check,
             "has_focus should see the focus handle the item returned at the last render"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_active_item_notify_refreshes_swapped_focus_handles_of_items_that_read_their_pane(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let other_pane = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(pane.clone(), SplitDirection::Right, window, cx)
+        });
+        let other_focus_handle = other_pane.read_with(cx, |pane, cx| pane.focus_handle(cx));
+        cx.update(|window, cx| window.focus(&other_focus_handle, cx));
+        cx.run_until_parked();
+
+        let item = cx.new(|cx| SwappingFocusItem::new(pane.downgrade(), cx));
+        cx.update(|window, cx| {
+            Pane::add_item(
+                &pane,
+                Box::new(item.clone()),
+                false,
+                false,
+                None,
+                window,
+                cx,
+            )
+        });
+        item.update(cx, |item, _| item.reads_pane = true);
+        cx.run_until_parked();
+        let reads_before_notify = item.read_with(cx, |item, _| item.pane_reads.get());
+
+        let checks_before_draw = Rc::new(Cell::new(None));
+        let _check_before_draw = cx.update(|window, cx| {
+            let pane = pane.clone();
+            let checks_before_draw = checks_before_draw.clone();
+            window.observe(&item, cx, move |item, window, cx| {
+                if checks_before_draw.get().is_some() {
+                    return;
+                }
+                let reads_by_pane = item.read(cx).pane_reads.get();
+                let pane = pane.read(cx);
+                let item_check = pane.focus_handle.contains_focused(window, cx)
+                    || item.read(cx).focus_handle(cx).contains_focused(window, cx);
+                checks_before_draw.set(Some((
+                    reads_by_pane,
+                    pane.has_focus(window, cx),
+                    item_check,
+                )));
+            })
+        });
+        cx.update(|window, cx| {
+            item.update(cx, |item, cx| {
+                item.swapped = true;
+                window.focus(&item.unrendered_focus_handle, cx);
+                cx.notify();
+            })
+        });
+
+        let (reads_by_pane, has_focus, item_check) = checks_before_draw
+            .get()
+            .expect("the item notification should reach the test observer");
+        assert!(
+            reads_by_pane > reads_before_notify,
+            "the pane should ask its notifying active item for its focus handle"
+        );
+        assert!(
+            item_check,
+            "the item's current focus handle is the focused one"
+        );
+        assert_eq!(
+            has_focus, item_check,
+            "has_focus should see the focus handle the active item returned when it notified"
         );
     }
 
