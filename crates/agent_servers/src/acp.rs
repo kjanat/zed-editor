@@ -467,6 +467,7 @@ impl ConfigOptions {
 
 pub struct AcpSession {
     thread: WeakEntity<AcpThread>,
+    connection: std::rc::Weak<AcpConnection>,
     suppress_abort_err: bool,
     session_modes: Option<Rc<RefCell<acp::SessionModeState>>>,
     config_options: Option<ConfigOptions>,
@@ -1188,6 +1189,7 @@ impl AcpConnection {
             session_id,
             AcpSession {
                 thread: thread.downgrade(),
+                connection: Rc::downgrade(self),
                 suppress_abort_err: false,
                 session_modes,
                 config_options,
@@ -5982,6 +5984,94 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn default_config_options_apply_to_options_announced_after_session_start(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let store = settings::SettingsStore::test(cx);
+            cx.set_global(store);
+        });
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree("/", serde_json::json!({"a": {}})).await;
+        let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
+        let (connection, set_config_requests) = connect_config_defaults_test_agent_with_handler(
+            |_| {
+                Ok(acp::SetSessionConfigOptionResponse::new(vec![
+                    acp::SessionConfigOption::boolean("web_search", "Web Search", true),
+                ]))
+            },
+            cx,
+        )
+        .await;
+        let connection = Rc::new(connection);
+        connection.defaults.set(
+            None,
+            HashMap::from_iter([(
+                "web_search".to_string(),
+                AgentConfigOptionValue::Boolean(true),
+            )]),
+        );
+        let session_id = acp_v2::SessionId::new("late-config-session");
+        let _thread = cx
+            .update(|cx| {
+                connection.clone().open_or_create_session(
+                    session_id.clone(),
+                    project,
+                    PathList::new(&[std::path::Path::new("/a")]),
+                    None,
+                    move |_, _, _| {
+                        async move {
+                            Ok(SessionConfigResponse {
+                                modes: None,
+                                config_options: None,
+                            })
+                        }
+                        .boxed_local()
+                    },
+                    cx,
+                )
+            })
+            .await
+            .expect("load a session without config options");
+        cx.run_until_parked();
+        assert!(
+            set_config_requests
+                .lock()
+                .expect("set config requests mutex poisoned")
+                .is_empty()
+        );
+
+        let context = ClientContext {
+            sessions: connection.sessions.clone(),
+            session_list: Rc::new(RefCell::new(None)),
+            request_elicitations: cx.new(|_| ElicitationStore::default()),
+        };
+        let notification =
+            InboundSessionNotification::try_from(acp_v2::UpdateSessionNotification::new(
+                session_id,
+                acp_v2::SessionUpdate::ConfigOptionUpdate(acp_v2::ConfigOptionUpdate::new(vec![
+                    acp_v2::SessionConfigOption::boolean("web_search", "Web Search", false),
+                ])),
+            ))
+            .expect("config option notification");
+        let mut async_cx = cx.to_async();
+        handle_v2_session_notification(notification, &mut async_cx, &context);
+        drop(async_cx);
+        cx.run_until_parked();
+
+        assert_eq!(
+            set_config_requests
+                .lock()
+                .expect("set config requests mutex poisoned")
+                .as_slice(),
+            &[serde_json::json!({
+                "sessionId": "late-config-session", "configId": "web_search",
+                "type": "boolean", "value": true
+            })]
+        );
+    }
+
+    #[gpui::test]
     async fn default_config_options_refresh_dependent_options(cx: &mut gpui::TestAppContext) {
         for (initial_efforts, updated_efforts, default_effort, reasoning_first) in [
             (vec!["medium", "high"], vec!["medium", "ultra"], None, false),
@@ -8946,18 +9036,41 @@ fn handle_v2_session_notification(
         return;
     };
     if let InboundSessionUpdate::ConfigOptions(update) = &notification.update {
-        let config_options = {
+        let (config_options, announced_late) = {
             let mut sessions = context.sessions.borrow_mut();
             let Some(session) = sessions.get_mut(&notification.session_id) else {
                 return;
             };
-            session
+            let announced_late = session.config_options.is_none();
+            let config_options = session
                 .config_options
                 .get_or_insert_with(|| ConfigOptions::new(Rc::new(RefCell::new(Vec::new()))))
-                .clone()
+                .clone();
+            (config_options, announced_late)
         };
         *config_options.config_options.borrow_mut() = update.config_options.clone();
         config_options.tx.borrow_mut().send(()).log_err();
+        if announced_late {
+            let connection = context
+                .sessions
+                .borrow()
+                .get(&notification.session_id)
+                .and_then(|session| session.connection.upgrade());
+            if let Some(connection) = connection {
+                let default_config_task = connection.apply_default_config_options(
+                    &notification.session_id,
+                    &config_options,
+                    cx,
+                );
+                if let Some(session) = context
+                    .sessions
+                    .borrow_mut()
+                    .get_mut(&notification.session_id)
+                {
+                    session.default_config_task = Some(default_config_task);
+                }
+            }
+        }
     }
     thread
         .update(cx, |thread, cx| notification.apply(thread, cx))
