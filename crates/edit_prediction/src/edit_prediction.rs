@@ -2372,9 +2372,45 @@ impl EditPredictionStore {
         cx: &mut Context<Self>,
     ) {
         if self.is_following(&project) {
+            let this = cx.weak_entity();
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| {
+                    this.refresh_tracked_workspaces_following(cx);
+                    if !this.is_following(&project) {
+                        this.queue_prediction_refresh_from_buffer(
+                            project,
+                            buffer,
+                            position,
+                            debounce_duration,
+                            trigger,
+                            cx,
+                        );
+                    }
+                })
+                .ok();
+            });
             return;
         }
 
+        self.queue_prediction_refresh_from_buffer(
+            project,
+            buffer,
+            position,
+            debounce_duration,
+            trigger,
+            cx,
+        );
+    }
+
+    fn queue_prediction_refresh_from_buffer(
+        &mut self,
+        project: Entity<Project>,
+        buffer: Entity<Buffer>,
+        position: language::Anchor,
+        debounce_duration: Duration,
+        trigger: EditPredictionRequestTrigger,
+        cx: &mut Context<Self>,
+    ) {
         let trigger = predict_edits_request_trigger_from_editor_trigger(trigger);
 
         self.queue_prediction_refresh(
