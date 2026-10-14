@@ -37,9 +37,11 @@ pub fn open(
 ) {
     let repository = workspace.project().read(cx).active_repository(cx);
     let weak_workspace = workspace.weak_handle();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        StashList::new(repository, weak_workspace, rems(34.), window, cx)
-    })
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            StashList::new(repository, weak_workspace, rems(34.), window, cx)
+        })
+        .detach();
 }
 
 pub fn create_embedded(
@@ -750,13 +752,16 @@ mod tests {
             stash_entry(1, "stash #1", Some("develop")),
         ];
 
-        let stash_list = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.update_in(cx, |workspace, window, cx| {
             let weak_workspace = workspace.weak_handle();
 
-            workspace.toggle_modal(window, cx, move |window, cx| {
-                StashList::new(None, weak_workspace, rems(34.), window, cx)
-            });
-
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    StashList::new(None, weak_workspace, rems(34.), window, cx)
+                })
+                .detach();
+        });
+        let stash_list = workspace.update(cx, |workspace, cx| {
             assert!(workspace.active_modal::<StashList>(cx).is_some());
             workspace.active_modal::<StashList>(cx).unwrap()
         });

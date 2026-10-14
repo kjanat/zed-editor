@@ -180,16 +180,18 @@ impl BranchDiff {
             }
         });
 
-        workspace.toggle_modal(window, cx, |window, cx| {
-            branch_picker::select_modal(
-                workspace_handle,
-                Some(repository),
-                selected_branch,
-                on_select,
-                window,
-                cx,
-            )
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                branch_picker::select_modal(
+                    workspace_handle,
+                    Some(repository),
+                    selected_branch,
+                    on_select,
+                    window,
+                    cx,
+                )
+            })
+            .detach();
     }
 
     pub(crate) fn deploy_branch_diff_with_base_ref(

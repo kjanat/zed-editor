@@ -24,11 +24,13 @@ pub fn init(cx: &mut App) {
                 |workspace, _: &workspace::ToggleProjectSymbols, window, cx| {
                     let project = workspace.project().clone();
                     let handle = cx.entity().downgrade();
-                    workspace.toggle_modal(window, cx, move |window, cx| {
-                        let delegate = ProjectSymbolsDelegate::new(handle, project.clone());
-                        let preview = picker_preview::editor_preview(project, window, cx);
-                        Picker::uniform_list_with_preview(delegate, preview, window, cx)
-                    })
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            let delegate = ProjectSymbolsDelegate::new(handle, project.clone());
+                            let preview = picker_preview::editor_preview(project, window, cx);
+                            Picker::uniform_list_with_preview(delegate, preview, window, cx)
+                        })
+                        .detach();
                 },
             );
         },

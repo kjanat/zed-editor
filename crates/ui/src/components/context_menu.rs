@@ -17,6 +17,8 @@ use std::{
 use theme::BufferLineHeight;
 use web_time::Instant;
 
+type EntryHandler = Rc<dyn Fn(Option<&FocusHandle>, &mut Window, &mut App)>;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SubmenuOpenTrigger {
     Pointer,
@@ -854,19 +856,6 @@ impl ContextMenu {
         self
     }
 
-    pub fn trigger_end_slot_handler(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.selected_index.and_then(|ix| self.items.get(ix)) else {
-            return;
-        };
-        let ContextMenuItem::Entry(entry) = entry else {
-            return;
-        };
-        let Some(handler) = entry.end_slot_handler.as_ref() else {
-            return;
-        };
-        handler(None, window, cx);
-    }
-
     pub fn fixed_width(mut self, width: DefiniteLength) -> Self {
         self.fixed_width = Some(width);
         self
@@ -891,65 +880,54 @@ impl ContextMenu {
         self.selected_index
     }
 
-    pub fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected_index else {
-            return cx.emit(DismissEvent);
-        };
-
-        if let Some(ContextMenuItem::Submenu { builder, .. }) = self.items.get(ix) {
-            self.open_submenu(
-                ix,
-                builder.clone(),
-                SubmenuOpenTrigger::Keyboard,
-                window,
-                cx,
-            );
-
-            if let SubmenuState::Open(open_submenu) = &self.submenu_state {
-                let focus_handle = open_submenu.entity.read(cx).focus_handle.clone();
-                window.focus(&focus_handle, cx);
-                open_submenu.entity.update(cx, |submenu, cx| {
-                    submenu.select_first(&SelectFirst, window, cx);
-                });
-            }
-
-            cx.notify();
-            return;
-        }
-
-        let context = self.action_context.as_ref();
-
-        if let Some(
-            ContextMenuItem::Entry(ContextMenuEntry {
-                handler,
-                disabled: false,
-                ..
-            })
-            | ContextMenuItem::CustomEntry { handler, .. },
-        ) = self.items.get(ix)
-        {
-            (handler)(context, window, cx)
-        }
-
-        if self.main_menu.is_some() && !self.keep_open_on_confirm {
-            self.clicked = true;
-        }
-
-        if self.keep_open_on_confirm {
-            self.rebuild(window, cx);
-        } else {
-            cx.emit(DismissEvent);
-        }
+    pub fn confirm(menu: Entity<Self>, _: &menu::Confirm, window: &mut Window, cx: &mut App) {
+        Self::confirm_selected(menu, false, window, cx);
     }
 
     pub fn secondary_confirm(
-        &mut self,
+        menu: Entity<Self>,
         _: &menu::SecondaryConfirm,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) {
-        let Some(ix) = self.selected_index else {
+        Self::confirm_selected(menu, true, window, cx);
+    }
+
+    fn confirm_selected(menu: Entity<Self>, secondary: bool, window: &mut Window, cx: &mut App) {
+        let Some((handler, context)) = menu.update(cx, |menu, cx| {
+            menu.selected_confirm_handler(secondary, window, cx)
+        }) else {
             return;
+        };
+
+        if let Some(handler) = handler {
+            handler(context.as_ref(), window, cx);
+        }
+
+        menu.update(cx, |menu, cx| {
+            if menu.main_menu.is_some() && !menu.keep_open_on_confirm {
+                menu.clicked = true;
+            }
+
+            if menu.keep_open_on_confirm {
+                menu.rebuild(window, cx);
+            } else {
+                cx.emit(DismissEvent);
+            }
+        });
+    }
+
+    fn selected_confirm_handler(
+        &mut self,
+        secondary: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(Option<EntryHandler>, Option<FocusHandle>)> {
+        let Some(ix) = self.selected_index else {
+            if !secondary {
+                cx.emit(DismissEvent);
+            }
+            return None;
         };
 
         if let Some(ContextMenuItem::Submenu { builder, .. }) = self.items.get(ix) {
@@ -970,36 +948,26 @@ impl ContextMenu {
             }
 
             cx.notify();
-            return;
+            return None;
         }
 
-        let context = self.action_context.as_ref();
-
-        if let Some(ContextMenuItem::Entry(ContextMenuEntry {
-            handler,
-            secondary_handler,
-            disabled: false,
-            ..
-        })) = self.items.get(ix)
-        {
-            if let Some(secondary) = secondary_handler {
-                (secondary)(context, window, cx)
-            } else {
-                (handler)(context, window, cx)
-            }
-        } else if let Some(ContextMenuItem::CustomEntry { handler, .. }) = self.items.get(ix) {
-            (handler)(context, window, cx)
-        }
-
-        if self.main_menu.is_some() && !self.keep_open_on_confirm {
-            self.clicked = true;
-        }
-
-        if self.keep_open_on_confirm {
-            self.rebuild(window, cx);
-        } else {
-            cx.emit(DismissEvent);
-        }
+        let handler = match self.items.get(ix) {
+            Some(ContextMenuItem::Entry(ContextMenuEntry {
+                handler,
+                secondary_handler,
+                disabled: false,
+                ..
+            })) => Some(
+                secondary_handler
+                    .as_ref()
+                    .filter(|_| secondary)
+                    .unwrap_or(handler)
+                    .clone(),
+            ),
+            Some(ContextMenuItem::CustomEntry { handler, .. }) => Some(handler.clone()),
+            _ => None,
+        };
+        Some((handler, self.action_context.clone()))
     }
 
     pub fn cancel(&mut self, _: &menu::Cancel, window: &mut Window, cx: &mut Context<Self>) {
@@ -1023,19 +991,23 @@ impl ContextMenu {
         cx.emit(DismissEvent);
     }
 
-    pub fn end_slot(&mut self, _: &dyn Action, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.selected_index.and_then(|ix| self.items.get(ix)) else {
-            return;
-        };
-        let ContextMenuItem::Entry(entry) = item else {
-            return;
-        };
-        let Some(handler) = entry.end_slot_handler.as_ref() else {
+    pub fn end_slot(menu: Entity<Self>, _: &dyn Action, window: &mut Window, cx: &mut App) {
+        let Some(handler) = menu.read(cx).selected_end_slot_handler() else {
             return;
         };
         handler(None, window, cx);
-        self.rebuild(window, cx);
-        cx.notify();
+        menu.update(cx, |menu, cx| {
+            menu.rebuild(window, cx);
+            cx.notify();
+        });
+    }
+
+    fn selected_end_slot_handler(&self) -> Option<EntryHandler> {
+        let item = self.items.get(self.selected_index?)?;
+        let ContextMenuItem::Entry(entry) = item else {
+            return None;
+        };
+        entry.end_slot_handler.clone()
     }
 
     pub fn clear_selected(&mut self) {
@@ -2329,8 +2301,8 @@ impl Render for ContextMenu {
                         .on_action(cx.listener(ContextMenu::select_previous))
                         .on_action(cx.listener(ContextMenu::select_submenu_child))
                         .on_action(cx.listener(ContextMenu::select_submenu_parent))
-                        .on_action(cx.listener(ContextMenu::confirm))
-                        .on_action(cx.listener(ContextMenu::secondary_confirm))
+                        .on_action(cx.entity_listener(ContextMenu::confirm))
+                        .on_action(cx.entity_listener(ContextMenu::secondary_confirm))
                         .on_action(cx.listener(ContextMenu::cancel))
                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                             if *hovered {
@@ -2367,7 +2339,7 @@ impl Render for ContextMenu {
                             },
                         ))
                         .when_some(self.end_slot_action.as_ref(), |el, action| {
-                            el.on_boxed_action(&**action, cx.listener(ContextMenu::end_slot))
+                            el.on_boxed_action(&**action, cx.entity_listener(ContextMenu::end_slot))
                         })
                         .when(!self.delayed, |mut el| {
                             for item in self.items.iter() {
@@ -2614,9 +2586,12 @@ mod tests {
             })
         });
 
-        context_menu.update_in(cx, |context_menu, window, cx| {
-            assert_eq!(None, context_menu.selected_index);
-            context_menu.confirm(&menu::Confirm, window, cx);
+        assert_eq!(
+            None,
+            context_menu.read_with(cx, |context_menu, _| context_menu.selected_index)
+        );
+        cx.update(|window, cx| {
+            ContextMenu::confirm(context_menu.clone(), &menu::Confirm, window, cx)
         });
         cx.run_until_parked();
 
@@ -2629,6 +2604,81 @@ mod tests {
             entry_handler_calls.get(),
             0,
             "Confirming without a selection should not trigger any entry"
+        );
+    }
+
+    gpui::actions!(context_menu_test, [RemoveEntry]);
+
+    #[gpui::test]
+    fn keyboard_entry_handlers_can_update_their_own_menu(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    ContextMenu::build_persistent(window, cx, {
+                        let calls = calls.clone();
+                        move |menu, _, menu_cx| {
+                            let weak_menu = menu_cx.weak_entity();
+                            let handler = |name: &'static str| {
+                                let calls = calls.clone();
+                                let weak_menu = weak_menu.clone();
+                                move |_: &mut Window, cx: &mut App| {
+                                    weak_menu
+                                        .update(cx, |_, cx| cx.emit(DismissEvent))
+                                        .expect("menu is alive");
+                                    calls.borrow_mut().push(name);
+                                }
+                            };
+                            menu.end_slot_action(Box::new(RemoveEntry))
+                                .entry_with_end_slot(
+                                    "First",
+                                    None,
+                                    handler("first"),
+                                    IconName::Close,
+                                    "Remove".into(),
+                                    handler("first end slot"),
+                                )
+                                .item(
+                                    ContextMenuEntry::new("Second")
+                                        .handler(handler("second"))
+                                        .secondary_handler(handler("second secondary")),
+                                )
+                        }
+                    })
+                })
+            })
+            .expect("open menu window");
+        let menu = window.root(cx).expect("menu root");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, _| window.activate_window());
+        focus_menu(&menu, &mut cx);
+
+        cx.dispatch_action(SelectFirst);
+        cx.dispatch_action(menu::Confirm);
+        cx.dispatch_action(SelectFirst);
+        cx.dispatch_action(menu::SecondaryConfirm);
+        cx.dispatch_action(SelectFirst);
+        cx.dispatch_action(RemoveEntry);
+        cx.dispatch_action(SelectLast);
+        cx.dispatch_action(menu::Confirm);
+        cx.dispatch_action(SelectLast);
+        cx.dispatch_action(menu::SecondaryConfirm);
+
+        assert_eq!(
+            *calls.borrow(),
+            [
+                "first",
+                "first",
+                "first end slot",
+                "second",
+                "second secondary"
+            ]
         );
     }
 

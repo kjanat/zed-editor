@@ -1,11 +1,12 @@
 #![expect(clippy::result_large_err)]
 use crate::{
+    session::running::console::Console,
     tests::{active_debug_session_panel, start_debug_session},
     *,
 };
-use dap::requests::StackTrace;
+use dap::requests::{Completions, Initialize, StackTrace};
 use editor::{DisplayPoint, display_map::DisplayRow};
-use gpui::{BackgroundExecutor, TestAppContext, VisualTestContext};
+use gpui::{BackgroundExecutor, Entity, Focusable as _, TestAppContext, VisualTestContext};
 use project::{FakeFs, Project};
 use serde_json::json;
 use tests::{init_test, init_test_workspace};
@@ -355,6 +356,124 @@ async fn test_escape_code_processing(executor: BackgroundExecutor, cx: &mut Test
             )
         })
         .unwrap();
+}
+
+async fn start_session_with_completions(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) -> (Entity<Console>, VisualTestContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let mut cx = VisualTestContext::from_window(*workspace, cx);
+
+    let session = start_debug_session(&workspace, &mut cx, |client| {
+        client.on_request::<Initialize, _>(move |_, _| {
+            Ok(dap::Capabilities {
+                supports_completions_request: Some(true),
+                completion_trigger_characters: Some(vec![".".to_string()]),
+                ..Default::default()
+            })
+        });
+    })
+    .unwrap();
+    let client = session.update(&mut cx, |session, _| session.adapter_client().unwrap());
+    client.on_request::<Completions, _>(move |_, _| {
+        Ok(dap::CompletionsResponse {
+            targets: vec![dap::CompletionItem {
+                label: "result".to_string(),
+                text: None,
+                sort_text: None,
+                detail: None,
+                type_: None,
+                start: None,
+                length: None,
+                selection_start: None,
+                selection_length: None,
+            }],
+        })
+    });
+    cx.run_until_parked();
+
+    let console =
+        active_debug_session_panel(workspace, &mut cx).update_in(&mut cx, |item, window, cx| {
+            let console = item.running_state().read(cx).console().clone();
+            console
+                .read(cx)
+                .query_bar()
+                .focus_handle(cx)
+                .focus(window, cx);
+            console
+        });
+    cx.run_until_parked();
+
+    (console, cx)
+}
+
+fn assert_query_bar_completions(
+    console: &Entity<Console>,
+    cx: &mut VisualTestContext,
+    expected_labels: &[&str],
+) {
+    console.read_with(cx, |console, cx| {
+        let query_bar = console.query_bar().read(cx);
+        let labels = query_bar
+            .current_completions()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|completion| completion.label.text)
+            .collect::<Vec<_>>();
+        assert_eq!(labels, expected_labels);
+        assert_eq!(
+            query_bar.has_visible_completions_menu(),
+            !expected_labels.is_empty()
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_query_bar_completions_shown_inside_console_update(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    let (console, mut cx) = start_session_with_completions(executor, cx).await;
+
+    console.update_in(&mut cx, |console, window, cx| {
+        console.query_bar().update(cx, |query_bar, cx| {
+            query_bar.set_text("res", window, cx);
+            query_bar.move_to_end(&editor::actions::MoveToEnd, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_query_bar_completions(&console, &mut cx, &[]);
+
+    console.update_in(&mut cx, |console, window, cx| {
+        console.query_bar().update(cx, |query_bar, cx| {
+            query_bar.show_completions(&editor::actions::ShowCompletions, window, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    assert_query_bar_completions(&console, &mut cx, &["result"]);
+}
+
+#[gpui::test]
+async fn test_query_bar_trigger_character_inside_console_update(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    let (console, mut cx) = start_session_with_completions(executor, cx).await;
+
+    console.update_in(&mut cx, |console, window, cx| {
+        console.query_bar().update(cx, |query_bar, cx| {
+            query_bar.handle_input(".", window, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    assert_query_bar_completions(&console, &mut cx, &["result"]);
 }
 
 // #[gpui::test]

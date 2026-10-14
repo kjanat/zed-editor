@@ -58,9 +58,11 @@ impl LanguageSelector {
             .active_buffer(cx)?;
         let project = workspace.project().clone();
 
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            LanguageSelector::new(buffer, project, registry, window, cx)
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                LanguageSelector::new(buffer, project, registry, window, cx)
+            })
+            .detach();
         Some(())
     }
 

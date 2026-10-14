@@ -428,15 +428,17 @@ impl ProjectPicker {
                             .update_in(cx, |workspace, window, cx| {
                                 let fs = workspace.project().read(cx).fs().clone();
                                 let weak = cx.entity().downgrade();
-                                workspace.toggle_modal(window, cx, |window, cx| {
-                                    RemoteServerProjects::new(
-                                        create_new_window,
-                                        fs,
-                                        window,
-                                        weak,
-                                        cx,
-                                    )
-                                });
+                                workspace
+                                    .toggle_modal(window, cx, move |window, cx| {
+                                        RemoteServerProjects::new(
+                                            create_new_window,
+                                            fs,
+                                            window,
+                                            weak,
+                                            cx,
+                                        )
+                                    })
+                                    .detach();
                             })
                             .log_err()?;
                         return None;
@@ -1790,25 +1792,34 @@ impl RemoteServerProjects {
         workspace.update(cx, |_, cx| {
             cx.defer_in(window, move |workspace, window, cx| {
                 let app_state = workspace.app_state().clone();
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    RemoteConnectionModal::new(&connection_options, Vec::new(), window, cx)
+                let prompt = cx.new(|cx| {
+                    RemoteConnectionPrompt::for_connection(&connection_options, window, cx)
                 });
-                // can be None if another copy of this modal opened in the meantime
-                let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) else {
-                    return;
-                };
-                let prompt = modal.read(cx).prompt.clone();
-
-                let connect = connect(
-                    ConnectionIdentifier::setup(),
-                    connection_options.clone(),
-                    prompt,
-                    window,
-                    cx,
-                )
-                .prompt_err("Failed to connect", window, cx, |_, _, _| None);
+                let modal = workspace.toggle_modal(window, cx, {
+                    let prompt = prompt.clone();
+                    move |_, _| RemoteConnectionModal::with_prompt(prompt, Vec::new())
+                });
 
                 cx.spawn_in(window, async move |workspace, cx| {
+                    // can be None if another copy of this modal opened in the meantime
+                    if modal.await.is_none() {
+                        return Ok(());
+                    }
+                    let connect = workspace.update_in(cx, |_, window, cx| {
+                        connect(
+                            ConnectionIdentifier::setup(),
+                            connection_options.clone(),
+                            prompt,
+                            window,
+                            cx,
+                        )
+                        .prompt_err(
+                            "Failed to connect",
+                            window,
+                            cx,
+                            |_, _, _| None,
+                        )
+                    })?;
                     let session = connect.await;
 
                     workspace.update(cx, |workspace, cx| {
@@ -1821,9 +1832,17 @@ impl RemoteServerProjects {
                         return workspace.update_in(cx, |workspace, window, cx| {
                             let weak = cx.entity().downgrade();
                             let fs = workspace.project().read(cx).fs().clone();
-                            workspace.toggle_modal(window, cx, |window, cx| {
-                                RemoteServerProjects::new(create_new_window, fs, window, weak, cx)
-                            });
+                            workspace
+                                .toggle_modal(window, cx, move |window, cx| {
+                                    RemoteServerProjects::new(
+                                        create_new_window,
+                                        fs,
+                                        window,
+                                        weak,
+                                        cx,
+                                    )
+                                })
+                                .detach();
                         });
                     };
 
@@ -1858,18 +1877,20 @@ impl RemoteServerProjects {
                     workspace
                         .update_in(cx, |workspace, window, cx| {
                             let weak = cx.entity().downgrade();
-                            workspace.toggle_modal(window, cx, |window, cx| {
-                                RemoteServerProjects::project_picker(
-                                    create_new_window,
-                                    index,
-                                    connection_options,
-                                    project,
-                                    home_dir,
-                                    window,
-                                    cx,
-                                    weak,
-                                )
-                            });
+                            workspace
+                                .toggle_modal(window, cx, move |window, cx| {
+                                    RemoteServerProjects::project_picker(
+                                        create_new_window,
+                                        index,
+                                        connection_options,
+                                        project,
+                                        home_dir,
+                                        window,
+                                        cx,
+                                        weak,
+                                    )
+                                })
+                                .detach();
                         })
                         .ok();
                     Ok(())
@@ -3176,9 +3197,12 @@ mod tests {
             multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
         workspace.update_in(cx, |workspace, window, cx| {
             let weak = cx.weak_entity();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::new(false, fs.clone(), window, weak, cx)
-            });
+            let fs = fs.clone();
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    RemoteServerProjects::new(false, fs, window, weak, cx)
+                })
+                .detach();
         });
         cx.run_until_parked();
 
@@ -3216,11 +3240,16 @@ mod tests {
         });
         let workspace =
             multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
-        let modal = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.update_in(cx, |workspace, window, cx| {
             let weak = cx.weak_entity();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::new(false, fs.clone(), window, weak, cx)
-            });
+            let fs = fs.clone();
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    RemoteServerProjects::new(false, fs, window, weak, cx)
+                })
+                .detach();
+        });
+        let modal = workspace.read_with(cx, |workspace, cx| {
             workspace
                 .active_modal::<RemoteServerProjects>(cx)
                 .expect("remote projects modal is open")

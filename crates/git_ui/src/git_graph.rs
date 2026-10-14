@@ -2620,9 +2620,11 @@ impl GitGraph {
             _ => {
                 self.workspace
                     .update(cx, |workspace, cx| {
-                        workspace.toggle_modal(window, cx, |window, cx| {
-                            CommitTagPicker::new(tag_names, window, cx)
-                        });
+                        workspace
+                            .toggle_modal(window, cx, move |window, cx| {
+                                CommitTagPicker::new(tag_names, window, cx)
+                            })
+                            .detach();
                     })
                     .ok();
             }
@@ -8073,7 +8075,9 @@ mod tests {
             context_menu
                 .select_last(window, cx)
                 .expect("custom Git task should be selectable");
-            context_menu.confirm(&menu::Confirm, window, cx);
+        });
+        cx.update(|window, cx| {
+            ContextMenu::confirm(context_menu.clone(), &menu::Confirm, window, cx)
         });
         cx.run_until_parked();
 
@@ -8215,7 +8219,9 @@ mod tests {
             context_menu
                 .select_last(window, cx)
                 .expect("custom Git task should be selectable");
-            context_menu.confirm(&menu::Confirm, window, cx);
+        });
+        cx.update(|window, cx| {
+            ContextMenu::confirm(context_menu.clone(), &menu::Confirm, window, cx)
         });
         cx.run_until_parked();
 

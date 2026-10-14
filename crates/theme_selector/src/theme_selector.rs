@@ -50,15 +50,14 @@ fn toggle_theme_selector(
     cx: &mut Context<Workspace>,
 ) {
     let fs = workspace.app_state().fs.clone();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        let delegate = ThemeSelectorDelegate::new(
-            cx.entity().downgrade(),
-            fs,
-            toggle.themes_filter.as_ref(),
-            cx,
-        );
-        ThemeSelector::new(delegate, window, cx)
-    });
+    let themes_filter = toggle.themes_filter.clone();
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            let delegate =
+                ThemeSelectorDelegate::new(cx.entity().downgrade(), fs, themes_filter.as_ref(), cx);
+            ThemeSelector::new(delegate, window, cx)
+        })
+        .detach();
 }
 
 fn toggle_icon_theme_selector(
@@ -68,27 +67,25 @@ fn toggle_icon_theme_selector(
     cx: &mut Context<Workspace>,
 ) {
     let fs = workspace.app_state().fs.clone();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        let delegate = IconThemeSelectorDelegate::new(
-            cx.entity().downgrade(),
-            fs,
-            toggle.themes_filter.as_ref(),
-            cx,
-        );
-        IconThemeSelector::new(delegate, window, cx)
-    });
+    let themes_filter = toggle.themes_filter.clone();
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            let delegate = IconThemeSelectorDelegate::new(
+                cx.entity().downgrade(),
+                fs,
+                themes_filter.as_ref(),
+                cx,
+            );
+            IconThemeSelector::new(delegate, window, cx)
+        })
+        .detach();
 }
 
 impl ModalView for ThemeSelector {
-    fn on_before_dismiss(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> workspace::DismissDecision {
+    fn on_dismissed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.picker.update(cx, |picker, cx| {
             picker.delegate.revert_theme(cx);
         });
-        workspace::DismissDecision::Dismiss(true)
     }
 }
 

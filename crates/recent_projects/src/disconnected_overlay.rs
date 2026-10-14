@@ -77,12 +77,14 @@ impl DisconnectedOverlay {
                     Host::CollabGuestProject
                 };
 
-                workspace.toggle_modal(window, cx, |_, cx| DisconnectedOverlay {
-                    finished: false,
-                    workspace: handle,
-                    host,
-                    focus_handle: cx.focus_handle(),
-                });
+                workspace
+                    .toggle_modal(window, cx, move |_, cx| DisconnectedOverlay {
+                        finished: false,
+                        workspace: handle,
+                        host,
+                        focus_handle: cx.focus_handle(),
+                    })
+                    .detach();
             },
         )
         .detach();

@@ -77,16 +77,18 @@ pub fn open(
     let workspace_handle = workspace.weak_handle();
     let repository = workspace.project().read(cx).active_repository(cx);
 
-    workspace.toggle_modal(window, cx, |window, cx| {
-        BranchList::new(
-            workspace_handle,
-            repository,
-            BranchListStyle::Modal,
-            rems(34.),
-            window,
-            cx,
-        )
-    })
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            BranchList::new(
+                workspace_handle,
+                repository,
+                BranchListStyle::Modal,
+                rems(34.),
+                window,
+                cx,
+            )
+        })
+        .detach();
 }
 
 pub fn popover(
@@ -536,9 +538,12 @@ impl Render for BranchList {
                         if this.branch_filter_menu_open(cx) {
                             return;
                         }
-                        this.picker.update(cx, |this, cx| {
-                            this.cancel(&Default::default(), window, cx);
-                        })
+                        let picker = this.picker.clone();
+                        window.defer(cx, move |window, cx| {
+                            picker.update(cx, |picker, cx| {
+                                picker.cancel(&Default::default(), window, cx);
+                            })
+                        });
                     })
                 })
             })
@@ -2162,12 +2167,13 @@ impl PickerDelegate for BranchListDelegate {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::{cell::Cell, rc::Rc};
 
     use super::*;
     use git::repository::{
         CommitSummary, Remote, Upstream, UpstreamTracking, UpstreamTrackingStatus,
     };
-    use gpui::{AppContext, TestAppContext, VisualTestContext};
+    use gpui::{AppContext, MouseButton, TestAppContext, VisualTestContext, point};
     use project::{FakeFs, Project};
     use rand::{Rng, rngs::StdRng};
     use serde_json::json;
@@ -2402,6 +2408,66 @@ mod tests {
     ) -> (Entity<Project>, Entity<Repository>) {
         let (_, project, repository) = init_fake_repository_with_fs(cx).await;
         (project, repository)
+    }
+
+    struct BranchListHost {
+        branch_list: Entity<BranchList>,
+    }
+
+    impl Render for BranchListHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                div()
+                    .w(px(600.))
+                    .h(px(400.))
+                    .child(self.branch_list.clone()),
+            )
+        }
+    }
+
+    #[gpui::test]
+    async fn test_mouse_down_outside_dismisses_branch_list(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+
+        let (host, cx) = cx.add_window_view(|window, cx| BranchListHost {
+            branch_list: cx.new(|cx| {
+                BranchList::new(
+                    workspace.downgrade(),
+                    None,
+                    BranchListStyle::Modal,
+                    rems(34.),
+                    window,
+                    cx,
+                )
+            }),
+        });
+        let branch_list = host.read_with(cx, |host, _| host.branch_list.clone());
+        let dismissed = Rc::new(Cell::new(false));
+        let _subscription = cx.update(|_, cx| {
+            let dismissed = dismissed.clone();
+            cx.subscribe(&branch_list, move |_, _: &DismissEvent, _| {
+                dismissed.set(true)
+            })
+        });
+        cx.run_until_parked();
+
+        let viewport = cx.update(|window, _| window.viewport_size());
+        cx.simulate_mouse_down(
+            point(viewport.width - px(1.), viewport.height - px(1.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+
+        assert!(dismissed.get());
     }
 
     #[gpui::test]

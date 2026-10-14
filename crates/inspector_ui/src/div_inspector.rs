@@ -655,7 +655,7 @@ impl CompletionProvider for RustStyleCompletionProvider {
         position: Anchor,
         _: editor::CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> Task<Result<Vec<CompletionResponse>>> {
         let Some(replace_range) = completion_replace_range(&buffer.read(cx).snapshot(), &position)
         else {
@@ -994,6 +994,51 @@ mod tests {
         flush_teardown(&mut second);
         assert!(resources.iter().all(|entity| !entity.is_upgradable()));
         assert_eq!(watched_paths(&fs), watcher_baseline);
+    }
+
+    #[gpui::test]
+    async fn test_rust_style_completions_shown_inside_inspector_update(cx: &mut TestAppContext) {
+        let (fs, _) = test_fs(cx);
+        let project = Project::test(fs, [], cx).await;
+        project.read_with(cx, |project, _| {
+            project.languages().register_test_language(LanguageConfig {
+                name: LanguageName::from("Rust"),
+                ..LanguageConfig::default()
+            });
+        });
+
+        let cx = cx.add_empty_window();
+        let div_inspector =
+            cx.new_window_entity(|window, cx| DivInspector::new(project, window, cx));
+        cx.run_until_parked();
+
+        let editor = cx.new_window_entity(|window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_completion_provider(Some(Rc::new(RustStyleCompletionProvider {
+                div_inspector: div_inspector.downgrade(),
+            })));
+            editor.set_text(".p", window, cx);
+            editor.move_to_end(&editor::actions::MoveToEnd, window, cx);
+            editor
+        });
+        cx.update(|window, cx| {
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        cx.run_until_parked();
+
+        div_inspector.update_in(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.show_completions(&editor::actions::ShowCompletions, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        div_inspector.read_with(cx, |div_inspector, _| {
+            assert!(div_inspector.rust_completion_replace_range.is_some());
+        });
+        editor.read_with(cx, |editor, _| {
+            assert!(editor.has_visible_completions_menu());
+        });
     }
 
     fn test_fs(cx: &mut TestAppContext) -> (Arc<FakeFs>, Vec<PathBuf>) {

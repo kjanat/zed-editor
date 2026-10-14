@@ -408,10 +408,13 @@ pub fn init(cx: &mut App) {
                         });
                     }
                     _ => {
-                        workspace.toggle_modal(window, cx, |window, cx| {
-                            let delegate = DevExtensionRebuildPickerDelegate::new(dev_extensions);
-                            Picker::uniform_list(delegate, window, cx)
-                        });
+                        workspace
+                            .toggle_modal(window, cx, move |window, cx| {
+                                let delegate =
+                                    DevExtensionRebuildPickerDelegate::new(dev_extensions);
+                                Picker::uniform_list(delegate, window, cx)
+                            })
+                            .detach();
                     }
                 }
             });
@@ -976,15 +979,17 @@ impl ExtensionsPage {
 
             workspace.update_in(cx, |workspace, window, cx| {
                 let fs = workspace.project().read(cx).fs().clone();
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    let delegate = ExtensionVersionSelectorDelegate::new(
-                        fs,
-                        cx.entity().downgrade(),
-                        extension_versions,
-                    );
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        let delegate = ExtensionVersionSelectorDelegate::new(
+                            fs,
+                            cx.entity().downgrade(),
+                            extension_versions,
+                        );
 
-                    ExtensionVersionSelector::new(delegate, window, cx)
-                });
+                        ExtensionVersionSelector::new(delegate, window, cx)
+                    })
+                    .detach();
             })?;
 
             anyhow::Ok(())

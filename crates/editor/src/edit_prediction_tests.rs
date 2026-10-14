@@ -1701,7 +1701,7 @@ impl CompletionProvider for FakeCompletionMenuProvider {
         _buffer_position: text::Anchor,
         _trigger: CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<crate::Editor>,
+        cx: &mut App,
     ) -> Task<anyhow::Result<Vec<CompletionResponse>>> {
         let replace_range = text::Anchor::min_max_range_for_buffer(buffer.read(cx).remote_id());
         let completions = ["fake_completion", "fake_completion_2"]

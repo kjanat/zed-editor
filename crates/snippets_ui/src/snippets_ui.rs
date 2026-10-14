@@ -82,9 +82,11 @@ fn configure_snippets(
     let language_registry = workspace.app_state().languages.clone();
     let workspace_handle = workspace.weak_handle();
 
-    workspace.toggle_modal(window, cx, move |window, cx| {
-        ScopeSelector::new(language_registry, workspace_handle, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            ScopeSelector::new(language_registry, workspace_handle, window, cx)
+        })
+        .detach();
 }
 
 fn open_folder(

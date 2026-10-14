@@ -652,10 +652,13 @@ impl<D: PickerDelegate> Picker<D> {
             let focus_handle = this.focus_handle(cx);
             workspace::register_reopenable_picker(&focus_handle, cx);
         }
-        this.update_matches("".to_string(), window, cx);
-        // give the delegate 4ms to render the first set of suggestions.
-        this.delegate
-            .finalize_update_matches("".to_string(), Duration::from_millis(4), window, cx);
+        cx.defer_in(window, |this, window, cx| {
+            let query = this.query(cx);
+            this.update_matches(query.clone(), window, cx);
+            // give the delegate 4ms to render the first set of suggestions.
+            this.delegate
+                .finalize_update_matches(query, Duration::from_millis(4), window, cx);
+        });
         this
     }
 
@@ -1641,7 +1644,7 @@ impl<D: PickerDelegate> Picker<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{Entity, TestAppContext, WeakEntity};
     use std::cell::Cell;
 
     struct TestDelegate {
@@ -1806,6 +1809,158 @@ mod tests {
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             editor::init(cx);
         });
+    }
+
+    #[derive(Default)]
+    struct PickerOwner {
+        picker: Option<Entity<Picker<OwnerDelegate>>>,
+        confirmations: usize,
+        dismissals: usize,
+    }
+
+    impl PickerOwner {
+        fn confirm_through_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+            window.dispatch_action(menu::Confirm.boxed_clone(), cx);
+        }
+
+        fn cancel_through_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+            let Some(picker) = self.picker.clone() else {
+                return;
+            };
+            window.defer(cx, move |window, cx| {
+                picker.update(cx, |picker, cx| picker.cancel(&menu::Cancel, window, cx));
+            });
+        }
+    }
+
+    impl Render for PickerOwner {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().children(self.picker.clone())
+        }
+    }
+
+    struct OwnerDelegate {
+        owner: WeakEntity<PickerOwner>,
+        owner_reads: Rc<Cell<usize>>,
+    }
+
+    impl PickerDelegate for OwnerDelegate {
+        type ListItem = ui::ListItem;
+
+        fn name() -> &'static str {
+            "owner test"
+        }
+
+        fn match_count(&self) -> usize {
+            0
+        }
+
+        fn selected_index(&self) -> usize {
+            0
+        }
+
+        fn set_selected_index(
+            &mut self,
+            _ix: usize,
+            _window: &mut Window,
+            _cx: &mut Context<Picker<Self>>,
+        ) {
+        }
+
+        fn placeholder_text(&self, _window: &mut Window, _cx: &mut App) -> Arc<str> {
+            "Owner".into()
+        }
+
+        fn update_matches(
+            &mut self,
+            _query: String,
+            _window: &mut Window,
+            cx: &mut Context<Picker<Self>>,
+        ) -> Task<()> {
+            if let Some(owner) = self.owner.upgrade() {
+                owner.read(cx);
+                self.owner_reads.set(self.owner_reads.get() + 1);
+            }
+            Task::ready(())
+        }
+
+        fn confirm(
+            &mut self,
+            _secondary: bool,
+            _window: &mut Window,
+            cx: &mut Context<Picker<Self>>,
+        ) {
+            self.owner
+                .update(cx, |owner, _| owner.confirmations += 1)
+                .expect("owner should outlive its picker");
+        }
+
+        fn dismissed(&mut self, _window: &mut Window, cx: &mut Context<Picker<Self>>) {
+            self.owner
+                .update(cx, |owner, _| owner.dismissals += 1)
+                .expect("owner should outlive its picker");
+        }
+
+        fn render_match(
+            &self,
+            _ix: usize,
+            _selected: bool,
+            _window: &mut Window,
+            _cx: &mut Context<Picker<Self>>,
+        ) -> Option<Self::ListItem> {
+            None
+        }
+    }
+
+    #[gpui::test]
+    async fn test_initial_matches_wait_for_the_owner_to_be_released(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let owner_reads = Rc::new(Cell::new(0));
+        let (owner, cx) = cx.add_window_view(|_window, _cx| PickerOwner::default());
+        owner.update_in(cx, |owner, window, cx| {
+            let delegate = OwnerDelegate {
+                owner: cx.weak_entity(),
+                owner_reads: owner_reads.clone(),
+            };
+            owner.picker = Some(cx.new(|cx| Picker::uniform_list(delegate, window, cx)));
+            assert_eq!(owner_reads.get(), 0);
+        });
+
+        assert_eq!(owner_reads.get(), 1);
+    }
+
+    #[gpui::test]
+    async fn test_owner_reaches_its_delegate_after_releasing_itself(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let owner_reads = Rc::new(Cell::new(0));
+        let (owner, cx) = cx.add_window_view(|_window, _cx| PickerOwner::default());
+        owner.update_in(cx, |owner, window, cx| {
+            let delegate = OwnerDelegate {
+                owner: cx.weak_entity(),
+                owner_reads: owner_reads.clone(),
+            };
+            let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx));
+            picker.focus_handle(cx).focus(window, cx);
+            owner.picker = Some(picker);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        owner.update_in(cx, |owner, window, cx| {
+            owner.confirm_through_picker(window, cx);
+            assert_eq!(owner.confirmations, 0);
+        });
+        cx.run_until_parked();
+        owner.read_with(cx, |owner, _| assert_eq!(owner.confirmations, 1));
+
+        owner.update_in(cx, |owner, window, cx| {
+            owner.cancel_through_picker(window, cx);
+            assert_eq!(owner.dismissals, 0);
+        });
+        cx.run_until_parked();
+        owner.read_with(cx, |owner, _| assert_eq!(owner.dismissals, 1));
     }
 
     #[gpui::test]

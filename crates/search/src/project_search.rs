@@ -3412,26 +3412,37 @@ fn register_workspace_action<A: Action>(
     workspace: &mut Workspace,
     callback: fn(&mut ProjectSearchBar, &A, &mut Window, &mut Context<ProjectSearchBar>),
 ) {
-    workspace.register_action(move |workspace, action: &A, window, cx| {
-        if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-            cx.propagate();
-            return;
-        }
-
-        workspace.active_pane().update(cx, |pane, cx| {
-            pane.toolbar().update(cx, move |workspace, cx| {
-                if let Some(search_bar) = workspace.item_of_type::<ProjectSearchBar>() {
-                    search_bar.update(cx, move |search_bar, cx| {
-                        if search_bar.active_project_search.is_some() {
-                            callback(search_bar, action, window, cx);
-                            cx.notify();
-                        } else {
-                            cx.propagate();
-                        }
-                    });
+    workspace.register_action_renderer(move |div, _, _, cx| {
+        div.on_action(cx.entity_listener(
+            move |workspace: Entity<Workspace>, action: &A, window, cx| {
+                let modal_blocks_action = workspace.update(cx, |workspace, cx| {
+                    workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx)
+                });
+                if modal_blocks_action {
+                    cx.propagate();
+                    return;
                 }
-            });
-        })
+
+                let Some(search_bar) = workspace
+                    .read(cx)
+                    .active_pane()
+                    .read(cx)
+                    .toolbar()
+                    .read(cx)
+                    .item_of_type::<ProjectSearchBar>()
+                else {
+                    return;
+                };
+                search_bar.update(cx, |search_bar, cx| {
+                    if search_bar.active_project_search.is_some() {
+                        callback(search_bar, action, window, cx);
+                        cx.notify();
+                    } else {
+                        cx.propagate();
+                    }
+                });
+            },
+        ))
     });
 }
 
@@ -4314,6 +4325,72 @@ pub mod tests {
             has_any_folded,
             "Should report folds after manually folding one buffer"
         );
+    }
+
+    #[gpui::test]
+    async fn test_toggle_filters_from_results_editor_reaches_project_search_bar(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                "one.rs": "const ONE: usize = 1;",
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        let search_bar = window.build_entity(cx, |_, _| ProjectSearchBar::new());
+
+        workspace.update_in(cx, move |workspace, window, cx| {
+            workspace.panes()[0].update(cx, |pane, cx| {
+                pane.toolbar()
+                    .update(cx, |toolbar, cx| toolbar.add_item(search_bar, window, cx))
+            });
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx)
+        });
+        cx.run_until_parked();
+
+        let search_view = cx
+            .read(|cx| {
+                workspace
+                    .read(cx)
+                    .active_pane()
+                    .read(cx)
+                    .active_item()
+                    .and_then(|item| item.downcast::<ProjectSearchView>())
+            })
+            .expect("deploying a search should open a search view");
+        search_view.update_in(cx, |search_view, window, cx| {
+            search_view.query_editor.update(cx, |query_editor, cx| {
+                query_editor.set_text("ONE", window, cx)
+            });
+            search_view.search(SearchMode::Manual, cx);
+        });
+        cx.run_until_parked();
+
+        let filters_enabled = search_view.update_in(cx, |search_view, window, cx| {
+            assert!(search_view.has_matches());
+            search_view
+                .results_editor
+                .focus_handle(cx)
+                .focus(window, cx);
+            search_view.filters_enabled
+        });
+        cx.run_until_parked();
+
+        cx.dispatch_action(ToggleFilters);
+
+        search_view.read_with(cx, |search_view, _| {
+            assert_eq!(search_view.filters_enabled, !filters_enabled);
+        });
     }
 
     #[perf]
@@ -6177,9 +6254,13 @@ pub mod tests {
         impl workspace::ModalView for EmptyModalView {}
 
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, |_, cx| EmptyModalView {
-                focus_handle: cx.focus_handle(),
-            });
+            workspace
+                .toggle_modal(window, cx, move |_, cx| EmptyModalView {
+                    focus_handle: cx.focus_handle(),
+                })
+                .detach();
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
             assert!(workspace.has_active_modal(window, cx));
         });
 
@@ -6187,9 +6268,13 @@ pub mod tests {
 
         workspace.update_in(cx, |workspace, window, cx| {
             assert!(!workspace.has_active_modal(window, cx));
-            workspace.toggle_modal(window, cx, |_, cx| EmptyModalView {
-                focus_handle: cx.focus_handle(),
-            });
+            workspace
+                .toggle_modal(window, cx, move |_, cx| EmptyModalView {
+                    focus_handle: cx.focus_handle(),
+                })
+                .detach();
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
             assert!(workspace.has_active_modal(window, cx));
         });
 

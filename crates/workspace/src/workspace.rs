@@ -58,7 +58,7 @@ use futures::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
-    future::{Shared, try_join_all},
+    future::Shared,
 };
 use gpui::{
     Action, AnyEntity, AnyView, AnyWeakView, App, AppContext, AsyncApp, AsyncWindowContext, Axis,
@@ -126,7 +126,7 @@ use sqlez::{
 use status_bar::StatusBar;
 pub use status_bar::{HideStatusItem, StatusItemView, add_hide_button_entry};
 use std::{
-    any::TypeId,
+    any::{Any, TypeId},
     borrow::Cow,
     cell::{Cell, RefCell},
     cmp,
@@ -1240,7 +1240,7 @@ struct SerializableItemDescriptor {
         WorkspaceId,
         ItemId,
         &mut Window,
-        &mut Context<Pane>,
+        &mut App,
     ) -> Task<Result<Box<dyn ItemHandle>>>,
     cleanup: fn(WorkspaceId, Vec<ItemId>, &mut Window, &mut App) -> Task<Result<()>>,
     view_to_serializable_item: fn(AnyView) -> Box<dyn SerializableItemHandle>,
@@ -1262,7 +1262,7 @@ impl SerializableItemRegistry {
         workspace_id: WorkspaceId,
         item_item: ItemId,
         window: &mut Window,
-        cx: &mut Context<Pane>,
+        cx: &mut App,
     ) -> Task<Result<Box<dyn ItemHandle>>> {
         let Some(descriptor) = Self::descriptor(item_kind, cx) else {
             return Task::ready(Err(anyhow!(
@@ -1462,9 +1462,7 @@ impl DelayedDebouncedEditAction {
         cx: &mut Context<Workspace>,
         func: F,
     ) where
-        F: 'static
-            + Send
-            + FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> Task<Result<()>>,
+        F: 'static + Send + FnOnce(&mut Window, &mut App) -> Task<Result<()>>,
     {
         if let Some(channel) = self.cancel_channel.take() {
             _ = channel.send(());
@@ -1485,10 +1483,10 @@ impl DelayedDebouncedEditAction {
                     _ = timer => {}
             }
 
-            if let Some(result) = workspace
-                .update_in(cx, |workspace, window, cx| (func)(workspace, window, cx))
-                .log_err()
-            {
+            if workspace.upgrade().is_none() {
+                return;
+            }
+            if let Some(result) = cx.update(|window, cx| func(window, cx)).log_err() {
                 result.await.log_err();
             }
         }));
@@ -1700,6 +1698,7 @@ impl AutoWatch {
 struct FollowerView {
     view: Box<dyn FollowableItemHandle>,
     location: Option<proto::PanelId>,
+    is_project_item: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -3152,7 +3151,7 @@ impl Workspace {
             pane,
             mode,
             window,
-            &mut |history, cx| history.pop(mode, cx),
+            Rc::new(move |history: &mut NavHistory, cx: &mut App| history.pop(mode, cx)),
             cx,
         )
     }
@@ -3168,7 +3167,7 @@ impl Workspace {
             pane,
             NavigationMode::Normal,
             window,
-            &mut |history, _cx| history.pop_tag(mode),
+            Rc::new(move |history: &mut NavHistory, _: &mut App| history.pop_tag(mode)),
             cx,
         )
     }
@@ -3178,15 +3177,28 @@ impl Workspace {
         pane: WeakEntity<Pane>,
         mode: NavigationMode,
         window: &mut Window,
-        cb: &mut dyn FnMut(&mut NavHistory, &mut App) -> Option<NavigationEntry>,
+        pop_entry: Rc<dyn Fn(&mut NavHistory, &mut App) -> Option<NavigationEntry>>,
         cx: &mut Context<Workspace>,
     ) -> Task<Result<()>> {
-        let to_load = if let Some(pane) = pane.upgrade() {
+        enum NavigationStep {
+            Navigate {
+                item: Box<dyn ItemHandle>,
+                data: Arc<dyn Any + Send + Sync>,
+                activated: bool,
+            },
+            Load {
+                project_path: ProjectPath,
+                abs_path: Option<PathBuf>,
+                entry: NavigationEntry,
+            },
+        }
+
+        let step = if let Some(pane) = pane.upgrade() {
             pane.update(cx, |pane, cx| {
                 window.focus(&pane.focus_handle(cx), cx);
                 loop {
                     // Retrieve the weak item handle from the history.
-                    let entry = cb(pane.nav_history_mut(), cx)?;
+                    let entry = pop_entry(pane.nav_history_mut(), cx)?;
 
                     // If the item is still present in this pane, then activate it.
                     if let Some(index) = entry
@@ -3199,12 +3211,16 @@ impl Workspace {
                         pane.activate_item(index, true, true, window, cx);
                         pane.nav_history_mut().set_mode(NavigationMode::Normal);
 
-                        let mut navigated = prev_active_item_index != pane.active_item_index();
+                        let activated = prev_active_item_index != pane.active_item_index();
                         if let Some(data) = entry.data {
-                            navigated |= pane.active_item()?.navigate(data, window, cx);
+                            break Some(NavigationStep::Navigate {
+                                item: pane.active_item()?,
+                                data,
+                                activated,
+                            });
                         }
 
-                        if navigated {
+                        if activated {
                             break None;
                         }
                     } else {
@@ -3213,7 +3229,11 @@ impl Workspace {
                         if let Some((project_path, abs_path)) =
                             pane.nav_history().path_for_item(entry.item.id())
                         {
-                            break Some((project_path, abs_path, entry));
+                            break Some(NavigationStep::Load {
+                                project_path,
+                                abs_path,
+                                entry,
+                            });
                         }
                     }
                 }
@@ -3222,11 +3242,38 @@ impl Workspace {
             None
         };
 
-        if let Some((project_path, abs_path, entry)) = to_load {
-            // If the item was no longer present, then load it again from its previous path, first try the local path
-            let open_by_project_path = self.load_path(project_path.clone(), window, cx);
+        match step {
+            Some(NavigationStep::Navigate {
+                item,
+                data,
+                activated,
+            }) => {
+                let (retry_sender, retry_receiver) = oneshot::channel();
+                let workspace = cx.weak_entity();
+                window.defer(cx, move |window, cx| {
+                    let navigated = item.navigate(data, window, cx) || activated;
+                    let retry = if navigated {
+                        Task::ready(Ok(()))
+                    } else {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.navigate_history_impl(pane, mode, window, pop_entry, cx)
+                            })
+                            .unwrap_or_else(|error| Task::ready(Err(error)))
+                    };
+                    retry_sender.send(retry).ok();
+                });
+                cx.spawn(async move |_, _| retry_receiver.await?.await)
+            }
+            Some(NavigationStep::Load {
+                project_path,
+                abs_path,
+                entry,
+            }) => {
+                // If the item was no longer present, then load it again from its previous path, first try the local path
+                let open_by_project_path = self.load_path(project_path.clone(), window, cx);
 
-            cx.spawn_in(window, async move  |workspace, cx| {
+                cx.spawn_in(window, async move  |workspace, cx| {
                 let open_by_project_path = open_by_project_path.await;
                 let mut navigated = false;
                 match open_by_project_path
@@ -3238,7 +3285,7 @@ impl Workspace {
                             pane.active_item().map(|p| p.item_id())
                         })?;
 
-                        pane.update_in(cx, |pane, window, cx| {
+                        let item = pane.update_in(cx, |pane, window, cx| {
                             let item = pane.open_item(
                                 project_entry_id,
                                 project_path,
@@ -3251,10 +3298,11 @@ impl Workspace {
                             );
                             navigated |= Some(item.item_id()) != prev_active_item_id;
                             pane.nav_history_mut().set_mode(NavigationMode::Normal);
-                            if let Some(data) = entry.data {
-                                navigated |= item.navigate(data, window, cx);
-                            }
+                            item
                         })?;
+                        if let Some(data) = entry.data {
+                            navigated |= cx.update(|window, cx| item.navigate(data, window, cx))?;
+                        }
                     }
                     Err(open_by_project_path_e) => {
                         // Fall back to opening by abs path, in case an external file was opened and closed,
@@ -3272,13 +3320,13 @@ impl Workspace {
                                 .with_context(|| format!("Navigating to {abs_path:?}"))
                             {
                                 Ok(item) => {
-                                    pane.update_in(cx, |pane, window, cx| {
+                                    pane.update(cx, |pane, _| {
                                         navigated |= Some(item.item_id()) != prev_active_item_id;
                                         pane.nav_history_mut().set_mode(NavigationMode::Normal);
-                                        if let Some(data) = entry.data {
-                                            navigated |= item.navigate(data, window, cx);
-                                        }
                                     })?;
+                                    if let Some(data) = entry.data {
+                                        navigated |= cx.update(|window, cx| item.navigate(data, window, cx))?;
+                                    }
                                 }
                                 Err(open_by_abs_path_e) => {
                                     log::error!("Failed to navigate history: {open_by_project_path_e:#} and {open_by_abs_path_e:#}");
@@ -3298,8 +3346,8 @@ impl Workspace {
 
                 Ok(())
             })
-        } else {
-            Task::ready(Ok(()))
+            }
+            None => Task::ready(Ok(())),
         }
     }
 
@@ -4337,10 +4385,6 @@ impl Workspace {
             .downcast::<I>()
             .ok()
             .or_else(|| item.act_as::<I>(cx))
-    }
-
-    fn active_project_path(&self, cx: &App) -> Option<ProjectPath> {
-        self.active_item(cx).and_then(|item| item.project_path(cx))
     }
 
     pub fn most_recent_active_path(&self, cx: &App) -> Option<PathBuf> {
@@ -6081,18 +6125,24 @@ impl Workspace {
 
     fn flush_deferred_saves(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let deferred = std::mem::take(&mut self.deferred_save_items);
-        for weak_item in deferred {
-            let Some(item) = weak_item.upgrade() else {
-                continue;
-            };
-            // Skip if focus returned to this item
-            let focus_handle = item.item_focus_handle(cx);
-            if focus_handle.contains_focused(window, cx) {
-                continue;
-            }
-            Pane::autosave_item(item.as_ref(), self.project.clone(), window, cx)
-                .detach_and_log_err(cx);
+        if deferred.is_empty() {
+            return;
         }
+        let project = self.project.clone();
+        window.defer(cx, move |window, cx| {
+            for weak_item in deferred {
+                let Some(item) = weak_item.upgrade() else {
+                    continue;
+                };
+                // Skip if focus returned to this item
+                let focus_handle = item.item_focus_handle(cx);
+                if focus_handle.contains_focused(window, cx) {
+                    continue;
+                }
+                Pane::autosave_item(item.as_ref(), project.clone(), window, cx)
+                    .detach_and_log_err(cx);
+            }
+        });
     }
 
     fn handle_pane_event(
@@ -6105,9 +6155,15 @@ impl Workspace {
         let mut serialize_workspace = true;
         match event {
             pane::Event::AddItem { item } => {
-                item.added_to_pane(self, pane.clone(), window, cx);
-                cx.emit(Event::ItemAdded {
-                    item: item.boxed_clone(),
+                let item = item.boxed_clone();
+                let pane = pane.clone();
+                let workspace = cx.entity();
+                window.defer(cx, move |window, cx| {
+                    if pane.read(cx).index_for_item(item.as_ref()).is_none() {
+                        return;
+                    }
+                    item.added_to_pane(&workspace, pane, window, cx);
+                    workspace.update(cx, |_, cx| cx.emit(Event::ItemAdded { item }));
                 });
             }
             pane::Event::Split { direction, mode } => {
@@ -6268,8 +6324,11 @@ impl Workspace {
         if !item.can_split(cx) {
             return Task::ready(None);
         }
-        let task = item.clone_on_split(self.database_id(), window, cx);
+        let workspace_id = self.database_id();
         cx.spawn_in(window, async move |this, cx| {
+            let task = cx
+                .update(|window, cx| item.clone_on_split(workspace_id, window, cx))
+                .ok()?;
             if let Some(clone) = task.await {
                 this.update_in(cx, |this, window, cx| {
                     let new_pane = this.add_pane(window, cx);
@@ -6408,17 +6467,37 @@ impl Workspace {
     }
 
     fn collaborator_left(&mut self, peer_id: PeerId, window: &mut Window, cx: &mut Context<Self>) {
+        let mut unfollowed_views = Vec::new();
         self.follower_states.retain(|leader_id, state| {
             if *leader_id == CollaboratorId::PeerId(peer_id) {
-                for item in state.items_by_leader_view_id.values() {
-                    item.view.set_leader_id(None, window, cx);
-                }
+                unfollowed_views.extend(
+                    state
+                        .items_by_leader_view_id
+                        .drain()
+                        .map(|(_, item)| item.view),
+                );
                 false
             } else {
                 true
             }
         });
+        Self::clear_leader_ids(unfollowed_views, window, cx);
         cx.notify();
+    }
+
+    fn clear_leader_ids(
+        views: Vec<Box<dyn FollowableItemHandle>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if views.is_empty() {
+            return;
+        }
+        window.defer(cx, move |window, cx| {
+            for view in views {
+                view.set_leader_id(None, window, cx);
+            }
+        });
     }
 
     pub fn start_following(
@@ -6606,9 +6685,15 @@ impl Workspace {
 
         let leader_id = leader_id.into();
         let state = self.follower_states.remove(&leader_id)?;
-        for (_, item) in state.items_by_leader_view_id {
-            item.view.set_leader_id(None, window, cx);
-        }
+        Self::clear_leader_ids(
+            state
+                .items_by_leader_view_id
+                .into_values()
+                .map(|item| item.view)
+                .collect(),
+            window,
+            cx,
+        );
 
         if let CollaboratorId::PeerId(leader_peer_id) = leader_id {
             let project_id = self.project.read(cx).remote_id();
@@ -6636,41 +6721,59 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.emit(Event::ActiveItemChanged);
-        let active_entry = self.active_project_path(cx);
-        let active_project_path_changed =
-            self.last_active_project_path.as_ref() != active_entry.as_ref();
-        self.project.update(cx, |project, cx| {
-            project.set_active_path(active_entry.clone(), cx)
+        let workspace = cx.entity();
+        window.defer(cx, move |window, cx| {
+            Self::apply_active_item_path(&workspace, focus_changed, window, cx);
         });
+    }
 
-        // Infer the active repository only from singleton items.
-        // A multibuffer's active path represents the cursor's location within
-        // an aggregate view, so we assume it's not the user's intent to switch
-        // repositories.
-        if focus_changed
-            && let Some(project_path) = &active_entry
-            && self
-                .active_item(cx)
-                .is_some_and(|item| item.buffer_kind(cx) == ItemBufferKind::Singleton)
-        {
-            let git_store_entity = self.project.read(cx).git_store().clone();
-            git_store_entity.update(cx, |git_store, cx| {
-                git_store.set_active_repo_for_path(project_path, cx);
+    fn apply_active_item_path(
+        workspace: &Entity<Self>,
+        focus_changed: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let active_item = workspace.read(cx).active_item(cx);
+        let active_entry = active_item.as_ref().and_then(|item| item.project_path(cx));
+        let active_item_is_singleton =
+            active_item.is_some_and(|item| item.buffer_kind(cx) == ItemBufferKind::Singleton);
+
+        workspace.update(cx, |workspace, cx| {
+            cx.emit(Event::ActiveItemChanged);
+            let active_project_path_changed =
+                workspace.last_active_project_path.as_ref() != active_entry.as_ref();
+            workspace.project.update(cx, |project, cx| {
+                project.set_active_path(active_entry.clone(), cx)
             });
-        }
 
-        if active_project_path_changed {
-            match active_entry.as_ref() {
-                None => self.last_active_project_path = None,
-                Some(path) if self.remember_navigation_history_path(path, cx) => {
-                    self.serialize_workspace(window, cx);
-                }
-                Some(_) => {}
+            // Infer the active repository only from singleton items.
+            // A multibuffer's active path represents the cursor's location within
+            // an aggregate view, so we assume it's not the user's intent to switch
+            // repositories.
+            if focus_changed
+                && let Some(project_path) = &active_entry
+                && active_item_is_singleton
+            {
+                let git_store_entity = workspace.project.read(cx).git_store().clone();
+                git_store_entity.update(cx, |git_store, cx| {
+                    git_store.set_active_repo_for_path(project_path, cx);
+                });
             }
-        }
 
-        self.update_window_title(window, cx);
+            if active_project_path_changed {
+                match active_entry.as_ref() {
+                    None => workspace.last_active_project_path = None,
+                    Some(path) if workspace.remember_navigation_history_path(path, cx) => {
+                        workspace.serialize_workspace(window, cx);
+                    }
+                    Some(_) => {}
+                }
+            }
+
+            if workspace.owns_window_chrome() {
+                workspace.apply_window_title(active_entry, window, cx);
+            }
+        });
     }
 
     /// Whether this workspace may write the platform window's title and edited
@@ -6691,10 +6794,25 @@ impl Workspace {
     }
 
     fn update_window_title(&mut self, window: &mut Window, cx: &mut App) {
-        if !self.owns_window_chrome() {
-            return;
-        }
-        self.apply_window_title(window, cx);
+        self.schedule_window_title(false, window, cx);
+    }
+
+    fn schedule_window_title(&self, force: bool, window: &mut Window, cx: &mut App) {
+        let workspace = self.weak_self.clone();
+        window.defer(cx, move |window, cx| {
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            let active_project_path = workspace
+                .read(cx)
+                .active_item(cx)
+                .and_then(|item| item.project_path(cx));
+            workspace.update(cx, |workspace, cx| {
+                if force || workspace.owns_window_chrome() {
+                    workspace.apply_window_title(active_project_path, window, cx);
+                }
+            });
+        });
     }
 
     /// Whether the active window-title template references `${branch}`, and so
@@ -6704,9 +6822,13 @@ impl Workspace {
             .branch
     }
 
-    fn apply_window_title(&mut self, window: &mut Window, cx: &mut App) {
+    fn apply_window_title(
+        &mut self,
+        active_project_path: Option<ProjectPath>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let project = self.project().read(cx);
-        let active_project_path = self.active_item(cx).and_then(|item| item.project_path(cx));
         let settings = WorkspaceSettings::get_global(cx);
         let template = settings.window_title_format.as_str();
         let separator = settings.window_title_separator.as_str();
@@ -6879,7 +7001,7 @@ impl Workspace {
     /// shows a different workspace's state).
     pub fn refresh_window_state(&mut self, window: &mut Window, cx: &mut App) {
         self.last_window_title = None;
-        self.apply_window_title(window, cx);
+        self.schedule_window_title(true, window, cx);
 
         self.window_edited = self.is_window_edited(cx);
         window.set_window_edited(self.window_edited);
@@ -6888,10 +7010,10 @@ impl Workspace {
     fn update_item_dirty_state(
         &mut self,
         item: &dyn ItemHandle,
+        is_dirty: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let is_dirty = item.is_dirty(cx);
         let item_id = item.item_id();
         let was_dirty = self.dirty_items.contains_key(&item_id);
         if is_dirty == was_dirty {
@@ -6952,28 +7074,30 @@ impl Workspace {
     // RPC handlers
 
     fn active_view_for_follower(
-        &self,
+        workspace: &Entity<Self>,
         follower_project_id: Option<u64>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) -> Option<proto::View> {
-        let (item, panel_id) = self.active_item_for_followers(window, cx);
+        let this = workspace.read(cx);
+        let (item, panel_id) = this.active_item_for_followers(window, cx);
         let item = item?;
-        let leader_id = self
+        let leader_id = this
             .pane_for(&*item)
-            .and_then(|pane| self.leader_for_pane(&pane));
+            .and_then(|pane| this.leader_for_pane(&pane));
         let leader_peer_id = match leader_id {
             Some(CollaboratorId::PeerId(peer_id)) => Some(peer_id),
             Some(CollaboratorId::Agent) | None => None,
         };
+        let client = this.app_state.client.clone();
+        let project_id = this.project.read(cx).remote_id();
 
         let item_handle = item.to_followable_item_handle(cx)?;
-        let id = item_handle.remote_id(&self.app_state.client, window, cx)?;
+        let id = item_handle.remote_id(&client, window, cx)?;
         let variant = item_handle.to_state_proto(window, cx)?;
 
         if item_handle.is_project_item(window, cx)
-            && (follower_project_id.is_none()
-                || follower_project_id != self.project.read(cx).remote_id())
+            && (follower_project_id.is_none() || follower_project_id != project_id)
         {
             return None;
         }
@@ -6987,14 +7111,15 @@ impl Workspace {
     }
 
     fn handle_follow(
-        &mut self,
+        workspace: &Entity<Self>,
         follower_project_id: Option<u64>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) -> proto::FollowResponse {
-        let active_view = self.active_view_for_follower(follower_project_id, window, cx);
+        let active_view =
+            Self::active_view_for_follower(workspace, follower_project_id, window, cx);
 
-        cx.notify();
+        workspace.update(cx, |_, cx| cx.notify());
         proto::FollowResponse {
             views: active_view.iter().cloned().collect(),
             active_view,
@@ -7061,23 +7186,23 @@ impl Workspace {
             proto::update_followers::Variant::UpdateView(update_view) => {
                 let variant = update_view.variant.context("missing update view variant")?;
                 let id = update_view.id.context("missing update view id")?;
-                let mut tasks = Vec::new();
-                this.update_in(cx, |this, window, cx| {
-                    let project = this.project.clone();
+                let (project, view) = this.update(cx, |this, _| {
+                    let mut view = None;
                     if let Some(state) = this.follower_states.get(&leader_id.into()) {
                         let view_id = ViewId::from_proto(id)?;
-                        if let Some(item) = state.items_by_leader_view_id.get(&view_id) {
-                            tasks.push(item.view.apply_update_proto(
-                                &project,
-                                variant.clone(),
-                                window,
-                                cx,
-                            ));
-                        }
+                        view = state
+                            .items_by_leader_view_id
+                            .get(&view_id)
+                            .map(|item| item.view.downgrade());
                     }
-                    anyhow::Ok(())
+                    anyhow::Ok((this.project.clone(), view))
                 })??;
-                try_join_all(tasks).await.log_err();
+                if let Some(view) = view.and_then(|view| view.upgrade()) {
+                    let task = cx.update(|window, cx| {
+                        view.apply_update_proto(&project, variant, window, cx)
+                    })?;
+                    task.await.log_err();
+                }
             }
         }
         this.update_in(cx, |this, window, cx| {
@@ -7109,9 +7234,14 @@ impl Workspace {
                 .context("stopped following")?;
             anyhow::Ok(state.pane().clone())
         })?;
-        let existing_item = pane.update_in(cx, |pane, window, cx| {
-            let client = this.read(cx).client().clone();
-            pane.items().find_map(|item| {
+        let client = this.read_with(cx, |this, _| this.client().clone());
+        let pane_items = pane.read_with(cx, |pane, _| {
+            pane.items()
+                .map(|item| item.boxed_clone())
+                .collect::<Vec<_>>()
+        });
+        let existing_item = cx.update(|window, cx| {
+            pane_items.iter().find_map(|item| {
                 let item = item.to_followable_item_handle(cx)?;
                 if item.remote_id(&client, window, cx) == Some(id) {
                     Some(item)
@@ -7137,136 +7267,200 @@ impl Workspace {
             };
 
             let mut new_item = task.await?;
-            pane.update_in(cx, |pane, window, cx| {
-                let mut item_to_remove = None;
-                for (ix, item) in pane.items().enumerate() {
+            let pane_items = pane.read_with(cx, |pane, _| {
+                pane.items()
+                    .map(|item| item.boxed_clone())
+                    .collect::<Vec<_>>()
+            });
+            let item_to_remove = cx.update(|window, cx| {
+                for (ix, item) in pane_items.iter().enumerate() {
                     if let Some(item) = item.to_followable_item_handle(cx) {
                         match new_item.dedup(item.as_ref(), window, cx) {
                             Some(item::Dedup::KeepExisting) => {
-                                new_item =
-                                    item.boxed_clone().to_followable_item_handle(cx).unwrap();
-                                break;
+                                new_item = item;
+                                return None;
                             }
                             Some(item::Dedup::ReplaceExisting) => {
-                                item_to_remove = Some((ix, item.item_id()));
-                                break;
+                                return Some((ix, item.item_id()));
                             }
                             None => {}
                         }
                     }
                 }
+                None
+            })?;
 
-                if let Some((ix, id)) = item_to_remove {
+            if let Some((ix, id)) = item_to_remove {
+                pane.update_in(cx, |pane, window, cx| {
                     pane.remove_item(id, false, false, window, cx);
                     pane.add_item(new_item.boxed_clone(), false, false, Some(ix), window, cx);
-                }
-            })?;
+                })?;
+            }
 
             new_item
         };
 
-        this.update_in(cx, |this, window, cx| {
-            let state = this.follower_states.get_mut(&leader_id.into())?;
+        let is_following = this.read_with(cx, |this, _| {
+            this.follower_states.contains_key(&leader_id.into())
+        });
+        if !is_following {
+            return Ok(());
+        }
+
+        let is_project_item = cx.update(|window, cx| {
             item.set_leader_id(Some(leader_id.into()), window, cx);
+            item.is_project_item(window, cx)
+        })?;
+        let weak_item = item.downgrade();
+        let is_still_following = this.update(cx, |this, _| {
+            let Some(state) = this.follower_states.get_mut(&leader_id.into()) else {
+                return false;
+            };
             state.items_by_leader_view_id.insert(
                 id,
                 FollowerView {
                     view: item,
                     location: panel_id,
+                    is_project_item,
                 },
             );
-
-            Some(())
-        })
-        .context("no follower state")?;
+            true
+        });
+        if !is_still_following && let Some(item) = weak_item.upgrade() {
+            cx.update(|window, cx| item.set_leader_id(None, window, cx))?;
+        }
 
         Ok(())
     }
 
     fn handle_agent_location_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(follower_state) = self.follower_states.get_mut(&CollaboratorId::Agent) else {
+        if !self.follower_states.contains_key(&CollaboratorId::Agent) {
+            return;
+        }
+        let workspace = cx.entity();
+        window.defer(cx, move |window, cx| {
+            Self::follow_agent_location(&workspace, window, cx);
+        });
+    }
+
+    fn follow_agent_location(workspace: &Entity<Self>, window: &mut Window, cx: &mut App) {
+        let this = workspace.read(cx);
+        let Some(follower_state) = this.follower_states.get(&CollaboratorId::Agent) else {
             return;
         };
+        let Some(agent_location) = this.project.read(cx).agent_location() else {
+            workspace.update(cx, |workspace, cx| {
+                if let Some(follower_state) =
+                    workspace.follower_states.get_mut(&CollaboratorId::Agent)
+                {
+                    follower_state.active_view_id = None;
+                    workspace.leader_updated(CollaboratorId::Agent, window, cx);
+                }
+            });
+            return;
+        };
+        let buffer_entity_id = agent_location.buffer.entity_id();
+        let view_id = ViewId {
+            creator: CollaboratorId::Agent,
+            id: buffer_entity_id.as_u64(),
+        };
+        let followed_view = follower_state
+            .items_by_leader_view_id
+            .get(&view_id)
+            .map(|item| item.view.downgrade());
+        let center_pane = follower_state.center_pane.clone();
+        let project = this.project.clone();
 
-        if let Some(agent_location) = self.project.read(cx).agent_location() {
-            let buffer_entity_id = agent_location.buffer.entity_id();
-            let view_id = ViewId {
-                creator: CollaboratorId::Agent,
-                id: buffer_entity_id.as_u64(),
+        let view = match followed_view {
+            Some(followed_view) => followed_view.upgrade(),
+            None => {
+                let pane_items = center_pane
+                    .read(cx)
+                    .items()
+                    .map(|item| item.boxed_clone())
+                    .collect::<Vec<_>>();
+                let existing_view = pane_items.iter().find_map(|item| {
+                    let item = item.to_followable_item_handle(cx)?;
+                    if item.buffer_kind(cx) == ItemBufferKind::Singleton
+                        && item.project_item_model_ids(cx).as_slice() == [buffer_entity_id]
+                    {
+                        Some(item)
+                    } else {
+                        None
+                    }
+                });
+                existing_view.or_else(|| {
+                    agent_location.buffer.upgrade().and_then(|buffer| {
+                        cx.update_default_global(|registry: &mut ProjectItemRegistry, cx| {
+                            registry.build_item(buffer, project, None, window, cx)
+                        })?
+                        .to_followable_item_handle(cx)
+                    })
+                })
+            }
+        };
+
+        let view = view.map(|view| {
+            view.set_leader_id(Some(CollaboratorId::Agent), window, cx);
+            view.update_agent_location(agent_location.position, window, cx);
+            let is_project_item = view.is_project_item(window, cx);
+            (view, is_project_item)
+        });
+        let weak_view = view.as_ref().map(|(view, _)| view.downgrade());
+        let is_following = workspace.update(cx, |workspace, cx| {
+            let Some(follower_state) = workspace.follower_states.get_mut(&CollaboratorId::Agent)
+            else {
+                return false;
             };
             follower_state.active_view_id = Some(view_id);
-
-            let item = match follower_state.items_by_leader_view_id.entry(view_id) {
-                hash_map::Entry::Occupied(entry) => Some(entry.into_mut()),
-                hash_map::Entry::Vacant(entry) => {
-                    let existing_view =
-                        follower_state
-                            .center_pane
-                            .read(cx)
-                            .items()
-                            .find_map(|item| {
-                                let item = item.to_followable_item_handle(cx)?;
-                                if item.buffer_kind(cx) == ItemBufferKind::Singleton
-                                    && item.project_item_model_ids(cx).as_slice()
-                                        == [buffer_entity_id]
-                                {
-                                    Some(item)
-                                } else {
-                                    None
-                                }
-                            });
-                    let view = existing_view.or_else(|| {
-                        agent_location.buffer.upgrade().and_then(|buffer| {
-                            cx.update_default_global(|registry: &mut ProjectItemRegistry, cx| {
-                                registry.build_item(buffer, self.project.clone(), None, window, cx)
-                            })?
-                            .to_followable_item_handle(cx)
-                        })
-                    });
-
-                    view.map(|view| {
-                        entry.insert(FollowerView {
-                            view,
-                            location: None,
-                        })
-                    })
-                }
-            };
-
-            if let Some(item) = item {
-                item.view
-                    .set_leader_id(Some(CollaboratorId::Agent), window, cx);
-                item.view
-                    .update_agent_location(agent_location.position, window, cx);
+            if let Some((view, is_project_item)) = view
+                && let hash_map::Entry::Vacant(entry) =
+                    follower_state.items_by_leader_view_id.entry(view_id)
+            {
+                entry.insert(FollowerView {
+                    view,
+                    location: None,
+                    is_project_item,
+                });
             }
-        } else {
-            follower_state.active_view_id = None;
+            workspace.leader_updated(CollaboratorId::Agent, window, cx);
+            true
+        });
+        if !is_following && let Some(view) = weak_view.and_then(|view| view.upgrade()) {
+            view.set_leader_id(None, window, cx);
         }
-
-        self.leader_updated(CollaboratorId::Agent, window, cx);
     }
 
     pub fn update_active_view_for_followers(&mut self, window: &mut Window, cx: &mut App) {
+        let workspace = self.weak_self.clone();
+        window.defer(cx, move |window, cx| {
+            if let Some(workspace) = workspace.upgrade() {
+                Self::send_active_view_to_followers(&workspace, window, cx);
+            }
+        });
+    }
+
+    fn send_active_view_to_followers(workspace: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let mut is_project_item = true;
         let mut update = proto::UpdateActiveView::default();
         if window.is_window_active() {
-            let (active_item, panel_id) = self.active_item_for_followers(window, cx);
+            let this = workspace.read(cx);
+            let (active_item, panel_id) = this.active_item_for_followers(window, cx);
 
             if let Some(item) = active_item
                 && item.item_focus_handle(cx).contains_focused(window, cx)
             {
-                let leader_id = self
+                let leader_id = this
                     .pane_for(&*item)
-                    .and_then(|pane| self.leader_for_pane(&pane));
+                    .and_then(|pane| this.leader_for_pane(&pane));
                 let leader_peer_id = match leader_id {
                     Some(CollaboratorId::PeerId(peer_id)) => Some(peer_id),
                     Some(CollaboratorId::Agent) | None => None,
                 };
+                let client = this.app_state.client.clone();
 
                 if let Some(item) = item.to_followable_item_handle(cx) {
-                    let id = item
-                        .remote_id(&self.app_state.client, window, cx)
-                        .map(|id| id.to_proto());
+                    let id = item.remote_id(&client, window, cx).map(|id| id.to_proto());
 
                     if let Some(id) = id
                         && let Some(variant) = item.to_state_proto(window, cx)
@@ -7285,22 +7479,24 @@ impl Workspace {
             }
         }
 
-        let active_view_id = update.view.as_ref().and_then(|view| view.id.as_ref());
-        if active_view_id != self.last_active_view_id.as_ref() {
-            self.last_active_view_id = active_view_id.cloned();
-            self.update_followers(
-                is_project_item,
-                proto::update_followers::Variant::UpdateActiveView(update),
-                window,
-                cx,
-            );
-        }
+        workspace.update(cx, |workspace, cx| {
+            let active_view_id = update.view.as_ref().and_then(|view| view.id.as_ref());
+            if active_view_id != workspace.last_active_view_id.as_ref() {
+                workspace.last_active_view_id = active_view_id.cloned();
+                workspace.update_followers(
+                    is_project_item,
+                    proto::update_followers::Variant::UpdateActiveView(update),
+                    window,
+                    cx,
+                );
+            }
+        });
     }
 
     fn active_item_for_followers(
         &self,
-        window: &mut Window,
-        cx: &mut App,
+        window: &Window,
+        cx: &App,
     ) -> (Option<Box<dyn ItemHandle>>, Option<proto::PanelId>) {
         let mut active_item = None;
         let mut panel_id = None;
@@ -7440,7 +7636,7 @@ impl Workspace {
         let mut item_to_activate = None;
         if let (Some(active_view_id), true) = (state.active_view_id, leader_in_this_app) {
             if let Some(item) = state.items_by_leader_view_id.get(&active_view_id)
-                && (leader_in_this_project || !item.view.is_project_item(window, cx))
+                && (leader_in_this_project || !item.is_project_item)
             {
                 item_to_activate = Some((item.location, item.view.boxed_clone()));
             }
@@ -7479,22 +7675,36 @@ impl Workspace {
         } else {
             // When window is deactivated, flush any deferred saves since focus has left the window
             self.flush_deferred_saves(window, cx);
-            for pane in &self.panes {
-                pane.update(cx, |pane, cx| {
-                    if let Some(item) = pane.active_item() {
+            let project = self.project.clone();
+            let panes_items = self
+                .panes
+                .iter()
+                .map(|pane| {
+                    let pane = pane.read(cx);
+                    (
+                        pane.active_item(),
+                        pane.items()
+                            .map(|item| item.boxed_clone())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            window.defer(cx, move |window, cx| {
+                for (active_item, items) in panes_items {
+                    if let Some(item) = active_item {
                         item.workspace_deactivated(window, cx);
                     }
-                    for item in pane.items() {
+                    for item in items {
                         if matches!(
                             item.workspace_settings(cx).autosave,
                             AutosaveSetting::OnWindowChange | AutosaveSetting::OnFocusChange
                         ) {
-                            Pane::autosave_item(item.as_ref(), self.project.clone(), window, cx)
+                            Pane::autosave_item(item.as_ref(), project.clone(), window, cx)
                                 .detach_and_log_err(cx);
                         }
                     }
-                });
-            }
+                }
+            });
         }
     }
 
@@ -8112,11 +8322,13 @@ impl Workspace {
     }
 
     /// Multiworkspace uses this to add workspace action handling to itself
-    pub fn actions(&self, div: Div, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let active_item_is_read_only = self
-            .active_item(cx)
-            .is_some_and(|item| !item.capability(cx).editable());
-
+    pub fn actions(
+        &self,
+        div: Div,
+        active_item_is_read_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         self.add_workspace_actions_listeners(div, window, cx)
             .on_action(cx.listener(
                 |_workspace, action_sequence: &settings::ActionSequence, window, cx| {
@@ -8496,9 +8708,9 @@ impl Workspace {
                 },
             ))
             .on_action(
-                cx.listener(|workspace, _: &ToggleReadOnlyFile, window, cx| {
-                    let pane = workspace.active_pane().clone();
-                    if let Some(item) = pane.read(cx).active_item() {
+                cx.entity_listener(|workspace, _: &ToggleReadOnlyFile, window, cx| {
+                    let active_item = workspace.read(cx).active_item(cx);
+                    if let Some(item) = active_item {
                         item.toggle_read_only(window, cx);
                     }
                 }),
@@ -8591,18 +8803,27 @@ impl Workspace {
     /// If closing the current modal fails (e.g., due to `on_before_dismiss` returning
     /// `DismissDecision::Dismiss(false)` or `DismissDecision::Pending`), the new modal
     /// will not be shown.
-    pub fn toggle_modal<V: ModalView, B>(&mut self, window: &mut Window, cx: &mut App, build: B)
+    pub fn toggle_modal<V: ModalView, B>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+        build: B,
+    ) -> Task<Option<Entity<V>>>
     where
-        B: FnOnce(&mut Window, &mut Context<V>) -> V,
+        B: FnOnce(&mut Window, &mut Context<V>) -> V + 'static,
     {
-        self.modal_layer.update(cx, |modal_layer, cx| {
-            modal_layer.toggle_modal(window, cx, build)
-        })
+        let modal_layer = self.modal_layer.clone();
+        let (modal_sender, modal_receiver) = oneshot::channel();
+        window.defer(cx, move |window, cx| {
+            modal_sender
+                .send(ModalLayer::toggle(&modal_layer, window, cx, build))
+                .ok();
+        });
+        cx.spawn(async move |_| modal_receiver.await.ok().flatten())
     }
 
     pub fn hide_modal(&mut self, window: &mut Window, cx: &mut App) -> bool {
-        self.modal_layer
-            .update(cx, |modal_layer, cx| modal_layer.hide_modal(window, cx))
+        ModalLayer::hide(&self.modal_layer, window, cx)
     }
 
     fn reopen_last_picker(
@@ -9145,9 +9366,10 @@ impl Workspace {
                     .remote_connection_options(cx)
                     .map(RemoteHostLocation::from);
                 let worktree_store = project.worktree_store().downgrade();
-                self.toggle_modal(window, cx, |window, cx| {
+                self.toggle_modal(window, cx, move |window, cx| {
                     SecurityModal::new(worktree_store, remote_host, window, cx)
-                });
+                })
+                .detach();
             }
         }
     }
@@ -10159,35 +10381,42 @@ impl WorkspaceStore {
         envelope: TypedEnvelope<proto::Follow>,
         mut cx: AsyncApp,
     ) -> Result<proto::FollowResponse> {
-        this.update(&mut cx, |this, cx| {
-            let follower = Follower {
-                project_id: envelope.payload.project_id,
-                peer_id: envelope.original_sender_id()?,
-            };
+        let follower = Follower {
+            project_id: envelope.payload.project_id,
+            peer_id: envelope.original_sender_id()?,
+        };
 
-            let mut response = proto::FollowResponse::default();
-
-            this.workspaces.retain(|(window_handle, weak_workspace)| {
-                let Some(workspace) = weak_workspace.upgrade() else {
-                    return false;
-                };
+        let mut response = proto::FollowResponse::default();
+        let workspaces = this.read_with(&cx, |this, _| {
+            this.workspaces.iter().cloned().collect::<Vec<_>>()
+        });
+        let mut closed_workspaces = Vec::new();
+        for (window_handle, weak_workspace) in workspaces {
+            let is_open = weak_workspace.upgrade().is_some_and(|workspace| {
                 window_handle
-                    .update(cx, |_, window, cx| {
-                        workspace.update(cx, |workspace, cx| {
-                            let handler_response =
-                                workspace.handle_follow(follower.project_id, window, cx);
-                            if let Some(active_view) = handler_response.active_view
-                                && workspace.project.read(cx).remote_id() == follower.project_id
-                            {
-                                response.active_view = Some(active_view)
-                            }
-                        });
+                    .update(&mut cx, |_, window, cx| {
+                        let handler_response =
+                            Workspace::handle_follow(&workspace, follower.project_id, window, cx);
+                        if let Some(active_view) = handler_response.active_view
+                            && workspace.read(cx).project.read(cx).remote_id()
+                                == follower.project_id
+                        {
+                            response.active_view = Some(active_view)
+                        }
                     })
                     .is_ok()
             });
+            if !is_open {
+                closed_workspaces.push((window_handle, weak_workspace));
+            }
+        }
+        this.update(&mut cx, |this, _| {
+            for closed_workspace in &closed_workspaces {
+                this.workspaces.remove(closed_workspace);
+            }
+        });
 
-            Ok(response)
-        })
+        Ok(response)
     }
 
     async fn handle_update_followers(
@@ -12344,16 +12573,16 @@ pub fn move_active_item(
     source.update(cx, |source_pane, cx| {
         let item_id = active_item.item_id();
         source_pane.remove_item(item_id, false, close_if_empty, window, cx);
-        destination.update(cx, |target_pane, cx| {
-            target_pane.add_item(
-                active_item,
-                focus_destination,
-                focus_destination,
-                Some(target_pane.items_len()),
-                window,
-                cx,
-            );
-        });
+    });
+    destination.update(cx, |target_pane, cx| {
+        target_pane.add_item(
+            active_item,
+            focus_destination,
+            focus_destination,
+            Some(target_pane.items_len()),
+            window,
+            cx,
+        );
     });
 }
 
@@ -12375,9 +12604,14 @@ pub fn clone_active_item(
         return;
     }
     let destination = destination.downgrade();
-    let task = active_item.clone_on_split(workspace_id, window, cx);
     window
         .spawn(cx, async move |cx| {
+            let Some(task) = cx
+                .update(|window, cx| active_item.clone_on_split(workspace_id, window, cx))
+                .log_err()
+            else {
+                return;
+            };
             let Some(clone) = task.await else {
                 return;
             };
@@ -12542,7 +12776,9 @@ mod tests {
         invalid_item_view::InvalidItemView,
         item::{
             ItemBufferKind, ItemEvent,
-            test::{TestItem, TestProjectItem},
+            test::{
+                HookBits, PendingFollowerView, StaticHooksReadContainers, TestItem, TestProjectItem,
+            },
         },
         persistence::model::DockData,
     };
@@ -14263,7 +14499,7 @@ mod tests {
         // Opening a modal moves focus away from the item, but autosave should be
         // deferred until focus lands on a pane or panel (not saved immediately).
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, TestModal::new);
+            workspace.toggle_modal(window, cx, TestModal::new).detach();
         });
         cx.executor().run_until_parked();
         item.read_with(cx, |item, _| {
@@ -14276,9 +14512,7 @@ mod tests {
         // If focus returns to the same item (modal dismissed), the deferred save
         // should be skipped.
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.modal_layer.update(cx, |modal, cx| {
-                modal.hide_modal(window, cx);
-            });
+            ModalLayer::hide(&workspace.modal_layer, window, cx);
         });
         cx.executor().run_until_parked();
         item.read_with(cx, |item, _| {
@@ -14294,7 +14528,7 @@ mod tests {
             cx.focus_self(window);
         });
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, TestModal::new);
+            workspace.toggle_modal(window, cx, TestModal::new).detach();
         });
         cx.executor().run_until_parked();
         item.read_with(cx, |item, _| {
@@ -14417,11 +14651,1344 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(*toolbar_notify_count.borrow(), 2);
+        assert_eq!(*toolbar_notify_count.borrow(), 3);
         pane.read_with(cx, |pane, _| {
             assert!(!pane.can_navigate_backward());
             assert!(pane.can_navigate_forward());
         });
+    }
+
+    fn add_test_item_reading_containers(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<Pane>,
+        build: impl FnOnce(TestItem, &mut Context<TestItem>) -> TestItem,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TestItem> {
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            build(
+                TestItem::new(cx)
+                    .with_pane_reader(pane_handle)
+                    .with_workspace_reader(workspace_handle),
+                cx,
+            )
+        });
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(Box::new(item.clone()), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        item
+    }
+
+    fn read_containers_in(item: &Entity<TestItem>, hooks: HookBits, cx: &mut VisualTestContext) {
+        item.read_with(cx, |item, _| item.read_containers_in(hooks));
+    }
+
+    fn container_reads(item: &Entity<TestItem>, cx: &mut VisualTestContext) -> usize {
+        item.read_with(cx, |item, _| item.container_reads.get())
+    }
+
+    #[gpui::test]
+    async fn test_go_back_navigates_items_that_read_their_containers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item_a =
+            add_test_item_reading_containers(&workspace, &pane, |item, _| item.with_label("A"), cx);
+        let item_b =
+            add_test_item_reading_containers(&workspace, &pane, |item, _| item.with_label("B"), cx);
+        read_containers_in(&item_a, HookBits::NAVIGATE | HookBits::DEACTIVATED, cx);
+        read_containers_in(&item_b, HookBits::NAVIGATE | HookBits::DEACTIVATED, cx);
+
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.go_back(pane.downgrade(), window, cx)
+            })
+            .await
+            .unwrap();
+
+        pane.read_with(cx, |pane, _| {
+            assert_eq!(
+                pane.active_item().map(|item| item.item_id()),
+                Some(item_a.entity_id())
+            );
+            assert!(pane.can_navigate_forward());
+        });
+        assert!(
+            container_reads(&item_a, cx) > 0,
+            "going back should navigate the item it activates"
+        );
+        assert!(
+            container_reads(&item_b, cx) > 0,
+            "going back should deactivate the item it leaves"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_cloning_items_that_read_their_containers(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item =
+            add_test_item_reading_containers(&workspace, &pane, |item, _| item.with_label("A"), cx);
+        read_containers_in(&item, HookBits::CLONE_ON_SPLIT, cx);
+
+        let split_pane = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.split_and_clone(pane.clone(), SplitDirection::Right, window, cx)
+            })
+            .await
+            .expect("splitting should clone the active item");
+        cx.run_until_parked();
+        let reads_after_split = container_reads(&item, cx);
+        assert!(
+            reads_after_split > 0,
+            "splitting should clone the active item"
+        );
+        split_pane.read_with(cx, |pane, _| assert_eq!(pane.items_len(), 1));
+
+        let destination = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(pane.clone(), SplitDirection::Down, window, cx)
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            clone_active_item(
+                workspace.database_id(),
+                &pane,
+                &destination,
+                false,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            container_reads(&item, cx) > reads_after_split,
+            "cloning into another pane should clone the active item"
+        );
+        destination.read_with(cx, |pane, _| assert_eq!(pane.items_len(), 1));
+    }
+
+    #[gpui::test]
+    async fn test_restoring_items_whose_deserialize_reads_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| {
+            register_serializable_item::<TestItem>(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let (pane, task) = workspace.update_in(cx, |workspace, window, cx| {
+            let pane = workspace.add_pane(window, cx);
+            cx.set_global(StaticHooksReadContainers {
+                pane: Some(pane.downgrade()),
+                workspace: Some(cx.weak_entity()),
+                reads: 0,
+            });
+            let weak_pane = pane.downgrade();
+            let project = workspace.project().clone();
+            let workspace = cx.weak_entity();
+            let serialized_pane = SerializedPane::new(
+                vec![SerializedItem::new("TestItem", 1, true, false)],
+                true,
+                0,
+            );
+            let task = window.spawn(cx, async move |cx| {
+                serialized_pane
+                    .deserialize_to(
+                        &project,
+                        &weak_pane,
+                        WorkspaceId::from_i64(1),
+                        workspace,
+                        cx,
+                    )
+                    .await
+            });
+            (pane, task)
+        });
+        task.await.unwrap();
+
+        let reads = cx.update(|_, cx| cx.global::<StaticHooksReadContainers>().reads);
+        assert_eq!(
+            reads, 2,
+            "deserializing the item should read its pane and workspace"
+        );
+        pane.read_with(cx, |pane, _| assert_eq!(pane.items_len(), 1));
+    }
+
+    fn follow_with_view(
+        workspace: &Entity<Workspace>,
+        pane: &Entity<Pane>,
+        leader_id: CollaboratorId,
+        view_id: ViewId,
+        item: &Entity<TestItem>,
+        cx: &mut VisualTestContext,
+    ) {
+        workspace.update(cx, |workspace, cx| {
+            let view = item
+                .to_followable_item_handle(cx)
+                .expect("TestItem should be registered as followable");
+            let mut items_by_leader_view_id = HashMap::default();
+            items_by_leader_view_id.insert(
+                view_id,
+                FollowerView {
+                    view,
+                    location: None,
+                    is_project_item: false,
+                },
+            );
+            workspace.follower_states.insert(
+                leader_id,
+                FollowerState {
+                    center_pane: pane.clone(),
+                    dock_pane: None,
+                    active_view_id: Some(view_id),
+                    items_by_leader_view_id,
+                },
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_unfollowing_clears_leaders_of_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| FollowableViewRegistry::register::<TestItem>(cx));
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let peer_id = PeerId { owner_id: 1, id: 1 };
+        let leader_id = CollaboratorId::PeerId(peer_id);
+        let view_id = ViewId {
+            creator: leader_id,
+            id: 1,
+        };
+        let item = add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, _| item.with_remote_id(view_id),
+            cx,
+        );
+        item.update(cx, |item, _| {
+            item.leader_id = Some(leader_id);
+            item.read_containers_in(HookBits::SET_LEADER_ID);
+        });
+
+        follow_with_view(&workspace, &pane, leader_id, view_id, &item, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.unfollow(peer_id, window, cx);
+        });
+        cx.run_until_parked();
+        let reads_after_unfollow = container_reads(&item, cx);
+        item.read_with(cx, |item, _| assert_eq!(item.leader_id, None));
+        assert!(
+            reads_after_unfollow > 0,
+            "unfollowing should clear the leader of the followed item"
+        );
+
+        item.update(cx, |item, _| item.leader_id = Some(leader_id));
+        follow_with_view(&workspace, &pane, leader_id, view_id, &item, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.collaborator_left(peer_id, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| assert_eq!(item.leader_id, None));
+        assert!(
+            container_reads(&item, cx) > reads_after_unfollow,
+            "a leaving collaborator should clear the leader of the followed item"
+        );
+        workspace.read_with(cx, |workspace, _| {
+            assert!(!workspace.follower_states.contains_key(&leader_id));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_following_runs_hooks_of_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| FollowableViewRegistry::register::<TestItem>(cx));
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let peer_id = PeerId { owner_id: 1, id: 1 };
+        let leader_id = CollaboratorId::PeerId(peer_id);
+        let view_id = ViewId {
+            creator: leader_id,
+            id: 1,
+        };
+        let item = add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, _| item.with_label("A").with_remote_id(view_id),
+            cx,
+        );
+
+        read_containers_in(
+            &item,
+            HookBits::TO_STATE_PROTO | HookBits::IS_PROJECT_ITEM,
+            cx,
+        );
+        let response =
+            cx.update(|window, cx| Workspace::handle_follow(&workspace, None, window, cx));
+        assert!(
+            response.active_view.is_some(),
+            "a follower should receive the active view"
+        );
+        let reads_after_follow_request = container_reads(&item, cx);
+        assert!(
+            reads_after_follow_request > 0,
+            "answering a follow request should serialize the active item"
+        );
+
+        cx.update(|window, _| window.activate_window());
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        cx.run_until_parked();
+        let reads_before_update = container_reads(&item, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.update_active_view_for_followers(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            container_reads(&item, cx) > reads_before_update,
+            "updating followers should serialize the focused item"
+        );
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(workspace.last_active_view_id, view_id.to_proto());
+        });
+
+        follow_with_view(&workspace, &pane, leader_id, view_id, &item, cx);
+        read_containers_in(&item, HookBits::APPLY_UPDATE_PROTO, cx);
+        let update = proto::UpdateFollowers {
+            variant: Some(proto::update_followers::Variant::UpdateView(
+                proto::UpdateView {
+                    id: view_id.to_proto(),
+                    leader_id: Some(peer_id),
+                    variant: Some(proto::update_view::Variant::Editor(
+                        proto::update_view::Editor::default(),
+                    )),
+                },
+            )),
+            ..Default::default()
+        };
+        let weak_workspace = workspace.downgrade();
+        cx.update(|window, cx| {
+            window.spawn(cx, async move |cx| {
+                Workspace::process_leader_update(&weak_workspace, peer_id, update, cx).await
+            })
+        })
+        .await
+        .unwrap();
+        item.read_with(cx, |item, _| {
+            assert_eq!(item.applied_updates, 1);
+            assert!(
+                item.container_reads.get() > 0,
+                "a leader update should reach the followed item"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_adding_views_from_a_leader_runs_hooks_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| FollowableViewRegistry::register::<TestItem>(cx));
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let peer_id = PeerId { owner_id: 1, id: 1 };
+        let leader_id = CollaboratorId::PeerId(peer_id);
+        let existing_view_id = ViewId {
+            creator: leader_id,
+            id: 1,
+        };
+        let new_view_id = ViewId {
+            creator: leader_id,
+            id: 2,
+        };
+        let replaced_item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
+        let existing_item = add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, _| item.with_label("A").with_remote_id(existing_view_id),
+            cx,
+        );
+        read_containers_in(
+            &existing_item,
+            HookBits::SET_LEADER_ID | HookBits::IS_PROJECT_ITEM,
+            cx,
+        );
+        workspace.update(cx, |workspace, cx| {
+            workspace.follower_states.insert(
+                leader_id,
+                FollowerState {
+                    center_pane: pane.clone(),
+                    dock_pane: None,
+                    active_view_id: None,
+                    items_by_leader_view_id: HashMap::default(),
+                },
+            );
+            cx.set_global(StaticHooksReadContainers {
+                pane: Some(pane.downgrade()),
+                workspace: Some(cx.weak_entity()),
+                reads: 0,
+            });
+        });
+
+        for view_id in [existing_view_id, new_view_id] {
+            let view = proto::View {
+                id: view_id.to_proto(),
+                leader_id: Some(peer_id),
+                panel_id: None,
+                variant: Some(proto::view::Variant::Editor(proto::view::Editor::default())),
+            };
+            let weak_workspace = workspace.downgrade();
+            cx.update(|window, cx| {
+                window.spawn(cx, async move |cx| {
+                    Workspace::add_view_from_leader(weak_workspace, peer_id, &view, cx).await
+                })
+            })
+            .await
+            .unwrap();
+            cx.run_until_parked();
+        }
+
+        existing_item.read_with(cx, |item, _| {
+            assert_eq!(item.leader_id, Some(leader_id));
+            assert!(
+                item.container_reads.get() > 0,
+                "following an existing view should set its leader"
+            );
+        });
+        let new_item = workspace.read_with(cx, |workspace, _| {
+            let state = workspace
+                .follower_states
+                .get(&leader_id)
+                .expect("the leader should still be followed");
+            assert!(
+                state
+                    .items_by_leader_view_id
+                    .contains_key(&existing_view_id)
+            );
+            state
+                .items_by_leader_view_id
+                .get(&new_view_id)
+                .and_then(|view| view.view.to_any_view().downcast::<TestItem>().ok())
+                .expect("the new view should be followed")
+        });
+        new_item.read_with(cx, |item, _| {
+            assert_eq!(item.leader_id, Some(leader_id));
+            assert!(
+                item.container_reads.get() > 0,
+                "a new view should dedup against the pane and get its leader"
+            );
+        });
+        pane.read_with(cx, |pane, _| {
+            assert!(pane.index_for_item(&new_item).is_some());
+            assert!(
+                pane.index_for_item(&replaced_item).is_none(),
+                "the new view should replace the item it deduplicates"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_adding_a_view_from_a_leader_dedups_against_items_opened_while_it_loads(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| FollowableViewRegistry::register::<TestItem>(cx));
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let peer_id = PeerId { owner_id: 1, id: 1 };
+        let leader_id = CollaboratorId::PeerId(peer_id);
+        let view_id = ViewId {
+            creator: leader_id,
+            id: 1,
+        };
+        workspace.update(cx, |workspace, _| {
+            workspace.follower_states.insert(
+                leader_id,
+                FollowerState {
+                    center_pane: pane.clone(),
+                    dock_pane: None,
+                    active_view_id: None,
+                    items_by_leader_view_id: HashMap::default(),
+                },
+            );
+        });
+        let (sender, receiver) = oneshot::channel();
+        cx.update(|_, cx| cx.set_global(PendingFollowerView(receiver)));
+
+        let view = proto::View {
+            id: view_id.to_proto(),
+            leader_id: Some(peer_id),
+            panel_id: None,
+            variant: Some(proto::view::Variant::Editor(proto::view::Editor::default())),
+        };
+        let weak_workspace = workspace.downgrade();
+        let task = cx.update(|window, cx| {
+            window.spawn(cx, async move |cx| {
+                Workspace::add_view_from_leader(weak_workspace, peer_id, &view, cx).await
+            })
+        });
+        cx.run_until_parked();
+
+        let item_opened_while_loading = cx.new(TestItem::new);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(
+                Box::new(item_opened_while_loading.clone()),
+                false,
+                false,
+                None,
+                window,
+                cx,
+            );
+        });
+        sender.send(()).unwrap();
+        task.await.unwrap();
+        cx.run_until_parked();
+
+        let new_item = workspace.read_with(cx, |workspace, _| {
+            workspace
+                .follower_states
+                .get(&leader_id)
+                .and_then(|state| state.items_by_leader_view_id.get(&view_id))
+                .and_then(|view| view.view.to_any_view().downcast::<TestItem>().ok())
+                .expect("the new view should be followed")
+        });
+        pane.read_with(cx, |pane, _| {
+            assert_eq!(pane.index_for_item(&new_item), Some(0));
+            assert!(
+                pane.index_for_item(&item_opened_while_loading).is_none(),
+                "the new view should replace the item opened while it loaded"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_following_the_agent_runs_hooks_of_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| FollowableViewRegistry::register::<TestItem>(cx));
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let buffer = cx.new(|cx| Buffer::local("", cx));
+        let view_id = ViewId {
+            creator: CollaboratorId::Agent,
+            id: buffer.entity_id().as_u64(),
+        };
+        let item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            if let Some(task) = workspace.start_following(CollaboratorId::Agent, window, cx) {
+                task.detach_and_log_err(cx);
+            }
+            let view = item
+                .to_followable_item_handle(cx)
+                .expect("TestItem should be registered as followable");
+            workspace
+                .follower_states
+                .get_mut(&CollaboratorId::Agent)
+                .expect("the agent should be followed")
+                .items_by_leader_view_id
+                .insert(
+                    view_id,
+                    FollowerView {
+                        view,
+                        location: None,
+                        is_project_item: false,
+                    },
+                );
+        });
+        read_containers_in(
+            &item,
+            HookBits::SET_LEADER_ID | HookBits::UPDATE_AGENT_LOCATION,
+            cx,
+        );
+
+        project.update(cx, |project, cx| {
+            let position = language::Anchor::min_for_buffer(buffer.read(cx).remote_id());
+            project.set_agent_location(
+                Some(project::AgentLocation {
+                    buffer: buffer.downgrade(),
+                    position,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        item.read_with(cx, |item, _| {
+            assert_eq!(item.leader_id, Some(CollaboratorId::Agent));
+            assert_eq!(item.agent_location_updates, 1);
+            assert!(
+                item.container_reads.get() > 0,
+                "the agent's location should reach the followed item"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_window_deactivation_runs_hooks_of_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item = add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, cx| item.with_project_items(&[TestProjectItem::new(1, "1.txt", cx)]),
+            cx,
+        );
+        item.update(cx, |item, cx| {
+            SettingsStore::update_global(cx, |settings, cx| {
+                settings.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(AutosaveSetting::OnWindowChange);
+                })
+            });
+            item.is_dirty = true;
+            item.read_containers_in(HookBits::WORKSPACE_DEACTIVATED | HookBits::SAVE);
+        });
+
+        cx.deactivate_window();
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            assert_eq!(item.save_count, 1);
+            assert!(
+                item.container_reads.get() > 0,
+                "deactivating the window should deactivate and autosave the item"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_deferred_autosave_saves_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item_1 = add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, cx| item.with_project_items(&[TestProjectItem::new(1, "1.txt", cx)]),
+            cx,
+        );
+        add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, cx| item.with_project_items(&[TestProjectItem::new(2, "2.txt", cx)]),
+            cx,
+        );
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(0, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        item_1.update(cx, |item, cx| {
+            SettingsStore::update_global(cx, |settings, cx| {
+                settings.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(AutosaveSetting::OnFocusChange);
+                })
+            });
+            item.is_dirty = true;
+            item.read_containers_in(HookBits::SAVE);
+        });
+        cx.run_until_parked();
+
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(1, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        item_1.read_with(cx, |item, _| {
+            assert_eq!(item.save_count, 1);
+            assert!(
+                item.container_reads.get() > 0,
+                "focusing the pane should flush the deferred autosave"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_active_path_comes_from_items_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item_a = add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, cx| item.with_project_items(&[TestProjectItem::new(1, "a.txt", cx)]),
+            cx,
+        );
+        add_test_item_reading_containers(
+            &workspace,
+            &pane,
+            |item, cx| item.with_project_items(&[TestProjectItem::new(2, "b.txt", cx)]),
+            cx,
+        );
+        read_containers_in(&item_a, HookBits::ACTIVE_PROJECT_PATH, cx);
+
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(0, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        let reads_after_activation = container_reads(&item_a, cx);
+        assert!(
+            reads_after_activation > 0,
+            "activating the item should read its project path"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.refresh_window_state(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            container_reads(&item_a, cx) > reads_after_activation,
+            "refreshing the window title should read the active item's project path"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_items_removed_before_their_deferred_setup_stay_unregistered(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let added_item_ids = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|_, cx| {
+            let added_item_ids = added_item_ids.clone();
+            cx.subscribe(&workspace, move |_, event: &Event, _| {
+                if let Event::ItemAdded { item } = event {
+                    added_item_ids.borrow_mut().push(item.item_id());
+                }
+            })
+        });
+
+        let item = cx.new(TestItem::new);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(Box::new(item.clone()), true, true, None, window, cx);
+            pane.remove_item(item.item_id(), false, false, window, cx);
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, _| {
+            assert!(
+                !workspace.panes_by_item.contains_key(&item.item_id()),
+                "an item removed before its deferred setup should not be mapped to a pane"
+            );
+        });
+        assert!(
+            added_item_ids.borrow().is_empty(),
+            "an item removed before its deferred setup should not be announced as added"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_adding_items_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let workspace_handle = workspace.downgrade();
+        let pane_handle = pane.downgrade();
+        let item = cx.new(|cx| {
+            let item = TestItem::new(cx)
+                .with_project_items(&[TestProjectItem::new(1, "1.txt", cx)])
+                .with_pane_reader(pane_handle)
+                .with_workspace_reader(workspace_handle);
+            item.read_containers_in(HookBits::SET_NAV_HISTORY | HookBits::PANE_CHANGED);
+            item
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(item.clone()), None, true, window, cx);
+        });
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            assert!(item.nav_history.is_some());
+            assert!(
+                item.container_reads.get() > 0,
+                "adding the item should give it its pane's history"
+            );
+        });
+
+        read_containers_in(&item, HookBits::IS_DIRTY, cx);
+        let reads_before_update = container_reads(&item, cx);
+        item.update(cx, |item, cx| {
+            item.is_dirty = true;
+            cx.emit(ItemEvent::UpdateTab);
+        });
+        cx.run_until_parked();
+        assert!(container_reads(&item, cx) > reads_before_update);
+        workspace.read_with(cx, |workspace, _| {
+            assert!(workspace.dirty_items.contains_key(&item.entity_id()));
+        });
+
+        read_containers_in(&item, HookBits::SAVE, cx);
+        let reads_before_edit = container_reads(&item, cx);
+        item.update(cx, |_, cx| {
+            SettingsStore::update_global(cx, |settings, cx| {
+                settings.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(AutosaveSetting::AfterDelay {
+                        milliseconds: 500.into(),
+                    });
+                })
+            });
+            cx.emit(ItemEvent::Edit);
+        });
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            assert_eq!(item.save_count, 1);
+            assert!(
+                item.container_reads.get() > reads_before_edit,
+                "the delayed autosave should save the item"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_toggling_read_only_on_items_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
+        item.update_in(cx, |_, window, cx| cx.focus_self(window));
+        read_containers_in(&item, HookBits::TOGGLE_READ_ONLY, cx);
+
+        cx.dispatch_action(ToggleReadOnlyFile);
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            assert_eq!(item.capability, language::Capability::Read);
+            assert!(item.container_reads.get() > 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_rendering_the_window_reads_the_capability_of_items_that_read_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item = add_test_item_reading_containers(&workspace, &pane, |item, _| item, cx);
+        read_containers_in(&item, HookBits::CAPABILITY, cx);
+        multi_workspace.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(
+            container_reads(&item, cx) > 0,
+            "rendering the window should read the active item's capability"
+        );
+    }
+
+    struct NavigationTestFile {
+        project_path: ProjectPath,
+    }
+
+    impl project::ProjectItem for NavigationTestFile {
+        fn try_open(
+            _project: &Entity<Project>,
+            path: &ProjectPath,
+            cx: &mut App,
+        ) -> Option<Task<anyhow::Result<Entity<Self>>>> {
+            if path.path.extension() != Some("nav") {
+                return None;
+            }
+            let project_path = path.clone();
+            Some(cx.spawn(async move |cx| Ok(cx.new(|_| Self { project_path }))))
+        }
+
+        fn entry_id(&self, _: &App) -> Option<ProjectEntryId> {
+            None
+        }
+
+        fn project_path(&self, _: &App) -> Option<ProjectPath> {
+            Some(self.project_path.clone())
+        }
+
+        fn is_dirty(&self) -> bool {
+            false
+        }
+    }
+
+    struct ExternalNavigationTestFile {
+        project_path: ProjectPath,
+        entry_id: Option<ProjectEntryId>,
+    }
+
+    impl project::ProjectItem for ExternalNavigationTestFile {
+        fn try_open(
+            project: &Entity<Project>,
+            path: &ProjectPath,
+            cx: &mut App,
+        ) -> Option<Task<anyhow::Result<Entity<Self>>>> {
+            let abs_path = project.read(cx).absolute_path(path, cx)?;
+            if abs_path
+                .extension()
+                .is_none_or(|extension| extension != "ext")
+            {
+                return None;
+            }
+            let entry_id = project
+                .read(cx)
+                .entry_for_path(path, cx)
+                .map(|entry| entry.id);
+            let project_path = path.clone();
+            Some(Task::ready(Ok(cx.new(|_| Self {
+                project_path,
+                entry_id,
+            }))))
+        }
+
+        fn entry_id(&self, _: &App) -> Option<ProjectEntryId> {
+            self.entry_id
+        }
+
+        fn project_path(&self, _: &App) -> Option<ProjectPath> {
+            Some(self.project_path.clone())
+        }
+
+        fn is_dirty(&self) -> bool {
+            false
+        }
+    }
+
+    struct NavigationTestView<File: project::ProjectItem + 'static> {
+        focus_handle: FocusHandle,
+        file: Entity<File>,
+        nav_history: Option<ItemNavHistory>,
+        navigations: usize,
+    }
+
+    impl<File: project::ProjectItem + 'static> Item for NavigationTestView<File> {
+        type Event = ();
+
+        fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+            "".into()
+        }
+
+        fn for_each_project_item(
+            &self,
+            cx: &App,
+            callback: &mut dyn FnMut(EntityId, &dyn project::ProjectItem),
+        ) {
+            callback(self.file.entity_id(), self.file.read(cx));
+        }
+
+        fn buffer_kind(&self, _cx: &App) -> ItemBufferKind {
+            ItemBufferKind::Singleton
+        }
+
+        fn set_nav_history(
+            &mut self,
+            history: ItemNavHistory,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) {
+            self.nav_history = Some(history);
+        }
+
+        fn deactivated(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+            if let Some(history) = &mut self.nav_history {
+                history.push(Some(self.navigations), None, cx);
+            }
+        }
+
+        fn navigate(
+            &mut self,
+            data: Arc<dyn Any + Send>,
+            _window: &mut Window,
+            cx: &mut Context<Self>,
+        ) -> bool {
+            let (pane, workspace) = cx
+                .try_global::<StaticHooksReadContainers>()
+                .map(|readers| (readers.pane.clone(), readers.workspace.clone()))
+                .unwrap_or_default();
+            let mut reads = 0;
+            if let Some(pane) = pane.and_then(|pane| pane.upgrade()) {
+                pane.read(cx);
+                reads += 1;
+            }
+            if let Some(workspace) = workspace.and_then(|workspace| workspace.upgrade()) {
+                workspace.read(cx);
+                reads += 1;
+            }
+            if reads > 0 {
+                cx.global_mut::<StaticHooksReadContainers>().reads += reads;
+            }
+            self.navigations += 1;
+            data.downcast_ref::<usize>().is_some()
+        }
+    }
+
+    impl<File: project::ProjectItem + 'static> EventEmitter<()> for NavigationTestView<File> {}
+
+    impl<File: project::ProjectItem + 'static> Focusable for NavigationTestView<File> {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl<File: project::ProjectItem + 'static> Render for NavigationTestView<File> {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            Empty
+        }
+    }
+
+    impl<File: project::ProjectItem + 'static> ProjectItem for NavigationTestView<File> {
+        type Item = File;
+
+        fn for_project_item(
+            _project: Entity<Project>,
+            _pane: Option<&Pane>,
+            item: Entity<Self::Item>,
+            _: &mut Window,
+            cx: &mut Context<Self>,
+        ) -> Self
+        where
+            Self: Sized,
+        {
+            Self {
+                focus_handle: cx.focus_handle(),
+                file: item,
+                nav_history: None,
+                navigations: 0,
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn test_go_back_reopens_closed_items_whose_navigate_reads_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| {
+            register_project_item::<NavigationTestView<NavigationTestFile>>(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root1", json!({ "one.nav": "" })).await;
+        let project = Project::test(fs, ["root1".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let worktree_id = project.update(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+
+        let closed_item = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path((worktree_id, rel_path("one.nav")), None, true, window, cx)
+            })
+            .await
+            .unwrap();
+        let other_item = cx.new(|cx| TestItem::new(cx).with_label("other"));
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(Box::new(other_item), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        pane.update_in(cx, |pane, window, cx| {
+            pane.remove_item(closed_item.item_id(), false, true, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |_, cx| {
+            cx.set_global(StaticHooksReadContainers {
+                pane: Some(pane.downgrade()),
+                workspace: Some(cx.weak_entity()),
+                reads: 0,
+            });
+        });
+
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.go_back(pane.downgrade(), window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let reopened_item = pane
+            .read_with(cx, |pane, _| pane.active_item())
+            .and_then(|item| item.downcast::<NavigationTestView<NavigationTestFile>>())
+            .expect("going back should reopen the closed item");
+        assert_ne!(reopened_item.entity_id(), closed_item.item_id());
+        reopened_item.read_with(cx, |item, _| assert_eq!(item.navigations, 1));
+        let reads = cx.update(|_, cx| cx.global::<StaticHooksReadContainers>().reads);
+        assert_eq!(
+            reads, 2,
+            "the reopened item should navigate with its pane and workspace readable"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_go_back_reopens_closed_items_by_abs_path_whose_navigate_reads_their_containers(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| {
+            register_project_item::<NavigationTestView<ExternalNavigationTestFile>>(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/external"), json!({ "one.ext": "" }))
+            .await;
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let abs_path = PathBuf::from(path!("/external/one.ext"));
+
+        let closed_item = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    abs_path.clone(),
+                    OpenOptions {
+                        visible: Some(OpenVisible::None),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        let closed_worktree_id = cx
+            .update(|_, cx| closed_item.project_path(cx))
+            .expect("the opened item should have a project path")
+            .worktree_id;
+        let other_item = cx.new(|cx| TestItem::new(cx).with_label("other"));
+        pane.update_in(cx, |pane, window, cx| {
+            pane.add_item(Box::new(other_item), true, true, None, window, cx);
+        });
+        cx.run_until_parked();
+        pane.update_in(cx, |pane, window, cx| {
+            pane.remove_item(closed_item.item_id(), false, true, window, cx);
+        });
+        cx.run_until_parked();
+        pane.read_with(cx, |pane, _| {
+            let (_, recorded_abs_path) = pane
+                .nav_history()
+                .path_for_item(closed_item.item_id())
+                .expect("closing the item should record its path");
+            assert_eq!(recorded_abs_path, Some(abs_path.clone()));
+        });
+        project.update(cx, |project, cx| {
+            project.remove_worktree(closed_worktree_id, cx);
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |_, cx| {
+            cx.set_global(StaticHooksReadContainers {
+                pane: Some(pane.downgrade()),
+                workspace: Some(cx.weak_entity()),
+                reads: 0,
+            });
+        });
+
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.go_back(pane.downgrade(), window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let reopened_item = pane
+            .read_with(cx, |pane, _| pane.active_item())
+            .and_then(|item| item.downcast::<NavigationTestView<ExternalNavigationTestFile>>())
+            .expect("going back should reopen the closed item by its abs path");
+        assert_ne!(reopened_item.entity_id(), closed_item.item_id());
+        let reopened_worktree_id = cx
+            .update(|_, cx| reopened_item.project_path(cx))
+            .expect("the reopened item should have a project path")
+            .worktree_id;
+        assert_ne!(
+            reopened_worktree_id, closed_worktree_id,
+            "the item should reopen in a new worktree"
+        );
+        reopened_item.read_with(cx, |item, _| assert_eq!(item.navigations, 1));
+        let reads = cx.update(|_, cx| cx.global::<StaticHooksReadContainers>().reads);
+        assert_eq!(
+            reads, 2,
+            "the reopened item should navigate with its pane and workspace readable"
+        );
+    }
+
+    fn add_test_panel_reading_containers(
+        workspace: &Entity<Workspace>,
+        position: DockPosition,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TestPanel> {
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            let workspace_handle = cx.weak_entity();
+            let dock = workspace.dock_at_position(position).downgrade();
+            let panel = cx.new(|cx| {
+                let mut panel = TestPanel::new(position, 100, cx);
+                panel.workspace_reader = Some(workspace_handle);
+                panel.dock_reader = Some(dock);
+                panel
+            });
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(position, window, cx);
+        });
+        cx.run_until_parked();
+        panel
+    }
+
+    fn panel_container_reads(panel: &Entity<TestPanel>, cx: &mut VisualTestContext) -> usize {
+        panel.read_with(cx, |panel, _| panel.container_reads)
+    }
+
+    #[gpui::test]
+    async fn test_zooming_panels_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let panel = add_test_panel_reading_containers(&workspace, DockPosition::Right, cx);
+        let dock = workspace.read_with(cx, |workspace, _| workspace.right_dock().clone());
+
+        let reads_before = panel_container_reads(&panel, cx);
+        panel.update(cx, |_, cx| cx.emit(PanelEvent::ZoomIn));
+        cx.run_until_parked();
+        let reads_after_zoom_in = panel_container_reads(&panel, cx);
+        panel.read_with(cx, |panel, _| assert!(panel.zoomed));
+        assert!(reads_after_zoom_in > reads_before);
+
+        dock.update_in(cx, |dock, window, cx| dock.zoom_out(window, cx));
+        cx.run_until_parked();
+        let reads_after_zoom_out = panel_container_reads(&panel, cx);
+        panel.read_with(cx, |panel, _| assert!(!panel.zoomed));
+        assert!(reads_after_zoom_out > reads_after_zoom_in);
+
+        dock.update_in(cx, |dock, window, cx| {
+            dock.restore_serialized_state(
+                DockData {
+                    visible: true,
+                    active_panel: Some(TestPanel::persistent_name().to_string()),
+                    zoom: true,
+                },
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| assert!(panel.zoomed));
+        assert!(panel_container_reads(&panel, cx) > reads_after_zoom_out);
+    }
+
+    #[gpui::test]
+    async fn test_resizing_and_moving_panels_that_read_their_containers(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let panel = add_test_panel_reading_containers(&workspace, DockPosition::Right, cx);
+        let dock = workspace.read_with(cx, |workspace, _| workspace.right_dock().clone());
+
+        let reads_before = panel_container_reads(&panel, cx);
+        dock.update_in(cx, |dock, window, cx| {
+            dock.resize_panel_sizes(Some(px(200.)), None, window, cx);
+        });
+        cx.run_until_parked();
+        let reads_after_resize = panel_container_reads(&panel, cx);
+        assert!(
+            reads_after_resize > reads_before,
+            "resizing the dock should notify the panel"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            let dock = workspace.right_dock().clone();
+            let panel = dock
+                .read(cx)
+                .visible_panel()
+                .expect("the right dock should show the panel")
+                .clone();
+            workspace.toggle_dock_panel_flexible_size(&dock, panel.as_ref(), window, cx);
+        });
+        cx.run_until_parked();
+        let reads_after_flex = panel_container_reads(&panel, cx);
+        panel.read_with(cx, |panel, _| assert!(panel.flexible));
+        assert!(reads_after_flex > reads_after_resize);
+
+        dock.update_in(cx, |dock, window, cx| {
+            let panel = dock
+                .active_panel()
+                .expect("the right dock should have an active panel")
+                .clone();
+            panel.set_position(DockPosition::Left, window, cx);
+        });
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.position, DockPosition::Left);
+        });
+        assert!(panel_container_reads(&panel, cx) > reads_after_flex);
     }
 
     /// Tests that the navigation history deduplicates entries for the same item.
@@ -14846,6 +16413,61 @@ mod tests {
             assert!(!pane.focus_handle(cx).is_focused(window));
             assert!(workspace.right_dock().read(cx).is_open());
             assert!(workspace.zoomed.is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_toggle_dock_activates_panels_that_read_the_workspace_and_dock(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            let workspace_handle = cx.weak_entity();
+            let dock = workspace.right_dock().downgrade();
+            let panel = cx.new(|cx| {
+                let mut panel = TestPanel::new(DockPosition::Right, 100, cx);
+                panel.workspace_reader = Some(workspace_handle);
+                panel.dock_reader = Some(dock);
+                panel
+            });
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        cx.run_until_parked();
+        let reads_before = panel.read_with(cx, |panel, _| panel.container_reads);
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Right, window, cx);
+        });
+        cx.run_until_parked();
+
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.active, "opening the dock should activate its panel");
+            assert!(
+                panel.container_reads > reads_before,
+                "activating the panel should run its set_active hook"
+            );
+        });
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Right, window, cx);
+        });
+        cx.run_until_parked();
+
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.active,
+                "closing the dock should deactivate its panel"
+            );
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(!workspace.right_dock().read(cx).is_open());
         });
     }
 
@@ -16544,8 +18166,9 @@ mod tests {
                 window,
                 cx,
             );
-
-            let right_dock = right_dock.read(cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            let right_dock = workspace.right_dock().read(cx);
             let right_panel = right_dock
                 .visible_panel()
                 .expect("right dock should still have a visible panel");
@@ -16648,6 +18271,197 @@ mod tests {
         }
     }
 
+    type ModalHookLog = Rc<RefCell<Vec<(&'static str, bool)>>>;
+
+    struct ContainerReadingModal {
+        focus_handle: FocusHandle,
+        workspace: WeakEntity<Workspace>,
+        modal_layer: WeakEntity<ModalLayer>,
+        hook_log: ModalHookLog,
+    }
+
+    impl ContainerReadingModal {
+        fn new(
+            workspace: WeakEntity<Workspace>,
+            modal_layer: WeakEntity<ModalLayer>,
+            hook_log: ModalHookLog,
+            cx: &mut Context<Self>,
+        ) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+                workspace,
+                modal_layer,
+                hook_log,
+            }
+        }
+    }
+
+    impl EventEmitter<DismissEvent> for ContainerReadingModal {}
+
+    impl Focusable for ContainerReadingModal {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl ModalView for ContainerReadingModal {
+        fn on_before_dismiss(
+            &mut self,
+            _window: &mut Window,
+            cx: &mut Context<Self>,
+        ) -> DismissDecision {
+            let has_active_modal = self
+                .modal_layer
+                .upgrade()
+                .expect("modal layer should outlive its modal")
+                .read(cx)
+                .has_active_modal();
+            self.hook_log
+                .borrow_mut()
+                .push(("before_dismiss", has_active_modal));
+            DismissDecision::Dismiss(true)
+        }
+
+        fn on_dismissed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+            let has_active_modal = self
+                .workspace
+                .update(cx, |workspace, cx| {
+                    workspace.modal_layer.read(cx).has_active_modal()
+                })
+                .expect("workspace should outlive its modal");
+            self.hook_log
+                .borrow_mut()
+                .push(("dismissed", has_active_modal));
+        }
+    }
+
+    impl Render for ContainerReadingModal {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<ContainerReadingModal>,
+        ) -> impl IntoElement {
+            div().track_focus(&self.focus_handle)
+        }
+    }
+
+    fn toggle_container_reading_modal(
+        workspace: &Entity<Workspace>,
+        hook_log: &ModalHookLog,
+        cx: &mut VisualTestContext,
+    ) {
+        workspace.update_in(cx, |workspace, window, cx| {
+            let workspace_handle = cx.weak_entity();
+            let modal_layer = workspace.modal_layer.downgrade();
+            let hook_log = hook_log.clone();
+            workspace
+                .toggle_modal(window, cx, move |_, cx| {
+                    ContainerReadingModal::new(workspace_handle, modal_layer, hook_log, cx)
+                })
+                .detach();
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn test_modal_dismiss_event_reads_modal_layer(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let hook_log = ModalHookLog::default();
+        toggle_container_reading_modal(&workspace, &hook_log, cx);
+        let modal = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.active_modal::<ContainerReadingModal>(cx)
+            })
+            .expect("modal should open");
+
+        modal.update(cx, |_, cx| cx.emit(DismissEvent));
+        cx.run_until_parked();
+
+        assert!(workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<ContainerReadingModal>(cx)
+                .is_none()
+        }));
+        assert_eq!(
+            *hook_log.borrow(),
+            [("before_dismiss", true), ("dismissed", false)]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_modal_builder_reads_workspace(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let hook_log = ModalHookLog::default();
+        workspace.update_in(cx, |workspace, window, cx| {
+            let workspace_handle = cx.weak_entity();
+            let modal_layer = workspace.modal_layer.downgrade();
+            let hook_log = hook_log.clone();
+            workspace
+                .toggle_modal(window, cx, move |_, cx| {
+                    let has_active_modal = workspace_handle
+                        .upgrade()
+                        .expect("workspace should outlive the modal builder")
+                        .read(cx)
+                        .modal_layer
+                        .read(cx)
+                        .has_active_modal();
+                    hook_log.borrow_mut().push(("build", has_active_modal));
+                    ContainerReadingModal::new(workspace_handle, modal_layer, hook_log, cx)
+                })
+                .detach();
+        });
+        cx.run_until_parked();
+
+        assert!(workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<ContainerReadingModal>(cx)
+                .is_some()
+        }));
+        assert_eq!(*hook_log.borrow(), [("build", false)]);
+    }
+
+    #[gpui::test]
+    async fn test_modal_on_dismissed_updates_workspace_after_hide_modal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let hook_log = ModalHookLog::default();
+        toggle_container_reading_modal(&workspace, &hook_log, cx);
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.hide_modal(window, cx));
+        });
+        cx.run_until_parked();
+
+        assert!(workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<ContainerReadingModal>(cx)
+                .is_none()
+        }));
+        assert_eq!(
+            *hook_log.borrow(),
+            [("before_dismiss", true), ("dismissed", false)]
+        );
+    }
+
     #[gpui::test]
     async fn test_reopen_last_picker(cx: &mut gpui::TestAppContext) {
         init_test(cx);
@@ -16659,15 +18473,15 @@ mod tests {
 
         // A non-reopenable modal is dropped on dismissal and cannot be revealed.
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, TestModal::new);
+            workspace.toggle_modal(window, cx, TestModal::new).detach();
         });
         cx.executor().run_until_parked();
         assert!(workspace.read_with(cx, |workspace, cx| {
             workspace.active_modal::<TestModal>(cx).is_some()
         }));
         workspace.update_in(cx, |workspace, window, cx| {
+            ModalLayer::hide(&workspace.modal_layer, window, cx);
             let revealed = workspace.modal_layer.update(cx, |modal_layer, cx| {
-                modal_layer.hide_modal(window, cx);
                 modal_layer.reveal_stashed_modal(window, cx)
             });
             assert!(!revealed, "a non-reopenable modal should not be revealable");
@@ -16676,7 +18490,9 @@ mod tests {
         // A reopenable modal is stashed on dismissal and revealed as the *same*
         // entity, so its prior state is preserved exactly.
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, ReopenableTestModal::new);
+            workspace
+                .toggle_modal(window, cx, ReopenableTestModal::new)
+                .detach();
         });
         cx.executor().run_until_parked();
         let original_id = workspace.read_with(cx, |workspace, cx| {
@@ -16686,9 +18502,7 @@ mod tests {
                 .entity_id()
         });
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace
-                .modal_layer
-                .update(cx, |modal_layer, cx| modal_layer.hide_modal(window, cx));
+            ModalLayer::hide(&workspace.modal_layer, window, cx);
         });
         cx.executor().run_until_parked();
         assert!(workspace.read_with(cx, |workspace, cx| {
@@ -16722,15 +18536,13 @@ mod tests {
         // A non-reopenable modal must not discard the stash, which is what lets the
         // command palette be used to trigger the reopen.
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace
-                .modal_layer
-                .update(cx, |modal_layer, cx| modal_layer.hide_modal(window, cx));
-            workspace.toggle_modal(window, cx, TestModal::new);
+            ModalLayer::hide(&workspace.modal_layer, window, cx);
+            workspace.toggle_modal(window, cx, TestModal::new).detach();
         });
         cx.executor().run_until_parked();
         workspace.update_in(cx, |workspace, window, cx| {
+            ModalLayer::hide(&workspace.modal_layer, window, cx);
             let revealed = workspace.modal_layer.update(cx, |modal_layer, cx| {
-                modal_layer.hide_modal(window, cx);
                 modal_layer.reveal_stashed_modal(window, cx)
             });
             assert!(
@@ -16743,10 +18555,8 @@ mod tests {
         // Reopen triggered from within a modal that dismisses asynchronously and
         // dispatches the action in the same cycle, as the command palette does.
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace
-                .modal_layer
-                .update(cx, |modal_layer, cx| modal_layer.hide_modal(window, cx));
-            workspace.toggle_modal(window, cx, TestModal::new);
+            ModalLayer::hide(&workspace.modal_layer, window, cx);
+            workspace.toggle_modal(window, cx, TestModal::new).detach();
         });
         cx.executor().run_until_parked();
         workspace.update_in(cx, |workspace, window, cx| {
@@ -16776,13 +18586,13 @@ mod tests {
 
         // Stash a reopenable modal.
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, ReopenableTestModal::new);
+            workspace
+                .toggle_modal(window, cx, ReopenableTestModal::new)
+                .detach();
         });
         cx.executor().run_until_parked();
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace
-                .modal_layer
-                .update(cx, |modal_layer, cx| modal_layer.hide_modal(window, cx));
+            ModalLayer::hide(&workspace.modal_layer, window, cx);
         });
         cx.executor().run_until_parked();
 
@@ -16790,7 +18600,7 @@ mod tests {
         // active when the reopen fires, and it dismisses *after* the action rather
         // than before it (which-key dismisses when pending input clears).
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.toggle_modal(window, cx, TestModal::new);
+            workspace.toggle_modal(window, cx, TestModal::new).detach();
         });
         cx.executor().run_until_parked();
         workspace.update_in(cx, |workspace, window, cx| {
@@ -16990,10 +18800,10 @@ mod tests {
             move |cx: &mut VisualTestContext| {
                 workspace.update_in(cx, |workspace, window, cx| {
                     if workspace.active_modal::<TestModal>(cx).is_some() {
-                        workspace.toggle_modal(window, cx, TestModal::new);
-                        workspace.toggle_modal(window, cx, TestModal::new);
+                        workspace.toggle_modal(window, cx, TestModal::new).detach();
+                        workspace.toggle_modal(window, cx, TestModal::new).detach();
                     } else {
-                        workspace.toggle_modal(window, cx, TestModal::new);
+                        workspace.toggle_modal(window, cx, TestModal::new).detach();
                     }
                 })
             }

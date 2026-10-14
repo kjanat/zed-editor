@@ -22,7 +22,9 @@ const PLAYBACK_FRAME_DURATION_MILLISECONDS: u64 = 10;
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _cx| {
         workspace.register_action(|workspace, _: &ShowCallStats, window, cx| {
-            workspace.toggle_modal(window, cx, |_window, cx| CallStatsModal::new(cx));
+            workspace
+                .toggle_modal(window, cx, move |_window, cx| CallStatsModal::new(cx))
+                .detach();
         });
     })
     .detach();

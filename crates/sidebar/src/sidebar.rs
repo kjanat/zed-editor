@@ -7589,16 +7589,18 @@ impl Sidebar {
         let multi_workspace = self.multi_workspace.clone();
 
         active_workspace.update(cx, |workspace, cx| {
-            workspace.toggle_modal(window, cx, |window, cx| {
-                ThreadImportModal::new(
-                    agent_server_store,
-                    agent_registry_store,
-                    workspace_handle.clone(),
-                    multi_workspace.clone(),
-                    window,
-                    cx,
-                )
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    ThreadImportModal::new(
+                        agent_server_store,
+                        agent_registry_store,
+                        workspace_handle,
+                        multi_workspace,
+                        window,
+                        cx,
+                    )
+                })
+                .detach();
         });
     }
 

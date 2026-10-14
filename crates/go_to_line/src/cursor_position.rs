@@ -238,9 +238,11 @@ impl Render for CursorPosition {
                                     .and_then(|item| item.act_as::<Editor>(cx))
                                     && let Some(buffer) = editor.read(cx).active_buffer(cx)
                                 {
-                                    workspace.toggle_modal(window, cx, |window, cx| {
-                                        crate::GoToLine::new(editor, buffer, window, cx)
-                                    })
+                                    workspace
+                                        .toggle_modal(window, cx, move |window, cx| {
+                                            crate::GoToLine::new(editor, buffer, window, cx)
+                                        })
+                                        .detach();
                                 }
                             });
                         }

@@ -136,15 +136,17 @@ pub fn init(cx: &mut App) {
             let focused_dock = workspace.focused_dock_position(window, cx);
             let project = workspace.project().clone();
             let workspace_handle = workspace.weak_handle();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                git_ui_core::worktree_picker::WorktreePicker::new_modal(
-                    project,
-                    workspace_handle,
-                    focused_dock,
-                    window,
-                    cx,
-                )
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    git_ui_core::worktree_picker::WorktreePicker::new_modal(
+                        project,
+                        workspace_handle,
+                        focused_dock,
+                        window,
+                        cx,
+                    )
+                })
+                .detach();
         });
 
         workspace.register_action(
@@ -327,9 +329,11 @@ pub fn init(cx: &mut App) {
                 return;
             };
 
-            workspace.toggle_modal(window, cx, |window, cx| {
-                GitCloneModal::show(panel, window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    GitCloneModal::show(panel, window, cx)
+                })
+                .detach();
         });
         workspace.register_action(|workspace, _: &git::OpenModifiedFiles, window, cx| {
             open_modified_files(workspace, window, cx);
@@ -664,9 +668,11 @@ fn rename_current_branch(
         return;
     };
 
-    workspace.toggle_modal(window, cx, |window, cx| {
-        RenameBranchModal::new(current_branch_name, repo, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            RenameBranchModal::new(current_branch_name, repo, window, cx)
+        })
+        .detach();
 }
 
 fn create_tag_at_head(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -693,9 +699,11 @@ pub(crate) fn create_tag_at_commit(
     cx: &mut Context<Workspace>,
 ) {
     let workspace_handle = cx.weak_entity();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        CreateTagModal::new(commit, at_head, repo, workspace_handle, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            CreateTagModal::new(commit, at_head, repo, workspace_handle, window, cx)
+        })
+        .detach();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
@@ -936,9 +944,11 @@ fn show_ref_picker(
     };
 
     let workspace_entity = cx.entity();
-    workspace.toggle_modal(window, cx, |window, cx| {
-        RefPickerModal::new(repo, workspace_entity, window, cx)
-    });
+    workspace
+        .toggle_modal(window, cx, move |window, cx| {
+            RefPickerModal::new(repo, workspace_entity, window, cx)
+        })
+        .detach();
 }
 
 fn render_remote_button(
@@ -1680,8 +1690,8 @@ mod view_commit_tests {
             menu.select_first(&menu::SelectFirst, window, cx);
             menu.select_next(&menu::SelectNext, window, cx);
             menu.select_next(&menu::SelectNext, window, cx);
-            menu.confirm(&Confirm, window, cx);
         });
+        cx.update(|window, cx| ContextMenu::confirm(context_menu.clone(), &Confirm, window, cx));
 
         let modal = workspace
             .update(cx, |workspace, _, cx| {

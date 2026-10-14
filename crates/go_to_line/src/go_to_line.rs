@@ -15,7 +15,7 @@ use text::{Bias, Point};
 use theme::ActiveTheme;
 use ui::prelude::*;
 use util::paths::FILE_ROW_COLUMN_DELIMITER;
-use workspace::{DismissDecision, ModalView};
+use workspace::ModalView;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(GoToLine::register).detach();
@@ -32,13 +32,8 @@ pub struct GoToLine {
 }
 
 impl ModalView for GoToLine {
-    fn on_before_dismiss(
-        &mut self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> DismissDecision {
+    fn on_dismissed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         self.prev_scroll_position.take();
-        DismissDecision::Dismiss(true)
     }
 }
 
@@ -67,9 +62,11 @@ impl GoToLine {
                     return;
                 };
                 workspace.update(cx, |workspace, cx| {
-                    workspace.toggle_modal(window, cx, move |window, cx| {
-                        GoToLine::new(editor_handle, buffer, window, cx)
-                    });
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            GoToLine::new(editor_handle, buffer, window, cx)
+                        })
+                        .detach();
                 })
             })
             .detach();

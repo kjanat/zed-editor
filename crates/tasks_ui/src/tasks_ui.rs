@@ -244,19 +244,21 @@ pub fn toggle_modal(
             let task_contexts = Arc::new(task_contexts.await);
             workspace
                 .update_in(cx, |workspace, window, cx| {
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        TasksModal::new(
-                            task_store.clone(),
-                            task_contexts,
-                            reveal_target.map(|target| TaskOverrides {
-                                reveal_target: Some(target),
-                            }),
-                            true,
-                            workspace_handle,
-                            window,
-                            cx,
-                        )
-                    })
+                    workspace
+                        .toggle_modal(window, cx, move |window, cx| {
+                            TasksModal::new(
+                                task_store,
+                                task_contexts,
+                                reveal_target.map(|target| TaskOverrides {
+                                    reveal_target: Some(target),
+                                }),
+                                true,
+                                workspace_handle,
+                                window,
+                                cx,
+                            )
+                        })
+                        .detach();
                 })
                 .ok();
         })

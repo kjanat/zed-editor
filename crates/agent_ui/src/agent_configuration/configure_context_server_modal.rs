@@ -541,36 +541,38 @@ impl ConfigureContextServerModal {
             workspace.update_in(cx, |workspace, window, cx| {
                 let workspace_handle = cx.weak_entity();
                 let context_server_store = workspace.project().read(cx).context_server_store();
-                workspace.toggle_modal(window, cx, |window, cx| Self {
-                    context_server_store: context_server_store.clone(),
-                    workspace: workspace_handle,
-                    state: Self::initial_state(&context_server_store, &target, cx),
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| Self {
+                        context_server_store: context_server_store.clone(),
+                        workspace: workspace_handle,
+                        state: Self::initial_state(&context_server_store, &target, cx),
 
-                    original_server_id: Some(match &target {
-                        ConfigurationTarget::Existing { id, .. }
-                        | ConfigurationTarget::ExistingHttp { id, .. }
-                        | ConfigurationTarget::Extension { id, .. } => id.clone(),
-                    }),
-                    source: ConfigurationSource::from_target(
-                        target,
-                        language_registry,
-                        jsonc_language,
-                        window,
-                        cx,
-                    ),
-                    scroll_handle: ScrollHandle::new(),
-                    secret_editor: cx.new(|cx| {
-                        let mut editor = Editor::single_line(window, cx);
-                        editor.set_placeholder_text(
-                            "Enter client secret (leave empty for public clients)",
+                        original_server_id: Some(match &target {
+                            ConfigurationTarget::Existing { id, .. }
+                            | ConfigurationTarget::ExistingHttp { id, .. }
+                            | ConfigurationTarget::Extension { id, .. } => id.clone(),
+                        }),
+                        source: ConfigurationSource::from_target(
+                            target,
+                            language_registry,
+                            jsonc_language,
                             window,
                             cx,
-                        );
-                        editor.set_masked(true, cx);
-                        editor
-                    }),
-                    _auth_subscription: None,
-                })
+                        ),
+                        scroll_handle: ScrollHandle::new(),
+                        secret_editor: cx.new(|cx| {
+                            let mut editor = Editor::single_line(window, cx);
+                            editor.set_placeholder_text(
+                                "Enter client secret (leave empty for public clients)",
+                                window,
+                                cx,
+                            );
+                            editor.set_masked(true, cx);
+                            editor
+                        }),
+                        _auth_subscription: None,
+                    })
+                    .detach();
             })
         })
     }

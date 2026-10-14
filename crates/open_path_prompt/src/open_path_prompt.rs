@@ -231,17 +231,19 @@ impl OpenPathPrompt {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        workspace.toggle_modal(window, cx, |window, cx| {
-            let delegate =
-                OpenPathDelegate::new(tx, lister.clone(), creating_path, cx).show_hidden();
-            let picker = Picker::uniform_list(delegate, window, cx);
-            let mut query = lister.default_query(cx);
-            if let Some(suggested_name) = suggested_name {
-                query.push_str(&suggested_name);
-            }
-            picker.set_query(&query, window, cx);
-            picker
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                let delegate =
+                    OpenPathDelegate::new(tx, lister.clone(), creating_path, cx).show_hidden();
+                let picker = Picker::uniform_list(delegate, window, cx);
+                let mut query = lister.default_query(cx);
+                if let Some(suggested_name) = suggested_name {
+                    query.push_str(&suggested_name);
+                }
+                picker.set_query(&query, window, cx);
+                picker
+            })
+            .detach();
     }
 
     fn prompt_for_new_path(

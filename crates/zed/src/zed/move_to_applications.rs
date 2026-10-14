@@ -90,7 +90,10 @@ impl MoveToApplicationsRequest {
                 workspace
                     .update_in(cx, |workspace, window, cx| {
                         workspace
-                            .toggle_modal(window, cx, |_window, cx| InstallingZedModal::new(cx));
+                            .toggle_modal(window, cx, move |_window, cx| {
+                                InstallingZedModal::new(cx)
+                            })
+                            .detach();
                     })
                     .ok();
                 if let Err(error) = move_to_applications(&self.app_path, cx).await {

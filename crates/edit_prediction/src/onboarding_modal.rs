@@ -50,27 +50,29 @@ impl ZedPredictModal {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        workspace.toggle_modal(window, cx, |_window, cx| {
-            let weak_entity = cx.weak_entity();
-            Self {
-                onboarding: cx.new(|cx| {
-                    EditPredictionOnboarding::new(
-                        user_store.clone(),
-                        client.clone(),
-                        Arc::new({
-                            let this = weak_entity.clone();
-                            move |_window, cx| {
-                                ZedPredictUpsell::set_dismissed(true, cx);
-                                set_edit_prediction_provider(EditPredictionProvider::Zed, cx);
-                                this.update(cx, |_, cx| cx.emit(DismissEvent)).ok();
-                            }
-                        }),
-                        cx,
-                    )
-                }),
-                focus_handle: cx.focus_handle(),
-            }
-        });
+        workspace
+            .toggle_modal(window, cx, move |_window, cx| {
+                let weak_entity = cx.weak_entity();
+                Self {
+                    onboarding: cx.new(|cx| {
+                        EditPredictionOnboarding::new(
+                            user_store.clone(),
+                            client.clone(),
+                            Arc::new({
+                                let this = weak_entity.clone();
+                                move |_window, cx| {
+                                    ZedPredictUpsell::set_dismissed(true, cx);
+                                    set_edit_prediction_provider(EditPredictionProvider::Zed, cx);
+                                    this.update(cx, |_, cx| cx.emit(DismissEvent)).ok();
+                                }
+                            }),
+                            cx,
+                        )
+                    }),
+                    focus_handle: cx.focus_handle(),
+                }
+            })
+            .detach();
     }
 
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -88,13 +90,8 @@ impl Focusable for ZedPredictModal {
 }
 
 impl ModalView for ZedPredictModal {
-    fn on_before_dismiss(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> workspace::DismissDecision {
+    fn on_dismissed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         ZedPredictUpsell::set_dismissed(true, cx);
-        workspace::DismissDecision::Dismiss(true)
     }
 }
 

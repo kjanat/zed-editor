@@ -340,17 +340,21 @@ mod windows_tests {
     /// returns the `Child` along with the pid of the grandchild (`ping`).
     fn spawn_process_tree(temp_dir: &std::path::Path) -> (Child, u32) {
         let pid_file = temp_dir.join("grandchild_pid");
+        let partial_pid_file = temp_dir.join("grandchild_pid.partial");
         let mut command = std::process::Command::new("powershell.exe");
         command.args(["-NoProfile", "-Command"]).arg(format!(
             "$p = Start-Process -FilePath ping.exe -ArgumentList @('-n','60','127.0.0.1') -PassThru -WindowStyle Hidden; \
-             Set-Content -LiteralPath '{}' -Value $p.Id; \
+             Set-Content -LiteralPath '{0}' -Value $p.Id; \
+             Move-Item -LiteralPath '{0}' -Destination '{1}'; \
              Wait-Process -Id $p.Id",
+            partial_pid_file.display(),
             pid_file.display()
         ));
         let child = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null())
             .expect("failed to spawn powershell");
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // PowerShell startup exceeded 5 seconds on Windows CI runners under nextest's parallel load.
+        let deadline = Instant::now() + Duration::from_secs(30);
         let grandchild_pid = loop {
             if let Ok(contents) = std::fs::read_to_string(&pid_file)
                 && let Ok(pid) = contents.trim().parse::<u32>()

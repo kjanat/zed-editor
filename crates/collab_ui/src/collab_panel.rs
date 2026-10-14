@@ -2130,10 +2130,13 @@ impl CollabPanel {
 
     fn toggle_contact_finder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
+            let user_store = self.user_store.clone();
             workspace.update(cx, |workspace, cx| {
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    ContactFinder::new(self.user_store.clone(), window, cx)
-                });
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        ContactFinder::new(user_store, window, cx)
+                    })
+                    .detach();
             });
         }
     }
@@ -2501,16 +2504,11 @@ impl CollabPanel {
 
         cx.spawn_in(window, async move |_, cx| {
             workspace.update_in(cx, |workspace, window, cx| {
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    ChannelModal::new(
-                        user_store.clone(),
-                        channel_store.clone(),
-                        channel_id,
-                        mode,
-                        window,
-                        cx,
-                    )
-                });
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        ChannelModal::new(user_store, channel_store, channel_id, mode, window, cx)
+                    })
+                    .detach();
             })
         })
         .detach();

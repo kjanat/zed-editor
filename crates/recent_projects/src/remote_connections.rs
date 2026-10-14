@@ -247,45 +247,44 @@ pub async fn open_remote_project(
 
     loop {
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        let delegate = window.update(cx, {
+        let (ui, delegate, modal) = window.update(cx, {
             let paths = paths.clone();
             let connection_options = connection_options.clone();
             let initial_workspace = initial_workspace.clone();
             move |_multi_workspace: &mut MultiWorkspace, window, cx| {
                 window.activate_window();
-                initial_workspace.update(cx, |workspace, cx| {
+                let ui = cx.new(|cx| {
+                    RemoteConnectionPrompt::for_connection(&connection_options, window, cx)
+                });
+                let modal = initial_workspace.update(cx, |workspace, cx| {
                     workspace.hide_modal(window, cx);
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        RemoteConnectionModal::new(&connection_options, paths, window, cx)
-                    });
-
-                    let ui = workspace
-                        .active_modal::<RemoteConnectionModal>(cx)?
-                        .read(cx)
-                        .prompt
-                        .clone();
-
-                    ui.update(cx, |ui, _cx| {
-                        ui.set_cancellation_tx(cancel_tx);
-                    });
-
-                    Some(Arc::new(RemoteClientDelegate::new(
-                        window.window_handle(),
-                        ui.downgrade(),
-                        if let RemoteConnectionOptions::Ssh(options) = &connection_options {
-                            options
-                                .password
-                                .as_deref()
-                                .and_then(|pw| EncryptedPassword::try_from(pw).ok())
-                        } else {
-                            None
-                        },
-                    )))
-                })
+                    workspace.toggle_modal(window, cx, {
+                        let ui = ui.clone();
+                        move |_, _| RemoteConnectionModal::with_prompt(ui, paths)
+                    })
+                });
+                let delegate = Arc::new(RemoteClientDelegate::new(
+                    window.window_handle(),
+                    ui.downgrade(),
+                    if let RemoteConnectionOptions::Ssh(options) = &connection_options {
+                        options
+                            .password
+                            .as_deref()
+                            .and_then(|pw| EncryptedPassword::try_from(pw).ok())
+                    } else {
+                        None
+                    },
+                ));
+                (ui, delegate, modal)
             }
         })?;
 
-        let Some(delegate) = delegate else { break };
+        if modal.await.is_none() {
+            break;
+        }
+        ui.update(cx, |ui, _cx| {
+            ui.set_cancellation_tx(cancel_tx);
+        });
 
         let connection = remote::connect(connection_options.clone(), delegate.clone(), cx);
         let connection = select! {

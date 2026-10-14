@@ -235,10 +235,9 @@ impl Render for RemoteConnectionPrompt {
     }
 }
 
-impl RemoteConnectionModal {
-    pub fn new(
+impl RemoteConnectionPrompt {
+    pub fn for_connection(
         connection_options: &RemoteConnectionOptions,
-        paths: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -258,17 +257,21 @@ impl RemoteConnectionModal {
                 (format!("mock-{}", options.id), None, false, false)
             }
         };
+        Self::new(
+            connection_string,
+            nickname,
+            is_wsl,
+            is_devcontainer,
+            window,
+            cx,
+        )
+    }
+}
+
+impl RemoteConnectionModal {
+    pub fn with_prompt(prompt: Entity<RemoteConnectionPrompt>, paths: Vec<PathBuf>) -> Self {
         Self {
-            prompt: cx.new(|cx| {
-                RemoteConnectionPrompt::new(
-                    connection_string,
-                    nickname,
-                    is_wsl,
-                    is_devcontainer,
-                    window,
-                    cx,
-                )
-            }),
+            prompt,
             finished: false,
             paths,
         }
@@ -567,23 +570,28 @@ pub fn connect_with_modal(
         return connect_reusing_pool(connection_options, cx);
     }
 
-    workspace.update(cx, |workspace, cx| {
-        workspace.toggle_modal(window, cx, |window, cx| {
-            RemoteConnectionModal::new(&connection_options, Vec::new(), window, cx)
-        });
-        let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) else {
-            return Task::ready(Err(anyhow::anyhow!(
-                "Failed to open remote connection dialog"
-            )));
-        };
-        let prompt = modal.read(cx).prompt.clone();
-        connect(
-            ConnectionIdentifier::setup(),
-            connection_options,
-            prompt,
-            window,
-            cx,
-        )
+    let prompt =
+        cx.new(|cx| RemoteConnectionPrompt::for_connection(&connection_options, window, cx));
+    let modal = workspace.update(cx, |workspace, cx| {
+        workspace.toggle_modal(window, cx, {
+            let prompt = prompt.clone();
+            move |_, _| RemoteConnectionModal::with_prompt(prompt, Vec::new())
+        })
+    });
+    window.spawn(cx, async move |cx| {
+        if modal.await.is_none() {
+            return Err(anyhow::anyhow!("Failed to open remote connection dialog"));
+        }
+        cx.update(|window, cx| {
+            connect(
+                ConnectionIdentifier::setup(),
+                connection_options,
+                prompt,
+                window,
+                cx,
+            )
+        })?
+        .await
     })
 }
 

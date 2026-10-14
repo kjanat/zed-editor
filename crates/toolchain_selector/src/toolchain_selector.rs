@@ -627,7 +627,8 @@ impl ToolchainSelector {
                             window,
                             cx,
                         )
-                    });
+                    })
+                    .detach();
                 })
                 .ok();
             anyhow::Ok(())

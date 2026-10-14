@@ -174,6 +174,8 @@ pub struct EditPredictionStore {
     _fetch_experiments_task: Task<()>,
     _user_store_subscription: gpui::Subscription,
     projects: HashMap<EntityId, ProjectState>,
+    tracked_workspaces: HashMap<EntityId, TrackedWorkspace>,
+    _workspace_creation_subscription: gpui::Subscription,
     update_required: bool,
     edit_prediction_model: EditPredictionModel,
     zeta2_raw_config: Option<Zeta2RawConfig>,
@@ -189,6 +191,12 @@ pub struct EditPredictionStore {
     #[cfg(test)]
     settled_event_callback: Option<Box<dyn Fn(EditPredictionId, String)>>,
     credentials_provider: Arc<dyn CredentialsProvider>,
+}
+
+struct TrackedWorkspace {
+    workspace: WeakEntity<Workspace>,
+    followed_project: Option<EntityId>,
+    _subscriptions: [gpui::Subscription; 3],
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -1023,8 +1031,37 @@ impl EditPredictionStore {
 
         let credentials_provider = zed_credentials_provider::global(cx);
 
+        let workspace_creation_subscription = cx.observe_new({
+            let this = cx.weak_entity();
+            move |_: &mut Workspace, _, cx| {
+                let workspace = cx.entity();
+                this.update(cx, |this, cx| this.track_workspace(workspace, cx))
+                    .ok();
+            }
+        });
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            let Some(app_state) = AppState::try_global(cx) else {
+                return;
+            };
+            let workspaces = app_state
+                .workspace_store
+                .read(cx)
+                .workspaces()
+                .filter_map(|workspace| workspace.upgrade())
+                .collect::<Vec<_>>();
+            this.update(cx, |this, cx| {
+                for workspace in workspaces {
+                    this.track_workspace(workspace, cx);
+                }
+            })
+            .ok();
+        });
+
         let this = Self {
             projects: HashMap::default(),
+            tracked_workspaces: HashMap::default(),
+            _workspace_creation_subscription: workspace_creation_subscription,
             client,
             user_store,
             llm_token,
@@ -2252,6 +2289,73 @@ impl EditPredictionStore {
         }
     }
 
+    fn track_workspace(&mut self, workspace: Entity<Workspace>, cx: &mut Context<Self>) {
+        let workspace_id = workspace.entity_id();
+        if self.tracked_workspaces.contains_key(&workspace_id) {
+            return;
+        }
+
+        let subscriptions = [
+            cx.observe(&workspace, |this, workspace, cx| {
+                this.update_workspace_following(&workspace, cx)
+            }),
+            cx.subscribe(&workspace, |this, workspace, _: &workspace::Event, cx| {
+                this.update_workspace_following(&workspace, cx)
+            }),
+            cx.observe_release(&workspace, move |this, _, _| {
+                this.tracked_workspaces.remove(&workspace_id);
+            }),
+        ];
+        self.tracked_workspaces.insert(
+            workspace_id,
+            TrackedWorkspace {
+                workspace: workspace.downgrade(),
+                followed_project: None,
+                _subscriptions: subscriptions,
+            },
+        );
+
+        let workspace = workspace.downgrade();
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.update_workspace_following(&workspace, cx)
+            })
+            .ok();
+        });
+    }
+
+    fn update_workspace_following(&mut self, workspace: &Entity<Workspace>, cx: &App) {
+        let workspace_state = workspace.read(cx);
+        let followed_project = workspace_state
+            .leader_for_pane(workspace_state.active_pane())
+            .map(|_| workspace_state.project().entity_id());
+        if let Some(tracked_workspace) = self.tracked_workspaces.get_mut(&workspace.entity_id()) {
+            tracked_workspace.followed_project = followed_project;
+        }
+    }
+
+    fn refresh_tracked_workspaces_following(&mut self, cx: &App) {
+        let workspaces = self
+            .tracked_workspaces
+            .values()
+            .filter_map(|tracked_workspace| tracked_workspace.workspace.upgrade())
+            .collect::<Vec<_>>();
+        for workspace in workspaces {
+            self.update_workspace_following(&workspace, cx);
+        }
+    }
+
+    fn is_following(&self, project: &Entity<Project>) -> bool {
+        let project_id = project.entity_id();
+        self.tracked_workspaces
+            .values()
+            .any(|tracked_workspace| tracked_workspace.followed_project == Some(project_id))
+    }
+
     fn is_refreshing(&self, project: &Entity<Project>) -> bool {
         self.projects
             .get(&project.entity_id())
@@ -2267,10 +2371,46 @@ impl EditPredictionStore {
         trigger: EditPredictionRequestTrigger,
         cx: &mut Context<Self>,
     ) {
-        if currently_following(&project, cx) {
+        if self.is_following(&project) {
+            let this = cx.weak_entity();
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| {
+                    this.refresh_tracked_workspaces_following(cx);
+                    if !this.is_following(&project) {
+                        this.queue_prediction_refresh_from_buffer(
+                            project,
+                            buffer,
+                            position,
+                            debounce_duration,
+                            trigger,
+                            cx,
+                        );
+                    }
+                })
+                .ok();
+            });
             return;
         }
 
+        self.queue_prediction_refresh_from_buffer(
+            project,
+            buffer,
+            position,
+            debounce_duration,
+            trigger,
+            cx,
+        );
+    }
+
+    fn queue_prediction_refresh_from_buffer(
+        &mut self,
+        project: Entity<Project>,
+        buffer: Entity<Buffer>,
+        position: language::Anchor,
+        debounce_duration: Duration,
+        trigger: EditPredictionRequestTrigger,
+        cx: &mut Context<Self>,
+    ) {
         let trigger = predict_edits_request_trigger_from_editor_trigger(trigger);
 
         self.queue_prediction_refresh(
@@ -2281,15 +2421,19 @@ impl EditPredictionStore {
             move |this, cx| {
                 let Some(request_task) = this
                     .update(cx, |this, cx| {
-                        this.request_prediction_internal(
-                            project.clone(),
-                            buffer.clone(),
-                            position,
-                            trigger,
-                            cx,
-                        )
+                        this.refresh_tracked_workspaces_following(cx);
+                        (!this.is_following(&project)).then(|| {
+                            this.request_prediction_internal(
+                                project.clone(),
+                                buffer.clone(),
+                                position,
+                                trigger,
+                                cx,
+                            )
+                        })
                     })
                     .log_err()
+                    .flatten()
                 else {
                     return Task::ready(anyhow::Ok(None));
                 };
@@ -2411,25 +2555,6 @@ async fn send_settled_batches(
             log::error!("failed to submit edit predictions settled: {error:?}");
         }
     }
-}
-
-fn currently_following(project: &Entity<Project>, cx: &App) -> bool {
-    let Some(app_state) = AppState::try_global(cx) else {
-        return false;
-    };
-
-    app_state
-        .workspace_store
-        .read(cx)
-        .workspaces()
-        .filter_map(|workspace| workspace.upgrade())
-        .any(|workspace| {
-            workspace.read(cx).project().entity_id() == project.entity_id()
-                && workspace
-                    .read(cx)
-                    .leader_for_pane(workspace.read(cx).active_pane())
-                    .is_some()
-        })
 }
 
 fn is_ep_store_provider(provider: EditPredictionProvider) -> bool {

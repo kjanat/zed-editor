@@ -78,11 +78,7 @@ impl Focusable for CommitModal {
 
 impl EventEmitter<DismissEvent> for CommitModal {}
 impl ModalView for CommitModal {
-    fn on_before_dismiss(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> workspace::DismissDecision {
+    fn on_dismissed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.git_panel.update(cx, |git_panel, cx| {
             git_panel.set_modal_open(false, cx);
         });
@@ -95,7 +91,6 @@ impl ModalView for CommitModal {
                 dock.set_open(self.restore_dock.is_open, window, cx)
             })
             .log_err();
-        workspace::DismissDecision::Dismiss(true)
     }
 }
 
@@ -167,9 +162,11 @@ impl CommitModal {
         };
 
         workspace.open_panel::<GitPanel>(window, cx);
-        workspace.toggle_modal(window, cx, move |window, cx| {
-            CommitModal::new(git_panel, restore_dock_position, window, cx)
-        })
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                CommitModal::new(git_panel, restore_dock_position, window, cx)
+            })
+            .detach();
     }
 
     fn new(

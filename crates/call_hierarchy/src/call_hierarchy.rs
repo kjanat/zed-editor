@@ -25,7 +25,7 @@ use ui::{
     KeyBinding, ListItem, ListItemSpacing, prelude::*, tooltip_container, utils::buffer_text_style,
 };
 use util::{ResultExt, paths::PathExt};
-use workspace::{DismissDecision, ModalView, Workspace};
+use workspace::{ModalView, Workspace};
 pub use zed_actions::{ShowIncomingCalls, ShowOutgoingCalls, ToggleDirection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -307,15 +307,10 @@ impl Focusable for CallHierarchyView {
 impl EventEmitter<DismissEvent> for CallHierarchyView {}
 
 impl ModalView for CallHierarchyView {
-    fn on_before_dismiss(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> DismissDecision {
+    fn on_dismissed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker.update(cx, |picker, cx| {
             picker.delegate.restore_editor(window, cx);
         });
-        DismissDecision::Dismiss(true)
     }
 }
 
@@ -858,9 +853,11 @@ fn toggle_call_hierarchy(
     let workspace_weak = workspace.downgrade();
 
     workspace.update(cx, |workspace, cx| {
-        workspace.toggle_modal(window, cx, |window, cx| {
-            CallHierarchyView::new(editor, project, workspace_weak, mode, window, cx)
-        });
+        workspace
+            .toggle_modal(window, cx, move |window, cx| {
+                CallHierarchyView::new(editor, project, workspace_weak, mode, window, cx)
+            })
+            .detach();
     });
 }
 

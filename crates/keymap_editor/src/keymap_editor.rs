@@ -1362,27 +1362,32 @@ impl KeymapEditor {
             arguments = arguments,
         );
 
-        let temp_dir = self.action_args_temp_dir.as_ref().map(|dir| dir.path());
+        let temp_dir = self
+            .action_args_temp_dir
+            .as_ref()
+            .map(|dir| dir.path().to_path_buf());
 
         self.workspace
             .update(cx, |workspace, cx| {
                 let fs = workspace.app_state().fs.clone();
                 let workspace_weak = cx.weak_entity();
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    let modal = KeybindingEditorModal::new(
-                        create,
-                        keybind,
-                        keybind_index,
-                        keymap_editor,
-                        temp_dir,
-                        workspace_weak,
-                        fs,
-                        window,
-                        cx,
-                    );
-                    window.focus(&modal.focus_handle(cx), cx);
-                    modal
-                });
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        let modal = KeybindingEditorModal::new(
+                            create,
+                            keybind,
+                            keybind_index,
+                            keymap_editor,
+                            temp_dir.as_deref(),
+                            workspace_weak,
+                            fs,
+                            window,
+                            cx,
+                        );
+                        window.focus(&modal.focus_handle(cx), cx);
+                        modal
+                    })
+                    .detach();
             })
             .log_err();
     }
@@ -1414,28 +1419,33 @@ impl KeymapEditor {
         let dummy_binding = ProcessedBinding::Unmapped(action_information);
         let dummy_index = self.keybindings.len();
 
-        let temp_dir = self.action_args_temp_dir.as_ref().map(|dir| dir.path());
+        let temp_dir = self
+            .action_args_temp_dir
+            .as_ref()
+            .map(|dir| dir.path().to_path_buf());
 
         self.workspace
             .update(cx, |workspace, cx| {
                 let fs = workspace.app_state().fs.clone();
                 let workspace_weak = cx.weak_entity();
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    let modal = KeybindingEditorModal::new(
-                        true,
-                        dummy_binding,
-                        dummy_index,
-                        keymap_editor,
-                        temp_dir,
-                        workspace_weak,
-                        fs,
-                        window,
-                        cx,
-                    );
+                workspace
+                    .toggle_modal(window, cx, move |window, cx| {
+                        let modal = KeybindingEditorModal::new(
+                            true,
+                            dummy_binding,
+                            dummy_index,
+                            keymap_editor,
+                            temp_dir.as_deref(),
+                            workspace_weak,
+                            fs,
+                            window,
+                            cx,
+                        );
 
-                    window.focus(&modal.focus_handle(cx), cx);
-                    modal
-                });
+                        window.focus(&modal.focus_handle(cx), cx);
+                        modal
+                    })
+                    .detach();
             })
             .log_err();
     }
@@ -3519,7 +3529,7 @@ impl CompletionProvider for KeyContextCompletionProvider {
         buffer_position: language::Anchor,
         _trigger: editor::CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> gpui::Task<anyhow::Result<Vec<project::CompletionResponse>>> {
         let buffer = buffer.read(cx);
         let mut count_back = 0;

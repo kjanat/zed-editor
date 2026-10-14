@@ -259,6 +259,324 @@ async fn test_refresh_prediction_from_buffer_suppressed_while_following(cx: &mut
 }
 
 #[gpui::test]
+async fn test_refresh_prediction_from_buffer_after_following_stops(cx: &mut TestAppContext) {
+    let (ep_store, mut requests) = init_test_with_fake_client(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/root",
+        json!({
+            "foo.md":  "Hello!\nHow\nBye\n"
+        }),
+    )
+    .await;
+    let project = Project::test(fs, vec![path!("/root").as_ref()], cx).await;
+
+    let app_state = cx.update(|cx| {
+        let app_state = AppState::test(cx);
+        AppState::set_global(app_state.clone(), cx);
+        app_state
+    });
+    let multi_workspace =
+        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    cx.update(|cx| {
+        AppState::set_global(workspace.read(cx).app_state().clone(), cx);
+    });
+    drop(app_state);
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            let path = project.find_project_path(path!("root/foo.md"), cx).unwrap();
+            project.open_buffer(path, cx)
+        })
+        .await
+        .unwrap();
+    let snapshot = buffer.read_with(cx, |buffer, _cx| buffer.snapshot());
+    let position = snapshot.anchor_before(language::Point::new(1, 3));
+
+    multi_workspace
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                workspace.start_following(CollaboratorId::Agent, window, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    ep_store.update(cx, |ep_store, cx| {
+        ep_store.register_project(&project, cx);
+        ep_store.register_buffer(&buffer, &project, cx);
+        ep_store.refresh_prediction_from_buffer(
+            project.clone(),
+            buffer.clone(),
+            position,
+            Duration::ZERO,
+            EditPredictionRequestTrigger::Other,
+            cx,
+        );
+
+        let project_state = ep_store.get_or_init_project(&project, cx);
+        assert!(project_state.pending_predictions.is_empty());
+        assert!(project_state.last_edit_prediction_refresh.is_none());
+    });
+    cx.run_until_parked();
+    assert_no_predict_request_ready(&mut requests.predict);
+
+    multi_workspace
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                assert!(
+                    workspace
+                        .unfollow(CollaboratorId::Agent, window, cx)
+                        .is_some()
+                );
+            });
+        })
+        .unwrap();
+
+    ep_store.update(cx, |ep_store, cx| {
+        ep_store.refresh_prediction_from_buffer(
+            project.clone(),
+            buffer.clone(),
+            position,
+            Duration::ZERO,
+            EditPredictionRequestTrigger::Other,
+            cx,
+        );
+
+        assert_eq!(
+            ep_store
+                .get_or_init_project(&project, cx)
+                .pending_predictions
+                .len(),
+            1
+        );
+    });
+    cx.run_until_parked();
+
+    let (_request, respond_tx) = requests
+        .predict
+        .next()
+        .now_or_never()
+        .flatten()
+        .expect("refresh after unfollowing should send a request without a throttle wait");
+    respond_tx.send(empty_response()).unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+async fn test_refresh_prediction_from_buffer_in_the_update_that_starts_following(
+    cx: &mut TestAppContext,
+) {
+    let (ep_store, mut requests) = init_test_with_fake_client(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/root",
+        json!({
+            "foo.md":  "Hello!\nHow\nBye\n"
+        }),
+    )
+    .await;
+    let project = Project::test(fs, vec![path!("/root").as_ref()], cx).await;
+
+    let app_state = cx.update(|cx| {
+        let app_state = AppState::test(cx);
+        AppState::set_global(app_state.clone(), cx);
+        app_state
+    });
+    let multi_workspace =
+        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    cx.update(|cx| {
+        AppState::set_global(workspace.read(cx).app_state().clone(), cx);
+    });
+    drop(app_state);
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            let path = project.find_project_path(path!("root/foo.md"), cx).unwrap();
+            project.open_buffer(path, cx)
+        })
+        .await
+        .unwrap();
+    let snapshot = buffer.read_with(cx, |buffer, _cx| buffer.snapshot());
+    let position = snapshot.anchor_before(language::Point::new(1, 3));
+    ep_store.update(cx, |ep_store, cx| {
+        ep_store.register_project(&project, cx);
+        ep_store.register_buffer(&buffer, &project, cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                workspace.start_following(CollaboratorId::Agent, window, cx);
+            });
+            ep_store.update(cx, |ep_store, cx| {
+                ep_store.refresh_prediction_from_buffer(
+                    project.clone(),
+                    buffer.clone(),
+                    position,
+                    Duration::ZERO,
+                    EditPredictionRequestTrigger::Other,
+                    cx,
+                );
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_no_predict_request_ready(&mut requests.predict);
+}
+
+#[gpui::test]
+async fn test_refresh_prediction_from_buffer_in_the_update_that_stops_following(
+    cx: &mut TestAppContext,
+) {
+    let (ep_store, mut requests) = init_test_with_fake_client(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/root",
+        json!({
+            "foo.md":  "Hello!\nHow\nBye\n"
+        }),
+    )
+    .await;
+    let project = Project::test(fs, vec![path!("/root").as_ref()], cx).await;
+
+    let app_state = cx.update(|cx| {
+        let app_state = AppState::test(cx);
+        AppState::set_global(app_state.clone(), cx);
+        app_state
+    });
+    let multi_workspace =
+        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    cx.update(|cx| {
+        AppState::set_global(workspace.read(cx).app_state().clone(), cx);
+    });
+    drop(app_state);
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            let path = project.find_project_path(path!("root/foo.md"), cx).unwrap();
+            project.open_buffer(path, cx)
+        })
+        .await
+        .unwrap();
+    let snapshot = buffer.read_with(cx, |buffer, _cx| buffer.snapshot());
+    let position = snapshot.anchor_before(language::Point::new(1, 3));
+    ep_store.update(cx, |ep_store, cx| {
+        ep_store.register_project(&project, cx);
+        ep_store.register_buffer(&buffer, &project, cx);
+    });
+    multi_workspace
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                workspace.start_following(CollaboratorId::Agent, window, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    multi_workspace
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                assert!(
+                    workspace
+                        .unfollow(CollaboratorId::Agent, window, cx)
+                        .is_some()
+                );
+            });
+            ep_store.update(cx, |ep_store, cx| {
+                ep_store.refresh_prediction_from_buffer(
+                    project.clone(),
+                    buffer.clone(),
+                    position,
+                    Duration::ZERO,
+                    EditPredictionRequestTrigger::Other,
+                    cx,
+                );
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let (_request, respond_tx) = requests
+        .predict
+        .next()
+        .now_or_never()
+        .flatten()
+        .expect("a refresh in the update that stops following should send a request");
+    respond_tx.send(empty_response()).unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+async fn test_refresh_prediction_from_buffer_inside_workspace_update(cx: &mut TestAppContext) {
+    let (ep_store, mut requests) = init_test_with_fake_client(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/root",
+        json!({
+            "foo.md":  "Hello!\nHow\nBye\n"
+        }),
+    )
+    .await;
+    let project = Project::test(fs, vec![path!("/root").as_ref()], cx).await;
+
+    let app_state = cx.update(|cx| {
+        let app_state = AppState::test(cx);
+        AppState::set_global(app_state.clone(), cx);
+        app_state
+    });
+    let multi_workspace =
+        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    cx.update(|cx| {
+        AppState::set_global(workspace.read(cx).app_state().clone(), cx);
+    });
+    drop(app_state);
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            let path = project.find_project_path(path!("root/foo.md"), cx).unwrap();
+            project.open_buffer(path, cx)
+        })
+        .await
+        .unwrap();
+    let snapshot = buffer.read_with(cx, |buffer, _cx| buffer.snapshot());
+    let position = snapshot.anchor_before(language::Point::new(1, 3));
+
+    workspace.update(cx, |_, cx| {
+        ep_store.update(cx, |ep_store, cx| {
+            ep_store.register_project(&project, cx);
+            ep_store.register_buffer(&buffer, &project, cx);
+            ep_store.refresh_prediction_from_buffer(
+                project.clone(),
+                buffer.clone(),
+                position,
+                Duration::ZERO,
+                EditPredictionRequestTrigger::Other,
+                cx,
+            );
+        });
+    });
+
+    let (_request, respond_tx) = requests.predict.next().await.unwrap();
+    respond_tx.send(empty_response()).unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui::test]
 async fn test_simple_request(cx: &mut TestAppContext) {
     let (ep_store, mut requests) = init_test_with_fake_client(cx);
     let fs = FakeFs::new(cx.executor());

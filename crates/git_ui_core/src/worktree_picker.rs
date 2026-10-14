@@ -1564,23 +1564,25 @@ pub async fn open_remote_worktree(
     workspace: gpui::WeakEntity<Workspace>,
     cx: &mut gpui::AsyncWindowContext,
 ) -> anyhow::Result<()> {
-    let connect_task = workspace.update_in(cx, |workspace, window, cx| {
-        workspace.toggle_modal(window, cx, |window, cx| {
-            remote_connection::RemoteConnectionModal::new(
+    let (prompt, modal) = workspace.update_in(cx, |workspace, window, cx| {
+        let prompt = cx.new(|cx| {
+            remote_connection::RemoteConnectionPrompt::for_connection(
                 &connection_options,
-                Vec::new(),
                 window,
                 cx,
             )
         });
+        let modal = workspace.toggle_modal(window, cx, {
+            let prompt = prompt.clone();
+            move |_, _| remote_connection::RemoteConnectionModal::with_prompt(prompt, Vec::new())
+        });
+        (prompt, modal)
+    })?;
+    if modal.await.is_none() {
+        return Ok(());
+    }
 
-        let prompt = workspace
-            .active_modal::<remote_connection::RemoteConnectionModal>(cx)
-            .expect("Modal just created")
-            .read(cx)
-            .prompt
-            .clone();
-
+    let connect_task = workspace.update_in(cx, |_, window, cx| {
         remote_connection::connect(
             remote::remote_client::ConnectionIdentifier::setup(),
             connection_options.clone(),

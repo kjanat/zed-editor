@@ -24098,6 +24098,192 @@ async fn test_completion_with_explicit_replace_range(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_completion_confirm_callback_updates_editor(cx: &mut TestAppContext) {
+    struct EditorUpdatingConfirmProvider {
+        editor: WeakEntity<Editor>,
+    }
+
+    impl crate::CompletionProvider for EditorUpdatingConfirmProvider {
+        fn completions(
+            &self,
+            _buffer: &Entity<language::Buffer>,
+            buffer_position: text::Anchor,
+            _trigger: crate::CompletionContext,
+            _window: &mut Window,
+            _cx: &mut App,
+        ) -> Task<anyhow::Result<Vec<project::CompletionResponse>>> {
+            let editor = self.editor.clone();
+            Task::ready(Ok(vec![project::CompletionResponse {
+                completions: vec![project::Completion {
+                    replace_range: buffer_position..buffer_position,
+                    new_text: " two".to_string(),
+                    label: language::CodeLabel::plain("two".to_string(), None),
+                    documentation: None,
+                    source: project::CompletionSource::Custom,
+                    icon_path: None,
+                    icon_color: None,
+                    match_start: None,
+                    snippet_deduplication_key: None,
+                    insert_text_mode: None,
+                    confirm: Some(Arc::new(
+                        move |_: project::CompletionIntent, window: &mut Window, cx: &mut App| {
+                            editor
+                                .update(cx, |editor, cx| editor.insert(" three", window, cx))
+                                .is_ok()
+                        },
+                    )),
+                    group: None,
+                }],
+                display_options: project::CompletionDisplayOptions::default(),
+                is_incomplete: false,
+            }]))
+        }
+
+        fn is_completion_trigger(
+            &self,
+            _buffer: &Entity<language::Buffer>,
+            _position: language::Anchor,
+            _text: &str,
+            _trigger_in_words: bool,
+            _cx: &mut Context<Editor>,
+        ) -> bool {
+            false
+        }
+
+        fn filter_completions(&self) -> bool {
+            false
+        }
+    }
+
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    let editor = cx.editor.downgrade();
+    cx.update_editor(|editor_ref, _, _| {
+        editor_ref.set_completion_provider(Some(Rc::new(EditorUpdatingConfirmProvider { editor })));
+    });
+    cx.set_state("oneˇ");
+
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.run_until_parked();
+    cx.editor(|editor, _, _| assert!(editor.has_visible_completions_menu()));
+
+    cx.update_editor(|editor, window, cx| {
+        editor
+            .confirm_completion(&ConfirmCompletion::default(), window, cx)
+            .expect("completion menu is open")
+            .detach_and_log_err(cx);
+    });
+    cx.run_until_parked();
+
+    cx.assert_editor_state("one two threeˇ");
+    cx.editor(|editor, _, _| assert!(editor.has_visible_completions_menu()));
+}
+
+#[gpui::test]
+async fn test_completion_resolution_uses_the_provider_that_opened_the_menu(
+    cx: &mut TestAppContext,
+) {
+    struct CountingResolveProvider {
+        resolves: Rc<std::cell::Cell<usize>>,
+    }
+
+    impl crate::CompletionProvider for CountingResolveProvider {
+        fn completions(
+            &self,
+            _buffer: &Entity<language::Buffer>,
+            buffer_position: text::Anchor,
+            _trigger: crate::CompletionContext,
+            _window: &mut Window,
+            _cx: &mut App,
+        ) -> Task<anyhow::Result<Vec<project::CompletionResponse>>> {
+            let completion = |text: &str| project::Completion {
+                replace_range: buffer_position..buffer_position,
+                new_text: text.to_string(),
+                label: language::CodeLabel::plain(text.to_string(), None),
+                documentation: None,
+                source: project::CompletionSource::Custom,
+                icon_path: None,
+                icon_color: None,
+                match_start: None,
+                snippet_deduplication_key: None,
+                insert_text_mode: None,
+                confirm: None,
+                group: None,
+            };
+            Task::ready(Ok(vec![project::CompletionResponse {
+                completions: vec![completion("two"), completion("three")],
+                display_options: project::CompletionDisplayOptions::default(),
+                is_incomplete: false,
+            }]))
+        }
+
+        fn resolve_completions(
+            &self,
+            _buffer: Entity<language::Buffer>,
+            _completion_indices: Vec<usize>,
+            _completions: Rc<RefCell<Box<[project::Completion]>>>,
+            _cx: &mut App,
+        ) -> Task<anyhow::Result<bool>> {
+            self.resolves.set(self.resolves.get() + 1);
+            Task::ready(Ok(false))
+        }
+
+        fn is_completion_trigger(
+            &self,
+            _buffer: &Entity<language::Buffer>,
+            _position: language::Anchor,
+            _text: &str,
+            _trigger_in_words: bool,
+            _cx: &mut Context<Editor>,
+        ) -> bool {
+            false
+        }
+
+        fn filter_completions(&self) -> bool {
+            false
+        }
+    }
+
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    let opening_resolves = Rc::new(std::cell::Cell::new(0));
+    let replacement_resolves = Rc::new(std::cell::Cell::new(0));
+    cx.update_editor(|editor, _, _| {
+        editor.set_completion_provider(Some(Rc::new(CountingResolveProvider {
+            resolves: opening_resolves.clone(),
+        })));
+    });
+    cx.set_state("oneˇ");
+
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.run_until_parked();
+    cx.editor(|editor, _, _| assert!(editor.has_visible_completions_menu()));
+    let resolves_after_opening = opening_resolves.get();
+
+    cx.update_editor(|editor, window, cx| {
+        editor.context_menu_next(&ContextMenuNext, window, cx);
+        editor.set_completion_provider(Some(Rc::new(CountingResolveProvider {
+            resolves: replacement_resolves.clone(),
+        })));
+    });
+    cx.run_until_parked();
+
+    assert!(
+        opening_resolves.get() > resolves_after_opening,
+        "moving the selection should resolve through the provider that opened the menu"
+    );
+    assert_eq!(
+        replacement_resolves.get(),
+        0,
+        "a provider set after the selection moved should receive no entries of the open menu"
+    );
+}
+
+#[gpui::test]
 async fn test_completion_with_mode_specified_by_action(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
     let mut cx = EditorLspTestContext::new_rust(
@@ -40578,7 +40764,9 @@ async fn test_hide_mouse_context_menu_on_modal_opened(cx: &mut TestAppContext) {
         assert!(editor.mouse_context_menu.is_some());
     });
     workspace.update_in(cx, |workspace, window, cx| {
-        workspace.toggle_modal(window, cx, |_, cx| EmptyModalView::new(cx));
+        workspace
+            .toggle_modal(window, cx, move |_, cx| EmptyModalView::new(cx))
+            .detach();
     });
 
     cx.read(|cx| {
@@ -40653,7 +40841,9 @@ async fn test_hide_pending_blame_popover_when_modal_opens(cx: &mut TestAppContex
     });
 
     workspace.update_in(cx, |workspace, window, cx| {
-        workspace.toggle_modal(window, cx, |_, cx| EmptyModalView::new(cx));
+        workspace
+            .toggle_modal(window, cx, move |_, cx| EmptyModalView::new(cx))
+            .detach();
     });
 
     // Toggling a modal while the blame popover task is still pending should

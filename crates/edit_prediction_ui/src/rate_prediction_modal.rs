@@ -97,9 +97,11 @@ impl RatePredictionsModal {
     pub fn toggle(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         if let Some(ep_store) = EditPredictionStore::try_global(cx) {
             let language_registry = workspace.app_state().languages.clone();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RatePredictionsModal::new(ep_store, language_registry, window, cx)
-            });
+            workspace
+                .toggle_modal(window, cx, move |window, cx| {
+                    RatePredictionsModal::new(ep_store, language_registry, window, cx)
+                })
+                .detach();
 
             telemetry::event!("Rate Prediction Modal Open", source = "Edit Prediction");
         }
@@ -1437,7 +1439,7 @@ impl editor::CompletionProvider for FeedbackCompletionProvider {
         buffer_position: language::Anchor,
         _trigger: editor::CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<Editor>,
+        cx: &mut App,
     ) -> gpui::Task<anyhow::Result<Vec<CompletionResponse>>> {
         let buffer = buffer.read(cx);
         let mut count_back = 0;

@@ -5,8 +5,15 @@ use menu::SelectPrevious;
 use project::{Project, ProjectPath};
 use serde_json::json;
 use settings::SettingsStore;
+use std::{cell::Cell, rc::Rc};
 use util::{path, rel_path::rel_path};
-use workspace::{ActivatePreviousItem, AppState, MultiWorkspace, Workspace, item::test::TestItem};
+use workspace::{
+    ActivatePreviousItem, AppState, MultiWorkspace, Workspace,
+    item::{
+        Item,
+        test::{HookBits, TestItem, TestProjectItem},
+    },
+};
 
 #[ctor::ctor(unsafe)]
 fn init_logger() {
@@ -278,6 +285,99 @@ async fn test_close_selected_item(cx: &mut gpui::TestAppContext) {
     assert_tab_switcher_is_closed(workspace, cx);
 }
 
+struct TabSwitcherReader {
+    focus_handle: FocusHandle,
+    workspace: WeakEntity<Workspace>,
+    tab_switcher_reads: Rc<Cell<usize>>,
+}
+
+impl EventEmitter<()> for TabSwitcherReader {}
+
+impl Focusable for TabSwitcherReader {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for TabSwitcherReader {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().track_focus(&self.focus_handle)
+    }
+}
+
+impl Item for TabSwitcherReader {
+    type Event = ();
+
+    fn tab_content_text(&self, _: usize, _: &App) -> SharedString {
+        "reader".into()
+    }
+
+    fn deactivated(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        if let Some(tab_switcher) = workspace.read(cx).active_modal::<TabSwitcher>(cx) {
+            tab_switcher.read(cx);
+            self.tab_switcher_reads
+                .set(self.tab_switcher_reads.get() + 1);
+        }
+    }
+}
+
+#[gpui::test]
+async fn test_tab_switcher_selection_runs_item_hooks_with_nothing_leased(
+    cx: &mut gpui::TestAppContext,
+) {
+    let app_state = init_test(cx);
+    let project = Project::test(app_state.fs.clone(), [], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    let tab_switcher_reads = Rc::new(Cell::new(0));
+    let reader = cx.new(|cx| TabSwitcherReader {
+        focus_handle: cx.focus_handle(),
+        workspace: workspace.downgrade(),
+        tab_switcher_reads: tab_switcher_reads.clone(),
+    });
+    let other = cx.new(|cx| TestItem::new(cx).with_label("other"));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.add_item_to_active_pane(Box::new(reader.clone()), None, true, window, cx);
+        workspace.add_item_to_active_pane(Box::new(other.clone()), None, true, window, cx);
+    });
+
+    cx.simulate_modifiers_change(Modifiers::control());
+    let tab_switcher = open_tab_switcher(false, &workspace, cx);
+    tab_switcher.read_with(cx, |tab_switcher, _| {
+        assert_match_at_position(tab_switcher, 0, other.boxed_clone());
+        assert_match_selection(tab_switcher, 1, reader.boxed_clone());
+    });
+    assert_eq!(tab_switcher_reads.get(), 0);
+
+    cx.dispatch_action(Toggle { select_last: false });
+    assert_eq!(
+        tab_switcher_reads.get(),
+        1,
+        "cycling away from the reader deactivates it outside the workspace action"
+    );
+
+    cx.dispatch_action(Toggle { select_last: false });
+    cx.simulate_modifiers_change(Modifiers::none());
+    assert_eq!(
+        tab_switcher_reads.get(),
+        2,
+        "confirming on modifier release deactivates the reader outside the tab switcher"
+    );
+    cx.read(|cx| {
+        let active_item = workspace
+            .read(cx)
+            .active_item(cx)
+            .expect("an item should be active");
+        assert_eq!(active_item.item_id(), reader.entity_id());
+    });
+    assert_tab_switcher_is_closed(workspace, cx);
+}
+
 fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
     cx.update(|cx| {
         let state = AppState::test(cx);
@@ -478,6 +578,67 @@ async fn test_open_in_active_pane_clones_files_to_current_pane(cx: &mut gpui::Te
         editor_2.entity_id(),
         "should clone to new instance"
     );
+}
+
+#[gpui::test]
+async fn test_open_in_active_pane_clones_items_that_read_the_tab_switcher(
+    cx: &mut gpui::TestAppContext,
+) {
+    let app_state = init_test(cx);
+    let project = Project::test(app_state.fs.clone(), [], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    let workspace_handle = workspace.downgrade();
+    let item = cx.new(|cx| {
+        TestItem::new(cx)
+            .with_label("1.txt")
+            .with_project_items(&[TestProjectItem::new(1, "1.txt", cx)])
+            .with_container_reader(move |cx| {
+                let Some(workspace) = workspace_handle.upgrade() else {
+                    return;
+                };
+                if let Some(tab_switcher) = workspace.read(cx).active_modal::<TabSwitcher>(cx) {
+                    tab_switcher.read(cx).picker.read(cx);
+                }
+            })
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.add_item_to_active_pane(Box::new(item.clone()), None, true, window, cx);
+        workspace.split_pane(
+            workspace.active_pane().clone(),
+            workspace::SplitDirection::Right,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let panes = workspace.read_with(cx, |workspace, _| workspace.panes().to_vec());
+    item.read_with(cx, |item, _| {
+        item.read_containers_in(HookBits::CLONE_ON_SPLIT)
+    });
+
+    let tab_switcher = open_tab_switcher_for_active_pane(&workspace, cx);
+    tab_switcher.update(cx, |picker, _| {
+        picker.delegate.selected_index = 0;
+    });
+    cx.dispatch_action(menu::Confirm);
+    cx.run_until_parked();
+
+    item.read_with(cx, |item, _| {
+        assert!(
+            item.container_reads.get() > 0,
+            "confirming should clone the item into the active pane"
+        );
+    });
+    panes[1].read_with(cx, |pane, _| {
+        let active_item = pane
+            .active_item()
+            .expect("the active pane should hold the clone");
+        assert_ne!(active_item.item_id(), item.entity_id());
+        assert!(active_item.downcast::<TestItem>().is_some());
+    });
 }
 
 #[gpui::test]

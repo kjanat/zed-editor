@@ -393,16 +393,19 @@ fn create_worktree_askpass_delegate(
             window
                 .update(cx, |_, window, cx| {
                     workspace.update(cx, |workspace, cx| {
-                        workspace.toggle_modal(window, cx, |window, cx| {
-                            AskPassModal::new(
-                                operation.clone(),
-                                prompt.into(),
-                                tx,
-                                cancellation,
-                                window,
-                                cx,
-                            )
-                        });
+                        let operation = operation.clone();
+                        workspace
+                            .toggle_modal(window, cx, move |window, cx| {
+                                AskPassModal::new(
+                                    operation,
+                                    prompt.into(),
+                                    tx,
+                                    cancellation,
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .detach();
                     })
                 })
                 .ok();
