@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from collections.abc import Callable
+from itertools import takewhile
 from pathlib import Path
 
 from test_container import (
@@ -18,6 +19,7 @@ from test_container import (
 
 HERE = Path(__file__).resolve().parent
 REPOSITORY = HERE.parents[1]
+WORKFLOW = REPOSITORY / ".github/workflows/fork_upstream_sync.yaml"
 SCRIPTS = ("prepare.sh", "resolve.sh", "resolve-prompt.md")
 LISTS = (
     "formatting-only.txt",
@@ -63,6 +65,16 @@ def require_toolchain(test: type[unittest.TestCase]) -> type[unittest.TestCase]:
     if toolchain_available() or os.environ.get("CI"):
         return test
     return unittest.skip("Requires mise and cargo")(test)
+
+
+def continuation(lines: list[str], start: int) -> list[str]:
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    return [
+        line.strip()
+        for line in takewhile(
+            lambda line: len(line) - len(line.lstrip()) > indent, lines[start + 1 :]
+        )
+    ]
 
 
 def git(directory: Path, *arguments: str, check: bool = True) -> str:
@@ -500,6 +512,63 @@ class ResolverTests(unittest.TestCase):
     def test_agent_that_does_nothing_produces_no_candidate(self):
         _ = self.assert_failed(self.fixture(), "Claude produced no merge")
 
+    def test_save_step_keeps_everything_when_the_export_fails(self):
+        lines = (
+            WORKFLOW
+            .read_text()
+            .split("name: Save Claude's checkout, notes, logs and session\n", 1)[1]
+            .splitlines()
+        )
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith("run: ")
+        )
+        script = " ".join([
+            lines[start].strip().removeprefix("run: "),
+            *continuation(lines, start),
+        ])
+        fixture = self.fixture()
+        fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        _ = (fixture.repository / "notes-draft.txt").write_text("half done\n")
+        runner = fixture.root / "runner"
+        session = runner / "home/.claude/projects/-work/session.jsonl"
+        session.parent.mkdir(parents=True)
+        _ = session.write_text('{"token":"secret-oauth-canary"}\n')
+        _ = (runner / "claude-execution-output.json").write_text(
+            '["secret-oauth-canary printed"]\n'
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=fixture.repository,
+            env={
+                "PATH": os.environ["PATH"],
+                "HOME": str(runner / "home"),
+                "RUNNER_TEMP": str(runner),
+                "GIT_INDEX_FILE": str(runner / "claude.index"),
+                "TOKEN": "secret-oauth-canary",
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        saved = runner / "sync-resolution"
+        patch_text = (saved / "checkout.patch").read_text()
+        self.assertIn("notes-draft.txt", patch_text)
+        self.assertNotIn(".sync/", patch_text)
+        self.assertIn(
+            "Kept the fork's value", (saved / "state/resolution.md").read_text()
+        )
+        self.assertIn("***", (saved / "claude-execution-output.json").read_text())
+        copied = (saved / "claude-projects/-work/session.jsonl").read_text()
+        self.assertEqual(copied, '{"token":"***"}\n')
+        for path in saved.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(
+                    "secret-oauth-canary", path.read_text(errors="replace")
+                )
+
     def test_unfinished_work_survives_unmerged_paths(self):
         fixture = self.fixture()
         _ = (fixture.repository / "alpha/src/lib.rs").write_text(RESOLVED_ALPHA)
@@ -656,6 +725,91 @@ class ResolverTests(unittest.TestCase):
         fixture = conflict_fixture(root)
         _ = self.assert_failed(fixture, "Claude produced no merge")
         self.assertFalse((fixture.resolution / "resolution.bundle").exists())
+
+
+class TrustedConfigurationTests(unittest.TestCase):
+    workflow: str = WORKFLOW.read_text()
+
+    def job(self, name: str) -> str:
+        lines = self.workflow.split(f"\n  {name}:\n", 1)[1].splitlines()
+        end = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.startswith("  ")
+                and not line.startswith("   ")
+                and line.strip().endswith(":")
+            ),
+            None,
+        )
+        return "\n".join(lines[:end] if end is not None else lines)
+
+    def test_resolver_has_no_github_write_credential(self):
+        resolve = self.job("resolve")
+        self.assertIn("permissions: { contents: read }", resolve)
+        self.assertNotIn("SYNC_TOKEN", resolve)
+        self.assertNotIn("github.token", resolve)
+        self.assertNotIn("id-token", self.workflow)
+        self.assertNotIn("persist-credentials: true", self.workflow)
+        self.assertEqual(
+            resolve.count("secrets."),
+            resolve.count("secrets.CLAUDE_CODE_OAUTH_TOKEN }}"),
+        )
+        self.assertIn(
+            "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", resolve
+        )
+
+    def run_line(self, subcommand: str) -> str:
+        lines = self.workflow.splitlines()
+        script = f"bash .sync-scripts/script/upstream-sync/resolve.sh {subcommand}"
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith("run: ") and script in line
+        )
+        command = [
+            script + lines[start].split(script, 1)[1],
+            *continuation(lines, start),
+        ]
+        return " ".join(command)
+
+    def test_workflow_passes_every_argument_to_resolve_sh(self):
+        for subcommand, expected in (
+            ("export", ["export", "{temp}/sync-candidate", "{temp}/sync-resolution"]),
+            (
+                "verify",
+                [
+                    "verify",
+                    "{temp}/sync-candidate",
+                    "{temp}/sync-resolution",
+                    "{temp}/sync-output",
+                ],
+            ),
+        ):
+            with (
+                self.subTest(subcommand=subcommand),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                workspace = Path(temporary)
+                stub = workspace / ".sync-scripts/script/upstream-sync/resolve.sh"
+                stub.parent.mkdir(parents=True)
+                _ = stub.write_text('printf "%s\\n" "$@"\n')
+                result = subprocess.run(
+                    ["bash", "-e", "-c", self.run_line(subcommand)],
+                    cwd=workspace,
+                    env={
+                        "PATH": os.environ["PATH"],
+                        "RUNNER_TEMP": temporary,
+                        "sync_output": f"{temporary}/sync-output",
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [argument.format(temp=temporary) for argument in expected],
+                )
 
 
 if __name__ == "__main__":
