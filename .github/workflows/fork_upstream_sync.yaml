@@ -43,7 +43,7 @@ jobs:
           --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/source,readonly"
           --mount "type=bind,src=${sync_output},dst=/output"
           upstream-sync-tools bash /source/script/upstream-sync/prepare.sh
-      - uses: kjanat/actions-shells@v0
+      - uses: kjanat/actions-shells@697bb547ef1ce427e202b4cbcdb19886aa587da7 # v0.1.0
       - &export
         name: Export bounded output
         shell: "actions-shell perl {0}"
@@ -203,7 +203,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
-      - uses: kjanat/actions-shells@v0
+      - uses: kjanat/actions-shells@697bb547ef1ce427e202b4cbcdb19886aa587da7 # v0.1.0
       - *export
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

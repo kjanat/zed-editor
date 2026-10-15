@@ -87,7 +87,8 @@ jobs:
     timeout-minutes: 15
     cancel-timeout-minutes: 4
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - run: docker run --rm -qv "${PWD}:/w" ghcr.io/kjanat/actionlint:nightly
 
   style:
@@ -99,8 +100,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: kjanat/setup-tombi@HEAD
-      - uses: kjanat/dprint-check@v3
+      - uses: kjanat/setup-tombi@fa7a237e9661f88c78309b5214f4eb7cf0c7c5f6 # master
+      - uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # v3.1.0
 
   clippy:
     name: Clippy (${{ matrix.os }})
