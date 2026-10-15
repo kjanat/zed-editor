@@ -167,7 +167,7 @@ class MergeFormattingTests(unittest.TestCase):
                 script = str(repository / "script/upstream-sync/prepare.sh")
                 configuration = str(repository / "dprint.toml")
             _ = (directory / "dprint.toml").write_text(
-                json.dumps({"extends": configuration})
+                f"extends = {json.dumps(configuration)}\n"
             )
 
             def normalize(contents: str) -> str:
