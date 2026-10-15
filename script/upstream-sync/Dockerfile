@@ -41,6 +41,6 @@ COPY .cargo/config.toml .cargo/config.toml
 RUN dprint output-resolved-config >/dev/null \
     && printf 'value = 1\n' | dprint fmt --stdin warmup.toml >/dev/null \
     && printf 'fn main() {}\n' | dprint fmt --stdin warmup.rs >/dev/null \
-    && chmod -R a+rwX /opt/dprint-cache
+    && chmod -R a+rwX /opt/dprint-cache /tmp/.cache
 WORKDIR /
 RUN rm -rf /tmp/work
