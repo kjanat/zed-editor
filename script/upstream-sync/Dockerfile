@@ -1,7 +1,7 @@
 FROM ghcr.io/jdx/mise:2026.10.3-debian@sha256:58c4c847f5518a9a87a9a582886a485443dbca5eb024426577f58d586a0990c6
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential unzip \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake unzip \
     && rm -rf /var/lib/apt/lists/*
 RUN git config --system advice.detachedHead false
 ARG MERGIRAF_VERSION=0.20.0
