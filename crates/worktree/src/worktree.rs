@@ -5215,26 +5215,29 @@ impl BackgroundScanner {
                 let mut dot_git_paths = None;
 
                 if self.track_git_repositories {
-                    let is_created_info_dir = matches!(event.kind, Some(PathEventKind::Created))
+                    // The native watcher reports a directory renamed into place as modified.
+                    let is_info_dir = !matches!(event.kind, Some(PathEventKind::Removed))
                         && abs_path.as_path().ends_with(INFO_DIR);
                     let is_exclude = abs_path.as_path().ends_with(REPO_EXCLUDE);
                     let mut watched_info_dir = false;
                     for repository in snapshot.git_repositories.values() {
                         let common_dir_abs_path = repository.common_dir_abs_path.as_ref();
-                        let created_info_dir = is_created_info_dir
-                            && common_dir_abs_path.join(INFO_DIR) == abs_path.as_path();
-                        if !created_info_dir
+                        let info_dir =
+                            is_info_dir && common_dir_abs_path.join(INFO_DIR) == abs_path.as_path();
+                        if !info_dir
                             && !(is_exclude
                                 && common_dir_abs_path.join(REPO_EXCLUDE) == abs_path.as_path())
                         {
                             continue;
                         }
                         // `info/exclude` can be written before this watch takes effect.
-                        if created_info_dir && !watched_info_dir {
-                            self.watcher
-                                .add(abs_path.as_path())
-                                .with_context(|| format!("failed to watch {abs_path:?}"))
-                                .log_err();
+                        if info_dir && !watched_info_dir {
+                            if self.fs.is_dir(abs_path.as_path()).await {
+                                self.watcher
+                                    .add(abs_path.as_path())
+                                    .with_context(|| format!("failed to watch {abs_path:?}"))
+                                    .log_err();
+                            }
                             watched_info_dir = true;
                         }
                         let common_dir_abs_path = common_dir_abs_path.to_path_buf();
@@ -5312,7 +5315,8 @@ impl BackgroundScanner {
                     // native watcher is non-recursive they need their own watches, or subsequent
                     // ref updates inside them would go unnoticed. The subtree is walked because
                     // nested directories may have been created before this watch took effect.
-                    if matches!(event.kind, Some(PathEventKind::Created))
+                    // The native watcher reports a directory renamed into place as modified.
+                    if !matches!(event.kind, Some(PathEventKind::Removed))
                         && path_in_git_dir
                             .components()
                             .any(|component| component.as_os_str() == OsStr::new(REFS_DIR))
