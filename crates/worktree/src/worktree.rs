@@ -5215,6 +5215,36 @@ impl BackgroundScanner {
                 let mut dot_git_paths = None;
 
                 if self.track_git_repositories {
+                    let is_created_info_dir = matches!(event.kind, Some(PathEventKind::Created))
+                        && abs_path.as_path().ends_with(INFO_DIR);
+                    let is_exclude = abs_path.as_path().ends_with(REPO_EXCLUDE);
+                    let mut watched_info_dir = false;
+                    for repository in snapshot.git_repositories.values() {
+                        let common_dir_abs_path = repository.common_dir_abs_path.as_ref();
+                        let created_info_dir = is_created_info_dir
+                            && common_dir_abs_path.join(INFO_DIR) == abs_path.as_path();
+                        if !created_info_dir
+                            && !(is_exclude
+                                && common_dir_abs_path.join(REPO_EXCLUDE) == abs_path.as_path())
+                        {
+                            continue;
+                        }
+                        // `info/exclude` can be written before this watch takes effect.
+                        if created_info_dir && !watched_info_dir {
+                            self.watcher
+                                .add(abs_path.as_path())
+                                .with_context(|| format!("failed to watch {abs_path:?}"))
+                                .log_err();
+                            watched_info_dir = true;
+                        }
+                        let common_dir_abs_path = common_dir_abs_path.to_path_buf();
+                        if !dot_git_abs_paths.contains(&common_dir_abs_path) {
+                            dot_git_abs_paths.push(common_dir_abs_path);
+                        }
+                        work_dirs_needing_exclude_update
+                            .push(repository.work_directory_abs_path.clone());
+                    }
+
                     for ancestor in abs_path.as_path().ancestors() {
                         if is_dot_git(ancestor, self.fs.as_ref()).await {
                             let path_in_git_dir = abs_path
@@ -5228,25 +5258,6 @@ impl BackgroundScanner {
                 }
 
                 if let Some((dot_git_abs_path, path_in_git_dir)) = dot_git_paths {
-                    // `info/exclude` can be written before this watch takes effect.
-                    if matches!(event.kind, Some(PathEventKind::Created))
-                        && path_in_git_dir == Path::new(INFO_DIR)
-                    {
-                        self.watcher
-                            .add(abs_path.as_path())
-                            .with_context(|| format!("failed to watch {abs_path:?}"))
-                            .log_err();
-                        if let Some(repository) = snapshot.git_repositories.values().find(|repo| {
-                            repo.common_dir_abs_path.join(INFO_DIR) == abs_path.as_path()
-                        }) {
-                            work_dirs_needing_exclude_update
-                                .push(repository.work_directory_abs_path.clone());
-                            if !dot_git_abs_paths.contains(&dot_git_abs_path) {
-                                dot_git_abs_paths.push(dot_git_abs_path.clone());
-                            }
-                        }
-                    }
-
                     let is_ignored = skipped_file_names_in_dot_git.iter().any(|skipped| {
                         path_in_git_dir
                             .file_name()
@@ -5337,19 +5348,6 @@ impl BackgroundScanner {
                             );
                             dot_git_abs_paths.push(dot_git_abs_path);
                         }
-                    }
-                }
-
-                if self.track_git_repositories
-                    && abs_path
-                        .as_path()
-                        .ends_with(Path::new(DOT_GIT).join(REPO_EXCLUDE))
-                {
-                    if let Some(repository) = snapshot.git_repositories.values().find(|repo| {
-                        repo.common_dir_abs_path.join(REPO_EXCLUDE) == abs_path.as_path()
-                    }) {
-                        work_dirs_needing_exclude_update
-                            .push(repository.work_directory_abs_path.clone());
                     }
                 }
             }

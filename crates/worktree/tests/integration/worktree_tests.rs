@@ -5447,6 +5447,115 @@ async fn test_repo_exclude_created_after_scan(
 }
 
 #[gpui::test]
+async fn test_repo_exclude_change_in_a_common_dir_named_bare(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.insert_tree(
+        path!("/repo"),
+        json!({
+            ".bare": {
+                "info": { "exclude": "" },
+                "worktrees": { "main": { "commondir": "../.." } },
+            },
+        }),
+    )
+    .await;
+    let worktree_dir = Path::new(path!("/repo/main"));
+    fs.insert_tree(
+        worktree_dir,
+        json!({
+            ".git": "gitdir: /repo/.bare/worktrees/main",
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), worktree_dir, cx).await;
+
+    fs.write(
+        &Path::new(path!("/repo/.bare")).join(REPO_EXCLUDE),
+        "agent.log\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_in_info_dir_created_after_scan_applies_to_linked_worktrees(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.set_non_recursive_watches();
+    fs.insert_tree(
+        path!("/repo"),
+        json!({
+            ".git": {
+                "worktrees": {
+                    "first": { "commondir": "../.." },
+                    "second": { "commondir": "../.." },
+                },
+            },
+        }),
+    )
+    .await;
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            "first": {
+                ".git": "gitdir: /repo/.git/worktrees/first",
+                "agent.log": "",
+                "README.md": "",
+            },
+            "second": {
+                ".git": "gitdir: /repo/.git/worktrees/second",
+                "agent.log": "",
+                "README.md": "",
+            },
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.insert_tree(
+        Path::new(path!("/repo")).join(DOT_GIT).join(INFO_DIR),
+        json!({ "exclude": "agent.log\n" }),
+    )
+    .await;
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["first/agent.log", "second/agent.log"],
+                tracked_paths: &["first/README.md", "second/README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_repo_exclude_anchored_pattern(executor: BackgroundExecutor, cx: &mut TestAppContext) {
     init_test(cx);
 
