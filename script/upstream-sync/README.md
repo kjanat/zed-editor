@@ -58,9 +58,11 @@ becomes the sync PR.
 For a `clean` or `resolved` result, `prepare.sh --regenerate-extension-schemas`
 builds `schema_generator` and rewrites `crates/extension_api/schemas`, and
 `prepare.sh` commits any change as `Regenerate the extension schemas`. The image
-installs `build-essential` and `cmake` for this build. When the build fails or runs longer
-than 20 minutes, `prepare.sh` prints a warning and produces the candidate
-without that commit, and the schema test fails on the sync PR.
+installs `build-essential` and `cmake` for this build. Cargo runs with
+`--verbose`, and `prepare.sh` logs the start, the duration and whether the
+schemas changed. When the build fails or runs longer than 45 minutes,
+`prepare.sh` logs its exit status, 124 for the timeout, and produces the
+candidate without that commit, and the schema test fails on the sync PR.
 
 ## Claude resolver
 

@@ -39,9 +39,9 @@ structured_merge() (
 		&& dprint check "$1"
 )
 regenerate_extension_schemas() {
-	cargo run --locked --quiet --package schema_generator -- extension \
+	cargo run --locked --verbose --package schema_generator -- extension \
 		--output crates/extension_api/schemas/extension.schema.json \
-		&& cargo run --locked --quiet --package schema_generator -- language_config \
+		&& cargo run --locked --verbose --package schema_generator -- language_config \
 			--output crates/extension_api/schemas/language-config.schema.json
 }
 # The exporter refuses conflict-report.md above 60000 bytes, and GitHub rejects
@@ -385,14 +385,23 @@ case "$result" in
 			git commit --all --message "Apply this fork's formatting to the upstream merge"
 		fi
 		if [[ "$result" != partial ]]; then
-			# The prepare job times out after 30 minutes.
-			if timeout 20m bash "$0" --regenerate-extension-schemas; then
+			echo "prepare.sh: regenerating the extension schemas" >&2
+			started=$SECONDS
+			status=0
+			# The prepare job times out after 60 minutes.
+			timeout 45m bash "$0" --regenerate-extension-schemas || status=$?
+			elapsed=$((SECONDS - started))
+			if ((status == 0)); then
 				git add crates/extension_api/schemas
-				if ! git diff --cached --quiet; then
+				git diff --cached --stat
+				if git diff --cached --quiet; then
+					echo "prepare.sh: the extension schemas are current (${elapsed}s)" >&2
+				else
 					git commit --message "Regenerate the extension schemas"
+					echo "prepare.sh: committed the regenerated extension schemas (${elapsed}s)" >&2
 				fi
 			else
-				echo "prepare.sh: could not regenerate the extension schemas" >&2
+				echo "prepare.sh: could not regenerate the extension schemas: exit status ${status} after ${elapsed}s, 124 is the 45-minute timeout" >&2
 			fi
 		fi
 		git bundle create /output/sync.bundle refs/heads/sync/upstream ^master

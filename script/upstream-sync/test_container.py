@@ -237,7 +237,7 @@ rustfmt --version
         self.assertIsNone(self.candidate_file(output, source, "gone.txt"))
 
     def test_clean_merge_commits_the_regenerated_extension_schemas(self):
-        output, source, _ = self.run_sync(
+        output, source, result = self.run_sync(
             SCHEMA_WORKSPACE,
             {"notes.txt": "fork\n"},
             {"crates/schema_generator/src/main.rs": schema_generator(2)},
@@ -254,9 +254,16 @@ rustfmt --version
         self.assertEqual(
             self.candidate_subjects(source)[0], "Regenerate the extension schemas"
         )
+        self.assertIn("prepare.sh: regenerating the extension schemas", result.stderr)
+        self.assertIn("Running `", result.stderr)
+        self.assertRegex(
+            result.stderr,
+            r"prepare\.sh: committed the regenerated extension schemas \([0-9]+s\)",
+        )
+        self.assertIn("extension.schema.json", result.stdout)
 
     def test_current_extension_schemas_add_no_commit(self):
-        output, source, _ = self.run_sync(
+        output, source, result = self.run_sync(
             SCHEMA_WORKSPACE,
             {"notes.txt": "fork\n"},
             {
@@ -274,6 +281,10 @@ rustfmt --version
         self.assertNotIn(
             "Regenerate the extension schemas", self.candidate_subjects(source)
         )
+        self.assertRegex(
+            result.stderr,
+            r"prepare\.sh: the extension schemas are current \([0-9]+s\)",
+        )
 
     def test_failed_schema_generation_still_produces_the_candidate(self):
         output, source, result = self.run_sync(
@@ -284,8 +295,9 @@ rustfmt --version
             },
         )
         self.assertEqual((output / "result").read_text(), "clean\n")
-        self.assertIn(
-            "prepare.sh: could not regenerate the extension schemas", result.stderr
+        self.assertRegex(
+            result.stderr,
+            r"prepare\.sh: could not regenerate the extension schemas: exit status 1 after [0-9]+s",
         )
         self.assertEqual(
             self.candidate_file(output, source, EXTENSION_SCHEMA),
