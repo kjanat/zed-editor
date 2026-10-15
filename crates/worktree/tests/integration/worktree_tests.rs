@@ -3,7 +3,7 @@ mod worktree_settings_tests;
 use anyhow::Result;
 use encoding_rs;
 use fs::{FakeFs, Fs, PathEventKind, RealFs, RemoveOptions};
-use git::{DOT_GIT, GITIGNORE, REPO_EXCLUDE};
+use git::{DOT_GIT, GITIGNORE, INFO_DIR, REPO_EXCLUDE};
 use gpui::{
     AppContext as _, BackgroundExecutor, BorrowAppContext, Context, Entity, Task, TestAppContext,
 };
@@ -5298,6 +5298,148 @@ async fn test_repo_exclude(executor: BackgroundExecutor, cx: &mut TestAppContext
             worktree,
             WorktreeExpectations {
                 tracked_paths: &[".env.example", ".env.local", "README.md", "src/main.rs"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+async fn local_worktree(fs: Arc<FakeFs>, root: &Path, cx: &mut TestAppContext) -> Entity<Worktree> {
+    let worktree = Worktree::local(
+        root,
+        true,
+        fs,
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    worktree
+        .update(cx, |worktree, _| {
+            worktree.as_local().unwrap().scan_complete()
+        })
+        .await;
+    cx.run_until_parked();
+    worktree
+}
+
+#[gpui::test]
+async fn test_repo_exclude_change_with_non_recursive_watches(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.set_non_recursive_watches();
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": { "info": { "exclude": "" } },
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.write(
+        &project_dir.join(DOT_GIT).join(REPO_EXCLUDE),
+        "agent.log\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_in_info_dir_created_after_scan(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.set_non_recursive_watches();
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": {},
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.insert_tree(
+        project_dir.join(DOT_GIT).join(INFO_DIR),
+        json!({ "exclude": "agent.log\n" }),
+    )
+    .await;
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_created_after_scan(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": { "info": {} },
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.write(
+        &project_dir.join(DOT_GIT).join(REPO_EXCLUDE),
+        "agent.log\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
                 ..Default::default()
             },
         );

@@ -3899,22 +3899,25 @@ impl BackgroundScannerState {
     }
 }
 
-/// Watches the directories inside a git directory that git writes ref updates to.
+/// Watches the directories inside a git directory that hold refs and the repository's
+/// `info/exclude`.
 ///
 /// On Linux and FreeBSD the native file watcher is non-recursive, so a watch on the git
 /// directory itself does not report changes to files nested below it, such as the loose
 /// refs that git updates on commit, fetch, and branch operations. Watch the `refs` tree
-/// (its directories are watched individually because branch names may contain slashes)
-/// and, for repositories using the reftable backend, the `reftable` directory. On
-/// platforms with recursive watchers these calls are deduplicated against the existing
-/// recursive registration, making them effectively free.
+/// (its directories are watched individually because branch names may contain slashes),
+/// the `info` directory, and, for repositories using the reftable backend, the `reftable`
+/// directory. On platforms with recursive watchers these calls are deduplicated against
+/// the existing recursive registration, making them effectively free.
 async fn watch_git_dir_subdirectories(git_dir_abs_path: &Path, fs: &dyn Fs, watcher: &dyn Watcher) {
-    let reftable_dir_abs_path = git_dir_abs_path.join(REFTABLE_DIR);
-    if fs.is_dir(&reftable_dir_abs_path).await {
-        watcher
-            .add(&reftable_dir_abs_path)
-            .context("failed to add reftable directory to watcher")
-            .log_err();
+    for subdirectory in [REFTABLE_DIR, INFO_DIR] {
+        let subdirectory_abs_path = git_dir_abs_path.join(subdirectory);
+        if fs.is_dir(&subdirectory_abs_path).await {
+            watcher
+                .add(&subdirectory_abs_path)
+                .with_context(|| format!("failed to watch {subdirectory_abs_path:?}"))
+                .log_err();
+        }
     }
 
     watch_dir_tree(git_dir_abs_path.join(REFS_DIR), fs, watcher).await;
@@ -5225,6 +5228,25 @@ impl BackgroundScanner {
                 }
 
                 if let Some((dot_git_abs_path, path_in_git_dir)) = dot_git_paths {
+                    // `info/exclude` can be written before this watch takes effect.
+                    if matches!(event.kind, Some(PathEventKind::Created))
+                        && path_in_git_dir == Path::new(INFO_DIR)
+                    {
+                        self.watcher
+                            .add(abs_path.as_path())
+                            .with_context(|| format!("failed to watch {abs_path:?}"))
+                            .log_err();
+                        if let Some(repository) = snapshot.git_repositories.values().find(|repo| {
+                            repo.common_dir_abs_path.join(INFO_DIR) == abs_path.as_path()
+                        }) {
+                            work_dirs_needing_exclude_update
+                                .push(repository.work_directory_abs_path.clone());
+                            if !dot_git_abs_paths.contains(&dot_git_abs_path) {
+                                dot_git_abs_paths.push(dot_git_abs_path.clone());
+                            }
+                        }
+                    }
+
                     let is_ignored = skipped_file_names_in_dot_git.iter().any(|skipped| {
                         path_in_git_dir
                             .file_name()
@@ -5448,13 +5470,12 @@ impl BackgroundScanner {
         if !work_dirs_needing_exclude_update.is_empty() {
             let mut state = self.state.lock().await;
             for work_dir_abs_path in work_dirs_needing_exclude_update {
-                if let Some((_, needs_update)) = state
+                state
                     .snapshot
                     .repo_exclude_by_work_dir_abs_path
-                    .get_mut(&work_dir_abs_path)
-                {
-                    *needs_update = true;
-                }
+                    .entry(work_dir_abs_path)
+                    .or_insert_with(|| (Arc::new(Gitignore::empty()), true))
+                    .1 = true;
             }
         }
 
