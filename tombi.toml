@@ -70,7 +70,7 @@ lint.rules   = {
 
 [[schemas]]  # https://doc.rust-lang.org/cargo/reference/config.html#configuration-format
 path    = "https://www.schemastore.org/cargo-config.json"
-include = ["**/.cargo/config.toml", "**/.config/nightly.toml"]
+include = ["**/.cargo/*.toml"]
 
 # Python
 [[schemas]]  # https://docs.basedpyright.com/dev/configuration/config-files/#pyright-configuration
@@ -112,5 +112,7 @@ include = ["**/helix/themes/*.toml", "**/runtime/themes/*.toml"]
 
 # Mise
 [[schemas]]
-path    = "https://mise.jdx.dev/schema/mise.json"
-include = ["mise.toml", ".mise.toml"]
+toml-version = "v1.1.0"
+path         = "https://mise.jdx.dev/schema/mise.json"
+include      = ["**/mise*.toml", "**/.mise*.toml"]
+exclude      = [".miserc.toml"]

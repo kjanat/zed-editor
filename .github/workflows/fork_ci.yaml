@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=github-workflow.json
 # CI gate for kjanat/zed-editor.
 #
 # Distilled from upstream's run_tests.yml, which runs on Zed's namespace-*
@@ -9,7 +10,7 @@
 # Guards every push and PR on master, including the PRs the upstream-sync
 # workflow opens.
 ---
-name: fork_ci
+name: CI
 on:
   push: { branches: [master] }
   pull_request: { branches: [master] }
@@ -19,10 +20,11 @@ concurrency: { group: "${{ github.workflow }}-${{ github.ref }}-${{ github.event
 
 jobs:
   plan:
+    name: Calculate affected packages
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    cancel-timeout-minutes: 1
+    cancel-timeout-minutes: 4
     outputs:
       scope: ${{ steps.plan.outputs.scope }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -31,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false, fetch-depth: 2 }
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with: { cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - name: Test the planner
         run: mise run test-fork-ci
@@ -54,7 +56,7 @@ jobs:
           esac
           mise run affected-packages --base "${base}" --head HEAD | tee -a "${GITHUB_OUTPUT}"
           sync_inputs=(
-            .cargo/config.toml .dprint.jsonc .mise.toml rust-toolchain.toml rustfmt.toml tombi.toml
+            .cargo/config.toml dprint.toml .mise.toml rust-toolchain.toml rustfmt.toml tombi.toml
             .github/workflows/fork_ci.yaml .github/workflows/fork_upstream_sync.yaml script/upstream-sync
           )
           if [[ -n "${base}" ]] && git diff --quiet "${base}" HEAD -- "${sync_inputs[@]}"; then
@@ -64,55 +66,69 @@ jobs:
           fi | tee -a "${GITHUB_OUTPUT}"
 
   sync_security:
+    name: Test upstream sync
     if: github.repository == 'kjanat/zed-editor' && needs.plan.outputs.sync == 'true'
-    needs: plan
-    runs-on: ubuntu-26.04
+    needs: [plan]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    cancel-timeout-minutes: 1
+    cancel-timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with: { cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - name: Test the upstream sync
         run: mise run test-upstream-sync
-  style:
+
+  actionlint:
+    name: kjanat/actionlint
     if: github.repository == 'kjanat/zed-editor'
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    cancel-timeout-minutes: 1
+    cancel-timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker run --rm --it -qv "${PWD}:/w" ghcr.io/kjanat/actionlint:nightly
+
+  style:
+    name: kjanat/dprint-check
+    if: github.repository == 'kjanat/zed-editor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    cancel-timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
+      - uses: kjanat/setup-tombi@HEAD
       - uses: kjanat/dprint-check@v3
 
   clippy:
+    name: Clippy (${matrix.os})
     if: github.repository == 'kjanat/zed-editor'
     needs: plan
     strategy:
       fail-fast: false
-      matrix: { os: [ubuntu-26.04, windows-2025-vs2026, macos-latest] }
+      matrix: { os: [ubuntu-latest, windows-2025-vs2026, macos-latest] }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
-    cancel-timeout-minutes: 1
+    cancel-timeout-minutes: 4
     env:
       SCOPE: ${{ needs.plan.outputs.scope }}
       PACKAGE_ARGS: ${{ needs.plan.outputs.package_args }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: env.SCOPE != 'none'
+        if: &NoScope env.SCOPE != 'none'
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
-        if: env.SCOPE != 'none'
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        if: *NoScope
         with: { bootstrap: true, bootstrap_skip: compose, cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: env.SCOPE != 'none'
+        if: *NoScope
         with: { shared-key: fork-ci-clippy, save-if: "${{ github.ref == 'refs/heads/master' }}", cache-on-failure: false }
       - name: Clippy
-        if: env.SCOPE != 'none'
+        if: *NoScope
         shell: bash
-        run: |
-          read -ra package_args <<< "${PACKAGE_ARGS}"
+        run: read -ra package_args <<< "${PACKAGE_ARGS}";
           mise run clippy --no-deps "${package_args[@]}"
       - name: Show disk usage
         if: always() && env.SCOPE != 'none' && runner.os != 'Windows'
@@ -120,19 +136,20 @@ jobs:
         run: df -h /
 
   test_suites:
+    name: Test suites (${matrix.os}, ${matrix.suite}${{ case(matrix.package != null, format(', {0}', matrix.package), '') }})
     if: github.repository == 'kjanat/zed-editor'
-    needs: plan
+    needs: [plan]
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, windows-2025-vs2026, macos-latest]
+        os: [ubuntu-latest, windows-2025-vs2026, macos-latest]
         suite: [remote-save, affected, editor-backup]
         include:
           - { suite: remote-save, package: collab }
           - { suite: editor-backup, package: editor }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
-    cancel-timeout-minutes: 1
+    cancel-timeout-minutes: 4
     steps:
       - name: Decide whether the suite runs
         id: suite
@@ -152,7 +169,7 @@ jobs:
         if: steps.suite.outputs.run == 'true'
         with: { persist-credentials: false }
       # Concurrent action startup can lock the runner's event.json on Windows.
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         if: steps.suite.outputs.run == 'true'
         with:
           bootstrap: true
@@ -176,8 +193,7 @@ jobs:
         if: steps.suite.outputs.run == 'true' && matrix.suite == 'affected'
         shell: bash
         env: { PACKAGE_ARGS: "${{ needs.plan.outputs.package_args }}" }
-        run: |
-          read -ra package_args <<< "${PACKAGE_ARGS:---workspace}"
+        run: read -ra package_args <<< "${PACKAGE_ARGS:---workspace}";
           cargo nextest run --no-fail-fast --no-tests=warn "${package_args[@]}" 2>&1 | tee tests.log
       - name: Test editor save-backup and rendering regressions
         if: steps.suite.outputs.run == 'true' && matrix.suite == 'editor-backup'
@@ -198,15 +214,16 @@ jobs:
 
   # Preserve the check names required by branch protection after splitting the suites.
   tests:
+    name: Require all test suites to pass
     if: ${{ !cancelled() && github.repository == 'kjanat/zed-editor' }}
     needs: test_suites
     permissions: { actions: read }
     strategy:
       fail-fast: false
-      matrix: { os: [ubuntu-26.04, windows-2025-vs2026, macos-latest] }
-    runs-on: ubuntu-26.04
+      matrix: { os: [ubuntu-latest, windows-2025-vs2026, macos-latest] }
+    runs-on: ubuntu-latest
     timeout-minutes: 5
-    cancel-timeout-minutes: 1
+    cancel-timeout-minutes: 4
     steps:
       - name: Require this platform's test suites to pass
         shell: bash

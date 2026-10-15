@@ -23,7 +23,7 @@ format_merge_input() (
 	esac
 	configuration=$(mktemp .sync-merge-format.XXXXXX.json)
 	trap 'rm -f "$configuration"' EXIT
-	printf '{"extends":"./.dprint.jsonc",%s}\n' "$overrides" >"$configuration"
+	printf '{"extends":"./dprint.toml",%s}\n' "$overrides" >"$configuration"
 	dprint fmt --config "$configuration" --stdin "$1"
 )
 # Callers test the result, which disables errexit inside, so every step is chained.

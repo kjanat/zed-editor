@@ -36,7 +36,7 @@ WORKDIR /tmp/work
 COPY rust-toolchain.toml ./
 RUN rustup show active-toolchain >/dev/null \
     && chmod -R a+rwX /opt/cargo /opt/rustup
-COPY .dprint.jsonc tombi.toml rustfmt.toml ./
+COPY dprint.toml tombi.toml rustfmt.toml ./
 COPY .cargo/config.toml .cargo/config.toml
 RUN dprint output-resolved-config >/dev/null \
     && printf 'value = 1\n' | dprint fmt --stdin warmup.toml >/dev/null \

@@ -1,5 +1,6 @@
+# yaml-language-server: $schema=github-workflow.json
 ---
-name: fork_upstream_sync
+name: Upstream sync
 on:
   schedule: [{ cron: "37 7 * * *", timezone: &Adam Europe/Amsterdam }, { cron: "37 11 * * *", timezone: *Adam }]
   workflow_dispatch: null
@@ -7,6 +8,7 @@ concurrency: { group: "${{ github.workflow }}", cancel-in-progress: false, queue
 permissions: { contents: read }
 jobs:
   prepare:
+    name: Prepare the candidate for upstream sync
     if: github.repository == 'kjanat/zed-editor' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
@@ -32,15 +34,15 @@ jobs:
           cache-to: type=gha,mode=max,scope=upstream-sync-tools
       - name: Prepare the candidate
         shell: bash
-        run: |
-          mkdir -p "${sync_output}"
-          # Untrusted formatter output must not be interpreted as runner commands.
-          marker="$(cat /proc/sys/kernel/random/uuid)"; echo "::stop-commands::${marker}"; trap 'echo "::${marker}::"' EXIT
-          user_id="$(id -u)"; group_id="$(id -g)"
-          docker run --rm --user "${user_id}:${group_id}" --cap-drop=ALL --security-opt=no-new-privileges \
-            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/source,readonly" \
-            --mount "type=bind,src=${sync_output},dst=/output" \
-            upstream-sync-tools bash /source/script/upstream-sync/prepare.sh
+        run: mkdir -p "${sync_output}";
+          marker="$(cat /proc/sys/kernel/random/uuid)";
+          echo "::stop-commands::${marker}";
+          trap 'echo "::${marker}::"' EXIT;
+          user_id="$(id -u)"; group_id="$(id -g)";
+          docker run --rm --user "${user_id}:${group_id}" --cap-drop=ALL --security-opt=no-new-privileges
+          --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/source,readonly"
+          --mount "type=bind,src=${sync_output},dst=/output"
+          upstream-sync-tools bash /source/script/upstream-sync/prepare.sh
       - uses: kjanat/actions-shells@v0
       - &export
         name: Export bounded output
@@ -83,19 +85,20 @@ jobs:
         id: claude
         if: steps.result.outputs.result == 'partial'
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: |
-          prs="$(gh pr list -R "${GITHUB_REPOSITORY}" --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("sync/upstream"))] | length')"
-          tried="$(gh issue list -R "${GITHUB_REPOSITORY}" --state open --label upstream-sync-conflict --json body,comments \
-            --jq "[.[] | .body, .comments[].body | select(contains(\"claude-attempt fork=${GITHUB_SHA}\"))] | length")"
-          [[ "${prs}" == 0 && "${tried}" == 0 ]] && run=true || run=false
+        run: prs="$(gh pr list -R "${GITHUB_REPOSITORY}" --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("sync/upstream"))] | length')";
+          tried="$(gh issue list -R "${GITHUB_REPOSITORY}" --state open --label upstream-sync-conflict --json body,comments
+          --jq "[.[] | .body, .comments[].body | select(contains(\"claude-attempt fork=${GITHUB_SHA}\"))] | length")";
+          [[ "${prs}" == 0 && "${tried}" == 0 ]] && run=true || run=false;
           echo "run=${run}" | tee -a "${GITHUB_OUTPUT}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: upstream-sync-candidate
           path: ${{ env.sync_export }}
           if-no-files-found: error
           retention-days: 30
+
   resolve:
+    name: Resolve the conflicts with Claude
     needs: prepare
     if: needs.prepare.outputs.result == 'partial' && needs.prepare.outputs.claude == 'true'
     runs-on: ubuntu-26.04
@@ -109,7 +112,7 @@ jobs:
             env: *git-advice
             with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
           - &candidate
-            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+            uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
             with: { name: upstream-sync-candidate, path: "${{ runner.temp }}/sync-candidate" }
       - &sync-scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,7 +127,7 @@ jobs:
             /script/upstream-sync/
             /script/clippy
       - &mise
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with: { bootstrap: true, bootstrap_skip: compose }
       - &rust-cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -137,7 +140,7 @@ jobs:
       - name: Resolve the conflicts with Claude
         continue-on-error: true
         timeout-minutes: 280
-        uses: anthropics/claude-code-action/base-action@58985842b834ed26087302ba27d07bc24ca8697a # v1.0.244
+        uses: anthropics/claude-code-action/base-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
         env: { DISABLE_AUTOUPDATER: "1" }
         with:
           prompt_file: ${{ github.workspace }}/script/upstream-sync/resolve-prompt.md
@@ -147,27 +150,28 @@ jobs:
       - name: Save Claude's checkout, notes, logs and session
         if: always()
         env: { GIT_INDEX_FILE: "${{ runner.temp }}/claude.index", TOKEN: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" }
-        run: |
-          r="${RUNNER_TEMP}/sync-resolution"
-          mkdir -p "${r}"
-          git read-tree HEAD
-          git add -A
-          git diff --cached --binary HEAD >"${r}/checkout.patch"
-          if [[ -d .sync ]]; then cp -r .sync "${r}/state"; fi
-          if [[ -f "${RUNNER_TEMP}/claude-execution-output.json" ]]; then cp "${RUNNER_TEMP}/claude-execution-output.json" "${r}/"; fi
-          if [[ -d ~/.claude/projects ]]; then cp -r ~/.claude/projects "${r}/claude-projects"; fi
+        run: r="${RUNNER_TEMP}/sync-resolution";
+          mkdir -p "${r}";
+          git read-tree HEAD;
+          git add -A;
+          git diff --cached --binary HEAD >"${r}/checkout.patch";
+          if [[ -d .sync ]]; then cp -r .sync "${r}/state"; fi;
+          if [[ -f "${RUNNER_TEMP}/claude-execution-output.json" ]]; then cp "${RUNNER_TEMP}/claude-execution-output.json" "${r}/"; fi;
+          if [[ -d ~/.claude/projects ]]; then cp -r ~/.claude/projects "${r}/claude-projects"; fi;
           if [[ -n "${TOKEN}" ]]; then find "${r}" -type f -exec perl -pi -e 's/\Q$ENV{TOKEN}\E/***/g' {} +; fi
       - name: Export the resolution
         if: always()
         run: *export-resolution
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: upstream-sync-resolution
           path: ${{ runner.temp }}/sync-resolution
           if-no-files-found: warn
           retention-days: 30
+
   verify:
+    name: Verify the resolution
     needs: [prepare, resolve]
     if: always() && needs.prepare.outputs.result == 'partial' && needs.prepare.outputs.claude == 'true'
     runs-on: ubuntu-26.04
@@ -178,7 +182,7 @@ jobs:
       - parallel:
           - *checkout
           - *candidate
-          - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
             continue-on-error: true
             with: { name: upstream-sync-resolution, path: "${{ runner.temp }}/sync-resolution" }
           - name: Create the output directories
@@ -191,7 +195,7 @@ jobs:
       - name: Verify the resolution on a clean runner
         run: bash .sync-scripts/script/upstream-sync/resolve.sh verify
           "${RUNNER_TEMP}"/sync-{candidate,resolution} "${sync_output}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: upstream-sync-verify-logs
@@ -201,13 +205,14 @@ jobs:
           retention-days: 30
       - uses: kjanat/actions-shells@v0
       - *export
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: upstream-sync-verified
           path: ${{ env.sync_export }}
           if-no-files-found: error
           retention-days: 30
   open-sync-pr:
+    name: Open PR
     needs: [prepare, verify]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-26.04
@@ -218,7 +223,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         env: *git-advice
         with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.verify.result == 'success' && 'upstream-sync-verified' || 'upstream-sync-candidate' }}
           path: ${{ runner.temp }}/sync-candidate

@@ -147,7 +147,7 @@ The container assumes the GitHub-hosted runner, Docker/kernel, pinned tool image
 and trusted workflow revision are not compromised. Do not mount host caches
 into the container to speed it up.
 
-The `upstream-sync-tools` image preloads the root `.dprint.jsonc`, its plugins, and the Tombi
+The `upstream-sync-tools` image preloads the root `dprint.toml`, its plugins, and the Tombi
 and rustfmt setup commands. It includes `tombi.toml`, `rustfmt.toml`,
 `.cargo/config.toml`, and `rust-toolchain.toml` while warming the cache at
 `/tmp/work`, the same path used during preparation. The Rust toolchain has its

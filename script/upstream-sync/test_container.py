@@ -64,7 +64,7 @@ class ContainerTests(unittest.TestCase):
                 """
 mkdir -p /tmp/work/.cargo
 cd /tmp/work
-cp /source/.dprint.jsonc /source/tombi.toml /source/rustfmt.toml /source/rust-toolchain.toml .
+cp /source/dprint.toml /source/tombi.toml /source/rustfmt.toml /source/rust-toolchain.toml .
 cp /source/.cargo/config.toml .cargo/
 test "$DPRINT_CACHE_DIR" = /opt/dprint-cache
 test -w "$DPRINT_CACHE_DIR"
@@ -359,7 +359,7 @@ rustfmt --version
         script.parent.mkdir(parents=True)
         _ = shutil.copyfile(Path(__file__).with_name("prepare.sh"), script)
         for name in (
-            ".dprint.jsonc",
+            "dprint.toml",
             "tombi.toml",
             "rustfmt.toml",
             "rust-toolchain.toml",

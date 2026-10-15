@@ -1,5 +1,6 @@
+# yaml-language-server: $schema=github-workflow.json
 ---
-name: fork_release
+name: Release ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || format('{0} bump', inputs.bump || 'patch')) || github.ref_name || '' }}
 run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0}{1}{2}{3}{4}{5}{6}{7}', inputs.tag || format('{0} bump', inputs.bump || 'patch'), inputs.linux && ' linux' || '', inputs.mac && ' mac' || '', inputs.windows && ' windows' || '', inputs.freebsd && ' freebsd' || '', inputs.bwrap && ' bwrap' || '', inputs.pacman && ' pacman' || '', !inputs.upload && ' (dry run)' || '') || '' }}
 on:
   push: { tags: [v*] }
@@ -28,6 +29,7 @@ defaults: { run: { shell: "bash -euxo pipefail {0}" } }
 env: { SENTRY_CLI: "npm:@sentry/cli@3.8.0" }
 jobs:
   create_draft_release:
+    name: Create the draft release for ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || format('{0} bump', inputs.bump || 'patch')) || github.ref_name || '' }}
     if: github.repository == 'kjanat/zed-editor'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -78,6 +80,7 @@ jobs:
             });
 
   bundle_linux:
+    name: Bundle for Linux
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.linux)
     needs: create_draft_release
     strategy:
@@ -99,7 +102,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.arch == 'x86_64'
         with: { shared-key: bundle-linux-x86_64, cache-on-failure: true }
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: &mise jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with: { cache: false, bootstrap: true, bootstrap_skip: compose }
       - &icu70
         name: Install ICU 70 for the LLVM release binaries
@@ -174,12 +177,13 @@ jobs:
           "target/zed-linux-${arch}.dbg.tar.gz#Debug symbols for Linux (${arch}, DWARF)"
 
   bundle_mac:
+    name: Bundle for macOS
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.mac)
     needs: create_draft_release
     strategy:
       fail-fast: false
       matrix: { include: [{ arch: aarch64, target: aarch64-apple-darwin }, { arch: x86_64, target: x86_64-apple-darwin }] }
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 240
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write }
@@ -187,8 +191,7 @@ jobs:
     env: *BundleEnv
     steps:
       - *checkout
-      - &mise
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: *mise
       - *prepare
       - *SentryDsn
       - *SentryCheck
@@ -222,6 +225,7 @@ jobs:
           "target/zed-macos-${arch}.dwarf.tar.gz#Debug symbols for macOS (${arch}, DWARF)"
 
   bundle_windows:
+    name: Bundle for Windows
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.windows)
     needs: create_draft_release
     strategy:
@@ -235,7 +239,7 @@ jobs:
     env: *BundleEnv
     steps:
       - *checkout
-      - *mise
+      - uses: *mise
       - *prepare
       - *SentryDsn
       - *SentryCheck
@@ -272,6 +276,7 @@ jobs:
           "target/zed-windows-${arch}.dbg.zip#Debug symbols for Windows (${arch}, PDB)"
 
   remote_server_freebsd:
+    name: Build the FreeBSD remote server
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.freebsd)
     needs: create_draft_release
     runs-on: ubuntu-26.04
@@ -284,7 +289,7 @@ jobs:
       - *checkout
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { shared-key: remote-server-freebsd, cache-on-failure: true }
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: *mise
         with: { cache: false }
       - *icu70
       - *prepare
@@ -311,6 +316,7 @@ jobs:
         run: gh release upload "${tag}" --clobber "zed-remote-server-freebsd-x86_64.gz#Zed remote server for FreeBSD (x86_64)"
 
   bwrap_linux:
+    name: Build static bubblewrap for Linux
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.bwrap)
     needs: create_draft_release
     strategy:
@@ -322,7 +328,7 @@ jobs:
     permissions: { contents: write, id-token: write, attestations: write }
     env: { GH_REPO: *REPO }
     steps:
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with: { github_access_token: *TOKEN }
       - name: Build static bubblewrap
         env: { arch: "${{ matrix.arch }}" }
@@ -340,6 +346,7 @@ jobs:
         run: gh release upload "${tag}" --clobber "bwrap-linux-${arch}.gz#Static bubblewrap (${arch})"
 
   pacman_repo:
+    name: Build the pacman packages and repository
     if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && startsWith(needs.create_draft_release.outputs.tag, 'v') && (github.event_name == 'push' || inputs.pacman) && (github.event_name == 'push' || inputs.upload)
     needs: [create_draft_release, bundle_linux]
     runs-on: ubuntu-26.04
@@ -350,7 +357,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: *mise
       - name: Install Arch packaging tools
         run: mise bootstrap packages apply --update --yes
       - name: Download the Linux tarballs
@@ -403,6 +410,7 @@ jobs:
           "zed-kjanat-aarch64.files#Pacman repo file list (aarch64)"
 
   publish:
+    name: Publish the release
     if: github.repository == 'kjanat/zed-editor' && !failure() && !cancelled() && (github.event_name == 'push' || (inputs.linux && inputs.mac && inputs.windows && inputs.freebsd && inputs.bwrap && inputs.pacman)) && (github.event_name == 'push' || inputs.upload)
     needs: [create_draft_release, bundle_linux, bundle_mac, bundle_windows, remote_server_freebsd, bwrap_linux, pacman_repo]
     runs-on: ubuntu-26.04

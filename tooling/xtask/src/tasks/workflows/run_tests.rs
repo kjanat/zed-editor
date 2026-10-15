@@ -858,9 +858,7 @@ fn check_licenses() -> NamedJob {
 
 pub(crate) fn check_scripts(harden: bool) -> NamedJob {
     fn download_actionlint() -> Step<Run> {
-        named::bash(
-            "bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)",
-        )
+        named::bash("go install actionlint.kjanat.dev/cmd/actionlint@master")
     }
 
     fn run_actionlint() -> Step<Run> {

@@ -1,6 +1,6 @@
 *
 !.cargo/config.toml
-!.dprint.jsonc
+!dprint.toml
 !.mise.toml
 !rust-toolchain.toml
 !rustfmt.toml

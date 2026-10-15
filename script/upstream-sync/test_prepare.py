@@ -161,12 +161,12 @@ class MergeFormattingTests(unittest.TestCase):
                     image,
                 ]
                 script = "/repository/script/upstream-sync/prepare.sh"
-                configuration = "/repository/.dprint.jsonc"
+                configuration = "/repository/dprint.toml"
             else:
                 command = []
                 script = str(repository / "script/upstream-sync/prepare.sh")
-                configuration = str(repository / ".dprint.jsonc")
-            _ = (directory / ".dprint.jsonc").write_text(
+                configuration = str(repository / "dprint.toml")
+            _ = (directory / "dprint.toml").write_text(
                 json.dumps({"extends": configuration})
             )
 

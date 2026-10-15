@@ -1,16 +1,17 @@
+# yaml-language-server: $schema=github-workflow.json
 ---
-name: fork_release_published
-run-name: ${{ github.event.release.tag_name || inputs.tag }}
+name: Create Sentry release for ${{ github.event.release.tag_name || inputs.tag }}
+run-name: Sentry release ${{ github.event.release.tag_name || inputs.tag }}
 on:
   release: { types: [published] }
   workflow_dispatch:
-    inputs:
-      tag: { description: Published release tag, type: string, required: true }
+    inputs: { tag: { description: Published release tag, type: string, required: true } }
 permissions: { contents: read }
 concurrency: { group: "${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}" }
 defaults: { run: { shell: "bash -euxo pipefail {0}" } }
 jobs:
   sentry_release:
+    name: Create Sentry release for ${{ github.event.release.tag_name || inputs.tag }}
     if: github.repository == 'kjanat/zed-editor'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
