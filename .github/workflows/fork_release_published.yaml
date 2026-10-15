@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=github-workflow.json
 ---
-name: Create Sentry release for ${{ github.event.release.tag_name || inputs.tag }}
+name: Create Sentry release
 run-name: Sentry release ${{ github.event.release.tag_name || inputs.tag }}
 on:
   release: { types: [published] }

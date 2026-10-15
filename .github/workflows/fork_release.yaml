@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=github-workflow.json
 ---
-name: Release ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || format('{0} bump', inputs.bump || 'patch')) || github.ref_name || '' }}
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0}{1}{2}{3}{4}{5}{6}{7}', inputs.tag || format('{0} bump', inputs.bump || 'patch'), inputs.linux && ' linux' || '', inputs.mac && ' mac' || '', inputs.windows && ' windows' || '', inputs.freebsd && ' freebsd' || '', inputs.bwrap && ' bwrap' || '', inputs.pacman && ' pacman' || '', !inputs.upload && ' (dry run)' || '') || '' }}
+name: Release
+run-name: Release ${{ github.event_name == 'workflow_dispatch' && format('{0}{1}{2}{3}{4}{5}{6}{7}', inputs.tag || format('{0} bump', inputs.bump || 'patch'), inputs.linux && ' linux' || '', inputs.mac && ' mac' || '', inputs.windows && ' windows' || '', inputs.freebsd && ' freebsd' || '', inputs.bwrap && ' bwrap' || '', inputs.pacman && ' pacman' || '', !inputs.upload && ' (dry run)' || '') || github.ref_name }}
 on:
   push: { tags: [v*] }
   # pretty-yaml-ignore
