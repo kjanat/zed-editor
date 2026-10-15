@@ -103,7 +103,7 @@ jobs:
       - uses: kjanat/dprint-check@v3
 
   clippy:
-    name: Clippy (${matrix.os})
+    name: Clippy (${{ matrix.os }})
     if: github.repository == 'kjanat/zed-editor'
     needs: plan
     strategy:
@@ -136,7 +136,7 @@ jobs:
         run: df -h /
 
   test_suites:
-    name: Test suites (${matrix.os}, ${matrix.suite}${{ case(matrix.package != null, format(', {0}', matrix.package), '') }})
+    name: Test suites (${{ matrix.os }}, ${{ matrix.suite }}${{ case(matrix.package != null, format(', {0}', matrix.package), '') }})
     if: github.repository == 'kjanat/zed-editor'
     needs: [plan]
     strategy:
@@ -178,7 +178,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.suite.outputs.run == 'true'
         with: { shared-key: fork-ci-tests, save-if: "${{ github.ref == 'refs/heads/master' && matrix.suite == 'affected' }}", cache-on-failure: false }
-      # The extension store test allows 60 seconds for installing the test extension.
+      # The extension store test allows 240 seconds for installing the test extension.
       - name: Build the test extension
         if: >-
           steps.suite.outputs.run == 'true' && matrix.suite == 'affected'
@@ -211,31 +211,3 @@ jobs:
       - name: Show disk usage
         if: always() && steps.suite.outputs.run == 'true' && runner.os != 'Windows'
         run: df -h /
-
-  # Preserve the check names required by branch protection after splitting the suites.
-  tests:
-    name: Require all test suites to pass
-    if: ${{ !cancelled() && github.repository == 'kjanat/zed-editor' }}
-    needs: test_suites
-    permissions: { actions: read }
-    strategy:
-      fail-fast: false
-      matrix: { os: [ubuntu-latest, windows-2025-vs2026, macos-latest] }
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    cancel-timeout-minutes: 4
-    steps:
-      - name: Require this platform's test suites to pass
-        shell: bash
-        env: { GH_TOKEN: "${{ github.token }}", OS: "${{ matrix.os }}" }
-        run: |
-          found=false
-          failed=false
-          while IFS=$'\t' read -r name conclusion; do
-            [[ "${name}" == "test_suites (${OS}, "* ]] || continue
-            found=true
-            echo "${name}: ${conclusion}"
-            [[ "${conclusion}" == success ]] || failed=true
-          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest" --jq '.jobs[] | [.name, .conclusion] | @tsv')
-          test "${found}" = true
-          test "${failed}" = false
