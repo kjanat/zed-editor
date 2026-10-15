@@ -628,7 +628,13 @@ impl ApiKeyConfiguration {
             is_from_env_var,
             env_var_name,
             api_key_url,
+            error: None,
         }
+    }
+
+    pub fn error(mut self, error: Option<SharedString>) -> Self {
+        self.error = error;
+        self
     }
 }
 
@@ -640,6 +646,7 @@ pub struct ApiKeyConfiguration {
     pub is_from_env_var: bool,
     pub env_var_name: SharedString,
     pub api_key_url: SharedString,
+    pub error: Option<SharedString>,
 }
 
 /// The subtitle rendered beneath a provider's name when its configuration is

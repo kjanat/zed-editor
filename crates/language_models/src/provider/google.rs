@@ -2,8 +2,8 @@ use anyhow::Result;
 use collections::BTreeMap;
 use credentials_provider::CredentialsProvider;
 use futures::{FutureExt, StreamExt, future::BoxFuture};
-use google_ai::GenerateContentResponse;
 pub use google_ai::completion::{GoogleEventMapper, into_google};
+use google_ai::{GenerateContentResponse, ThinkingLevel};
 use gpui::{App, AppContext, AsyncApp, Context, Entity, SharedString, Task};
 use http_client::{CustomHeaders, HttpClient};
 use language_model::{
@@ -14,14 +14,13 @@ use language_model::{
     GOOGLE_PROVIDER_ID, GOOGLE_PROVIDER_NAME, IconOrSvg, LanguageModel, LanguageModelClient,
     LanguageModelEffortLevel, LanguageModelId, LanguageModelName, LanguageModelProvider,
     LanguageModelProviderId, LanguageModelProviderName, LanguageModelProviderState,
-    LanguageModelRequest, ModelRateLimiters, ProviderSettingsView,
+    LanguageModelRequest, MAX_RETRY_ATTEMPTS, ModelRateLimiters, ProviderSettingsView,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 pub use settings::GoogleAvailableModel as AvailableModel;
 use settings::{Settings, SettingsStore};
 use std::sync::{Arc, LazyLock};
-use strum::IntoEnumIterator;
 use ui::IconName;
 
 use language_model::ApiKeyState;
@@ -56,6 +55,10 @@ pub struct GoogleLanguageModelProvider {
 pub struct State {
     api_key_state: ApiKeyState,
     credentials_provider: Arc<dyn CredentialsProvider>,
+    http_client: Arc<dyn HttpClient>,
+    fetched_models: Vec<google_ai::Model>,
+    fetch_models_error: Option<SharedString>,
+    fetch_models_task: Option<Task<()>>,
 }
 
 const GEMINI_API_KEY_VAR_NAME: &str = "GEMINI_API_KEY";
@@ -74,24 +77,103 @@ impl State {
     fn set_api_key(&mut self, api_key: Option<String>, cx: &mut Context<Self>) -> Task<Result<()>> {
         let credentials_provider = self.credentials_provider.clone();
         let api_url = GoogleLanguageModelProvider::api_url(cx);
-        self.api_key_state.store(
+        let should_fetch_models = api_key.is_some();
+        let task = self.api_key_state.store(
             api_url,
             api_key,
             |this| &mut this.api_key_state,
             credentials_provider,
             cx,
-        )
+        );
+        self.clear_fetched_models();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            if result.is_ok() && should_fetch_models {
+                this.update(cx, |this, cx| this.restart_fetch_models_task(cx))
+                    .ok();
+            }
+            result
+        })
     }
 
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
         let credentials_provider = self.credentials_provider.clone();
         let api_url = GoogleLanguageModelProvider::api_url(cx);
-        self.api_key_state.load_if_needed(
+        let task = self.api_key_state.load_if_needed(
             api_url,
             |this| &mut this.api_key_state,
             credentials_provider,
             cx,
-        )
+        );
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            if result.is_ok() {
+                this.update(cx, |this, cx| this.restart_fetch_models_task(cx))
+                    .ok();
+            }
+            result
+        })
+    }
+
+    /// Drops models fetched with an outdated key or endpoint, cancelling any fetch in flight.
+    fn clear_fetched_models(&mut self) {
+        self.fetched_models.clear();
+        self.fetch_models_error = None;
+        self.fetch_models_task = None;
+    }
+
+    fn restart_fetch_models_task(&mut self, cx: &mut Context<Self>) {
+        let api_url = GoogleLanguageModelProvider::api_url(cx);
+        let Some(api_key) = self.api_key_state.key(&api_url) else {
+            self.fetch_models_task = None;
+            return;
+        };
+        let http_client = self.http_client.clone();
+        let extra_headers = GoogleLanguageModelProvider::settings(cx)
+            .custom_headers
+            .clone();
+
+        self.fetch_models_error = None;
+        self.fetch_models_task = Some(cx.spawn(async move |this, cx| {
+            let mut attempt = 0;
+            let result = loop {
+                let error = match google_ai::list_models(
+                    http_client.as_ref(),
+                    &api_url,
+                    &api_key,
+                    &extra_headers,
+                )
+                .await
+                {
+                    Ok(models) => break Ok(models),
+                    Err(error) => error,
+                };
+                attempt += 1;
+                let retry_delay = error
+                    .retry_delay(attempt)
+                    .filter(|_| attempt <= usize::from(MAX_RETRY_ATTEMPTS));
+                let Some(retry_delay) = retry_delay else {
+                    log::error!("Failed to fetch Google models: {error}");
+                    break Err(SharedString::from(format!(
+                        "Failed to load Google models: {error}"
+                    )));
+                };
+                log::warn!(
+                    "Failed to fetch Google models, retrying in {}s: {error}",
+                    retry_delay.as_secs()
+                );
+                cx.background_executor().timer(retry_delay).await;
+            };
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(models) => this.fetched_models = models,
+                    Err(error) => this.fetch_models_error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 }
 
@@ -102,21 +184,38 @@ impl GoogleLanguageModelProvider {
         cx: &mut App,
     ) -> Self {
         let state = cx.new(|cx| {
-            cx.observe_global::<SettingsStore>(|this: &mut State, cx| {
-                let credentials_provider = this.credentials_provider.clone();
-                let api_url = Self::api_url(cx);
-                this.api_key_state.handle_url_change(
-                    api_url,
-                    |this| &mut this.api_key_state,
-                    credentials_provider,
-                    cx,
-                );
-                cx.notify();
+            cx.observe_global::<SettingsStore>({
+                let mut last_api_url = Self::api_url(cx);
+                let mut last_custom_headers = Self::settings(cx).custom_headers.clone();
+                move |this: &mut State, cx| {
+                    let credentials_provider = this.credentials_provider.clone();
+                    let api_url = Self::api_url(cx);
+                    let custom_headers = Self::settings(cx).custom_headers.clone();
+                    let catalog_changed =
+                        api_url != last_api_url || custom_headers != last_custom_headers;
+                    last_api_url = api_url.clone();
+                    last_custom_headers = custom_headers;
+                    this.api_key_state.handle_url_change(
+                        api_url,
+                        |this| &mut this.api_key_state,
+                        credentials_provider,
+                        cx,
+                    );
+                    if catalog_changed {
+                        this.clear_fetched_models();
+                        this.authenticate(cx).detach();
+                    }
+                    cx.notify();
+                }
             })
             .detach();
             State {
                 api_key_state: ApiKeyState::new(Self::api_url(cx), (*API_KEY_ENV_VAR).clone()),
                 credentials_provider,
+                http_client: http_client.clone(),
+                fetched_models: Vec::new(),
+                fetch_models_error: None,
+                fetch_models_task: None,
             }
         });
 
@@ -127,30 +226,37 @@ impl GoogleLanguageModelProvider {
         }
     }
 
-    /// Every model this provider offers, keyed by id: the built-in models,
-    /// with settings entries added or overriding built-in ones.
+    /// Every model this provider offers, keyed by id: the fetched catalog,
+    /// with settings entries added or overriding fetched ones.
     fn google_models(&self, cx: &App) -> BTreeMap<String, google_ai::Model> {
         let mut models = BTreeMap::default();
 
-        for model in google_ai::Model::iter() {
-            if !matches!(model, google_ai::Model::Custom { .. }) {
-                models.insert(model.id().to_string(), model);
-            }
+        // Empty until authentication succeeds and the first catalog fetch completes.
+        for model in &self.state.read(cx).fetched_models {
+            models.insert(model.id.clone(), model.clone());
         }
 
-        for model in &GoogleLanguageModelProvider::settings(cx).available_models {
-            models.insert(
-                model.name.clone(),
-                google_ai::Model::Custom {
-                    name: model.name.clone(),
-                    display_name: model.display_name.clone(),
-                    max_tokens: model.max_tokens,
-                    mode: model.mode.unwrap_or_default(),
-                },
-            );
+        for available in &GoogleLanguageModelProvider::settings(cx).available_models {
+            let model = available_model_to_google_model(available);
+            models.insert(model.id.clone(), model);
         }
 
         models
+    }
+
+    /// The newest offered Flash-Lite model, else the newest Flash model.
+    fn preferred_model(&self, cx: &App) -> Option<LanguageModel> {
+        let models = self.google_models(cx);
+        ["-flash-lite", "-flash"].iter().find_map(|family| {
+            models
+                .values()
+                .filter(|model| model.id.contains(family))
+                .max_by(|a, b| {
+                    (google_ai::model_version(&a.id), &a.id)
+                        .cmp(&(google_ai::model_version(&b.id), &b.id))
+                })
+                .map(language_model)
+        })
     }
 
     /// The current configuration of `model`, if this provider still offers it.
@@ -239,15 +345,11 @@ impl LanguageModelProvider for GoogleLanguageModelProvider {
     }
 
     fn default_model(&self, cx: &App) -> Option<LanguageModel> {
-        self.google_models(cx)
-            .get(google_ai::Model::default().id())
-            .map(language_model)
+        self.preferred_model(cx)
     }
 
     fn default_fast_model(&self, cx: &App) -> Option<LanguageModel> {
-        self.google_models(cx)
-            .get(google_ai::Model::default_fast().id())
-            .map(language_model)
+        self.preferred_model(cx)
     }
 
     fn provided_models(&self, cx: &App) -> Vec<LanguageModel> {
@@ -267,12 +369,15 @@ impl LanguageModelProvider for GoogleLanguageModelProvider {
 
     fn settings_view(&self, cx: &mut App) -> Option<ProviderSettingsView> {
         let state = self.state.read(cx);
-        Some(ProviderSettingsView::ApiKey(ApiKeyConfiguration::new(
-            state.api_key_state.has_key(),
-            state.api_key_state.is_from_env_var(),
-            state.api_key_state.env_var_name().clone(),
-            "https://aistudio.google.com/app/apikey".into(),
-        )))
+        Some(ProviderSettingsView::ApiKey(
+            ApiKeyConfiguration::new(
+                state.api_key_state.has_key(),
+                state.api_key_state.is_from_env_var(),
+                state.api_key_state.env_var_name().clone(),
+                "https://aistudio.google.com/app/apikey".into(),
+            )
+            .error(state.fetch_models_error.clone()),
+        ))
     }
 
     fn set_api_key(&self, api_key: Option<String>, cx: &mut App) -> Task<Result<()>> {
@@ -297,9 +402,19 @@ impl LanguageModelClient for GoogleLanguageModelProvider {
         let mut request = request;
         if request.max_output_tokens.is_some() {
             request.max_output_tokens =
-                request.effective_max_output_tokens(config.max_output_tokens());
+                request.effective_max_output_tokens(config.max_output_tokens);
         }
-        let request = match into_google(request, config.request_id().to_string(), config.mode()) {
+        // A thread keeps its effort across model switches, and Gemini rejects levels a model
+        // doesn't accept, including any level for models that budget thinking by tokens.
+        let effort_supported = request
+            .thinking_effort
+            .as_deref()
+            .and_then(ThinkingLevel::from_effort)
+            .is_some_and(|level| config.supported_thinking_levels.contains(&level));
+        if !effort_supported {
+            request.thinking_effort = None;
+        }
+        let request = match into_google(request, config.id.clone(), config.mode) {
             Ok(request) => request,
             Err(error) => return async move { Err(error.into()) }.boxed(),
         };
@@ -313,29 +428,285 @@ impl LanguageModelClient for GoogleLanguageModelProvider {
 }
 
 fn language_model(model: &google_ai::Model) -> LanguageModel {
-    let default_level = model.default_thinking_level();
     LanguageModel {
-        supports_tools: model.supports_tools(),
-        supports_images: model.supports_images(),
+        supports_tools: true,
+        supports_images: true,
         supports_thinking: model.supports_thinking(),
+        supports_disabling_thinking: model.supports_disabling_thinking(),
         supported_effort_levels: model
-            .supported_thinking_levels()
+            .supported_thinking_levels
             .iter()
             .map(|level| LanguageModelEffortLevel {
                 name: level.name().into(),
                 value: level.value().into(),
-                is_default: Some(*level) == default_level,
+                is_default: Some(*level) == model.default_thinking_level,
             })
             .collect(),
         tool_choice_support: LanguageModelToolChoiceSupport::ALL,
-        max_output_tokens: model.max_output_tokens(),
+        max_output_tokens: model.max_output_tokens,
         ..LanguageModel::new(
-            LanguageModelId::from(model.id().to_string()),
-            LanguageModelName::from(model.display_name().to_string()),
+            LanguageModelId::from(model.id.clone()),
+            LanguageModelName::from(model.display_name.clone()),
             PROVIDER_ID,
             PROVIDER_NAME,
-            format!("google/{}", model.request_id()),
-            model.max_token_count(),
+            format!("google/{}", model.id),
+            model.max_input_tokens,
         )
+    }
+}
+
+/// Converts a settings-defined `available_models` entry into a `google_ai::Model`.
+fn available_model_to_google_model(available: &AvailableModel) -> google_ai::Model {
+    google_ai::Model {
+        id: available.name.clone(),
+        display_name: available
+            .display_name
+            .clone()
+            .unwrap_or_else(|| available.name.clone()),
+        max_input_tokens: available.max_tokens,
+        max_output_tokens: None,
+        mode: available.mode.unwrap_or_default(),
+        supported_thinking_levels: Vec::new(),
+        default_thinking_level: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_client::{AsyncBody, FakeHttpClient, StatusCode};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    fn longest_retry_delay() -> Duration {
+        LanguageModelCompletionError::from_http_status(
+            PROVIDER_NAME,
+            StatusCode::SERVICE_UNAVAILABLE,
+            String::new(),
+            None,
+        )
+        .retry_delay(usize::from(MAX_RETRY_ATTEMPTS))
+        .expect("a 503 response is retried")
+    }
+
+    const CATALOG: &str = r#"{"models": [{
+        "name": "models/gemini-3.5-flash",
+        "displayName": "Gemini 3.5 Flash",
+        "inputTokenLimit": 1048576,
+        "outputTokenLimit": 65536,
+        "supportedGenerationMethods": ["generateContent"],
+        "thinking": true
+    }]}"#;
+
+    #[gpui::test]
+    async fn test_model_catalog_fetch_retries_after_a_failure(cx: &mut gpui::TestAppContext) {
+        let catalog_requests = Arc::new(AtomicUsize::new(0));
+        let http_client = FakeHttpClient::create({
+            let catalog_requests = catalog_requests.clone();
+            move |_request| {
+                let attempt = catalog_requests.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    let (status, body) = if attempt == 0 {
+                        (503, "unavailable")
+                    } else {
+                        (200, CATALOG)
+                    };
+                    Ok(http_client::Response::builder()
+                        .status(status)
+                        .body(AsyncBody::from(body))?)
+                }
+            }
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+        assert_eq!(catalog_requests.load(Ordering::SeqCst), 1);
+        assert!(cx.update(|cx| provider.provided_models(cx)).is_empty());
+
+        cx.executor().advance_clock(longest_retry_delay());
+        cx.run_until_parked();
+        assert_eq!(catalog_requests.load(Ordering::SeqCst), 2);
+        let model_ids = cx.update(|cx| {
+            provider
+                .provided_models(cx)
+                .into_iter()
+                .map(|model| model.id.0.to_string())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(model_ids, ["gemini-3.5-flash"]);
+    }
+
+    #[gpui::test]
+    async fn test_model_catalog_fetch_stops_on_a_permanent_failure(cx: &mut gpui::TestAppContext) {
+        let catalog_requests = Arc::new(AtomicUsize::new(0));
+        let http_client = FakeHttpClient::create({
+            let catalog_requests = catalog_requests.clone();
+            move |_request| {
+                catalog_requests.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Ok(http_client::Response::builder()
+                        .status(401)
+                        .body(AsyncBody::from("invalid api key"))?)
+                }
+            }
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+        cx.executor().advance_clock(longest_retry_delay());
+        cx.run_until_parked();
+
+        assert_eq!(catalog_requests.load(Ordering::SeqCst), 1);
+        assert!(cx.update(|cx| provider.provided_models(cx)).is_empty());
+        assert!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.fetch_models_error.is_some())
+        );
+    }
+
+    #[gpui::test]
+    async fn test_model_catalog_fetch_gives_up_after_the_retry_limit(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let catalog_requests = Arc::new(AtomicUsize::new(0));
+        let http_client = FakeHttpClient::create({
+            let catalog_requests = catalog_requests.clone();
+            move |_request| {
+                catalog_requests.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Ok(http_client::Response::builder()
+                        .status(503)
+                        .body(AsyncBody::from("unavailable"))?)
+                }
+            }
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+        for _ in 0..=MAX_RETRY_ATTEMPTS {
+            cx.executor().advance_clock(longest_retry_delay());
+            cx.run_until_parked();
+        }
+
+        assert_eq!(
+            catalog_requests.load(Ordering::SeqCst),
+            1 + usize::from(MAX_RETRY_ATTEMPTS)
+        );
+        assert!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.fetch_models_error.is_some())
+        );
+
+        cx.update(|cx| provider.authenticate(cx))
+            .await
+            .expect("authenticate with the stored key");
+        cx.run_until_parked();
+        assert_eq!(
+            catalog_requests.load(Ordering::SeqCst),
+            2 + usize::from(MAX_RETRY_ATTEMPTS)
+        );
+        assert!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.fetch_models_error.is_none())
+        );
+    }
+
+    #[gpui::test]
+    async fn test_default_model_compares_versions_numerically(cx: &mut gpui::TestAppContext) {
+        let http_client = FakeHttpClient::create(|_request| async move {
+            Ok(http_client::Response::builder()
+                .status(200)
+                .body(AsyncBody::from(
+                    r#"{"models": [
+                        {
+                            "name": "models/gemini-3.10-flash-lite",
+                            "inputTokenLimit": 1048576,
+                            "outputTokenLimit": 65536,
+                            "supportedGenerationMethods": ["generateContent"],
+                            "thinking": true
+                        },
+                        {
+                            "name": "models/gemini-3.9-flash-lite",
+                            "inputTokenLimit": 1048576,
+                            "outputTokenLimit": 65536,
+                            "supportedGenerationMethods": ["generateContent"],
+                            "thinking": true
+                        }
+                    ]}"#,
+                ))?)
+        });
+        let provider = cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            GoogleLanguageModelProvider::new(http_client, Arc::new(TestCredentialsProvider), cx)
+        });
+
+        cx.update(|cx| provider.set_api_key(Some("test-key".to_string()), cx))
+            .await
+            .expect("store the api key");
+        cx.run_until_parked();
+
+        let default_model_id = cx.update(|cx| {
+            provider
+                .default_model(cx)
+                .map(|model| model.id.0.to_string())
+        });
+        assert_eq!(default_model_id.as_deref(), Some("gemini-3.10-flash-lite"));
+    }
+
+    struct TestCredentialsProvider;
+
+    impl CredentialsProvider for TestCredentialsProvider {
+        fn read_credentials<'a>(
+            &'a self,
+            _url: &'a str,
+            _cx: &'a AsyncApp,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Option<(String, Vec<u8>)>>> + 'a>,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn write_credentials<'a>(
+            &'a self,
+            _url: &'a str,
+            _username: &'a str,
+            _password: &'a [u8],
+            _cx: &'a AsyncApp,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete_credentials<'a>(
+            &'a self,
+            _url: &'a str,
+            _cx: &'a AsyncApp,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 }

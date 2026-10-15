@@ -166,7 +166,7 @@ impl std::fmt::Display for PromptId {
     }
 }
 
-pub(crate) const MAX_RETRY_ATTEMPTS: u8 = 4;
+pub(crate) use language_model::MAX_RETRY_ATTEMPTS;
 pub(crate) const BASE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq)]

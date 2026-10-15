@@ -200,6 +200,7 @@ jobs:
   tests:
     if: ${{ !cancelled() && github.repository == 'kjanat/zed-editor' }}
     needs: test_suites
+    permissions: { actions: read }
     strategy:
       fail-fast: false
       matrix: { os: [ubuntu-26.04, windows-2025-vs2026, macos-latest] }
@@ -207,6 +208,17 @@ jobs:
     timeout-minutes: 5
     cancel-timeout-minutes: 1
     steps:
-      - name: Require all test suites to pass
-        env: { TEST_RESULT: "${{ needs.test_suites.result }}" }
-        run: test "${TEST_RESULT}" = success
+      - name: Require this platform's test suites to pass
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}", OS: "${{ matrix.os }}" }
+        run: |
+          found=false
+          failed=false
+          while IFS=$'\t' read -r name conclusion; do
+            [[ "${name}" == "test_suites (${OS}, "* ]] || continue
+            found=true
+            echo "${name}: ${conclusion}"
+            [[ "${conclusion}" == success ]] || failed=true
+          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest" --jq '.jobs[] | [.name, .conclusion] | @tsv')
+          test "${found}" = true
+          test "${failed}" = false
