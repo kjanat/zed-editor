@@ -314,6 +314,7 @@ pub struct JsxTagAutoCloseConfig {
 
 /// The configuration for block comments for this language.
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
+#[schemars(with = "BlockCommentConfigHelper")]
 pub struct BlockCommentConfig {
     /// A start tag of block comment.
     pub start: Arc<str>,
@@ -322,8 +323,23 @@ pub struct BlockCommentConfig {
     /// A character to add as a prefix when a new line is added to a block comment.
     pub prefix: Arc<str>,
     /// A indent to add for prefix and end line upon new line.
-    #[schemars(range(min = 1, max = 128))]
     pub tab_size: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum BlockCommentConfigHelper {
+    New {
+        /// A start tag of block comment.
+        start: Arc<str>,
+        /// A end tag of block comment.
+        end: Arc<str>,
+        /// A character to add as a prefix when a new line is added to a block comment.
+        prefix: Arc<str>,
+        /// A indent to add for prefix and end line upon new line.
+        tab_size: u32,
+    },
+    Old([Arc<str>; 2]),
 }
 
 impl<'de> Deserialize<'de> for BlockCommentConfig {
@@ -331,18 +347,6 @@ impl<'de> Deserialize<'de> for BlockCommentConfig {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum BlockCommentConfigHelper {
-            New {
-                start: Arc<str>,
-                end: Arc<str>,
-                prefix: Arc<str>,
-                tab_size: u32,
-            },
-            Old([Arc<str>; 2]),
-        }
-
         match BlockCommentConfigHelper::deserialize(deserializer)? {
             BlockCommentConfigHelper::New {
                 start,

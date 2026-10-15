@@ -1,0 +1,383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ContextServerManifestEntry": {
+      "type": "object"
+    },
+    "DebugAdapterManifestEntry": {
+      "type": "object",
+      "properties": {
+        "schema_path": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      }
+    },
+    "DebugLocatorManifestEntry": {
+      "type": "object"
+    },
+    "ExtensionCapability": {
+      "description": "A capability for an extension.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command",
+            "kind"
+          ],
+          "properties": {
+            "args": {
+              "description": "The arguments to pass to the command. Use `*` for a single wildcard argument.\nIf the last element is `**`, then any trailing arguments are allowed.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "command": {
+              "description": "The command to execute.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "process:exec"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "host",
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "download_file"
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "package"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "npm:install"
+            },
+            "package": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "ExtensionLibraryKind": {
+      "type": "string",
+      "enum": [
+        "Rust"
+      ]
+    },
+    "ExtensionSnippets": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "GrammarManifestEntry": {
+      "type": "object",
+      "required": [
+        "repository",
+        "rev"
+      ],
+      "properties": {
+        "path": {
+          "default": null,
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "repository": {
+          "type": "string"
+        },
+        "rev": {
+          "type": "string"
+        }
+      }
+    },
+    "LanguageModelProviderManifestEntry": {
+      "description": "Manifest entry for a language model provider.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "icon": {
+          "description": "Path to an SVG icon file relative to the extension root (e.g., \"icons/provider.svg\").",
+          "default": null,
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "name": {
+          "description": "Display name for the provider.",
+          "type": "string"
+        }
+      }
+    },
+    "LanguageName": {
+      "type": "string"
+    },
+    "LanguageServerManifestEntry": {
+      "type": "object",
+      "properties": {
+        "code_action_kinds": {
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "language": {
+          "description": "Deprecated in favor of `languages`.",
+          "default": null,
+          "deprecated": true,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LanguageName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language_ids": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "languages": {
+          "description": "The list of languages this language server should work with.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LanguageName"
+          }
+        },
+        "opt_in_languages": {
+          "description": "Languages (from `languages`) for which this language server is not started\nunless the user explicitly lists it in their `language_servers` setting.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/LanguageName"
+          }
+        }
+      }
+    },
+    "LibManifestEntry": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtensionLibraryKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      }
+    },
+    "SchemaVersion": {
+      "description": "The schema version of the [`ExtensionManifest`].",
+      "type": "integer",
+      "format": "int32"
+    },
+    "SlashCommandManifestEntry": {
+      "type": "object",
+      "required": [
+        "description",
+        "requires_argument"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "requires_argument": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "title": "ExtensionManifest",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "schema_version",
+    "version"
+  ],
+  "properties": {
+    "authors": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ExtensionCapability"
+      }
+    },
+    "context_servers": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ContextServerManifestEntry"
+      }
+    },
+    "debug_adapters": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/DebugAdapterManifestEntry"
+      }
+    },
+    "debug_locators": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/DebugLocatorManifestEntry"
+      }
+    },
+    "description": {
+      "default": null,
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "grammars": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/GrammarManifestEntry"
+      }
+    },
+    "icon_themes": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "id": {
+      "type": "string"
+    },
+    "language_model_providers": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/LanguageModelProviderManifestEntry"
+      }
+    },
+    "language_servers": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/LanguageServerManifestEntry"
+      }
+    },
+    "languages": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "lib": {
+      "$ref": "#/$defs/LibManifestEntry",
+      "default": {
+        "kind": null,
+        "version": null
+      }
+    },
+    "name": {
+      "type": "string"
+    },
+    "repository": {
+      "default": null,
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "slash_commands": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/SlashCommandManifestEntry"
+      }
+    },
+    "snippets": {
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExtensionSnippets"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "themes": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "version": {
+      "type": "string"
+    }
+  }
+}
