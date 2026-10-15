@@ -3,7 +3,7 @@ mod worktree_settings_tests;
 use anyhow::Result;
 use encoding_rs;
 use fs::{FakeFs, Fs, PathEventKind, RealFs, RemoveOptions};
-use git::{DOT_GIT, GITIGNORE, REPO_EXCLUDE};
+use git::{DOT_GIT, GITIGNORE, INFO_DIR, REPO_EXCLUDE};
 use gpui::{
     AppContext as _, BackgroundExecutor, BorrowAppContext, Context, Entity, Task, TestAppContext,
 };
@@ -5304,6 +5304,319 @@ async fn test_repo_exclude(executor: BackgroundExecutor, cx: &mut TestAppContext
     });
 }
 
+async fn local_worktree(fs: Arc<FakeFs>, root: &Path, cx: &mut TestAppContext) -> Entity<Worktree> {
+    let worktree = Worktree::local(
+        root,
+        true,
+        fs,
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    worktree
+        .update(cx, |worktree, _| {
+            worktree.as_local().unwrap().scan_complete()
+        })
+        .await;
+    cx.run_until_parked();
+    worktree
+}
+
+#[gpui::test]
+async fn test_repo_exclude_change_with_non_recursive_watches(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.set_non_recursive_watches();
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": { "info": { "exclude": "" } },
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.write(
+        &project_dir.join(DOT_GIT).join(REPO_EXCLUDE),
+        "agent.log\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_in_info_dir_created_after_scan(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.set_non_recursive_watches();
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": {},
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.insert_tree(
+        project_dir.join(DOT_GIT).join(INFO_DIR),
+        json!({ "exclude": "agent.log\n" }),
+    )
+    .await;
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_in_info_dir_renamed_into_place_after_scan(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.set_non_recursive_watches();
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": {},
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    let info_dir = project_dir.join(DOT_GIT).join(INFO_DIR);
+    fs.pause_events();
+    fs.insert_tree(&info_dir, json!({ "exclude": "agent.log\n" }))
+        .await;
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+    // The native watcher reports a directory renamed into place as modified.
+    fs.emit_fs_event(&info_dir, Some(PathEventKind::Changed));
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+
+    fs.write(
+        &project_dir.join(DOT_GIT).join(REPO_EXCLUDE),
+        "README.md\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["README.md"],
+                tracked_paths: &["agent.log"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_created_after_scan(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": { "info": {} },
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.write(
+        &project_dir.join(DOT_GIT).join(REPO_EXCLUDE),
+        "agent.log\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_change_in_a_common_dir_named_bare(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.insert_tree(
+        path!("/repo"),
+        json!({
+            ".bare": {
+                "info": { "exclude": "" },
+                "worktrees": { "main": { "commondir": "../.." } },
+            },
+        }),
+    )
+    .await;
+    let worktree_dir = Path::new(path!("/repo/main"));
+    fs.insert_tree(
+        worktree_dir,
+        json!({
+            ".git": "gitdir: /repo/.bare/worktrees/main",
+            "agent.log": "",
+            "README.md": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), worktree_dir, cx).await;
+
+    fs.write(
+        &Path::new(path!("/repo/.bare")).join(REPO_EXCLUDE),
+        "agent.log\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["agent.log"],
+                tracked_paths: &["README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_repo_exclude_in_info_dir_created_after_scan_applies_to_linked_worktrees(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.set_non_recursive_watches();
+    fs.insert_tree(
+        path!("/repo"),
+        json!({
+            ".git": {
+                "worktrees": {
+                    "first": { "commondir": "../.." },
+                    "second": { "commondir": "../.." },
+                },
+            },
+        }),
+    )
+    .await;
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            "first": {
+                ".git": "gitdir: /repo/.git/worktrees/first",
+                "agent.log": "",
+                "README.md": "",
+            },
+            "second": {
+                ".git": "gitdir: /repo/.git/worktrees/second",
+                "agent.log": "",
+                "README.md": "",
+            },
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    fs.insert_tree(
+        Path::new(path!("/repo")).join(DOT_GIT).join(INFO_DIR),
+        json!({ "exclude": "agent.log\n" }),
+    )
+    .await;
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _cx| {
+        check_worktree_entries(
+            worktree,
+            WorktreeExpectations {
+                ignored_paths: &["first/agent.log", "second/agent.log"],
+                tracked_paths: &["first/README.md", "second/README.md"],
+                ..Default::default()
+            },
+        );
+    });
+}
+
 #[gpui::test]
 async fn test_repo_exclude_anchored_pattern(executor: BackgroundExecutor, cx: &mut TestAppContext) {
     init_test(cx);
@@ -6628,6 +6941,58 @@ async fn test_ref_updates_in_dot_git_subdirectories_are_detected(cx: &mut TestAp
         "updating a ref in a directory created after the initial scan",
     )
     .await;
+}
+
+#[gpui::test]
+async fn test_ref_updates_in_a_directory_renamed_into_refs_are_detected(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.set_non_recursive_watches();
+    let project_dir = Path::new(path!("/project"));
+    fs.insert_tree(
+        project_dir,
+        json!({
+            ".git": { "refs": { "remotes": {} } },
+            "a.txt": "",
+        }),
+    )
+    .await;
+    let worktree = local_worktree(fs.clone(), project_dir, cx).await;
+
+    let remote_dir = project_dir
+        .join(DOT_GIT)
+        .join("refs")
+        .join("remotes")
+        .join("upstream");
+    fs.pause_events();
+    fs.insert_tree(
+        &remote_dir,
+        json!({ "main": "3333333333333333333333333333333333333333\n" }),
+    )
+    .await;
+    fs.clear_buffered_events();
+    fs.unpause_events_and_flush();
+    // The native watcher reports a directory renamed into place as modified.
+    fs.emit_fs_event(&remote_dir, Some(PathEventKind::Changed));
+    executor.run_until_parked();
+
+    let mut events = cx.events(&worktree);
+    fs.write(
+        &remote_dir.join("main"),
+        "4444444444444444444444444444444444444444\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    executor.run_until_parked();
+
+    assert!(
+        drain_git_repo_updates(&mut events),
+        "updating a ref in a directory renamed into refs should emit UpdatedGitRepositories"
+    );
 }
 
 async fn expect_git_repo_update(

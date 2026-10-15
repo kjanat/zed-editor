@@ -3899,22 +3899,25 @@ impl BackgroundScannerState {
     }
 }
 
-/// Watches the directories inside a git directory that git writes ref updates to.
+/// Watches the directories inside a git directory that hold refs and the repository's
+/// `info/exclude`.
 ///
 /// On Linux and FreeBSD the native file watcher is non-recursive, so a watch on the git
 /// directory itself does not report changes to files nested below it, such as the loose
 /// refs that git updates on commit, fetch, and branch operations. Watch the `refs` tree
-/// (its directories are watched individually because branch names may contain slashes)
-/// and, for repositories using the reftable backend, the `reftable` directory. On
-/// platforms with recursive watchers these calls are deduplicated against the existing
-/// recursive registration, making them effectively free.
+/// (its directories are watched individually because branch names may contain slashes),
+/// the `info` directory, and, for repositories using the reftable backend, the `reftable`
+/// directory. On platforms with recursive watchers these calls are deduplicated against
+/// the existing recursive registration, making them effectively free.
 async fn watch_git_dir_subdirectories(git_dir_abs_path: &Path, fs: &dyn Fs, watcher: &dyn Watcher) {
-    let reftable_dir_abs_path = git_dir_abs_path.join(REFTABLE_DIR);
-    if fs.is_dir(&reftable_dir_abs_path).await {
-        watcher
-            .add(&reftable_dir_abs_path)
-            .context("failed to add reftable directory to watcher")
-            .log_err();
+    for subdirectory in [REFTABLE_DIR, INFO_DIR] {
+        let subdirectory_abs_path = git_dir_abs_path.join(subdirectory);
+        if fs.is_dir(&subdirectory_abs_path).await {
+            watcher
+                .add(&subdirectory_abs_path)
+                .with_context(|| format!("failed to watch {subdirectory_abs_path:?}"))
+                .log_err();
+        }
     }
 
     watch_dir_tree(git_dir_abs_path.join(REFS_DIR), fs, watcher).await;
@@ -5212,6 +5215,39 @@ impl BackgroundScanner {
                 let mut dot_git_paths = None;
 
                 if self.track_git_repositories {
+                    // The native watcher reports a directory renamed into place as modified.
+                    let is_info_dir = !matches!(event.kind, Some(PathEventKind::Removed))
+                        && abs_path.as_path().ends_with(INFO_DIR);
+                    let is_exclude = abs_path.as_path().ends_with(REPO_EXCLUDE);
+                    let mut watched_info_dir = false;
+                    for repository in snapshot.git_repositories.values() {
+                        let common_dir_abs_path = repository.common_dir_abs_path.as_ref();
+                        let info_dir =
+                            is_info_dir && common_dir_abs_path.join(INFO_DIR) == abs_path.as_path();
+                        if !info_dir
+                            && !(is_exclude
+                                && common_dir_abs_path.join(REPO_EXCLUDE) == abs_path.as_path())
+                        {
+                            continue;
+                        }
+                        // `info/exclude` can be written before this watch takes effect.
+                        if info_dir && !watched_info_dir {
+                            if self.fs.is_dir(abs_path.as_path()).await {
+                                self.watcher
+                                    .add(abs_path.as_path())
+                                    .with_context(|| format!("failed to watch {abs_path:?}"))
+                                    .log_err();
+                            }
+                            watched_info_dir = true;
+                        }
+                        let common_dir_abs_path = common_dir_abs_path.to_path_buf();
+                        if !dot_git_abs_paths.contains(&common_dir_abs_path) {
+                            dot_git_abs_paths.push(common_dir_abs_path);
+                        }
+                        work_dirs_needing_exclude_update
+                            .push(repository.work_directory_abs_path.clone());
+                    }
+
                     for ancestor in abs_path.as_path().ancestors() {
                         if is_dot_git(ancestor, self.fs.as_ref()).await {
                             let path_in_git_dir = abs_path
@@ -5279,7 +5315,8 @@ impl BackgroundScanner {
                     // native watcher is non-recursive they need their own watches, or subsequent
                     // ref updates inside them would go unnoticed. The subtree is walked because
                     // nested directories may have been created before this watch took effect.
-                    if matches!(event.kind, Some(PathEventKind::Created))
+                    // The native watcher reports a directory renamed into place as modified.
+                    if !matches!(event.kind, Some(PathEventKind::Removed))
                         && path_in_git_dir
                             .components()
                             .any(|component| component.as_os_str() == OsStr::new(REFS_DIR))
@@ -5315,19 +5352,6 @@ impl BackgroundScanner {
                             );
                             dot_git_abs_paths.push(dot_git_abs_path);
                         }
-                    }
-                }
-
-                if self.track_git_repositories
-                    && abs_path
-                        .as_path()
-                        .ends_with(Path::new(DOT_GIT).join(REPO_EXCLUDE))
-                {
-                    if let Some(repository) = snapshot.git_repositories.values().find(|repo| {
-                        repo.common_dir_abs_path.join(REPO_EXCLUDE) == abs_path.as_path()
-                    }) {
-                        work_dirs_needing_exclude_update
-                            .push(repository.work_directory_abs_path.clone());
                     }
                 }
             }
@@ -5448,13 +5472,12 @@ impl BackgroundScanner {
         if !work_dirs_needing_exclude_update.is_empty() {
             let mut state = self.state.lock().await;
             for work_dir_abs_path in work_dirs_needing_exclude_update {
-                if let Some((_, needs_update)) = state
+                state
                     .snapshot
                     .repo_exclude_by_work_dir_abs_path
-                    .get_mut(&work_dir_abs_path)
-                {
-                    *needs_update = true;
-                }
+                    .entry(work_dir_abs_path)
+                    .or_insert_with(|| (Arc::new(Gitignore::empty()), true))
+                    .1 = true;
             }
         }
 
