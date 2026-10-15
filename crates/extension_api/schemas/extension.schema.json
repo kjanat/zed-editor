@@ -242,6 +242,7 @@
     "SchemaVersion": {
       "description": "The schema version of the [`ExtensionManifest`].",
       "type": "integer",
+      "maximum": 1,
       "format": "int32"
     },
     "SlashCommandManifestEntry": {

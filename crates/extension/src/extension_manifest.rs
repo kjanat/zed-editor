@@ -43,6 +43,7 @@ pub struct OldExtensionManifest {
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Serialize, Deserialize, JsonSchema,
 )]
+#[schemars(extend("maximum" = SchemaVersion::CURRENT.0))]
 pub struct SchemaVersion(pub i32);
 
 impl fmt::Display for SchemaVersion {
