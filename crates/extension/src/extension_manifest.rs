@@ -243,6 +243,7 @@ pub enum ExtensionLibraryKind {
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = |schema: &mut schemars::Schema| language_core::add_property_alias(schema, "rev", "commit"))]
 pub struct GrammarManifestEntry {
     pub repository: String,
     #[serde(alias = "commit")]

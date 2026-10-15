@@ -109,10 +109,13 @@
     "GrammarManifestEntry": {
       "type": "object",
       "required": [
-        "repository",
-        "rev"
+        "repository"
       ],
       "properties": {
+        "commit": {
+          "deprecated": true,
+          "type": "string"
+        },
         "path": {
           "default": null,
           "type": [
@@ -126,7 +129,19 @@
         "rev": {
           "type": "string"
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "rev"
+          ]
+        },
+        {
+          "required": [
+            "commit"
+          ]
+        }
+      ]
     },
     "LanguageModelProviderManifestEntry": {
       "description": "Manifest entry for a language model provider.",

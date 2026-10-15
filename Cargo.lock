@@ -6135,6 +6135,7 @@ dependencies = [
  "http_client",
  "indoc",
  "language",
+ "language_core",
  "log",
  "lsp",
  "parking_lot",

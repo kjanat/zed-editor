@@ -95,13 +95,17 @@ mod tests {
         directories
     }
 
-    fn assert_valid(schema: &serde_json::Value, label: &str, toml_content: &str) {
+    fn validation_errors(schema: &serde_json::Value, toml_content: &str) -> Vec<String> {
         let instance = toml::from_str::<serde_json::Value>(toml_content).unwrap();
-        let errors = jsonschema::validator_for(schema)
+        jsonschema::validator_for(schema)
             .unwrap()
             .iter_errors(&instance)
             .map(|error| error.to_string())
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn assert_valid(schema: &serde_json::Value, label: &str, toml_content: &str) {
+        let errors = validation_errors(schema, toml_content);
         assert!(errors.is_empty(), "{label}: {errors:#?}");
     }
 
@@ -169,5 +173,42 @@ mod tests {
             LanguageConfig::from_toml(config).unwrap();
             assert_valid(&schema, config, config);
         }
+    }
+
+    #[test]
+    fn test_extension_schemas_accept_serde_aliases() {
+        let manifest_schema = generate(SchemaType::Extension).to_value();
+        let manifest = |grammar: &str| {
+            format!(
+                "id = \"gleam\"\nname = \"Gleam\"\nversion = \"0.1.0\"\nschema_version = 1\n\n[grammars.gleam]\nrepository = \"https://github.com/gleam-lang/tree-sitter-gleam\"\n{grammar}"
+            )
+        };
+        for grammar in ["rev = \"abc\"\n", "commit = \"abc\"\n"] {
+            let manifest = manifest(grammar);
+            toml::from_str::<ExtensionManifest>(&manifest).unwrap();
+            assert_valid(&manifest_schema, &manifest, &manifest);
+        }
+        for grammar in ["", "rev = \"abc\"\ncommit = \"abc\"\n"] {
+            let manifest = manifest(grammar);
+            assert!(toml::from_str::<ExtensionManifest>(&manifest).is_err());
+            assert!(!validation_errors(&manifest_schema, &manifest).is_empty());
+        }
+
+        let language_schema = generate(SchemaType::LanguageConfig).to_value();
+        let documentation = "{ start = \"/**\", end = \"*/\", prefix = \"* \", tab_size = 1 }";
+        for config in [
+            format!("name = \"C\"\ndocumentation = {documentation}\n"),
+            format!("name = \"C\"\ndocumentation_comment = {documentation}\n"),
+            "name = \"C\"\nsoft_wrap = \"preferred_line_length\"\n".to_string(),
+            "name = \"C\"\nsoft_wrap = \"bounded\"\n".to_string(),
+        ] {
+            LanguageConfig::from_toml(&config).unwrap();
+            assert_valid(&language_schema, &config, &config);
+        }
+        let both_names = format!(
+            "name = \"C\"\ndocumentation = {documentation}\ndocumentation_comment = {documentation}\n"
+        );
+        assert!(LanguageConfig::from_toml(&both_names).is_err());
+        assert!(!validation_errors(&language_schema, &both_names).is_empty());
     }
 }

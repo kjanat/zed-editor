@@ -309,6 +309,12 @@
           "description": "Soft wrap line at the preferred line length or the editor width (whichever is smaller).",
           "type": "string",
           "const": "bounded"
+        },
+        {
+          "description": "Soft wrap line at the preferred line length or the editor width (whichever is smaller).",
+          "deprecated": true,
+          "type": "string",
+          "const": "preferred_line_length"
         }
       ]
     },
@@ -440,6 +446,18 @@
       "items": {
         "$ref": "#/$defs/DecreaseIndentConfig"
       }
+    },
+    "documentation": {
+      "description": "Delimiters and configuration for recognizing and formatting documentation comments.",
+      "deprecated": true,
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlockCommentConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "documentation_comment": {
       "description": "Delimiters and configuration for recognizing and formatting documentation comments.",
@@ -638,5 +656,11 @@
         }
       ]
     }
+  },
+  "not": {
+    "required": [
+      "documentation",
+      "documentation_comment"
+    ]
   }
 }
