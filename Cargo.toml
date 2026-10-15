@@ -1,6 +1,7 @@
 [workspace]
 resolver        = "3"
 members         = ["crates/*", "extensions/*", "tooling/*"]
+exclude         = ["extensions/workflows", "tooling/corgi", "tooling/lints"]
 default-members = ["crates/zed"]
 
 [workspace.package]
