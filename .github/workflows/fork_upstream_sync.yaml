@@ -11,7 +11,7 @@ jobs:
     name: Prepare the candidate for upstream sync
     if: github.repository == 'kjanat/zed-editor' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     cancel-timeout-minutes: 1
     permissions: { contents: read, issues: read, pull-requests: read }
     outputs: { result: "${{ steps.result.outputs.result }}", claude: "${{ steps.claude.outputs.run }}" }
