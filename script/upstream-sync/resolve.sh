@@ -139,6 +139,7 @@ check() {
 	run_check "whitespace" 'git diff --cached --check' || return 1
 	run_check "formatting" 'dprint check' || return 1
 	run_check "workspace compile" 'cargo check --locked --workspace --all-targets --keep-going' || return 1
+	run_check "extension schemas" "bash $(printf '%q' "${here}/prepare.sh") --regenerate-extension-schemas && git add crates/extension_api/schemas" || return 1
 
 	packages="$(packages_of)"
 	if [[ -n "${packages}" ]]; then

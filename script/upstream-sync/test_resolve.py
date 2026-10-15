@@ -10,6 +10,13 @@ from collections.abc import Callable
 from itertools import takewhile
 from pathlib import Path
 
+from test_container import (
+    EXTENSION_SCHEMA,
+    LANGUAGE_CONFIG_SCHEMA,
+    schema,
+    schema_generator,
+)
+
 HERE = Path(__file__).resolve().parent
 REPOSITORY = HERE.parents[1]
 SCRIPTS = ("prepare.sh", "resolve.sh", "resolve-prompt.md")
@@ -95,13 +102,17 @@ class Fixture:
         _ = git(self.repository, "config", "user.name", "Test")
         _ = git(self.repository, "config", "user.email", "test@example.invalid")
         self.write({
-            "Cargo.toml": '[workspace]\nmembers = ["alpha", "beta", "fork_tool"]\nresolver = "2"\n',
+            "Cargo.toml": '[workspace]\nmembers = ["alpha", "beta", "fork_tool", "schema_generator"]\nresolver = "2"\n',
             "alpha/Cargo.toml": '[package]\nname = "alpha"\nversion = "0.1.0"\nedition = "2021"\n',
             "alpha/src/lib.rs": ALPHA_BASE,
             "beta/Cargo.toml": '[package]\nname = "beta"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nalpha = { path = "../alpha" }\n',
             "beta/src/lib.rs": "pub fn doubled() -> u32 {\n    alpha::value() * 2\n}\n",
             "fork_tool/Cargo.toml": '[package]\nname = "fork_tool"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nalpha = { path = "../alpha" }\n',
             "fork_tool/src/lib.rs": "pub fn shown() -> u32 {\n    alpha::value()\n}\n",
+            "schema_generator/Cargo.toml": '[package]\nname = "schema_generator"\nversion = "0.1.0"\nedition = "2021"\n',
+            "schema_generator/src/main.rs": schema_generator(1),
+            EXTENSION_SCHEMA: schema("extension", 1),
+            LANGUAGE_CONFIG_SCHEMA: schema("language_config", 1),
             ".dprint.json": json.dumps({"plugins": [JSON_PLUGIN]}, indent=2) + "\n",
             "data.json": '{ "name": "fixture" }\n',
             ".github/workflows/ci.yml": "trusted workflow\n",
@@ -418,6 +429,51 @@ class ResolverTests(unittest.TestCase):
         self.assertNotIn("beyond the conflicts", resolution)
         for name in LISTS:
             self.assertTrue((fixture.output / name).is_file(), name)
+
+    def test_verification_commits_the_regenerated_extension_schemas(self):
+        def generator_changed(root: Path) -> Fixture:
+            return Fixture(
+                root,
+                {
+                    "alpha/src/lib.rs": UPSTREAM_ALPHA,
+                    "schema_generator/src/main.rs": schema_generator(2),
+                },
+                {"alpha/src/lib.rs": FORK_ALPHA},
+            )
+
+        fixture = self.fixture(generator_changed)
+        fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        self.assertEqual(fixture.finish(), "resolved")
+        _ = git(
+            fixture.verifier,
+            "fetch",
+            "-q",
+            str(fixture.output / "sync.bundle"),
+            "sync/upstream:refs/check/resolved",
+        )
+        for path, target in (
+            (EXTENSION_SCHEMA, "extension"),
+            (LANGUAGE_CONFIG_SCHEMA, "language_config"),
+        ):
+            self.assertEqual(
+                git(fixture.verifier, "show", f"refs/check/resolved:{path}"),
+                schema(target, 2).strip(),
+            )
+
+    def test_failing_schema_generation_produces_no_candidate(self):
+        def generator_broken(root: Path) -> Fixture:
+            return Fixture(
+                root,
+                {
+                    "alpha/src/lib.rs": UPSTREAM_ALPHA,
+                    "schema_generator/src/main.rs": "fn main() {\n    std::process::exit(1);\n}\n",
+                },
+                {"alpha/src/lib.rs": FORK_ALPHA},
+            )
+
+        fixture = self.fixture(generator_broken)
+        fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        _ = self.assert_failed(fixture, "Validation failed at **extension schemas**")
 
     def test_changes_beyond_the_conflicts_are_listed(self):
         fixture = self.fixture()

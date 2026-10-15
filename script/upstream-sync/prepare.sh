@@ -38,6 +38,12 @@ structured_merge() (
 		&& dprint fmt "$1" \
 		&& dprint check "$1"
 )
+regenerate_extension_schemas() {
+	cargo run --locked --quiet --package schema_generator -- extension \
+		--output crates/extension_api/schemas/extension.schema.json \
+		&& cargo run --locked --quiet --package schema_generator -- language_config \
+			--output crates/extension_api/schemas/language-config.schema.json
+}
 # The exporter refuses conflict-report.md above 60000 bytes, and GitHub rejects
 # pull request bodies above 65536 characters, so the report must fit a fixed budget.
 REPORT_BUDGET="${SYNC_REPORT_BUDGET:-56000}"
@@ -91,6 +97,10 @@ fi
 if [[ "${1:-}" == --restore-fork-rules ]]; then
 	restore_fork_rules
 	exit 0
+fi
+if [[ "${1:-}" == --regenerate-extension-schemas ]]; then
+	regenerate_extension_schemas
+	exit
 fi
 # Only /source (read-only) and /output cross the container boundary.
 git clone --no-local /source /tmp/work
@@ -373,6 +383,17 @@ case "$result" in
 		fi
 		if ! git diff --quiet; then
 			git commit --all --message "Apply this fork's formatting to the upstream merge"
+		fi
+		if [[ "$result" != partial ]]; then
+			# The prepare job times out after 30 minutes.
+			if timeout 20m bash "$0" --regenerate-extension-schemas; then
+				git add crates/extension_api/schemas
+				if ! git diff --cached --quiet; then
+					git commit --message "Regenerate the extension schemas"
+				fi
+			else
+				echo "prepare.sh: could not regenerate the extension schemas" >&2
+			fi
 		fi
 		git bundle create /output/sync.bundle refs/heads/sync/upstream ^master
 		cp /tmp/dropped-github.txt /output/

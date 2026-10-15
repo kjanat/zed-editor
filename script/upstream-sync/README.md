@@ -55,6 +55,13 @@ with its remaining conflict markers into `sync.bundle`, next to `human.txt` and
 `conflict-report.md`. A partial merge is input for the resolver and never
 becomes the sync PR.
 
+For a `clean` or `resolved` result, `prepare.sh --regenerate-extension-schemas`
+builds `schema_generator` and rewrites `crates/extension_api/schemas`, and
+`prepare.sh` commits any change as `Regenerate the extension schemas`. The image
+installs `build-essential` for this build. When the build fails or runs longer
+than 20 minutes, `prepare.sh` prints a warning and produces the candidate
+without that commit, and the schema test fails on the sync PR.
+
 ## Claude resolver
 
 A `partial` result runs two more jobs, both with `contents: read`. The `prepare`
@@ -76,7 +83,8 @@ names no conflicts. Claude runs the steps itself:
 - `resolve.sh check` runs the validation in place and prints it as it runs: no
   unmerged paths, no conflict markers, `.github`, `script/upstream-sync` and
   `script/clippy` unchanged, `git diff --cached --check`, `dprint check`,
-  `cargo check --locked --workspace --all-targets --keep-going`, then
+  `cargo check --locked --workspace --all-targets --keep-going`, the schema
+  regeneration from `prepare.sh` with its output staged, then
   `script/clippy --no-deps` and `cargo nextest run` for the crates of the
   conflicted files, and every test in Claude's `.sync/tests.txt`. `check`
   writes its logs to `.sync/`, a gitignored directory at the repository root.
@@ -161,7 +169,10 @@ mise run test-upstream-sync
 
 The task builds the container image and runs every test. The container
 regressions run an upstream-supplied formatter and verify that the root JSON,
-TOML, and Rust formatters work without network access as the runner user.
+TOML, and Rust formatters work without network access as the runner user. With
+a stub `schema_generator`, they check that a clean merge commits regenerated
+schemas only when the output changes, and that a failing generator still
+produces the candidate.
 `test_resolve.py` builds fixture repositories with a small cargo workspace and a
 stub agent, and checks:
 
@@ -172,7 +183,9 @@ stub agent, and checks:
   conflict, failing tests, automation changes, a missing resolution and a
   resolution with other parents all end as `conflict`;
 - that a verified resolution has the fork and upstream as parents and lists the
-  files it changed outside the conflicts.
+  files it changed outside the conflicts;
+- that a verified resolution carries the regenerated extension schemas, and a
+  failing generator ends as `conflict`.
 
 Other tests exercise bundle validation, `open-sync-pr.py` and hostile artifact
 file types without contacting GitHub or pushing anything.

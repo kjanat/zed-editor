@@ -174,6 +174,13 @@ Examples of earlier subjects: `Merge upstream and preserve watcher recovery`, `M
 
 Files that upstream added arrive in upstream's formatting. When `dprint check` reports them after the merge commit, run `dprint fmt` on those files and commit them separately as `Apply this fork's formatting to the upstream merge`, as the sync automation does.
 
+Then regenerate the extension schemas. Commit any change separately as `Regenerate the extension schemas`:
+
+```sh
+bash script/upstream-sync/prepare.sh --regenerate-extension-schemas
+git status --short -- crates/extension_api/schemas
+```
+
 ## 7. Push and open the PR
 
 ```sh
