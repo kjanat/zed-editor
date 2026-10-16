@@ -66,7 +66,7 @@ use collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
 use futures::{
     AsyncWriteExt, Future, FutureExt, StreamExt,
     channel::oneshot,
-    future::{Shared, join_all},
+    future::{BoxFuture, Shared, join_all},
     select, select_biased,
     stream::FuturesUnordered,
 };
@@ -311,6 +311,11 @@ struct DocumentSelectorContext {
     scheme: &'static str,
 }
 
+enum FormattingClaim {
+    Claimed(oneshot::Sender<()>),
+    InFlight(Shared<BoxFuture<'static, ()>>),
+}
+
 pub struct LocalLspStore {
     weak: WeakEntity<LspStore>,
     node_runtime: NodeRuntime,
@@ -323,7 +328,7 @@ pub struct LocalLspStore {
     language_server_ids: HashMap<LanguageServerSeed, UnifiedLanguageServer>,
     yarn: Entity<YarnPathStore>,
     pub language_servers: HashMap<LanguageServerId, LanguageServerState>,
-    buffers_being_formatted: HashSet<BufferId>,
+    buffers_being_formatted: HashMap<BufferId, Shared<BoxFuture<'static, ()>>>,
     last_workspace_edits_by_language_server: HashMap<LanguageServerId, ProjectTransaction>,
     language_server_watched_paths: HashMap<LanguageServerId, LanguageServerWatchedPaths>,
     watched_manifest_filenames: HashSet<ManifestName>,
@@ -390,6 +395,20 @@ fn workspace_folder_uri(worktree: &Worktree, path: &RelPath) -> Option<Uri> {
 }
 
 impl LocalLspStore {
+    fn claim_formatting(&mut self, buffer_id: BufferId) -> FormattingClaim {
+        if let Some(in_flight) = self.buffers_being_formatted.get(&buffer_id) {
+            return FormattingClaim::InFlight(in_flight.clone());
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.buffers_being_formatted.insert(
+            buffer_id,
+            async move { receiver.await.unwrap_or_default() }
+                .boxed()
+                .shared(),
+        );
+        FormattingClaim::Claimed(sender)
+    }
+
     /// Returns the running language server for the given ID. Note if the language server is starting, it will not be returned.
     pub fn running_language_server_for_id(
         &self,
@@ -1554,12 +1573,19 @@ impl LocalLspStore {
     ) -> anyhow::Result<ProjectTransaction> {
         // Do not allow multiple concurrent code actions requests for the
         // same buffer.
-        lsp_store.update(cx, |this, cx| {
+        let claims = lsp_store.update(cx, |this, cx| {
             let this = this.as_local_mut().unwrap();
-            buffers.retain(|buffer| {
-                this.buffers_being_formatted
-                    .insert(buffer.read(cx).remote_id())
-            });
+            let mut claims = Vec::new();
+            buffers.retain(
+                |buffer| match this.claim_formatting(buffer.read(cx).remote_id()) {
+                    FormattingClaim::Claimed(claim) => {
+                        claims.push(claim);
+                        true
+                    }
+                    FormattingClaim::InFlight(_) => false,
+                },
+            );
+            claims
         })?;
         let _cleanup = defer({
             let this = lsp_store.clone();
@@ -1574,6 +1600,7 @@ impl LocalLspStore {
                     }
                 })
                 .ok();
+                drop(claims);
             }
         });
         let mut project_transaction = ProjectTransaction::default();
@@ -1623,15 +1650,26 @@ impl LocalLspStore {
     ) -> anyhow::Result<ProjectTransaction> {
         // Do not allow multiple concurrent formatting requests for the
         // same buffer.
-        lsp_store.update(cx, |this, cx| {
+        let (claims, formats_in_flight) = lsp_store.update(cx, |this, cx| {
             let this = this.as_local_mut().unwrap();
+            let mut claims = Vec::new();
+            let mut formats_in_flight = Vec::new();
             buffers.retain(|buffer| {
-                this.buffers_being_formatted
-                    .insert(buffer.handle.read(cx).remote_id())
+                match this.claim_formatting(buffer.handle.read(cx).remote_id()) {
+                    FormattingClaim::Claimed(claim) => {
+                        claims.push(claim);
+                        true
+                    }
+                    FormattingClaim::InFlight(in_flight) => {
+                        formats_in_flight.push(in_flight);
+                        false
+                    }
+                }
             });
+            (claims, formats_in_flight)
         })?;
 
-        let _cleanup = defer({
+        let cleanup = defer({
             let this = lsp_store.clone();
             let mut cx = cx.clone();
             let buffers = &buffers;
@@ -1644,6 +1682,7 @@ impl LocalLspStore {
                     }
                 })
                 .ok();
+                drop(claims);
             }
         });
 
@@ -1708,6 +1747,9 @@ impl LocalLspStore {
             }
         }
 
+        drop(cleanup);
+        join_all(formats_in_flight).await;
+
         match format_error {
             Some(error) => Err(error),
             None => Ok(project_transaction),
@@ -1767,7 +1809,7 @@ impl LocalLspStore {
                 .await;
             extend_formatting_transaction(buffer, formatting_transaction_id, cx, |buffer, cx| {
                 buffer.apply_diff(diff, cx);
-            })?;
+            });
         }
 
         if settings.ensure_final_newline_on_save {
@@ -1777,7 +1819,7 @@ impl LocalLspStore {
             });
             extend_formatting_transaction(buffer, formatting_transaction_id, cx, |buffer, cx| {
                 buffer.apply_diff(diff, cx);
-            })?;
+            });
         }
 
         let line_ending_policy = match settings.line_ending {
@@ -2079,7 +2121,7 @@ impl LocalLspStore {
                     |buffer, cx| {
                         buffer.apply_diff(diff, cx);
                     },
-                )?;
+                );
             }
             Formatter::External { command, arguments } => {
                 let logger = zlog::scoped!(logger => "command");
@@ -2110,7 +2152,7 @@ impl LocalLspStore {
                     |buffer, cx| {
                         buffer.apply_diff(diff, cx);
                     },
-                )?;
+                );
             }
             Formatter::LanguageServer(specifier) => {
                 let logger = zlog::scoped!(logger => "language-server");
@@ -2267,7 +2309,7 @@ impl LocalLspStore {
                     |buffer, cx| {
                         buffer.edit(edits, None, cx);
                     },
-                )?;
+                );
             }
             Formatter::CodeAction(code_action_name) => {
                 let logger = zlog::scoped!(logger => "code-actions");
@@ -2513,18 +2555,12 @@ impl LocalLspStore {
                                 zlog::trace!("Applying {} edits", edits.len());
                                 buffer.edit(edits, None, cx);
                             },
-                        )?;
+                        );
                     }
 
                     let Some(command) = action.lsp_action.command() else {
                         continue;
                     };
-
-                    zlog::warn!(
-                        logger =>
-                        "Executing code action command '{}'. This may cause formatting to abort unnecessarily as well as splitting formatting into two entries in the undo history",
-                        &command.command,
-                    );
 
                     let server_capabilities = server.capabilities();
                     let available_commands = server_capabilities
@@ -2542,12 +2578,6 @@ impl LocalLspStore {
                         continue;
                     }
 
-                    extend_formatting_transaction(
-                        buffer,
-                        formatting_transaction_id,
-                        cx,
-                        |_, _| {},
-                    )?;
                     zlog::info!(logger => "Executing command {}", &command.command);
 
                     lsp_store.update(cx, |this, _| {
@@ -7677,18 +7707,24 @@ impl LspStore {
             })
         } else if let Some(local) = self.as_local_mut() {
             let buffer_id = buffer.read(cx).remote_id();
-            local.buffers_being_formatted.insert(buffer_id);
+            let claim = match local.claim_formatting(buffer_id) {
+                FormattingClaim::Claimed(claim) => Some(claim),
+                FormattingClaim::InFlight(_) => None,
+            };
             cx.spawn(async move |this, cx| {
                 let _cleanup = defer({
                     let this = this.clone();
                     let mut cx = cx.clone();
                     move || {
-                        this.update(&mut cx, |this, _| {
-                            if let Some(local) = this.as_local_mut() {
-                                local.buffers_being_formatted.remove(&buffer_id);
-                            }
-                        })
-                        .ok();
+                        if let Some(claim) = claim {
+                            this.update(&mut cx, |this, _| {
+                                if let Some(local) = this.as_local_mut() {
+                                    local.buffers_being_formatted.remove(&buffer_id);
+                                }
+                            })
+                            .ok();
+                            drop(claim);
+                        }
                     }
                 });
 
@@ -18679,24 +18715,19 @@ pub fn ensure_uniform_list_compatible_label(label: &mut CodeLabel) {
 }
 
 /// Apply edits to the buffer that will become part of the formatting transaction.
-/// Fails if the buffer has been edited since the start of that transaction.
 fn extend_formatting_transaction(
     buffer: &FormattableBuffer,
     formatting_transaction_id: text::TransactionId,
     cx: &mut AsyncApp,
     operation: impl FnOnce(&mut Buffer, &mut Context<Buffer>),
-) -> anyhow::Result<()> {
+) {
     buffer.handle.update(cx, |buffer, cx| {
-        let last_transaction_id = buffer.peek_undo_stack().map(|t| t.transaction_id());
-        if last_transaction_id != Some(formatting_transaction_id) {
-            anyhow::bail!("Buffer edited while formatting. Aborting")
-        }
+        buffer.finalize_last_transaction();
         buffer.start_transaction();
         operation(buffer, cx);
         if let Some(transaction_id) = buffer.end_transaction(cx) {
             buffer.merge_transactions(transaction_id, formatting_transaction_id);
         }
-        Ok(())
     })
 }
 
