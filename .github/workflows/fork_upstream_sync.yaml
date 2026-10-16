@@ -141,14 +141,27 @@ jobs:
         run: rm -r "${RUNNER_TEMP}/sync-resolution" .sync
       - name: Resolve the conflicts with Claude
         continue-on-error: true
-        timeout-minutes: 280
-        uses: anthropics/claude-code-action/base-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
-        env: { DISABLE_AUTOUPDATER: "1" }
+        timeout-minutes: 200
+        uses: &claude anthropics/claude-code-action/base-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
+        env: &claude-env { DISABLE_AUTOUPDATER: "1" }
         with:
           prompt_file: ${{ github.workspace }}/script/upstream-sync/resolve-prompt.md
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           show_full_output: true
           claude_args: --model claude-opus-5-5 --permission-mode auto --add-dir ${{ runner.temp }}/sync-candidate
+      - &continue-resolution
+        name: Continue the resolution until check passes
+        if: hashFiles('.sync/validated-tree') == ''
+        continue-on-error: true
+        timeout-minutes: 40
+        uses: *claude
+        env: *claude-env
+        with:
+          prompt_file: ${{ github.workspace }}/script/upstream-sync/resolve-continue-prompt.md
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          claude_args: --continue --model claude-opus-5-5 --permission-mode auto --add-dir ${{ runner.temp }}/sync-candidate
+      - *continue-resolution
       - name: Save Claude's checkout, notes, logs and session
         if: always()
         env: { GIT_INDEX_FILE: "${{ runner.temp }}/claude.index", TOKEN: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" }

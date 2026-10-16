@@ -123,8 +123,13 @@ or times out, `open-sync-pr.py` still opens or updates that issue, with the
 conflict report and a link to the run. Only the bundle and these bounded files
 reach it, through the same exporter as the prepare step.
 
-The Claude step stops after 280 of the job's 300 minutes, so the export and
-upload always run. GitHub keeps the candidate, resolution and verified
+`check` writes `.sync/validated-tree` when every check passed. While that file
+is missing after the Claude step, two more steps continue the same session with
+`resolve-continue-prompt.md`. A turn that ended while a command still ran in
+the background continues there.
+
+The Claude steps stop after 200, 40 and 40 of the job's 300 minutes, so the
+export and upload always run. GitHub keeps the candidate, resolution and verified
 artifacts for 30 days. A failed `open-sync-pr` job therefore loses nothing: a
 re-run of that job pushes the same verified merge and opens the PR.
 
