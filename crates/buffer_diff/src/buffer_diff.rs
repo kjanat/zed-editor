@@ -368,13 +368,17 @@ impl BufferDiffSnapshot {
     ) -> impl 'a + Iterator<Item = DiffHunk> {
         let unstaged_counterpart = self.secondary_diff.as_deref();
         let range = range.to_offset(buffer);
-        let filter = move |summary: &DiffHunkSummary| {
-            let summary_range = summary.buffer_range.to_offset(buffer);
-            let before_start = summary_range.end < range.start;
-            let after_end = summary_range.start > range.end;
-            !before_start && !after_end
+        let reaches_range = move |summary: &DiffHunkSummary| {
+            summary.buffer_range.end.to_offset(buffer) >= range.start
         };
-        self.hunks_intersecting_range_impl(filter, buffer, unstaged_counterpart)
+        let starts_in_range =
+            move |hunk: &InternalDiffHunk| hunk.buffer_range.start.to_offset(buffer) <= range.end;
+        self.hunks_intersecting_range_impl(
+            reaches_range,
+            starts_in_range,
+            buffer,
+            unstaged_counterpart,
+        )
     }
 
     /// Like [`hunks_intersecting_range`], but ignores optimistic pending hunks
@@ -386,12 +390,11 @@ impl BufferDiffSnapshot {
         buffer: &'a text::BufferSnapshot,
     ) -> impl 'a + Iterator<Item = DiffHunk> {
         let range = range.to_offset(buffer);
-        let filter = move |summary: &DiffHunkSummary| {
-            let summary_range = summary.buffer_range.to_offset(buffer);
-            !(summary_range.end < range.start) && !(summary_range.start > range.end)
-        };
         self.hunks
-            .filter::<_, DiffHunkSummary>(buffer, filter)
+            .filter::<_, DiffHunkSummary>(buffer, move |summary: &DiffHunkSummary| {
+                summary.buffer_range.end.to_offset(buffer) >= range.start
+            })
+            .take_while(move |hunk| hunk.buffer_range.start.to_offset(buffer) <= range.end)
             .map(move |hunk| {
                 let buffer_range = hunk.buffer_range.clone();
                 DiffHunk {
@@ -432,12 +435,13 @@ impl BufferDiffSnapshot {
         range: Range<Anchor>,
         buffer: &'a text::BufferSnapshot,
     ) -> impl 'a + Iterator<Item = DiffHunk> {
-        let filter = move |summary: &DiffHunkSummary| {
-            let before_start = summary.buffer_range.end.cmp(&range.start, buffer).is_lt();
-            let after_end = summary.buffer_range.start.cmp(&range.end, buffer).is_gt();
-            !before_start && !after_end
-        };
-        self.hunks_intersecting_range_rev_impl(filter, buffer)
+        let mut cursor = self.hunks.cursor::<DiffHunkSummary>(buffer);
+        cursor.seek(&range.end, Bias::Left);
+        let starts_after_range =
+            move |hunk: &InternalDiffHunk| hunk.buffer_range.start.cmp(&range.end, buffer).is_gt();
+        let reaches_range =
+            move |hunk: &InternalDiffHunk| hunk.buffer_range.end.cmp(&range.start, buffer).is_ge();
+        Self::hunks_intersecting_range_rev_impl(cursor, starts_after_range, reaches_range, buffer)
     }
 
     pub fn hunks_intersecting_base_text_range<'a>(
@@ -446,12 +450,16 @@ impl BufferDiffSnapshot {
         main_buffer: &'a text::BufferSnapshot,
     ) -> impl 'a + Iterator<Item = DiffHunk> {
         let unstaged_counterpart = self.secondary_diff.as_deref();
-        let filter = move |summary: &DiffHunkSummary| {
-            let before_start = summary.diff_base_byte_range.end < range.start;
-            let after_end = summary.diff_base_byte_range.start > range.end;
-            !before_start && !after_end
-        };
-        self.hunks_intersecting_range_impl(filter, main_buffer, unstaged_counterpart)
+        let reaches_range =
+            move |summary: &DiffHunkSummary| summary.diff_base_byte_range.end >= range.start;
+        let starts_in_range =
+            move |hunk: &InternalDiffHunk| hunk.diff_base_byte_range.start <= range.end;
+        self.hunks_intersecting_range_impl(
+            reaches_range,
+            starts_in_range,
+            main_buffer,
+            unstaged_counterpart,
+        )
     }
 
     pub fn hunks_intersecting_base_text_range_rev<'a>(
@@ -459,12 +467,18 @@ impl BufferDiffSnapshot {
         range: Range<usize>,
         main_buffer: &'a text::BufferSnapshot,
     ) -> impl 'a + Iterator<Item = DiffHunk> {
-        let filter = move |summary: &DiffHunkSummary| {
-            let before_start = summary.diff_base_byte_range.end.cmp(&range.start).is_lt();
-            let after_end = summary.diff_base_byte_range.start.cmp(&range.end).is_gt();
-            !before_start && !after_end
-        };
-        self.hunks_intersecting_range_rev_impl(filter, main_buffer)
+        let mut cursor = self.hunks.cursor::<DiffHunkSummary>(main_buffer);
+        cursor.seek(&range.end, Bias::Left);
+        let starts_after_range =
+            move |hunk: &InternalDiffHunk| hunk.diff_base_byte_range.start > range.end;
+        let reaches_range =
+            move |hunk: &InternalDiffHunk| hunk.diff_base_byte_range.end >= range.start;
+        Self::hunks_intersecting_range_rev_impl(
+            cursor,
+            starts_after_range,
+            reaches_range,
+            main_buffer,
+        )
     }
 
     pub fn hunks<'a>(
@@ -1041,13 +1055,15 @@ impl BufferDiffSnapshot {
 impl BufferDiffSnapshot {
     fn hunks_intersecting_range_impl<'a>(
         &'a self,
-        filter: impl 'a + Fn(&DiffHunkSummary) -> bool,
+        reaches_range: impl 'a + Fn(&DiffHunkSummary) -> bool,
+        starts_in_range: impl 'a + Fn(&InternalDiffHunk) -> bool,
         buffer: &'a text::BufferSnapshot,
         secondary: Option<&'a Self>,
     ) -> impl 'a + Iterator<Item = DiffHunk> {
         let anchor_iter = self
             .hunks
-            .filter::<_, DiffHunkSummary>(buffer, filter)
+            .filter::<_, DiffHunkSummary>(buffer, reaches_range)
+            .take_while(move |hunk| starts_in_range(hunk))
             .flat_map(move |hunk| {
                 [
                     (
@@ -1171,16 +1187,18 @@ impl BufferDiffSnapshot {
     }
 
     fn hunks_intersecting_range_rev_impl<'a>(
-        &'a self,
-        filter: impl 'a + Fn(&DiffHunkSummary) -> bool,
+        mut cursor: sum_tree::Cursor<'a, 'a, InternalDiffHunk, DiffHunkSummary>,
+        starts_after_range: impl 'a + Fn(&InternalDiffHunk) -> bool,
+        reaches_range: impl 'a + Fn(&InternalDiffHunk) -> bool,
         buffer: &'a text::BufferSnapshot,
     ) -> impl 'a + Iterator<Item = DiffHunk> {
-        let mut cursor = self.hunks.filter::<_, DiffHunkSummary>(buffer, filter);
+        if cursor.item().is_none_or(|hunk| starts_after_range(hunk)) {
+            cursor.prev();
+        }
 
         iter::from_fn(move || {
+            let hunk = cursor.item().filter(|hunk| reaches_range(hunk))?;
             cursor.prev();
-
-            let hunk = cursor.item()?;
             let range = hunk.buffer_range.to_point(buffer);
 
             Some(DiffHunk {
@@ -4400,5 +4418,104 @@ mod tests {
         let snapshot = diff.update(cx, |diff, cx| diff.snapshot(cx));
         snapshot.buffer_point_to_base_text_range(Point::new(0, 0), &buffer_snapshot);
         snapshot.buffer_point_to_base_text_range(Point::new(1, 0), &buffer_snapshot);
+    }
+
+    #[gpui::test(iterations = 20)]
+    async fn test_range_queries_match_every_intersecting_hunk(
+        cx: &mut TestAppContext,
+        mut rng: StdRng,
+    ) {
+        let base_lines = (0..300)
+            .map(|row| format!("line {row}"))
+            .collect::<Vec<_>>();
+        let mut buffer_lines = Vec::new();
+        for line in &base_lines {
+            match rng.random_range(0..10) {
+                0 => buffer_lines.push(format!("{line} changed")),
+                1 => {}
+                2 => {
+                    buffer_lines.push(line.clone());
+                    buffer_lines.push("inserted".to_string());
+                }
+                _ => buffer_lines.push(line.clone()),
+            }
+        }
+        let base_text = base_lines.join("\n") + "\n";
+        let buffer = Buffer::new(
+            ReplicaId::LOCAL,
+            BufferId::new(1).unwrap(),
+            buffer_lines.join("\n") + "\n",
+        );
+        let diff = BufferDiffSnapshot::new_sync(&buffer, base_text.clone(), cx);
+        let hunks = diff.hunks.iter().collect::<Vec<_>>();
+        assert!(hunks.len() > 10);
+
+        let base_ranges = |hunks: Vec<DiffHunk>| {
+            hunks
+                .into_iter()
+                .map(|hunk| hunk.diff_base_byte_range)
+                .collect::<Vec<_>>()
+        };
+
+        for _ in 0..50 {
+            let start = rng.random_range(0..=buffer.len());
+            let end = rng.random_range(start..=buffer.len());
+            let range = buffer.anchor_before(start)..buffer.anchor_after(end);
+            let expected = hunks
+                .iter()
+                .filter(|hunk| {
+                    let hunk_range = hunk.buffer_range.to_offset(&buffer);
+                    hunk_range.end >= start && hunk_range.start <= end
+                })
+                .map(|hunk| hunk.diff_base_byte_range.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                base_ranges(
+                    diff.hunks_intersecting_range(range.clone(), &buffer)
+                        .collect()
+                ),
+                expected
+            );
+            assert_eq!(
+                base_ranges(
+                    diff.raw_hunks_intersecting_range(range.clone(), &buffer)
+                        .collect()
+                ),
+                expected
+            );
+            let mut expected_rev = expected;
+            expected_rev.reverse();
+            assert_eq!(
+                base_ranges(diff.hunks_intersecting_range_rev(range, &buffer).collect()),
+                expected_rev
+            );
+
+            let base_start = rng.random_range(0..=base_text.len());
+            let base_end = rng.random_range(base_start..=base_text.len());
+            let expected = hunks
+                .iter()
+                .filter(|hunk| {
+                    hunk.diff_base_byte_range.end >= base_start
+                        && hunk.diff_base_byte_range.start <= base_end
+                })
+                .map(|hunk| hunk.diff_base_byte_range.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                base_ranges(
+                    diff.hunks_intersecting_base_text_range(base_start..base_end, &buffer)
+                        .collect()
+                ),
+                expected
+            );
+            let mut expected_rev = expected;
+            expected_rev.reverse();
+            assert_eq!(
+                base_ranges(
+                    diff.hunks_intersecting_base_text_range_rev(base_start..base_end, &buffer)
+                        .collect()
+                ),
+                expected_rev
+            );
+        }
     }
 }
