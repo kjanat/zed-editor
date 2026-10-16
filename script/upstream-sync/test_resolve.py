@@ -20,7 +20,12 @@ from test_container import (
 HERE = Path(__file__).resolve().parent
 REPOSITORY = HERE.parents[1]
 WORKFLOW = REPOSITORY / ".github/workflows/fork_upstream_sync.yaml"
-SCRIPTS = ("prepare.sh", "resolve.sh", "resolve-prompt.md")
+SCRIPTS = (
+    "prepare.sh",
+    "resolve.sh",
+    "resolve-prompt.md",
+    "resolve-continue-prompt.md",
+)
 LISTS = (
     "formatting-only.txt",
     "formatted-three-way.txt",
