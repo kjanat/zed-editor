@@ -7,6 +7,7 @@ use gpui::{
     DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, PromptLevel, Render, ScrollHandle,
     Task, TextStyleRefinement, UnderlineStyle, WeakEntity,
 };
+use language::LanguageServerId;
 use markdown::{CopyButtonVisibility, Markdown, MarkdownElement, MarkdownStyle};
 use parking_lot::Mutex;
 use project::project_settings::ProjectSettings;
@@ -190,6 +191,29 @@ impl Workspace {
             } else {
                 true
             }
+        });
+    }
+
+    pub fn dismiss_language_server_prompts(
+        &mut self,
+        server_id: LanguageServerId,
+        cx: &mut Context<Self>,
+    ) {
+        self.notifications.retain(|(_, view)| {
+            let belongs_to_server =
+                view.clone()
+                    .downcast::<LanguageServerPrompt>()
+                    .is_ok_and(|prompt| {
+                        prompt
+                            .read(cx)
+                            .request
+                            .as_ref()
+                            .is_some_and(|request| request.server_id == server_id)
+                    });
+            if belongs_to_server {
+                cx.notify();
+            }
+            !belongs_to_server
         });
     }
 
@@ -1767,7 +1791,7 @@ where
 #[cfg(test)]
 mod tests {
     use fs::FakeFs;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, VisualTestContext};
     use project::{LanguageServerPromptRequest, Project};
 
     use crate::tests::init_test;
@@ -1795,6 +1819,7 @@ mod tests {
                                  lsp_name: &str| {
             workspace.update(cx, |workspace, cx| {
                 let request = LanguageServerPromptRequest::test(
+                    LanguageServerId(0),
                     gpui::PromptLevel::Warning,
                     "Test notification".to_string(),
                     vec![], // Empty actions triggers auto-dismiss
@@ -1853,6 +1878,7 @@ mod tests {
             workspace.update(cx, |workspace, cx| {
                 let lsp_name = lsp_name.to_string();
                 let request = LanguageServerPromptRequest::test(
+                    LanguageServerId(0),
                     gpui::PromptLevel::Warning,
                     "Test notification".to_string(),
                     vec![], // Empty actions triggers auto-dismiss
@@ -1905,6 +1931,7 @@ mod tests {
 
         workspace.update(cx, |workspace, cx| {
             let request = LanguageServerPromptRequest::test(
+                LanguageServerId(0),
                 gpui::PromptLevel::Warning,
                 "Test notification".to_string(),
                 vec![], // Empty actions would trigger auto-dismiss if enabled
@@ -1948,6 +1975,7 @@ mod tests {
 
         workspace.update(cx, |workspace, cx| {
             let request = LanguageServerPromptRequest::test(
+                LanguageServerId(0),
                 gpui::PromptLevel::Warning,
                 "Test notification".to_string(),
                 vec![], // Empty actions triggers auto-dismiss
@@ -1969,5 +1997,110 @@ mod tests {
         // Advance time past the custom duration
         cx.executor().advance_clock(Duration::from_millis(1000));
         assert_eq!(count_notifications(&workspace, cx), 0);
+    }
+
+    #[gpui::test]
+    async fn test_language_server_prompts_dismissed_when_their_server_stops(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        cx.update(|cx| {
+            let mut settings = ProjectSettings::get_global(cx).clone();
+            settings
+                .global_lsp_settings
+                .notifications
+                .dismiss_timeout_ms = Some(0);
+            ProjectSettings::override_global(settings, cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        let notification_ids = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, _| workspace.notification_ids())
+        };
+
+        struct UnrelatedToast;
+        let toast_id = NotificationId::unique::<UnrelatedToast>();
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_toast(Toast::new(toast_id.clone(), "unrelated"), cx);
+        });
+
+        let show_prompt = |server_id: LanguageServerId,
+                           workspace: &Entity<Workspace>,
+                           cx: &mut VisualTestContext| {
+            workspace.update(cx, |workspace, cx| {
+                let request = LanguageServerPromptRequest::test(
+                    server_id,
+                    gpui::PromptLevel::Warning,
+                    "No dprint configuration file found".to_string(),
+                    vec![],
+                    "dprint".to_string(),
+                );
+                let notification_id = NotificationId::composite::<LanguageServerPrompt>(request.id);
+                let prompt = cx.new(|cx| LanguageServerPrompt::new(request, cx));
+                workspace.show_notification(notification_id.clone(), cx, |_| prompt.clone());
+                (notification_id, prompt)
+            })
+        };
+
+        let (first_id, _) = show_prompt(LanguageServerId(1), &workspace, cx);
+        let (second_id, _) = show_prompt(LanguageServerId(2), &workspace, cx);
+        let (answered_id, answered_prompt) = show_prompt(LanguageServerId(3), &workspace, cx);
+        assert_eq!(
+            notification_ids(&workspace, cx),
+            vec![
+                toast_id.clone(),
+                first_id.clone(),
+                second_id.clone(),
+                answered_id.clone()
+            ]
+        );
+
+        let mut async_cx = cx.update(|window, cx| window.to_async(cx));
+        cx.foreground_executor()
+            .spawn(async move {
+                LanguageServerPrompt::select_option(answered_prompt, 0, &mut async_cx).await
+            })
+            .detach();
+        cx.run_until_parked();
+        assert_eq!(
+            notification_ids(&workspace, cx),
+            vec![
+                toast_id.clone(),
+                first_id,
+                second_id.clone(),
+                answered_id.clone()
+            ]
+        );
+
+        let stop_server = |server_id: LanguageServerId, cx: &mut VisualTestContext| {
+            project.update(cx, |_, cx| {
+                cx.emit(project::Event::LanguageServerRemoved(server_id))
+            });
+            cx.run_until_parked();
+        };
+
+        stop_server(LanguageServerId(1), cx);
+        assert_eq!(
+            notification_ids(&workspace, cx),
+            vec![toast_id.clone(), second_id.clone(), answered_id.clone()]
+        );
+
+        stop_server(LanguageServerId(1), cx);
+        stop_server(LanguageServerId(3), cx);
+        assert_eq!(
+            notification_ids(&workspace, cx),
+            vec![toast_id.clone(), second_id, answered_id.clone()]
+        );
+
+        stop_server(LanguageServerId(2), cx);
+        assert_eq!(
+            notification_ids(&workspace, cx),
+            vec![toast_id, answered_id]
+        );
     }
 }

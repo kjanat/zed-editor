@@ -1909,6 +1909,10 @@ impl Workspace {
                     this.dismiss_notification(&NotificationId::named(notification_id.clone()), cx)
                 }
 
+                project::Event::LanguageServerRemoved(server_id) => {
+                    this.dismiss_language_server_prompts(*server_id, cx);
+                }
+
                 project::Event::LanguageServerPrompt(request) => {
                     struct LanguageServerPrompt;
 
