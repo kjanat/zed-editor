@@ -9,7 +9,7 @@ permissions: { contents: read }
 jobs:
   prepare:
     name: Prepare the candidate for upstream sync
-    if: github.repository == 'kjanat/zed-editor' && github.ref == 'refs/heads/master'
+    if: github.repository == 'kjanat/zed-editor' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     cancel-timeout-minutes: 1
