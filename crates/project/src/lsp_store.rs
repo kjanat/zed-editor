@@ -332,7 +332,7 @@ pub struct LocalLspStore {
     language_server_dynamic_registrations: HashMap<LanguageServerId, DynamicRegistrations>,
     initial_server_capabilities: HashMap<LanguageServerId, lsp::ServerCapabilities>,
     supplementary_language_servers:
-        HashMap<LanguageServerId, (LanguageServerName, Arc<LanguageServer>)>,
+        HashMap<LanguageServerId, (LanguageServerName, Arc<LanguageServer>, lsp::Subscription)>,
     prettier_store: Entity<PrettierStore>,
     next_diagnostic_group_id: usize,
     diagnostics: HashMap<
@@ -540,8 +540,8 @@ impl LocalLspStore {
             let adapter = adapter.clone();
             let server_name = adapter.name.clone();
             let stderr_capture = stderr_capture.clone();
-            #[cfg(any(test, feature = "test-support"))]
             let lsp_store = self.weak.clone();
+            let delegate = delegate.clone() as Arc<dyn LspAdapterDelegate>;
             let pending_workspace_folders = pending_workspace_folders.clone();
             async move |cx| {
                 let binary = binary.await?;
@@ -558,11 +558,12 @@ impl LocalLspStore {
                     .ok()
                     .flatten()
                 {
+                    Self::setup_lsp_messages(lsp_store, &server, delegate, adapter);
                     return Ok(server);
                 }
 
                 let code_action_kinds = adapter.code_action_kinds();
-                lsp::LanguageServer::new(
+                let server = lsp::LanguageServer::new(
                     stderr_capture,
                     server_id,
                     server_name,
@@ -571,7 +572,9 @@ impl LocalLspStore {
                     code_action_kinds,
                     Some(pending_workspace_folders),
                     cx,
-                )
+                )?;
+                Self::setup_lsp_messages(lsp_store, &server, delegate, adapter);
+                anyhow::Ok(server)
             }
         });
 
@@ -631,13 +634,6 @@ impl LocalLspStore {
                         params.initialization_options = initialization_options;
                         adapter.adapter.prepare_initialize_params(params, cx)
                     })?;
-
-                    Self::setup_lsp_messages(
-                        lsp_store.clone(),
-                        &language_server,
-                        delegate.clone(),
-                        adapter.clone(),
-                    );
 
                     let did_change_configuration_params = lsp::DidChangeConfigurationParams {
                         settings: workspace_config,
@@ -4682,7 +4678,7 @@ impl LocalLspStore {
     fn language_server_for_id(&self, id: LanguageServerId) -> Option<Arc<LanguageServer>> {
         if let Some(LanguageServerState::Running { server, .. }) = self.language_servers.get(&id) {
             Some(server.clone())
-        } else if let Some((_, server)) = self.supplementary_language_servers.get(&id) {
+        } else if let Some((_, server, _)) = self.supplementary_language_servers.get(&id) {
             Some(Arc::clone(server))
         } else {
             None
@@ -15493,9 +15489,22 @@ impl LspStore {
             local
                 .initial_server_capabilities
                 .insert(id, server.capabilities());
+            let log_subscription = server.on_notification::<lsp::notification::LogMessage, _>({
+                let this = cx.weak_entity();
+                move |params, cx| {
+                    this.update(cx, |_, cx| {
+                        cx.emit(LspStoreEvent::LanguageServerLog(
+                            id,
+                            LanguageServerLogType::Log(params.typ),
+                            params.message,
+                        ));
+                    })
+                    .ok();
+                }
+            });
             local
                 .supplementary_language_servers
-                .insert(id, (name.clone(), server));
+                .insert(id, (name.clone(), server, log_subscription));
             cx.emit(LspStoreEvent::SupplementaryLanguageServerAdded(id, name));
         }
     }

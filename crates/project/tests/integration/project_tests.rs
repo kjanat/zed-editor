@@ -2808,6 +2808,66 @@ async fn test_language_servers_disabled_by_default(cx: &mut gpui::TestAppContext
 }
 
 #[gpui::test]
+async fn test_log_messages_sent_before_initialize_reach_the_log(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "a.rs": "fn a() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "early-logger",
+            initializer: Some(Box::new(|fake_server| {
+                fake_server.notify::<lsp::notification::LogMessage>(lsp::LogMessageParams {
+                    typ: lsp::MessageType::INFO,
+                    message: "hello before initialize".to_string(),
+                });
+            })),
+            ..Default::default()
+        },
+    );
+
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&project, {
+            let logs = logs.clone();
+            move |_, event, _| {
+                if let Event::LanguageServerLog(
+                    server_id,
+                    LanguageServerLogType::Log(typ),
+                    message,
+                ) = event
+                {
+                    logs.lock().push((*server_id, *typ, message.clone()));
+                }
+            }
+        })
+    });
+
+    let _buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        *logs.lock(),
+        vec![(
+            fake_server.server.server_id(),
+            lsp::MessageType::INFO,
+            "hello before initialize".to_string()
+        )]
+    );
+}
+
+#[gpui::test]
 async fn test_language_server_relative_path(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 
