@@ -4,7 +4,7 @@ use crate::{
     git_panel_settings::GitPanelSettings,
 };
 use anyhow::Result;
-use buffer_diff::BufferDiff;
+use buffer_diff::{BufferDiff, BufferDiffSnapshot};
 use collections::{HashMap, HashSet};
 use editor::{
     EditorEvent, EditorSettings, SelectionEffects, SplittableEditor, actions::GoToHunk,
@@ -17,10 +17,10 @@ use gpui::{
     App, AppContext as _, AsyncWindowContext, Entity, EventEmitter, FocusHandle, Focusable, Render,
     SharedString, Subscription, Task, WeakEntity,
 };
-use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt};
-use multi_buffer::{MultiBuffer, PathKey};
+use language::{Anchor, Buffer, BufferId, BufferSnapshot, Capability, OffsetRangeExt, Point};
+use multi_buffer::{ExcerptRange, MultiBuffer, PathKey};
 use project::{
-    ConflictSet, Project, ProjectPath,
+    ConflictSet, ConflictSetSnapshot, Project, ProjectPath,
     git_store::{
         Repository,
         diff_buffer_list::{self, BranchDiffEvent, DiffBase},
@@ -40,6 +40,62 @@ use ztracing::instrument;
 /// Loading every changed file at once makes the first one land no sooner than the
 /// last, leaving a large diff on a spinner. Throughput flattens past this point.
 const MAX_CONCURRENT_BUFFER_LOADS: usize = 16;
+
+struct DiffExcerptInputs {
+    buffer_snapshot: BufferSnapshot,
+    diff_snapshot: BufferDiffSnapshot,
+    conflicts: Option<ConflictSetSnapshot>,
+    context_line_count: u32,
+}
+
+struct DiffExcerpts {
+    buffer_snapshot: BufferSnapshot,
+    ranges: Vec<ExcerptRange<Point>>,
+}
+
+impl DiffExcerptInputs {
+    fn read(
+        display_buffer: &Entity<Buffer>,
+        diff: &Entity<BufferDiff>,
+        conflict_set: Option<&Entity<ConflictSet>>,
+        cx: &App,
+    ) -> Self {
+        Self {
+            buffer_snapshot: display_buffer.read(cx).snapshot(),
+            diff_snapshot: diff.read(cx).snapshot(cx),
+            conflicts: conflict_set.map(|conflict_set| conflict_set.read(cx).snapshot()),
+            context_line_count: multibuffer_context_lines(cx),
+        }
+    }
+
+    fn build(self) -> DiffExcerpts {
+        let snapshot = &self.buffer_snapshot;
+        let conflict_ranges = self
+            .conflicts
+            .map(|conflicts| {
+                conflicts
+                    .conflicts
+                    .iter()
+                    .map(|conflict| conflict.range.to_point(snapshot))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|conflict_ranges| !conflict_ranges.is_empty());
+        let ranges = conflict_ranges.unwrap_or_else(|| {
+            self.diff_snapshot
+                .hunks_intersecting_range(
+                    Anchor::min_max_range_for_buffer(snapshot.remote_id()),
+                    snapshot,
+                )
+                .map(|diff_hunk| diff_hunk.buffer_range.to_point(snapshot))
+                .collect()
+        });
+        let ranges = multi_buffer::build_excerpt_ranges(ranges, self.context_line_count, snapshot);
+        DiffExcerpts {
+            buffer_snapshot: self.buffer_snapshot,
+            ranges,
+        }
+    }
+}
 
 struct BufferSubscriptions {
     _diff: Entity<BufferDiff>,
@@ -445,6 +501,7 @@ impl DiffMultibuffer {
         main_buffer: Entity<Buffer>,
         diff: Entity<BufferDiff>,
         conflict_set: Option<Entity<ConflictSet>>,
+        excerpts: DiffExcerpts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BufferId> {
@@ -506,39 +563,16 @@ impl DiffMultibuffer {
             },
         );
 
-        let snapshot = display_buffer.read(cx).snapshot();
-        let diff_snapshot = diff.read(cx).snapshot(cx);
-
-        let excerpt_ranges = {
-            let diff_hunk_ranges = diff_snapshot
-                .hunks_intersecting_range(
-                    Anchor::min_max_range_for_buffer(snapshot.remote_id()),
-                    &snapshot,
-                )
-                .map(|diff_hunk| diff_hunk.buffer_range.to_point(&snapshot));
-            let conflict_ranges = conflict_set.as_ref().and_then(|conflict_set| {
-                let conflicts = conflict_set.read(cx).snapshot();
-                let conflicts = conflicts
-                    .conflicts
-                    .iter()
-                    .map(|conflict| conflict.range.to_point(&snapshot))
-                    .collect::<Vec<_>>();
-                (!conflicts.is_empty()).then_some(conflicts)
-            });
-
-            conflict_ranges.unwrap_or_else(|| diff_hunk_ranges.collect())
-        };
-
-        let buffer_id = snapshot.text.remote_id();
+        let buffer_id = excerpts.buffer_snapshot.text.remote_id();
         let mut needs_fold = false;
 
         let (was_empty, is_excerpt_newly_added) = self.editor.update(cx, |editor, cx| {
             let was_empty = editor.rhs_editor().read(cx).buffer().read(cx).is_empty();
-            let is_newly_added = editor.update_excerpts_for_path(
+            let is_newly_added = editor.update_excerpt_ranges_for_path(
                 path_key.clone(),
                 display_buffer,
-                excerpt_ranges,
-                multibuffer_context_lines(cx),
+                &excerpts.buffer_snapshot,
+                excerpts.ranges,
                 diff,
                 cx,
             );
@@ -609,6 +643,8 @@ impl DiffMultibuffer {
         if display_buffer.read(cx).is_dirty() {
             return;
         }
+        let excerpts =
+            DiffExcerptInputs::read(&display_buffer, &diff, conflict_set.as_ref(), cx).build();
         self.register_buffer(
             repo_path,
             path_key,
@@ -617,6 +653,7 @@ impl DiffMultibuffer {
             main_buffer,
             diff,
             conflict_set,
+            excerpts,
             window,
             cx,
         );
@@ -700,6 +737,15 @@ impl DiffMultibuffer {
             // case this loop never awaits and starves the foreground thread.
             yield_now().await;
             if let Some(loaded_buffer) = loaded.log_err() {
+                let inputs = cx.update(|_, cx| {
+                    DiffExcerptInputs::read(
+                        &loaded_buffer.display_buffer,
+                        &loaded_buffer.diff,
+                        loaded_buffer.conflict_set.as_ref(),
+                        cx,
+                    )
+                })?;
+                let excerpts = cx.background_spawn(async move { inputs.build() }).await;
                 cx.update(|window, cx| {
                     this.update(cx, |this, cx| {
                         if let Some(buffer_id) = this.register_buffer(
@@ -710,6 +756,7 @@ impl DiffMultibuffer {
                             loaded_buffer.main_buffer,
                             loaded_buffer.diff,
                             loaded_buffer.conflict_set,
+                            excerpts,
                             window,
                             cx,
                         ) {

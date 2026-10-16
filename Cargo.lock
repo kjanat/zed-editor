@@ -2168,6 +2168,7 @@ dependencies = [
  "agent",
  "agent_settings",
  "assets",
+ "buffer_diff",
  "criterion",
  "editor",
  "futures 0.3.34",

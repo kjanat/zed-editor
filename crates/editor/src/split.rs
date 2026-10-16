@@ -1193,19 +1193,41 @@ impl SplittableEditor {
         &mut self,
         path: PathKey,
         buffer: Entity<Buffer>,
-        ranges: impl IntoIterator<Item = Range<Point>> + Clone,
+        ranges: impl IntoIterator<Item = Range<Point>>,
         context_line_count: u32,
         diff: Entity<BufferDiff>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let has_ranges = ranges.clone().into_iter().next().is_some();
+        let buffer_snapshot = buffer.read(cx).snapshot();
+        let excerpt_ranges =
+            multi_buffer::build_excerpt_ranges(ranges, context_line_count, &buffer_snapshot);
+        self.update_excerpt_ranges_for_path(
+            path,
+            buffer,
+            &buffer_snapshot,
+            excerpt_ranges,
+            diff,
+            cx,
+        )
+    }
+
+    pub fn update_excerpt_ranges_for_path(
+        &mut self,
+        path: PathKey,
+        buffer: Entity<Buffer>,
+        buffer_snapshot: &language::BufferSnapshot,
+        excerpt_ranges: Vec<ExcerptRange<Point>>,
+        diff: Entity<BufferDiff>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let has_ranges = !excerpt_ranges.is_empty();
         if self.lhs.is_none() {
             return self.rhs_multibuffer.update(cx, |rhs_multibuffer, cx| {
-                let added_a_new_excerpt = rhs_multibuffer.update_excerpts_for_path(
+                let added_a_new_excerpt = rhs_multibuffer.update_excerpt_ranges_for_path(
                     path,
                     buffer.clone(),
-                    ranges,
-                    context_line_count,
+                    buffer_snapshot,
+                    excerpt_ranges,
                     cx,
                 );
                 if has_ranges
@@ -1220,11 +1242,11 @@ impl SplittableEditor {
         }
 
         let result = self.rhs_multibuffer.update(cx, |rhs_multibuffer, cx| {
-            let added_a_new_excerpt = rhs_multibuffer.update_excerpts_for_path(
+            let added_a_new_excerpt = rhs_multibuffer.update_excerpt_ranges_for_path(
                 path.clone(),
                 buffer.clone(),
-                ranges,
-                context_line_count,
+                buffer_snapshot,
+                excerpt_ranges,
                 cx,
             );
             if has_ranges
