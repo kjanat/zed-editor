@@ -24,7 +24,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL --output /tmp/rustup-init \
 # Mise shims read the mise config of the candidate checkout.
 WORKDIR /opt/sync-tools
 COPY .mise.toml ./
-RUN mise trust .mise.toml \
+RUN --mount=type=secret,id=GITHUB_TOKEN if [[ -s /run/secrets/GITHUB_TOKEN ]]; then export GITHUB_TOKEN="$(</run/secrets/GITHUB_TOKEN)"; fi \
+    && mise trust .mise.toml \
     && mise install dprint node tombi \
     && ln -s "$(mise which dprint)" "$(mise which node)" "$(mise which tombi)" /usr/local/bin/
 ENV PATH="/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \

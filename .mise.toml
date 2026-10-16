@@ -72,7 +72,7 @@ run = "python3 -m unittest discover -s script/fork-ci -p 'test_*.py'"
 [tasks.test-upstream-sync]
 env.SYNC_TEST_IMAGE = "upstream-sync-test"
 run                 = [
-  "docker build -f script/upstream-sync/Dockerfile -t upstream-sync-test .",
+  "docker build ${GITHUB_TOKEN:+--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN} -f script/upstream-sync/Dockerfile -t upstream-sync-test .",
   "python3 -m unittest discover -s script/upstream-sync -p 'test_*.py'",
 ]
 

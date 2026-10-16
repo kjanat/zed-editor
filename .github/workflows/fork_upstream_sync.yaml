@@ -32,6 +32,8 @@ jobs:
           tags: upstream-sync-tools
           cache-from: type=gha,scope=upstream-sync-tools
           cache-to: type=gha,mode=max,scope=upstream-sync-tools
+          secrets: |
+            GITHUB_TOKEN=${{ github.token }}
       - name: Prepare the candidate
         shell: bash
         run: mkdir -p "${sync_output}";
