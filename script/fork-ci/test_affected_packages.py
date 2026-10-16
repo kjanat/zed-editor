@@ -37,6 +37,10 @@ PACKAGES = parse_packages(
         manifest("fs", "crates/fs"),
         manifest("fs_macros", "crates/fs/macros"),
         manifest("xtask", "tooling/xtask"),
+        manifest("grammars", "crates/grammars"),
+        manifest("zed_extension_api", "crates/extension_api"),
+        manifest("zed_html", "extensions/html", "crates/extension_api"),
+        manifest("schema_generator", "crates/schema_generator"),
         manifest("zed", "crates/zed", "crates/vim", "crates/fs", "crates/fs/macros"),
     )
 )
@@ -60,6 +64,26 @@ class PlanTest(unittest.TestCase):
         result = plan(["assets/keymaps/default-linux.json"], PACKAGES)
         self.assertEqual(
             result.packages, ("assets", "editor", "settings", "vim", "zed")
+        )
+
+    def test_schema_inputs_affect_the_schema_generator(self):
+        for path, packages in [
+            (
+                "crates/extension_api/schemas/extension.schema.json",
+                ("schema_generator", "zed_extension_api", "zed_html"),
+            ),
+            ("extensions/html/extension.toml", ("schema_generator", "zed_html")),
+            (
+                "extensions/html/languages/html/config.toml",
+                ("schema_generator", "zed_html"),
+            ),
+            ("crates/grammars/src/c/config.toml", ("grammars", "schema_generator")),
+        ]:
+            with self.subTest(path=path):
+                self.assertEqual(plan([path], PACKAGES).packages, packages)
+        self.assertEqual(
+            plan(["crates/grammars/src/c/highlights.scm"], PACKAGES).packages,
+            ("grammars",),
         )
 
     def test_files_outside_packages_affect_nothing(self):

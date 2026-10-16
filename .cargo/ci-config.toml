@@ -1,3 +1,7 @@
+# We don't need fullest debug information for dev stuff (tests etc.) in CI.
+[profile.dev]
+debug = "limited"
+
 # This config is different from config.toml in this directory, as the latter is recognized by Cargo.
 # This file is placed in ./../.cargo/config.toml on CI runs. Cargo then merges Zeds .cargo/config.toml with ./../.cargo/config.toml
 # with preference for settings from Zeds config.toml.
@@ -10,7 +14,3 @@
 # Here, we opted to use `[target.'cfg(all())']` instead of `[build]` because `[target.'**']` is guaranteed to be cumulative.
 [target."cfg(all())"]
 rustflags = ["-D", "warnings"]
-
-# We don't need fullest debug information for dev stuff (tests etc.) in CI.
-[profile.dev]
-debug = "limited"

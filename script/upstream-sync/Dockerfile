@@ -1,7 +1,7 @@
 FROM ghcr.io/jdx/mise:2026.10.3-debian@sha256:58c4c847f5518a9a87a9a582886a485443dbca5eb024426577f58d586a0990c6
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN apt-get update && apt-get install -y --no-install-recommends unzip \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake unzip \
     && rm -rf /var/lib/apt/lists/*
 RUN git config --system advice.detachedHead false
 ARG MERGIRAF_VERSION=0.20.0
@@ -24,7 +24,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL --output /tmp/rustup-init \
 # Mise shims read the mise config of the candidate checkout.
 WORKDIR /opt/sync-tools
 COPY .mise.toml ./
-RUN mise trust .mise.toml \
+RUN --mount=type=secret,id=GITHUB_TOKEN if [[ -s /run/secrets/GITHUB_TOKEN ]]; then export GITHUB_TOKEN="$(</run/secrets/GITHUB_TOKEN)"; fi \
+    && mise trust .mise.toml \
     && mise install dprint node tombi \
     && ln -s "$(mise which dprint)" "$(mise which node)" "$(mise which tombi)" /usr/local/bin/
 ENV PATH="/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -34,13 +35,13 @@ ENV PATH="/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
 # Match prepare.sh so configDir and cacheKeyFiles resolve against the checkout.
 WORKDIR /tmp/work
 COPY rust-toolchain.toml ./
-RUN rustup show active-toolchain >/dev/null \
+RUN rustup toolchain install \
     && chmod -R a+rwX /opt/cargo /opt/rustup
-COPY .dprint.jsonc tombi.toml rustfmt.toml ./
+COPY dprint.toml tombi.toml rustfmt.toml ./
 COPY .cargo/config.toml .cargo/config.toml
 RUN dprint output-resolved-config >/dev/null \
     && printf 'value = 1\n' | dprint fmt --stdin warmup.toml >/dev/null \
     && printf 'fn main() {}\n' | dprint fmt --stdin warmup.rs >/dev/null \
-    && chmod -R a+rwX /opt/dprint-cache
+    && chmod -R a+rwX /opt/dprint-cache /tmp/.cache
 WORKDIR /
 RUN rm -rf /tmp/work

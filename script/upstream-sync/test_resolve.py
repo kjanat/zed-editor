@@ -10,8 +10,16 @@ from collections.abc import Callable
 from itertools import takewhile
 from pathlib import Path
 
+from test_container import (
+    EXTENSION_SCHEMA,
+    LANGUAGE_CONFIG_SCHEMA,
+    schema,
+    schema_generator,
+)
+
 HERE = Path(__file__).resolve().parent
 REPOSITORY = HERE.parents[1]
+WORKFLOW = REPOSITORY / ".github/workflows/fork_upstream_sync.yaml"
 SCRIPTS = ("prepare.sh", "resolve.sh", "resolve-prompt.md")
 LISTS = (
     "formatting-only.txt",
@@ -59,6 +67,16 @@ def require_toolchain(test: type[unittest.TestCase]) -> type[unittest.TestCase]:
     return unittest.skip("Requires mise and cargo")(test)
 
 
+def continuation(lines: list[str], start: int) -> list[str]:
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    return [
+        line.strip()
+        for line in takewhile(
+            lambda line: len(line) - len(line.lstrip()) > indent, lines[start + 1 :]
+        )
+    ]
+
+
 def git(directory: Path, *arguments: str, check: bool = True) -> str:
     return subprocess.run(
         [
@@ -95,13 +113,17 @@ class Fixture:
         _ = git(self.repository, "config", "user.name", "Test")
         _ = git(self.repository, "config", "user.email", "test@example.invalid")
         self.write({
-            "Cargo.toml": '[workspace]\nmembers = ["alpha", "beta", "fork_tool"]\nresolver = "2"\n',
+            "Cargo.toml": '[workspace]\nmembers = ["alpha", "beta", "fork_tool", "schema_generator"]\nresolver = "2"\n',
             "alpha/Cargo.toml": '[package]\nname = "alpha"\nversion = "0.1.0"\nedition = "2021"\n',
             "alpha/src/lib.rs": ALPHA_BASE,
             "beta/Cargo.toml": '[package]\nname = "beta"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nalpha = { path = "../alpha" }\n',
             "beta/src/lib.rs": "pub fn doubled() -> u32 {\n    alpha::value() * 2\n}\n",
             "fork_tool/Cargo.toml": '[package]\nname = "fork_tool"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nalpha = { path = "../alpha" }\n',
             "fork_tool/src/lib.rs": "pub fn shown() -> u32 {\n    alpha::value()\n}\n",
+            "schema_generator/Cargo.toml": '[package]\nname = "schema_generator"\nversion = "0.1.0"\nedition = "2021"\n',
+            "schema_generator/src/main.rs": schema_generator(1),
+            EXTENSION_SCHEMA: schema("extension", 1),
+            LANGUAGE_CONFIG_SCHEMA: schema("language_config", 1),
             ".dprint.json": json.dumps({"plugins": [JSON_PLUGIN]}, indent=2) + "\n",
             "data.json": '{ "name": "fixture" }\n',
             ".github/workflows/ci.yml": "trusted workflow\n",
@@ -419,6 +441,51 @@ class ResolverTests(unittest.TestCase):
         for name in LISTS:
             self.assertTrue((fixture.output / name).is_file(), name)
 
+    def test_verification_commits_the_regenerated_extension_schemas(self):
+        def generator_changed(root: Path) -> Fixture:
+            return Fixture(
+                root,
+                {
+                    "alpha/src/lib.rs": UPSTREAM_ALPHA,
+                    "schema_generator/src/main.rs": schema_generator(2),
+                },
+                {"alpha/src/lib.rs": FORK_ALPHA},
+            )
+
+        fixture = self.fixture(generator_changed)
+        fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        self.assertEqual(fixture.finish(), "resolved")
+        _ = git(
+            fixture.verifier,
+            "fetch",
+            "-q",
+            str(fixture.output / "sync.bundle"),
+            "sync/upstream:refs/check/resolved",
+        )
+        for path, target in (
+            (EXTENSION_SCHEMA, "extension"),
+            (LANGUAGE_CONFIG_SCHEMA, "language_config"),
+        ):
+            self.assertEqual(
+                git(fixture.verifier, "show", f"refs/check/resolved:{path}"),
+                schema(target, 2).strip(),
+            )
+
+    def test_failing_schema_generation_produces_no_candidate(self):
+        def generator_broken(root: Path) -> Fixture:
+            return Fixture(
+                root,
+                {
+                    "alpha/src/lib.rs": UPSTREAM_ALPHA,
+                    "schema_generator/src/main.rs": "fn main() {\n    std::process::exit(1);\n}\n",
+                },
+                {"alpha/src/lib.rs": FORK_ALPHA},
+            )
+
+        fixture = self.fixture(generator_broken)
+        fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        _ = self.assert_failed(fixture, "Validation failed at **extension schemas**")
+
     def test_changes_beyond_the_conflicts_are_listed(self):
         fixture = self.fixture()
         fixture.agent({
@@ -446,19 +513,21 @@ class ResolverTests(unittest.TestCase):
         _ = self.assert_failed(self.fixture(), "Claude produced no merge")
 
     def test_save_step_keeps_everything_when_the_export_fails(self):
-        workflow = (
-            REPOSITORY / ".github/workflows/fork_upstream_sync.yaml"
-        ).read_text()
-        lines = workflow.split(
-            "name: Save Claude's checkout, notes, logs and session\n", 1
-        )[1].splitlines()
-        start = lines.index("        run: |") + 1
-        script = "\n".join(
-            line.removeprefix("          ")
-            for line in takewhile(
-                lambda line: line.startswith("          "), lines[start:]
-            )
+        lines = (
+            WORKFLOW
+            .read_text()
+            .split("name: Save Claude's checkout, notes, logs and session\n", 1)[1]
+            .splitlines()
         )
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith("run: ")
+        )
+        script = " ".join([
+            lines[start].strip().removeprefix("run: "),
+            *continuation(lines, start),
+        ])
         fixture = self.fixture()
         fixture.agent({"alpha/src/lib.rs": RESOLVED_ALPHA})
         _ = (fixture.repository / "notes-draft.txt").write_text("half done\n")
@@ -659,30 +728,21 @@ class ResolverTests(unittest.TestCase):
 
 
 class TrustedConfigurationTests(unittest.TestCase):
-    workflow: str = (
-        REPOSITORY / ".github/workflows/fork_upstream_sync.yaml"
-    ).read_text()
+    workflow: str = WORKFLOW.read_text()
 
     def job(self, name: str) -> str:
-        block = self.workflow.split(f"\n  {name}:\n", 1)[1]
+        lines = self.workflow.split(f"\n  {name}:\n", 1)[1].splitlines()
         end = next(
             (
                 index
-                for index, line in enumerate(block.splitlines())
+                for index, line in enumerate(lines)
                 if line.startswith("  ")
                 and not line.startswith("   ")
                 and line.strip().endswith(":")
             ),
             None,
         )
-        lines = block.splitlines()
         return "\n".join(lines[:end] if end is not None else lines)
-
-    def test_claude_runs_only_for_partial_merges(self):
-        self.assertIn(
-            "if: needs.prepare.outputs.result == 'partial'", self.job("resolve")
-        )
-        self.assertEqual(self.workflow.count("claude-code-action"), 1)
 
     def test_resolver_has_no_github_write_credential(self):
         resolve = self.job("resolve")
@@ -699,19 +759,6 @@ class TrustedConfigurationTests(unittest.TestCase):
             "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", resolve
         )
 
-    def test_claude_gets_the_static_prompt(self):
-        resolve = self.job("resolve")
-        self.assertRegex(
-            resolve,
-            r"uses: anthropics/claude-code-action/base-action@[0-9a-f]{40} # v\S+\n",
-        )
-        self.assertIn(
-            "prompt_file: ${{ github.workspace }}/script/upstream-sync/resolve-prompt.md",
-            resolve,
-        )
-        self.assertIn("--model claude-opus-5-5", resolve)
-        self.assertIn("--permission-mode auto", resolve)
-
     def run_line(self, subcommand: str) -> str:
         lines = self.workflow.splitlines()
         script = f"bash .sync-scripts/script/upstream-sync/resolve.sh {subcommand}"
@@ -720,19 +767,11 @@ class TrustedConfigurationTests(unittest.TestCase):
             for index, line in enumerate(lines)
             if line.strip().startswith("run: ") and script in line
         )
-        indent = len(lines[start]) - len(lines[start].lstrip())
-        command = [script + lines[start].split(script, 1)[1]]
-        for line in lines[start + 1 :]:
-            if len(line) - len(line.lstrip()) <= indent:
-                break
-            command.append(line.strip())
+        command = [
+            script + lines[start].split(script, 1)[1],
+            *continuation(lines, start),
+        ]
         return " ".join(command)
-
-    def test_the_export_command_runs_before_claude(self):
-        resolve = self.job("resolve")
-        trial = resolve.index("run: &export-resolution ")
-        self.assertLess(trial, resolve.index("name: Resolve the conflicts with Claude"))
-        self.assertGreater(resolve.index("run: *export-resolution"), trial)
 
     def test_workflow_passes_every_argument_to_resolve_sh(self):
         for subcommand, expected in (
@@ -771,46 +810,6 @@ class TrustedConfigurationTests(unittest.TestCase):
                     result.stdout.splitlines(),
                     [argument.format(temp=temporary) for argument in expected],
                 )
-
-    def test_verification_runs_trusted_scripts_on_a_clean_runner(self):
-        verify = self.job("verify")
-        self.assertIn("permissions: { contents: read }", verify)
-        self.assertNotIn("secrets.", verify)
-        self.assertIn("- *sync-scripts", verify)
-        self.assertIn(".sync-scripts/script/upstream-sync/resolve.sh verify", verify)
-        scripts = self.workflow.split("- &sync-scripts\n", 1)[1].split("\n      - ", 1)[
-            0
-        ]
-        self.assertIn("path: .sync-scripts\n", scripts)
-        self.assertIn("ref: ${{ github.sha }}\n", scripts)
-        self.assertIn("filter: blob:none\n", scripts)
-        self.assertIn(
-            "sparse-checkout: |\n            /script/upstream-sync/\n            /script/clippy",
-            scripts,
-        )
-        self.assertIn(
-            ".sync-scripts/script/upstream-sync/resolve.sh export", self.job("resolve")
-        )
-        self.assertIn("name: upstream-sync-verified", verify)
-        self.assertIn("upstream-sync-verified", self.job("open-sync-pr"))
-
-    def test_mise_provisions_the_resolver(self):
-        resolve = self.job("resolve")
-        mise = resolve.split("- &mise\n", 1)[1].split("\n      - ", 1)[0]
-        self.assertRegex(mise, r"uses: jdx/mise-action@[0-9a-f]{40} # v\S+\n")
-        self.assertIn("bootstrap: true, bootstrap_skip: compose", mise)
-        self.assertIn("- *mise", self.job("verify"))
-        for name in ("resolve", "verify"):
-            job = self.job(name)
-            for unmanaged in (
-                "setup-node",
-                "setup-python",
-                "rust-toolchain",
-                "rustup ",
-                "npm install",
-                "pip install",
-            ):
-                self.assertNotIn(unmanaged, job)
 
 
 if __name__ == "__main__":

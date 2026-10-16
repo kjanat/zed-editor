@@ -24,10 +24,12 @@ gpui.workspace            = true
 heck.workspace            = true
 http_client.workspace     = true
 language.workspace        = true
+language_core.workspace   = true
 log.workspace             = true
 lsp.workspace             = true
 parking_lot.workspace     = true
 path.workspace            = true
+schemars                  = { workspace = true, features = ["derive"] }
 semver.workspace          = true
 serde.workspace           = true
 serde_json.workspace      = true

@@ -9,6 +9,7 @@ use std::{num::NonZeroU32, path::Path, sync::Arc};
 /// Controls the soft-wrapping behavior in the editor.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(transform = |schema: &mut schemars::Schema| add_enum_value_alias(schema, "bounded", "preferred_line_length"))]
 pub enum SoftWrap {
     /// Prefer a single line generally, unless an overly long line is encountered.
     None,
@@ -25,6 +26,7 @@ pub enum SoftWrap {
 /// Top-level configuration for a language, typically loaded from a `config.toml`
 /// shipped alongside the grammar.
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[schemars(transform = |schema: &mut schemars::Schema| add_property_alias(schema, "documentation_comment", "documentation"))]
 pub struct LanguageConfig {
     /// Human-readable name of the language.
     pub name: LanguageName,
@@ -314,6 +316,7 @@ pub struct JsxTagAutoCloseConfig {
 
 /// The configuration for block comments for this language.
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
+#[schemars(with = "BlockCommentConfigHelper")]
 pub struct BlockCommentConfig {
     /// A start tag of block comment.
     pub start: Arc<str>,
@@ -322,8 +325,23 @@ pub struct BlockCommentConfig {
     /// A character to add as a prefix when a new line is added to a block comment.
     pub prefix: Arc<str>,
     /// A indent to add for prefix and end line upon new line.
-    #[schemars(range(min = 1, max = 128))]
     pub tab_size: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum BlockCommentConfigHelper {
+    New {
+        /// A start tag of block comment.
+        start: Arc<str>,
+        /// A end tag of block comment.
+        end: Arc<str>,
+        /// A character to add as a prefix when a new line is added to a block comment.
+        prefix: Arc<str>,
+        /// A indent to add for prefix and end line upon new line.
+        tab_size: u32,
+    },
+    Old([Arc<str>; 2]),
 }
 
 impl<'de> Deserialize<'de> for BlockCommentConfig {
@@ -331,18 +349,6 @@ impl<'de> Deserialize<'de> for BlockCommentConfig {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum BlockCommentConfigHelper {
-            New {
-                start: Arc<str>,
-                end: Arc<str>,
-                prefix: Arc<str>,
-                tab_size: u32,
-            },
-            Old([Arc<str>; 2]),
-        }
-
         match BlockCommentConfigHelper::deserialize(deserializer)? {
             BlockCommentConfigHelper::New {
                 start,
@@ -501,6 +507,60 @@ pub fn regex_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema 
     json_schema!({
         "type": "string"
     })
+}
+
+/// schemars ignores `#[serde(alias)]`.
+pub fn add_property_alias(schema: &mut schemars::Schema, property: &str, alias: &str) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    let Some(serde_json::Value::Object(properties)) = object.get_mut("properties") else {
+        return;
+    };
+    let Some(mut alias_schema) = properties.get(property).cloned() else {
+        return;
+    };
+    if let serde_json::Value::Object(alias_object) = &mut alias_schema {
+        alias_object.insert("deprecated".into(), true.into());
+    }
+    properties.insert(alias.into(), alias_schema);
+
+    let mut property_is_required = false;
+    if let Some(serde_json::Value::Array(required)) = object.get_mut("required") {
+        let required_count = required.len();
+        required.retain(|name| name != property);
+        property_is_required = required.len() != required_count;
+    }
+    if property_is_required {
+        object.insert(
+            "oneOf".into(),
+            serde_json::json!([{ "required": [property] }, { "required": [alias] }]),
+        );
+    } else {
+        object.insert(
+            "not".into(),
+            serde_json::json!({ "required": [property, alias] }),
+        );
+    }
+}
+
+/// schemars ignores `#[serde(alias)]`.
+pub fn add_enum_value_alias(schema: &mut schemars::Schema, value: &str, alias: &str) {
+    let Some(serde_json::Value::Array(variants)) = schema.get_mut("oneOf") else {
+        return;
+    };
+    let Some(mut alias_variant) = variants
+        .iter()
+        .find(|variant| variant.get("const").and_then(|value| value.as_str()) == Some(value))
+        .cloned()
+    else {
+        return;
+    };
+    if let serde_json::Value::Object(alias_object) = &mut alias_variant {
+        alias_object.insert("const".into(), alias.into());
+        alias_object.insert("deprecated".into(), true.into());
+    }
+    variants.push(alias_variant);
 }
 
 pub fn serialize_regex<S>(regex: &Option<Regex>, serializer: S) -> Result<S::Ok, S::Error>

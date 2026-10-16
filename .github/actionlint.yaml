@@ -1,14 +1,43 @@
-# yaml-language-server: $schema=https://cdn.jsdelivr.net/npm/@kjanat/actionlint/actionlint.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kjanat/actionlint/master/actionlint.schema.json
+# I was almose pleased when I tried it out!
+#
+# Oh!!! POPULAR ACTIONS IS USELESS FOR ANYBODY USING SHA-PINNED ACTIONS!
 ---
-self-hosted-runner: null # none, all github actions
-assume-default-permissions: permissive
-
-# Disable shellcheck because it doesn't like powershell
-# This should have been triggered with initial rollout of actionlint
-# but https://github.com/zed-industries/zed/pull/36693
-# somehow caused actionlint to actually check those windows jobs
-# where previously they were being skipped. Likely caused by an
-# unknown bug in actionlint where parsing of `runs-on: [ ]`
-# breaks something else. (yuck)
-paths: # my workflows end in .yaml on purpose, zed uses .yml
-  ".github/workflows/**/*.yml": { ignore: ["shellcheck", "label"] }
+assume-default-permissions: permissive # does this even do anything?
+# I WANT SOMETHING THAT IS NOT YAML. YAML LANGUAGE SERVER DOES NOT COMPLETE ON . OR ""
+# OR PERHAPS THIS IS ZED, IDK!
+lint:
+  rules:
+    preset: all
+    policy:
+      require-commit-hash:
+        level: info # `exclude: []` is missing (e.g. glob own org/*)
+      # `options: null` # not allowed
+      disallow-suppressions: "on" # `true` is rejected
+    # hover info shows this as title: security || security || security
+    # and the description starts like this...: Diagnostic level: default, off, on, info, warn, or error. ||
+    security: "on"
+    suspicious: "on" # WHY NOT allow: true|"all" for all as well?
+    nursery: # does this overrride the preset? NO NOT RIGHT NOW, I KNOW THEY ARE IN AGREEMENT CURRENTLY.
+      preset: all # does nursery even have any rules?
+tools:
+  shellcheck:
+    enabled: true
+    # WHERE IS THE CONFIG SETTING TO SPECIFY:
+    # - A BINARY/BINARY
+    #   - PATH
+    #   - AND ARGS
+    #   - AND ENV VARS
+    config:
+      extended-analysis: true
+      external-sources: true
+      source-path: null
+    # # THIS IS THE STUPIDEST THING/EXCUSE I HAVE READ SO FAR. DO WE KNOW WHAT DIRECTORY A RUN COMMAND IS RAN FROM
+    # # IF SO WHAT THE FUCK IS THE PROBLEM?
+    # # Scripts arrive on stdin, so SCRIPTDIR does not denote the workflow file’s directory.
+    # shell: dash # idk if this should be a repo-wide setting, or if this should be an override? idk.
+    # enable: all/true is not allowed, what? is confusingly named compared to tools.shellcheck.enabled...
+    # Incorrect type. Expected "array | null". (yaml-schema: enable 0)
+  ruff:
+# ruff does not have a config sub-entry like shellcheck???
+# ruff's rules are root level? the fuck...

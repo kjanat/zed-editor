@@ -15,7 +15,16 @@ FULL_RUN = re.compile(
     r"Cargo\.(toml|lock)|rust-toolchain\.toml|\.mise(rc|\.[a-z-]+)?\.toml|\.cargo/.*|\.config/nextest\.toml"
     r"|script/clippy(\.ps1)?|script/fork-ci/.*|\.github/workflows/fork_ci\.yaml"
 )
-ASSET_PACKAGES = ("assets", "settings")
+SHARED_INPUTS = (
+    (re.compile(r"assets/.*"), ("assets", "settings")),
+    (
+        re.compile(
+            r"crates/extension_api/schemas/.*|crates/grammars/src/[^/]+/config\.toml"
+            r"|extensions/[^/]+/(extension|languages/[^/]+/config)\.toml"
+        ),
+        ("schema_generator",),
+    ),
+)
 
 Scope = Literal["none", "all", "packages"]
 
@@ -116,8 +125,9 @@ def plan(changed_files: list[str] | None, packages: list[Package]) -> Plan:
         for path in changed_files
         if (package := owner(PurePosixPath(path), packages)) is not None
     }
-    if any(path.startswith("assets/") for path in changed_files):
-        changed.update(name for name in ASSET_PACKAGES if name in names)
+    for pattern, consumers in SHARED_INPUTS:
+        if any(pattern.fullmatch(path) for path in changed_files):
+            changed.update(name for name in consumers if name in names)
     if not changed:
         return Plan("none", (), "no workspace package changed")
     affected = dependents(changed, packages)

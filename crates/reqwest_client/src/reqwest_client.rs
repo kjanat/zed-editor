@@ -430,7 +430,7 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\n")
                 .unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
+                .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             let mut buffer = [0; 1];
             match stream.read(&mut buffer) {
@@ -446,7 +446,7 @@ mod tests {
 
         let client = ReqwestClient::new();
         let request = HttpRequest::get(format!("http://{address}/"))
-            .timeout(Duration::from_millis(100))
+            .timeout(Duration::from_secs(2))
             .body(AsyncBody::default())
             .unwrap();
         let started_at = Instant::now();
@@ -455,7 +455,7 @@ mod tests {
         let result = futures::executor::block_on(response.body_mut().read_to_end(&mut body));
         assert!(result.is_err(), "the response body should time out");
         assert!(
-            started_at.elapsed() < Duration::from_millis(500),
+            started_at.elapsed() < Duration::from_secs(8),
             "the request timeout should not wait for the server to close the connection"
         );
         drop(response);

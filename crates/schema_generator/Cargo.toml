@@ -6,14 +6,21 @@ license           = "GPL-3.0-or-later"
 publish.workspace = true
 
 [dependencies]
-anyhow.workspace         = true
-clap.workspace           = true
-env_logger.workspace     = true
-schemars.workspace       = true
-serde_json.workspace     = true
-settings.workspace       = true
-theme.workspace          = true
-theme_settings.workspace = true
+anyhow.workspace           = true
+clap.workspace             = true
+env_logger.workspace       = true
+extension.workspace        = true
+json-schema-sort.workspace = true
+language_core.workspace    = true
+schemars.workspace         = true
+serde_json.workspace       = true
+settings.workspace         = true
+theme.workspace            = true
+theme_settings.workspace   = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+toml.workspace       = true
 
 [lints]
 workspace = true
