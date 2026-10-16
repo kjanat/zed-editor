@@ -7227,6 +7227,7 @@ mod tests {
                 wait.await.unwrap();
             });
             thread.running_turn = Some(RunningTurn::new(
+                thread.prompt_id.clone(),
                 event_stream,
                 BTreeMap::default(),
                 cancellation,
