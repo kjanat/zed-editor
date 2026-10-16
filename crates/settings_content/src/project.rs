@@ -346,6 +346,11 @@ pub struct GlobalLspSettingsContent {
     /// Default: `20000`
     #[schemars(range(min = 1))]
     pub max_buffer_line_length: Option<u32>,
+    /// Environment variables passed to every language server process.
+    /// `lsp.<server>.binary.env` overrides these key by key.
+    ///
+    /// Default: `{}`
+    pub env: Option<BTreeMap<String, String>>,
     /// Settings for language server notifications
     pub notifications: Option<LspNotificationSettingsContent>,
     /// Rules for rendering LSP semantic tokens.

@@ -357,6 +357,17 @@ settings:
 }
 ```
 
+Environment variables for every language server go in `global_lsp_settings`.
+A key in a server's `binary.env` overrides the same key there:
+
+```json [settings]
+"global_lsp_settings": {
+  "env": {
+    "MISE_AUTO_INSTALL": "false"
+  }
+}
+```
+
 ### Enabling or Disabling Language Servers
 
 You can toggle language server support globally or per-language:
