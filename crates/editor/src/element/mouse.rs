@@ -1,3 +1,4 @@
+use std::mem;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
@@ -399,26 +400,19 @@ impl EditorElement {
         window.on_mouse_event({
             let editor = self.editor.clone();
             let position_map = layout.position_map.clone();
-
-            move |event: &MouseUpEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble {
-                    editor.update(cx, |editor, cx| {
-                        Self::mouse_up(editor, event, &position_map, window, cx)
-                    });
-                }
-            }
-        });
-
-        window.on_mouse_event({
-            let editor = self.editor.clone();
-            let position_map = layout.position_map.clone();
             let mut captured_mouse_down = None;
+            let mut ended_nonempty_selection = false;
 
             move |event: &MouseUpEvent, phase, window, cx| match phase {
-                // Clear the pending mouse down during the capture phase,
-                // so that it happens even if another event handler stops
-                // propagation.
-                DispatchPhase::Capture => editor.update(cx, |editor, _cx| {
+                // End the selection and clear the pending mouse down during the
+                // capture phase, so that it happens even if another event handler
+                // stops propagation.
+                DispatchPhase::Capture => editor.update(cx, |editor, cx| {
+                    ended_nonempty_selection = editor.has_pending_nonempty_selection();
+                    if editor.has_pending_selection() {
+                        editor.select(SelectPhase::End, window, cx);
+                    }
+
                     let pending_mouse_down = editor
                         .pending_mouse_down
                         .get_or_insert_with(Default::default)
@@ -430,15 +424,32 @@ impl EditorElement {
                         window.refresh();
                     }
                 }),
-                // Fire click handlers during the bubble phase.
                 DispatchPhase::Bubble => editor.update(cx, |editor, cx| {
+                    let ended_nonempty_selection = mem::take(&mut ended_nonempty_selection);
                     if let Some(mouse_down) = captured_mouse_down.take() {
-                        let event = ClickEvent::Mouse(MouseClickEvent {
+                        let click_event = ClickEvent::Mouse(MouseClickEvent {
                             down: mouse_down,
                             up: event.clone(),
                         });
-                        Self::click(editor, &event, &position_map, window, cx);
+                        if Self::click(
+                            editor,
+                            &click_event,
+                            &position_map,
+                            ended_nonempty_selection,
+                            window,
+                            cx,
+                        ) {
+                            return;
+                        }
                     }
+                    Self::mouse_up(
+                        editor,
+                        event,
+                        &position_map,
+                        ended_nonempty_selection,
+                        window,
+                        cx,
+                    )
                 }),
             }
         });
@@ -871,6 +882,7 @@ impl EditorElement {
         editor: &mut Editor,
         event: &MouseUpEvent,
         position_map: &PositionMap,
+        ended_nonempty_selection: bool,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
@@ -882,8 +894,6 @@ impl EditorElement {
         }
 
         let text_hitbox = &position_map.text_hitbox;
-        let end_selection = editor.has_pending_selection();
-        let pending_nonempty_selections = editor.has_pending_nonempty_selection();
         let point_for_position = position_map.point_for_position(event.position);
 
         match editor.selection_drag_state {
@@ -902,6 +912,7 @@ impl EditorElement {
                         window,
                         cx,
                     );
+                    editor.select(SelectPhase::End, window, cx);
                     editor.selection_drag_state = SelectionDragState::None;
                     cx.stop_propagation();
                     return;
@@ -933,11 +944,7 @@ impl EditorElement {
             _ => {}
         }
 
-        if end_selection {
-            editor.select(SelectPhase::End, window, cx);
-        }
-
-        if end_selection && pending_nonempty_selections {
+        if ended_nonempty_selection {
             cx.stop_propagation();
         } else if cfg!(any(target_os = "linux", target_os = "freebsd"))
             && event.button == MouseButton::Middle
@@ -977,11 +984,11 @@ impl EditorElement {
         editor: &mut Editor,
         event: &ClickEvent,
         position_map: &PositionMap,
+        ended_nonempty_selection: bool,
         window: &mut Window,
         cx: &mut Context<Editor>,
-    ) {
+    ) -> bool {
         let text_hitbox = &position_map.text_hitbox;
-        let pending_nonempty_selections = editor.has_pending_nonempty_selection();
 
         let hovered_link_modifier = Editor::is_cmd_or_ctrl_pressed(&event.modifiers(), cx);
         let mouse_down_hovered_link_modifier = if let ClickEvent::Mouse(mouse_event) = event {
@@ -991,7 +998,7 @@ impl EditorElement {
         };
 
         if let Some(mouse_position) = event.mouse_position()
-            && !pending_nonempty_selections
+            && !ended_nonempty_selection
             && text_hitbox.is_hovered(window)
             && !matches!(
                 editor.selection_drag_state,
@@ -1012,15 +1019,17 @@ impl EditorElement {
             {
                 editor.selection_drag_state = SelectionDragState::None;
                 cx.stop_propagation();
-                return;
+                return true;
             }
 
             if hovered_link_modifier && mouse_down_hovered_link_modifier {
                 editor.handle_click_hovered_link(point, event.modifiers(), window, cx);
                 editor.selection_drag_state = SelectionDragState::None;
                 cx.stop_propagation();
+                return true;
             }
         }
+        false
     }
 
     fn pressure_click(
@@ -1245,10 +1254,14 @@ fn scale_horizontal_mouse_autoscroll_delta(delta: Pixels) -> f32 {
 mod tests {
     use super::*;
     use crate::{
-        SelectionEffects, editor_tests::init_test, scroll::Autoscroll,
+        EditorMode, MultiBuffer, SelectionEffects, editor_tests::init_test, scroll::Autoscroll,
         test::editor_test_context::EditorTestContext,
     };
-    use gpui::{Modifiers, TestAppContext};
+    use gpui::{
+        AppContext as _, Entity, InteractiveElement as _, IntoElement, Modifiers, Render,
+        Styled as _, TestAppContext, VisualContext as _, div,
+    };
+    use language::Point;
 
     #[gpui::test]
     async fn test_mouse_drag_preserves_pending_sticky_header_autoscroll(cx: &mut TestAppContext) {
@@ -1329,5 +1342,205 @@ mod tests {
             );
             assert!(editor.has_autoscroll_request());
         });
+    }
+
+    struct TwoEditors {
+        top: Entity<Editor>,
+        bottom: Entity<Editor>,
+    }
+
+    impl Render for TwoEditors {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(div().h(px(200.)).child(self.top.clone()))
+                .child(
+                    div()
+                        .id("bottom")
+                        .flex_1()
+                        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(self.bottom.clone()),
+                )
+        }
+    }
+
+    struct TwoEditorsGeometry {
+        top_row0: gpui::Point<Pixels>,
+        top_row2: gpui::Point<Pixels>,
+        below: gpui::Point<Pixels>,
+    }
+
+    fn build_two_editors(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<TwoEditors>,
+        TwoEditorsGeometry,
+        &mut gpui::VisualTestContext,
+    ) {
+        init_test(cx, |_| {});
+        let top_text = (0..100)
+            .map(|row| format!("line {row:02}\n"))
+            .collect::<String>();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let top_buffer = cx.new(|cx| language::Buffer::local(top_text, cx));
+            let bottom_buffer = cx.new(|cx| language::Buffer::local("bottom\n", cx));
+            let top = cx.new(|cx| {
+                Editor::new(
+                    EditorMode::full(),
+                    cx.new(|cx| MultiBuffer::singleton(top_buffer, cx)),
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            let bottom = cx.new(|cx| {
+                Editor::new(
+                    EditorMode::full(),
+                    cx.new(|cx| MultiBuffer::singleton(bottom_buffer, cx)),
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            TwoEditors { top, bottom }
+        });
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let geometry = view.read_with(cx, |view, cx| {
+            let top_map = view.top.read(cx).last_position_map.clone().unwrap();
+            let bottom_map = view.bottom.read(cx).last_position_map.clone().unwrap();
+            let top_row0 = top_map.text_hitbox.bounds.origin
+                + gpui::point(top_map.em_advance * 2. + px(1.), top_map.line_height * 0.5);
+            TwoEditorsGeometry {
+                top_row0,
+                top_row2: top_row0 + gpui::point(px(0.), top_map.line_height * 2.),
+                below: bottom_map.text_hitbox.bounds.center(),
+            }
+        });
+        (view, geometry, cx)
+    }
+
+    fn top_selections(
+        view: &Entity<TwoEditors>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<Range<Point>> {
+        let top = view.read_with(cx, |view, _| view.top.clone());
+        top.update(cx, |editor, cx| {
+            editor
+                .selections
+                .all::<Point>(&editor.display_snapshot(cx))
+                .into_iter()
+                .map(|selection| selection.range())
+                .collect()
+        })
+    }
+
+    fn drag_in_top_editor(
+        view: &Entity<TwoEditors>,
+        geometry: &TwoEditorsGeometry,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        cx.simulate_mouse_down(geometry.top_row0, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(geometry.top_row2, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let top = view.read_with(cx, |view, _| view.top.clone());
+        cx.update(|window, cx| {
+            assert!(top.read(cx).focus_handle.is_focused(window));
+            assert!(top.read(cx).has_pending_selection());
+            assert!(top.read(cx).has_pending_nonempty_selection());
+        });
+    }
+
+    fn assert_stale_drag_leaves_top_editor_alone(
+        view: &Entity<TwoEditors>,
+        geometry: &TwoEditorsGeometry,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        let top = view.read_with(cx, |view, _| view.top.clone());
+        let scroll_before = top.update(cx, |editor, cx| editor.scroll_position(cx));
+        let selections_before = top_selections(view, cx);
+        cx.simulate_mouse_move(geometry.below, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert_eq!(
+            top.update(cx, |editor, cx| editor.scroll_position(cx)),
+            scroll_before
+        );
+        assert_eq!(top_selections(view, cx), selections_before);
+    }
+
+    #[gpui::test]
+    async fn test_focus_out_finalizes_pending_mouse_selection(cx: &mut TestAppContext) {
+        let (view, geometry, cx) = build_two_editors(cx);
+        drag_in_top_editor(&view, &geometry, cx);
+
+        let (top, bottom) = view.read_with(cx, |view, _| (view.top.clone(), view.bottom.clone()));
+        cx.focus(&bottom);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        cx.update(|window, cx| {
+            assert!(bottom.read(cx).focus_handle.is_focused(window));
+            assert!(!top.read(cx).focus_handle.contains_focused(window, cx));
+            assert!(!top.read(cx).has_pending_selection());
+        });
+        assert_eq!(
+            top_selections(&view, cx),
+            vec![Point::new(0, 2)..Point::new(2, 2)]
+        );
+        assert_stale_drag_leaves_top_editor_alone(&view, &geometry, cx);
+    }
+
+    #[gpui::test]
+    async fn test_capture_phase_mouse_up_ends_pending_selection(cx: &mut TestAppContext) {
+        let (view, geometry, cx) = build_two_editors(cx);
+        drag_in_top_editor(&view, &geometry, cx);
+
+        cx.simulate_mouse_up(geometry.below, MouseButton::Left, Modifiers::none());
+
+        view.read_with(cx, |view, cx| {
+            assert!(!view.top.read(cx).has_pending_selection());
+        });
+        assert_eq!(
+            top_selections(&view, cx),
+            vec![Point::new(0, 2)..Point::new(2, 2)]
+        );
+        assert_stale_drag_leaves_top_editor_alone(&view, &geometry, cx);
+    }
+
+    #[gpui::test]
+    async fn test_click_inside_selection_ends_its_new_selection(cx: &mut TestAppContext) {
+        let (view, geometry, cx) = build_two_editors(cx);
+        let top = view.read_with(cx, |view, _| view.top.clone());
+        top.update_in(cx, |editor, window, cx| {
+            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                selections.select_ranges([Point::new(0, 0)..Point::new(0, 6)]);
+            });
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        cx.simulate_mouse_down(geometry.top_row0, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(geometry.top_row0, MouseButton::Left, Modifiers::none());
+
+        view.read_with(cx, |view, cx| {
+            assert!(!view.top.read(cx).has_pending_selection());
+        });
+        assert_eq!(
+            top_selections(&view, cx),
+            vec![Point::new(0, 2)..Point::new(0, 2)]
+        );
+        assert_stale_drag_leaves_top_editor_alone(&view, &geometry, cx);
     }
 }
