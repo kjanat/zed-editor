@@ -15,7 +15,7 @@ use mermaid::{
     MermaidState, ParsedMarkdownMermaidDiagram, extract_mermaid_diagrams, render_mermaid_diagram,
 };
 pub use path_range::{LineCol, PathWithRange};
-use settings::Settings as _;
+use settings::{MarkdownTableLayout, Settings as _};
 use smallvec::SmallVec;
 use theme_settings::ThemeSettings;
 use util::maybe;
@@ -23,6 +23,7 @@ use util::maybe;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::iter;
 use std::mem;
 use std::ops::Range;
 use std::path::Path;
@@ -132,6 +133,7 @@ pub struct MarkdownStyle {
     pub height_is_multiple_of_line_height: bool,
     pub prevent_mouse_interaction: bool,
     pub table_columns_min_size: bool,
+    pub table_layout: Option<MarkdownTableLayout>,
     pub soft_break_as_hard_break: bool,
 }
 
@@ -161,6 +163,7 @@ impl Default for MarkdownStyle {
             height_is_multiple_of_line_height: false,
             prevent_mouse_interaction: false,
             table_columns_min_size: false,
+            table_layout: None,
             soft_break_as_hard_break: false,
         }
     }
@@ -528,6 +531,7 @@ pub struct Markdown {
     /// contents. All entries are retained against the parsed diagrams on each
     /// reparse, so a single map keeps that bookkeeping in one place.
     mermaid_views: HashMap<usize, MermaidViewState>,
+    table_layouts: HashMap<usize, TableLayoutState>,
     copied_code_blocks: HashSet<ElementId>,
     wrapped_code_blocks: HashSet<usize>,
     code_block_scroll_handles: BTreeMap<usize, ScrollHandle>,
@@ -723,6 +727,7 @@ impl Markdown {
             mermaid_state: MermaidState::default(),
             _mermaid_theme_subscription: theme_subscription,
             mermaid_views: HashMap::default(),
+            table_layouts: HashMap::default(),
             copied_code_blocks: HashSet::default(),
             wrapped_code_blocks: HashSet::default(),
             code_block_scroll_handles: BTreeMap::default(),
@@ -791,6 +796,63 @@ impl Markdown {
             cx,
         );
         cx.notify();
+    }
+
+    fn table_arrangement(
+        &self,
+        source_offset: usize,
+        layout: MarkdownTableLayout,
+    ) -> TableArrangement {
+        let state = self.table_layouts.get(&source_offset);
+        if let Some(arrangement) = state.and_then(|state| state.chosen) {
+            return arrangement;
+        }
+        match layout {
+            MarkdownTableLayout::Table => TableArrangement::Grid,
+            MarkdownTableLayout::List => TableArrangement::List,
+            MarkdownTableLayout::Auto => {
+                if state.is_some_and(|state| state.auto_prefers_list) {
+                    TableArrangement::List
+                } else {
+                    TableArrangement::Grid
+                }
+            }
+        }
+    }
+
+    fn choose_table_arrangement(
+        &mut self,
+        source_offset: usize,
+        arrangement: TableArrangement,
+        cx: &mut Context<Self>,
+    ) {
+        self.table_layouts.entry(source_offset).or_default().chosen = Some(arrangement);
+        cx.notify();
+    }
+
+    fn update_auto_table_layouts(
+        &mut self,
+        tables: &[AutoTable],
+        available_width: Pixels,
+        char_width: Pixels,
+        cell_padding_x: Pixels,
+    ) -> bool {
+        let mut changed = false;
+        for table in tables {
+            let state = self.table_layouts.entry(table.source_offset).or_default();
+            let prefers_list = table_prefers_list(
+                &table.column_chars,
+                available_width,
+                char_width,
+                cell_padding_x,
+                state.auto_prefers_list,
+            );
+            if prefers_list != state.auto_prefers_list {
+                state.auto_prefers_list = prefers_list;
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub(crate) fn is_mermaid_showing_code(&self, source_offset: usize) -> bool {
@@ -1386,6 +1448,17 @@ impl Markdown {
                 }) {
                     this.active_root_block = None;
                 }
+                let table_offsets = this
+                    .parsed_markdown
+                    .events
+                    .iter()
+                    .filter_map(|(range, event)| {
+                        matches!(event, MarkdownEvent::Start(MarkdownTag::Table(_)))
+                            .then_some(range.start)
+                    })
+                    .collect::<HashSet<_>>();
+                this.table_layouts
+                    .retain(|offset, _| table_offsets.contains(offset));
                 if this.options.render_mermaid_diagrams {
                     let parsed_markdown = this.parsed_markdown.clone();
                     this.mermaid_views
@@ -2028,6 +2101,44 @@ impl MarkdownElement {
         builder.push_image_child(image_element);
     }
 
+    fn push_table_structure(
+        &self,
+        builder: &mut MarkdownElementBuilder,
+        structure: TableStructure,
+        cx: &App,
+    ) {
+        let row_index = builder.table.row_index;
+        match structure {
+            TableStructure::OpenFields => builder.push_structural_div(
+                div()
+                    .debug_selector(move || format!("markdown_table_fields_{row_index}"))
+                    .flex()
+                    .flex_wrap()
+                    .gap_x_6()
+                    .gap_y_1()
+                    .pb_1()
+                    .border_b_1()
+                    .border_color(cx.theme().colors().border_variant),
+            ),
+            TableStructure::OpenField { column } => {
+                builder.table.in_field = true;
+                builder.push_structural_div(
+                    div()
+                        .debug_selector(move || {
+                            format!("markdown_table_field_{row_index}_{column}")
+                        })
+                        .flex()
+                        .flex_col(),
+                );
+            }
+            TableStructure::CloseField => {
+                builder.table.in_field = false;
+                builder.pop_div();
+            }
+            TableStructure::CloseFields => builder.pop_div(),
+        }
+    }
+
     fn push_markdown_paragraph(
         &self,
         builder: &mut MarkdownElementBuilder,
@@ -2633,7 +2744,6 @@ impl Element for MarkdownElement {
                         self.style.selection_background_color,
                     )
                 }),
-                next_search_highlight_ix: 0,
             }
         };
 
@@ -2665,7 +2775,23 @@ impl Element for MarkdownElement {
         let mut handled_html_block = false;
         let mut rendered_mermaid_block = false;
         let mut rendered_metadata_block = false;
-        for (index, (range, event)) in parsed_markdown.events.iter().enumerate() {
+        let table_plan = TablePlan::new(
+            &parsed_markdown.events,
+            self.style.table_layout,
+            self.markdown.read(cx),
+        );
+        for step in table_plan.steps.iter().flat_map(PlannedStep::render_steps) {
+            let (index, column) = match step {
+                RenderStep::Event { index, column } => (index, column),
+                RenderStep::Structure(structure) => {
+                    self.push_table_structure(&mut builder, structure, cx);
+                    continue;
+                }
+            };
+            if let Some(column) = column {
+                builder.table.col_index = column;
+            }
+            let (range, event) = &parsed_markdown.events[index];
             let event_index = MarkdownEventIndex(index);
             // Skip alt text for images that rendered
             if let Some(current_img_block_range) = &current_img_block_range
@@ -3049,37 +3175,85 @@ impl Element for MarkdownElement {
                             }
                         }
                         MarkdownTag::Table(alignments) => {
-                            builder.table.start(alignments.clone());
+                            let arrangement = match table_plan.list_tables.get(&index) {
+                                Some(head_end) => {
+                                    builder.table.start(
+                                        alignments.clone(),
+                                        TableArrangement::List,
+                                        *head_end,
+                                    );
+                                    TableArrangement::List
+                                }
+                                None => {
+                                    builder.table.start(
+                                        alignments.clone(),
+                                        TableArrangement::Grid,
+                                        0,
+                                    );
+                                    TableArrangement::Grid
+                                }
+                            };
 
                             let column_count = alignments.len();
-                            builder.push_div(div().flex(), range, markdown_end);
                             builder.push_div(
                                 div()
-                                    .id(("table", range.start))
-                                    .debug_selector(|| "markdown_table".into())
-                                    .min_w_0()
-                                    .grid()
-                                    .when(self.style.table_columns_min_size, |this| {
-                                        this.w_full().grid_cols_min_content(column_count as u16)
-                                    })
-                                    .when(!self.style.table_columns_min_size, |this| {
-                                        this.grid_cols_max_content(column_count as u16)
-                                    })
-                                    .mb_2()
-                                    .border(px(1.5))
-                                    .border_color(cx.theme().colors().border)
-                                    .rounded_sm()
-                                    .restrict_scroll_to_axis()
-                                    .custom_scrollbars(
-                                        Scrollbars::new(ScrollAxes::Horizontal)
-                                            .id(("markdown-table-scrollbar", range.start))
-                                            .notify_content(),
-                                        window,
-                                        cx,
-                                    ),
+                                    .relative()
+                                    .group(TABLE_GROUP)
+                                    .when(arrangement == TableArrangement::Grid, |this| {
+                                        this.flex()
+                                    }),
                                 range,
                                 markdown_end,
                             );
+                            if self.style.table_layout.is_some() {
+                                builder.append_child(
+                                    render_table_arrangement_toggle(
+                                        range.start,
+                                        arrangement,
+                                        self.markdown.clone(),
+                                    )
+                                    .into_any_element(),
+                                );
+                            }
+                            match arrangement {
+                                TableArrangement::Grid => builder.push_div(
+                                    div()
+                                        .id(("table", range.start))
+                                        .debug_selector(|| "markdown_table".into())
+                                        .min_w_0()
+                                        .grid()
+                                        .when(self.style.table_columns_min_size, |this| {
+                                            this.w_full().grid_cols_min_content(column_count as u16)
+                                        })
+                                        .when(!self.style.table_columns_min_size, |this| {
+                                            this.grid_cols_max_content(column_count as u16)
+                                        })
+                                        .mb_2()
+                                        .border(px(1.5))
+                                        .border_color(cx.theme().colors().border)
+                                        .rounded_sm()
+                                        .restrict_scroll_to_axis()
+                                        .custom_scrollbars(
+                                            Scrollbars::new(ScrollAxes::Horizontal)
+                                                .id(("markdown-table-scrollbar", range.start))
+                                                .notify_content(),
+                                            window,
+                                            cx,
+                                        ),
+                                    range,
+                                    markdown_end,
+                                ),
+                                TableArrangement::List => builder.push_div(
+                                    div()
+                                        .debug_selector(|| "markdown_table_list".into())
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .mb_2(),
+                                    range,
+                                    markdown_end,
+                                ),
+                            }
                         }
                         MarkdownTag::TableHead => {
                             builder.table.start_head();
@@ -3090,6 +3264,70 @@ impl Element for MarkdownElement {
                         }
                         MarkdownTag::TableRow => {
                             builder.table.start_row();
+                            if builder.table.arrangement == TableArrangement::List {
+                                let row_index = builder.table.row_index;
+                                builder.push_div(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("markdown_table_entry_{row_index}")
+                                        })
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .px(self.style.table_cell_padding.x * 2.)
+                                        .py(self.style.table_cell_padding.y * 2.)
+                                        .border_1()
+                                        .border_color(cx.theme().colors().border)
+                                        .rounded_sm()
+                                        .when(row_index % 2 == 1, |this| {
+                                            this.bg(cx.theme().colors().panel_background)
+                                        }),
+                                    range,
+                                    markdown_end,
+                                );
+                            }
+                        }
+                        MarkdownTag::TableCell
+                            if builder.table.arrangement == TableArrangement::List =>
+                        {
+                            builder.table.start_cell();
+                            let row_index = builder.table.row_index;
+                            let col_index = builder.table.col_index;
+                            if builder.table.is_list_label(index) {
+                                builder.push_div(
+                                    div().debug_selector(move || {
+                                        format!("markdown_table_label_{row_index}_{col_index}")
+                                    }),
+                                    range,
+                                    markdown_end,
+                                );
+                                builder.push_text_style(TextStyleRefinement {
+                                    font_weight: Some(FontWeight::SEMIBOLD),
+                                    color: Some(cx.theme().colors().text_muted),
+                                    ..Default::default()
+                                });
+                                if matches!(
+                                    parsed_markdown.events.get(index + 1),
+                                    Some((_, MarkdownEvent::End(MarkdownTagEnd::TableCell)))
+                                ) {
+                                    builder.push_text(
+                                        &format!("Column {}", col_index + 1),
+                                        range.start..range.start,
+                                    );
+                                }
+                            } else {
+                                let in_field = builder.table.in_field;
+                                builder.push_div(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("markdown_table_cell_{row_index}_{col_index}")
+                                        })
+                                        .when(!in_field, |this| this.w_full()),
+                                    range,
+                                    markdown_end,
+                                );
+                                builder.push_text_style(TextStyleRefinement::default());
+                            }
                         }
                         MarkdownTag::TableCell => {
                             builder.table.start_cell();
@@ -3267,14 +3505,26 @@ impl Element for MarkdownElement {
                         builder.table.end_head();
                     }
                     MarkdownTagEnd::TableRow => {
+                        if builder.table.arrangement == TableArrangement::List {
+                            builder.pop_div();
+                        }
                         builder.table.end_row();
+                    }
+                    MarkdownTagEnd::TableCell
+                        if builder.table.arrangement == TableArrangement::List =>
+                    {
+                        let is_list_label = builder.table.is_list_label(index);
+                        builder.replace_pending_checkbox(self.on_checkbox_toggle.clone());
+                        builder.pop_div();
+                        builder.pop_text_style();
+                        builder.table.end_cell(is_list_label);
                     }
                     MarkdownTagEnd::TableCell => {
                         builder.replace_pending_checkbox(self.on_checkbox_toggle.clone());
                         builder.pop_div();
                         builder.pop_div();
                         builder.pop_text_style();
-                        builder.table.end_cell();
+                        builder.table.end_cell(false);
                     }
                     MarkdownTagEnd::FootnoteDefinition => {
                         builder.pop_div();
@@ -3392,6 +3642,7 @@ impl Element for MarkdownElement {
                 .update(cx, |markdown, _| markdown.clear_code_block_scroll_handles());
         }
         let mut rendered_markdown = builder.build();
+        rendered_markdown.auto_tables = table_plan.auto_tables;
         #[cfg(test)]
         if let Some(on_render) = self.on_render.as_ref() {
             on_render(rendered_markdown.text.clone());
@@ -3417,6 +3668,26 @@ impl Element for MarkdownElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         rendered_markdown.element.prepaint(window, cx);
         self.autoscroll(&rendered_markdown.text, window, cx);
+        if !rendered_markdown.auto_tables.is_empty() {
+            let char_width = self
+                .style
+                .base_text_style
+                .font_size
+                .to_pixels(window.rem_size())
+                * TABLE_AUTO_CHAR_WIDTH_EMS;
+            let changed = self.markdown.update(cx, |markdown, _| {
+                markdown.update_auto_table_layouts(
+                    &rendered_markdown.auto_tables,
+                    bounds.size.width,
+                    char_width,
+                    self.style.table_cell_padding.x,
+                )
+            });
+            if changed {
+                let markdown = self.markdown.clone();
+                cx.defer(move |cx| markdown.update(cx, |_, cx| cx.notify()));
+            }
+        }
         hitbox
     }
 
@@ -3572,6 +3843,41 @@ fn heading_level_style(
     }
 }
 
+const TABLE_GROUP: &str = "markdown_table";
+
+fn render_table_arrangement_toggle(
+    source_offset: usize,
+    arrangement: TableArrangement,
+    markdown: Entity<Markdown>,
+) -> impl IntoElement {
+    let (icon, tooltip) = match arrangement {
+        TableArrangement::Grid => (IconName::ListTree, "Show as List"),
+        TableArrangement::List => (IconName::Table, "Show as Table"),
+    };
+    let button_id = ElementId::NamedChild(
+        Arc::new(ElementId::from(("table-arrangement", markdown.entity_id()))),
+        source_offset.to_string().into(),
+    );
+
+    div()
+        .debug_selector(move || format!("markdown_table_toggle_{source_offset}"))
+        .absolute()
+        .top_1()
+        .right_1()
+        .visible_on_hover(TABLE_GROUP)
+        .child(
+            IconButton::new(button_id, icon)
+                .icon_size(IconSize::Small)
+                .icon_color(Color::Muted)
+                .tooltip(Tooltip::text(tooltip))
+                .on_click(move |_event, _window, cx| {
+                    markdown.update(cx, |markdown, cx| {
+                        markdown.choose_table_arrangement(source_offset, arrangement.other(), cx);
+                    });
+                }),
+        )
+}
+
 fn render_wrap_code_block_button(
     id: usize,
     is_wrapped: bool,
@@ -3690,30 +3996,351 @@ impl ParentElement for AnyDiv {
     }
 }
 
+const TABLE_AUTO_COLUMN_CHAR_CAP: usize = 40;
+const TABLE_AUTO_PROSE_CHARS: usize = 24;
+const TABLE_AUTO_LEAVE_LIST_RATIO: f32 = 0.85;
+const TABLE_AUTO_CHAR_WIDTH_EMS: f32 = 0.55;
+const TABLE_COMPACT_FIELD_CHARS: usize = 16;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TableArrangement {
+    #[default]
+    Grid,
+    List,
+}
+
+impl TableArrangement {
+    fn other(self) -> Self {
+        match self {
+            Self::Grid => Self::List,
+            Self::List => Self::Grid,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TableLayoutState {
+    chosen: Option<TableArrangement>,
+    auto_prefers_list: bool,
+}
+
+struct AutoTable {
+    source_offset: usize,
+    column_chars: Vec<usize>,
+}
+
+fn table_prefers_list(
+    column_chars: &[usize],
+    available_width: Pixels,
+    char_width: Pixels,
+    cell_padding_x: Pixels,
+    currently_list: bool,
+) -> bool {
+    let natural_width = column_chars
+        .iter()
+        .map(|chars| char_width * (*chars).min(TABLE_AUTO_COLUMN_CHAR_CAP) as f32)
+        .fold(Pixels::ZERO, |total, width| total + width)
+        + cell_padding_x * (2 * column_chars.len()) as f32;
+    let has_prose = column_chars
+        .iter()
+        .any(|chars| *chars >= TABLE_AUTO_PROSE_CHARS);
+    if currently_list {
+        natural_width >= available_width * TABLE_AUTO_LEAVE_LIST_RATIO
+    } else {
+        has_prose && natural_width > available_width
+    }
+}
+
+struct TableCells {
+    start: usize,
+    end: usize,
+    cells: Vec<Range<usize>>,
+}
+
+struct TableEvents {
+    start: usize,
+    head_end: usize,
+    end: usize,
+    header_cells: Vec<Range<usize>>,
+    rows: Vec<TableCells>,
+}
+
+impl TableEvents {
+    fn collect(events: &[(Range<usize>, MarkdownEvent)], start: usize) -> Option<Self> {
+        let mut head_end = None;
+        let mut in_head = false;
+        let mut header_cells = Vec::new();
+        let mut rows = Vec::new();
+        let mut row: Option<TableCells> = None;
+        let mut cell_start = None;
+        for (index, (_, event)) in events.iter().enumerate().skip(start + 1) {
+            match event {
+                MarkdownEvent::Start(MarkdownTag::TableHead) => in_head = true,
+                MarkdownEvent::End(MarkdownTagEnd::TableHead) => {
+                    in_head = false;
+                    head_end = Some(index);
+                }
+                MarkdownEvent::Start(MarkdownTag::TableRow) => {
+                    row = Some(TableCells {
+                        start: index,
+                        end: index,
+                        cells: Vec::new(),
+                    });
+                }
+                MarkdownEvent::End(MarkdownTagEnd::TableRow) => {
+                    if let Some(mut finished) = row.take() {
+                        finished.end = index;
+                        rows.push(finished);
+                    }
+                }
+                MarkdownEvent::Start(MarkdownTag::TableCell) => cell_start = Some(index),
+                MarkdownEvent::End(MarkdownTagEnd::TableCell) => {
+                    let cell = cell_start.take()?..index + 1;
+                    if in_head {
+                        header_cells.push(cell);
+                    } else {
+                        row.as_mut()?.cells.push(cell);
+                    }
+                }
+                MarkdownEvent::End(MarkdownTagEnd::Table) => {
+                    return Some(Self {
+                        start,
+                        head_end: head_end?,
+                        end: index,
+                        header_cells,
+                        rows,
+                    });
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn column_chars(&self, events: &[(Range<usize>, MarkdownEvent)]) -> Vec<usize> {
+        let mut column_chars = vec![0; self.header_cells.len()];
+        for cells in iter::once(&self.header_cells).chain(self.rows.iter().map(|row| &row.cells)) {
+            for (column, cell) in cells.iter().enumerate() {
+                let chars = events[cell.clone()]
+                    .iter()
+                    .map(|(range, event)| match event {
+                        MarkdownEvent::Text | MarkdownEvent::Code | MarkdownEvent::InlineHtml => {
+                            range.len()
+                        }
+                        MarkdownEvent::SubstitutedText(text)
+                        | MarkdownEvent::SubstitutedCode(text) => text.len(),
+                        _ => 0,
+                    })
+                    .sum::<usize>();
+                if let Some(column_chars) = column_chars.get_mut(column) {
+                    *column_chars = (*column_chars).max(chars);
+                }
+            }
+        }
+        column_chars
+    }
+
+    fn push_list_steps(&self, compact_columns: &[bool], steps: &mut Vec<PlannedStep>) {
+        steps.push(PlannedStep::events(self.start..self.start + 1));
+        for row in &self.rows {
+            steps.push(PlannedStep::events(row.start..row.start + 1));
+            let grouped_columns = (0..row.cells.len())
+                .filter(|column| compact_columns.get(*column).copied().unwrap_or(false))
+                .collect::<Vec<_>>();
+            let groups_fields = grouped_columns.len() >= 2;
+            let mut group_pushed = false;
+            for (column, cell) in row.cells.iter().enumerate() {
+                if !groups_fields || !grouped_columns.contains(&column) {
+                    self.push_field(column, cell, steps);
+                    continue;
+                }
+                if group_pushed {
+                    continue;
+                }
+                group_pushed = true;
+                steps.push(PlannedStep::Structure(TableStructure::OpenFields));
+                for grouped_column in &grouped_columns {
+                    if let Some(grouped_cell) = row.cells.get(*grouped_column) {
+                        steps.push(PlannedStep::Structure(TableStructure::OpenField {
+                            column: *grouped_column,
+                        }));
+                        self.push_field(*grouped_column, grouped_cell, steps);
+                        steps.push(PlannedStep::Structure(TableStructure::CloseField));
+                    }
+                }
+                steps.push(PlannedStep::Structure(TableStructure::CloseFields));
+            }
+            steps.push(PlannedStep::events(row.end..row.end + 1));
+        }
+        steps.push(PlannedStep::events(self.end..self.end + 1));
+    }
+
+    fn push_field(&self, column: usize, cell: &Range<usize>, steps: &mut Vec<PlannedStep>) {
+        if let Some(header_cell) = self.header_cells.get(column) {
+            steps.push(PlannedStep::Events {
+                range: header_cell.clone(),
+                column: Some(column),
+            });
+        }
+        steps.push(PlannedStep::Events {
+            range: cell.clone(),
+            column: Some(column),
+        });
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableStructure {
+    OpenFields,
+    CloseFields,
+    OpenField { column: usize },
+    CloseField,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderStep {
+    Event { index: usize, column: Option<usize> },
+    Structure(TableStructure),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PlannedStep {
+    Events {
+        range: Range<usize>,
+        column: Option<usize>,
+    },
+    Structure(TableStructure),
+}
+
+impl PlannedStep {
+    fn events(range: Range<usize>) -> Self {
+        Self::Events {
+            range,
+            column: None,
+        }
+    }
+
+    fn render_steps(&self) -> impl Iterator<Item = RenderStep> + use<> {
+        let (range, column, structure) = match self {
+            Self::Events { range, column } => (range.clone(), *column, None),
+            Self::Structure(structure) => (0..0, None, Some(RenderStep::Structure(*structure))),
+        };
+        range
+            .map(move |index| RenderStep::Event { index, column })
+            .chain(structure)
+    }
+}
+
+struct TablePlan {
+    steps: Vec<PlannedStep>,
+    list_tables: HashMap<usize, usize>,
+    auto_tables: Vec<AutoTable>,
+}
+
+impl TablePlan {
+    fn new(
+        events: &[(Range<usize>, MarkdownEvent)],
+        layout: Option<MarkdownTableLayout>,
+        markdown: &Markdown,
+    ) -> Self {
+        let mut steps = Vec::new();
+        let mut list_tables = HashMap::default();
+        let mut auto_tables = Vec::new();
+        let Some(layout) = layout else {
+            steps.push(PlannedStep::events(0..events.len()));
+            return Self {
+                steps,
+                list_tables,
+                auto_tables,
+            };
+        };
+        let mut next_unplanned = 0;
+        let mut index = 0;
+        while index < events.len() {
+            let (range, event) = &events[index];
+            if !matches!(event, MarkdownEvent::Start(MarkdownTag::Table(_))) {
+                index += 1;
+                continue;
+            }
+            let Some(table) = TableEvents::collect(events, index) else {
+                index += 1;
+                continue;
+            };
+            let column_chars = table.column_chars(events);
+            if markdown.table_arrangement(range.start, layout) == TableArrangement::List {
+                steps.push(PlannedStep::events(next_unplanned..table.start));
+                let compact_columns = column_chars
+                    .iter()
+                    .map(|chars| *chars <= TABLE_COMPACT_FIELD_CHARS)
+                    .collect::<Vec<_>>();
+                table.push_list_steps(&compact_columns, &mut steps);
+                list_tables.insert(table.start, table.head_end);
+                next_unplanned = table.end + 1;
+            }
+            if layout == MarkdownTableLayout::Auto
+                && markdown
+                    .table_layouts
+                    .get(&range.start)
+                    .is_none_or(|state| state.chosen.is_none())
+            {
+                auto_tables.push(AutoTable {
+                    source_offset: range.start,
+                    column_chars,
+                });
+            }
+            index = table.end + 1;
+        }
+        steps.push(PlannedStep::events(next_unplanned..events.len()));
+        Self {
+            steps,
+            list_tables,
+            auto_tables,
+        }
+    }
+}
+
 #[derive(Default)]
 struct TableState {
     alignments: Vec<Alignment>,
+    arrangement: TableArrangement,
+    head_end: usize,
     in_head: bool,
     in_cell: bool,
+    in_field: bool,
     row_index: usize,
     col_index: usize,
 }
 
 impl TableState {
-    fn start(&mut self, alignments: Vec<Alignment>) {
+    fn start(
+        &mut self,
+        alignments: Vec<Alignment>,
+        arrangement: TableArrangement,
+        head_end: usize,
+    ) {
         self.alignments = alignments;
+        self.arrangement = arrangement;
+        self.head_end = head_end;
         self.in_head = false;
         self.in_cell = false;
+        self.in_field = false;
         self.row_index = 0;
         self.col_index = 0;
     }
 
     fn end(&mut self) {
         self.alignments.clear();
+        self.arrangement = TableArrangement::Grid;
+        self.head_end = 0;
         self.in_head = false;
         self.in_cell = false;
+        self.in_field = false;
         self.row_index = 0;
         self.col_index = 0;
+    }
+
+    fn is_list_label(&self, event_index: usize) -> bool {
+        self.arrangement == TableArrangement::List && event_index < self.head_end
     }
 
     fn start_head(&mut self) {
@@ -3736,13 +4363,15 @@ impl TableState {
         self.in_cell = true;
     }
 
-    fn end_cell(&mut self) {
+    fn end_cell(&mut self, is_list_label: bool) {
         self.in_cell = false;
-        self.col_index += 1;
+        if !is_list_label {
+            self.col_index += 1;
+        }
     }
 
     fn current_cell_alignment(&self) -> Option<Alignment> {
-        if self.alignments.is_empty() {
+        if self.alignments.is_empty() || self.arrangement == TableArrangement::List {
             return None;
         }
         if self.in_head {
@@ -3812,29 +4441,26 @@ struct MarkdownHighlights {
     search_match_color: Hsla,
     active_search_match_color: Hsla,
     selection: Option<(Range<usize>, Hsla)>,
-    /// Index of the first search highlight that may intersect the next line.
-    next_search_highlight_ix: usize,
 }
 
 impl MarkdownHighlights {
     /// Returns the highlighted ranges intersecting the given source range,
     /// clamped to it, in paint order.
     fn highlights_for_line(
-        &mut self,
+        &self,
         source_range: Range<usize>,
     ) -> SmallVec<[(Range<usize>, Hsla); 1]> {
         let mut highlights = SmallVec::new();
 
-        self.next_search_highlight_ix += self.search_highlights[self.next_search_highlight_ix..]
-            .iter()
-            .take_while(|range| range.end <= source_range.start)
-            .count();
+        let first_candidate = self
+            .search_highlights
+            .partition_point(|range| range.end <= source_range.start);
 
         for (ix, range) in self
             .search_highlights
             .iter()
             .enumerate()
-            .skip(self.next_search_highlight_ix)
+            .skip(first_candidate)
         {
             if range.start >= source_range.end {
                 break;
@@ -3988,6 +4614,11 @@ impl MarkdownElementBuilder {
             });
         }
 
+        self.div_stack.push(DivStackEntry::new(div));
+    }
+
+    fn push_structural_div(&mut self, div: impl Into<AnyDiv>) {
+        self.flush_text();
         self.div_stack.push(DivStackEntry::new(div));
     }
 
@@ -4368,6 +4999,7 @@ impl MarkdownElementBuilder {
                 image_links: self.rendered_image_links.into(),
                 footnote_refs: self.rendered_footnote_refs.into(),
             },
+            auto_tables: Vec::new(),
         }
     }
 }
@@ -4822,6 +5454,7 @@ fn source_index_for_rendered(mappings: &[SourceMapping], rendered_index: usize) 
 pub struct RenderedMarkdown {
     element: AnyElement,
     text: RenderedText,
+    auto_tables: Vec<AutoTable>,
 }
 
 #[derive(Clone)]
@@ -4867,10 +5500,7 @@ impl RenderedText {
                 continue;
             };
             let line_source_start = first_mapping.source_index;
-            if range.end <= line_source_start {
-                break;
-            }
-            if range.start >= line.source_end {
+            if range.end <= line_source_start || range.start >= line.source_end {
                 continue;
             }
             let wrapped_line_segments = line.wrapped_line_segments();
@@ -6577,22 +7207,26 @@ mod tests {
     #[test]
     fn test_table_state_current_cell_alignment_centers_headers() {
         let mut table = TableState::default();
-        table.start(vec![Alignment::Left, Alignment::Right, Alignment::None]);
+        table.start(
+            vec![Alignment::Left, Alignment::Right, Alignment::None],
+            TableArrangement::Grid,
+            0,
+        );
 
         table.start_head();
         for _ in 0..3 {
             assert_eq!(table.current_cell_alignment(), Some(Alignment::Center));
-            table.end_cell();
+            table.end_cell(false);
         }
 
         table.end_head();
         table.start_row();
         assert_eq!(table.current_cell_alignment(), Some(Alignment::Left));
-        table.end_cell();
+        table.end_cell(false);
         assert_eq!(table.current_cell_alignment(), Some(Alignment::Right));
-        table.end_cell();
+        table.end_cell(false);
         assert_eq!(table.current_cell_alignment(), Some(Alignment::None));
-        table.end_cell();
+        table.end_cell(false);
         table.end_row();
 
         table.end();
@@ -6610,12 +7244,12 @@ mod tests {
         let mut table = TableState::default();
         assert!(!table.in_cell);
 
-        table.start(vec![Alignment::Left]);
+        table.start(vec![Alignment::Left], TableArrangement::Grid, 0);
         assert!(!table.in_cell);
         table.start_head();
         table.start_cell();
         assert!(table.in_cell);
-        table.end_cell();
+        table.end_cell(false);
         assert!(!table.in_cell);
         table.end_head();
 
@@ -7936,6 +8570,358 @@ mod tests {
             right_cell_after_scroll.top(),
             right_cell_before_scroll.top()
         );
+    }
+
+    const WIDE_PROSE_TABLE: &str = indoc::indoc! {"
+        | ID | State | Evidence / notes |
+        | --- | --- | --- |
+        | 698 | open | Local action parsing accepts GitHub owner/repo references and Forgejo ones alike |
+    "};
+
+    fn open_table_layout_view<'a>(
+        source: &str,
+        layout: Option<MarkdownTableLayout>,
+        width: Pixels,
+        cx: &'a mut TestAppContext,
+    ) -> (
+        Entity<Markdown>,
+        Rc<RefCell<Option<RenderedText>>>,
+        &'a mut VisualTestContext,
+    ) {
+        ensure_theme_initialized(cx);
+        let markdown = cx.new(|cx| Markdown::new(source.to_string().into(), None, None, cx));
+        cx.run_until_parked();
+        let rendered_text = Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let markdown = markdown.clone();
+            let rendered_text = rendered_text.clone();
+            move |_, _| MarkdownTestView {
+                markdown,
+                style: MarkdownStyle {
+                    table_layout: layout,
+                    inline_code: TextStyleRefinement {
+                        background_color: Some(gpui::red()),
+                        ..Default::default()
+                    },
+                    ..MarkdownStyle::default()
+                },
+                code_span_link: None,
+                rendered_text,
+            }
+        });
+        cx.simulate_resize(size(width, px(600.)));
+        cx.run_until_parked();
+        (markdown, rendered_text, cx)
+    }
+
+    fn rendered_line_texts(rendered_text: &Rc<RefCell<Option<RenderedText>>>) -> Vec<String> {
+        rendered_text
+            .borrow()
+            .as_ref()
+            .expect("markdown should be rendered")
+            .lines
+            .iter()
+            .map(|line| line.layout.text())
+            .collect()
+    }
+
+    fn is_list_layout(cx: &mut VisualTestContext) -> bool {
+        match (
+            cx.debug_bounds("markdown_table_list"),
+            cx.debug_bounds("markdown_table"),
+        ) {
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (list, grid) => panic!("expected exactly one table layout, got {list:?} and {grid:?}"),
+        }
+    }
+
+    #[test]
+    fn test_table_prefers_list_switches_with_hysteresis() {
+        let char_width = px(10.);
+        let padding = px(4.);
+        let prose = [3, 5, 80];
+        let natural = px((3 + 5 + 40) as f32 * 10. + 3. * 2. * 4.);
+
+        assert!(!table_prefers_list(
+            &prose,
+            natural + px(1.),
+            char_width,
+            padding,
+            false
+        ));
+        assert!(table_prefers_list(
+            &prose,
+            natural - px(1.),
+            char_width,
+            padding,
+            false
+        ));
+        let inside_band = natural / TABLE_AUTO_LEAVE_LIST_RATIO - px(1.);
+        assert!(table_prefers_list(
+            &prose,
+            inside_band,
+            char_width,
+            padding,
+            true
+        ));
+        assert!(!table_prefers_list(
+            &prose,
+            inside_band,
+            char_width,
+            padding,
+            false
+        ));
+        let past_band = natural / TABLE_AUTO_LEAVE_LIST_RATIO + px(1.);
+        assert!(!table_prefers_list(
+            &prose, past_band, char_width, padding, true
+        ));
+
+        let short_columns = [10; 12];
+        assert!(!table_prefers_list(
+            &short_columns,
+            px(100.),
+            char_width,
+            padding,
+            false
+        ));
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_retains_every_cell(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | Done | Name | Name | |
+            | --- | --- | --- | --- |
+            | [x] | **bold** | `code` | [docs](https://example.com) long_unbroken_identifier_value |
+            | [ ] | second | | plain |
+        "};
+        let (_, rendered_text, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
+
+        assert!(is_list_layout(cx));
+        assert_eq!(
+            rendered_line_texts(&rendered_text),
+            [
+                "Done",
+                "Name",
+                "bold",
+                "Name",
+                "code",
+                "Column 4",
+                "docs long_unbroken_identifier_value",
+                "Done",
+                "Name",
+                "second",
+                "Name",
+                "Column 4",
+                "plain",
+            ]
+        );
+
+        for row in 0..2 {
+            let entry = cx
+                .debug_bounds(format!("markdown_table_entry_{row}").leak())
+                .expect("each body row should render as an entry");
+            for column in 0..4 {
+                let label = cx
+                    .debug_bounds(format!("markdown_table_label_{row}_{column}").leak())
+                    .expect("each cell should have a label");
+                let value = cx
+                    .debug_bounds(format!("markdown_table_cell_{row}_{column}").leak())
+                    .expect("each cell should have a value");
+                assert!(label.bottom() <= value.top());
+                assert!(entry.contains(&label.origin) && entry.contains(&value.origin));
+            }
+
+            let fields = cx
+                .debug_bounds(format!("markdown_table_fields_{row}").leak())
+                .expect("short columns should share a compact group");
+            let field_bounds = (0..3)
+                .map(|column| {
+                    cx.debug_bounds(format!("markdown_table_field_{row}_{column}").leak())
+                        .expect("each short column should be a field in the group")
+                })
+                .collect::<Vec<_>>();
+            for pair in field_bounds.windows(2) {
+                assert_eq!(pair[0].top(), pair[1].top());
+                assert!(pair[0].right() <= pair[1].left());
+            }
+            let prose_label = cx
+                .debug_bounds(format!("markdown_table_label_{row}_3").leak())
+                .expect("the prose column should keep its own label");
+            assert!(fields.bottom() <= prose_label.top());
+            assert!(
+                cx.debug_bounds(format!("markdown_table_field_{row}_3").leak())
+                    .is_none(),
+                "the prose column should span the entry instead of joining the group"
+            );
+        }
+
+        let rendered_text = rendered_text.borrow();
+        let rendered_text = rendered_text.as_ref().expect("markdown should be rendered");
+        assert_eq!(rendered_text.links.len(), 1);
+        assert!(
+            rendered_text
+                .lines
+                .iter()
+                .any(|line| line.layout.text() == "code" && !line.code_chips.is_empty())
+        );
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_wraps_compact_fields_in_narrow_panes(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | Checked | Author | Opened | Updated |
+            | --- | --- | --- | --- |
+            | yes | someone | 2026 | 2026-07-09 |
+        "};
+        let field = |cx: &mut VisualTestContext, column: usize| {
+            cx.debug_bounds(format!("markdown_table_field_0_{column}").leak())
+                .expect("each short column should be a field")
+        };
+
+        let (_, _, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
+        assert_eq!(field(cx, 0).top(), field(cx, 3).top());
+
+        cx.simulate_resize(size(px(140.), px(600.)));
+        cx.run_until_parked();
+        assert!(
+            field(cx, 3).top() > field(cx, 0).top(),
+            "fields should wrap onto further lines when the group does not fit"
+        );
+        let entry = cx
+            .debug_bounds("markdown_table_entry_0")
+            .expect("the row should render as an entry");
+        for column in 0..4 {
+            assert!(field(cx, column).right() <= entry.right());
+        }
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_selection_and_copy(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | Name | Notes |
+            | --- | --- |
+            | first | alpha |
+            | second | beta |
+        "};
+        let (_, rendered_text, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
+        assert!(is_list_layout(cx));
+
+        let row_start = source.find("| second").expect("second row");
+        let row_end = source[row_start..]
+            .find('\n')
+            .map(|end| row_start + end)
+            .expect("row end");
+        let rendered_text = rendered_text.borrow();
+        let rendered_text = rendered_text.as_ref().expect("markdown should be rendered");
+        assert_eq!(
+            rendered_text.text_for_range(row_start..row_end),
+            "second\nbeta"
+        );
+
+        let beta_start = source.find("beta").expect("beta cell");
+        let beta_bounds = rendered_text
+            .bounds_for_source_range(beta_start..beta_start + "beta".len())
+            .into_iter()
+            .next()
+            .expect("beta should have bounds");
+        let source_index = rendered_text
+            .source_index_for_position(beta_bounds.center())
+            .expect("the value cell should map to its source");
+        assert!((beta_start..beta_start + "beta".len()).contains(&source_index));
+
+        let header_start = source.find("Notes").expect("header");
+        assert_eq!(
+            rendered_text
+                .bounds_for_source_range(header_start..header_start + "Notes".len())
+                .len(),
+            2,
+            "every entry should label its value"
+        );
+    }
+
+    #[gpui::test]
+    fn test_table_auto_layout_follows_width_with_hysteresis(cx: &mut TestAppContext) {
+        let (_, _, cx) = open_table_layout_view(
+            WIDE_PROSE_TABLE,
+            Some(MarkdownTableLayout::Auto),
+            px(800.),
+            cx,
+        );
+        assert!(!is_list_layout(cx));
+
+        cx.simulate_resize(size(px(400.), px(600.)));
+        cx.run_until_parked();
+        assert!(is_list_layout(cx));
+
+        cx.simulate_resize(size(px(480.), px(600.)));
+        cx.run_until_parked();
+        assert!(
+            is_list_layout(cx),
+            "a width just past the switch point should keep the list"
+        );
+
+        cx.simulate_resize(size(px(800.), px(600.)));
+        cx.run_until_parked();
+        assert!(!is_list_layout(cx));
+    }
+
+    #[gpui::test]
+    fn test_table_auto_layout_keeps_short_tables(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | A | B | C |
+            | --- | --- | --- |
+            | 1 | 2 | 3 |
+        "};
+        let (_, _, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::Auto), px(120.), cx);
+        assert!(!is_list_layout(cx));
+    }
+
+    #[gpui::test]
+    fn test_table_arrangement_toggle_survives_reparse(cx: &mut TestAppContext) {
+        let (markdown, _, cx) = open_table_layout_view(
+            WIDE_PROSE_TABLE,
+            Some(MarkdownTableLayout::Table),
+            px(800.),
+            cx,
+        );
+        assert!(!is_list_layout(cx));
+
+        let table = cx
+            .debug_bounds("markdown_table")
+            .expect("table should render");
+        cx.simulate_mouse_move(table.center(), None, Modifiers::default());
+        let toggle = cx
+            .debug_bounds("markdown_table_toggle_0")
+            .expect("the table should offer a layout toggle");
+        cx.simulate_click(toggle.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(is_list_layout(cx));
+
+        markdown.update(cx, |markdown, cx| {
+            markdown.reset(WIDE_PROSE_TABLE.into(), cx);
+        });
+        cx.run_until_parked();
+        assert!(is_list_layout(cx), "the choice should survive a reparse");
+
+        markdown.update(cx, |markdown, cx| {
+            markdown.reset("no table here".into(), cx);
+        });
+        cx.run_until_parked();
+        markdown.read_with(cx, |markdown, _| {
+            assert!(markdown.table_layouts.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_tables_without_layout_controls_stay_grids(cx: &mut TestAppContext) {
+        let (_, _, cx) = open_table_layout_view(WIDE_PROSE_TABLE, None, px(300.), cx);
+        assert!(!is_list_layout(cx));
+        assert!(cx.debug_bounds("markdown_table_toggle_0").is_none());
     }
 
     #[gpui::test]

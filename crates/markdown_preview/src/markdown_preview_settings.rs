@@ -1,5 +1,5 @@
 use gpui::Pixels;
-use settings::{IntoGpui, RegisterSetting, Settings};
+use settings::{IntoGpui, MarkdownTableLayout, RegisterSetting, Settings};
 
 /// The settings for the markdown preview.
 #[derive(Clone, Copy, Debug, Default, RegisterSetting)]
@@ -9,6 +9,8 @@ pub struct MarkdownPreviewSettings {
     /// The maximum width of the rendered markdown content, or `None` to render
     /// content edge to edge.
     pub max_width: Option<Pixels>,
+    /// How tables render in the preview.
+    pub table_layout: MarkdownTableLayout,
 }
 
 impl Settings for MarkdownPreviewSettings {
@@ -22,6 +24,7 @@ impl Settings for MarkdownPreviewSettings {
         Self {
             open_markdown_files_in_preview: content.open_markdown_files_in_preview.unwrap_or(false),
             max_width,
+            table_layout: content.table_layout.unwrap_or_default(),
         }
     }
 }
@@ -42,9 +45,13 @@ mod tests {
             store.get::<MarkdownPreviewSettings>(None).max_width,
             Some(px(800.))
         );
+        assert_eq!(
+            store.get::<MarkdownPreviewSettings>(None).table_layout,
+            MarkdownTableLayout::Auto
+        );
         store
             .set_user_settings(
-                r#"{"markdown_preview":{"max_width":960,"open_markdown_files_in_preview":true}}"#,
+                r#"{"markdown_preview":{"max_width":960,"open_markdown_files_in_preview":true,"table_layout":"list"}}"#,
                 cx,
             )
             .unwrap();
@@ -65,7 +72,7 @@ mod tests {
             (
                 first_root,
                 "docs/narrow",
-                r#"{"markdown_preview":{"max_width":640}}"#,
+                r#"{"markdown_preview":{"max_width":640,"table_layout":"table"}}"#,
             ),
             (
                 second_root,
@@ -84,17 +91,33 @@ mod tests {
                 .unwrap();
         }
 
-        for (root, path, expected) in [
-            (first_root, "readme.md", None),
-            (first_root, "docs/guide.md", Some(px(960.))),
-            (first_root, "docs/narrow/guide.md", Some(px(640.))),
-            (second_root, "readme.md", Some(px(1200.))),
+        for (root, path, expected, expected_table_layout) in [
+            (first_root, "readme.md", None, MarkdownTableLayout::List),
+            (
+                first_root,
+                "docs/guide.md",
+                Some(px(960.)),
+                MarkdownTableLayout::List,
+            ),
+            (
+                first_root,
+                "docs/narrow/guide.md",
+                Some(px(640.)),
+                MarkdownTableLayout::Table,
+            ),
+            (
+                second_root,
+                "readme.md",
+                Some(px(1200.)),
+                MarkdownTableLayout::List,
+            ),
         ] {
             let settings = store.get::<MarkdownPreviewSettings>(Some(SettingsLocation {
                 worktree_id: root,
                 path: rel_path(path),
             }));
             assert_eq!(settings.max_width, expected);
+            assert_eq!(settings.table_layout, expected_table_layout);
             assert!(settings.open_markdown_files_in_preview);
         }
         assert_eq!(

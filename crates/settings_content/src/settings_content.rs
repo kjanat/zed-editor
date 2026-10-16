@@ -1356,6 +1356,39 @@ pub struct MarkdownPreviewSettingsContent {
     ///
     /// Default: 800
     pub max_width: Option<PixelSetting>,
+    /// How tables render in the markdown preview. `table` keeps the grid,
+    /// `list` renders each row as an entry labeled by the table headers, and
+    /// `auto` switches a table to entries when it is too wide for the
+    /// preview.
+    ///
+    /// Default: auto
+    pub table_layout: Option<MarkdownTableLayout>,
+}
+
+/// How a markdown table renders.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkdownTableLayout {
+    /// A grid of rows and columns.
+    Table,
+    /// One entry per row, with the headers as field labels.
+    List,
+    /// A grid when it fits the preview, otherwise one entry per row.
+    #[default]
+    Auto,
 }
 
 /// The settings for the image viewer.

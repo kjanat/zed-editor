@@ -10762,7 +10762,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn global_only_miscellaneous_sub_section() -> [SettingsPageItem; 4] {
+    fn global_only_miscellaneous_sub_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Image Viewer",
@@ -10870,6 +10870,31 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                         metadata: None,
                     }],
                 ],
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Markdown Table Layout",
+                description: "How tables render in the markdown preview. Auto switches a table to one entry per row when it is too wide for the preview.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("markdown_preview.table_layout"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .markdown_preview
+                            .as_ref()?
+                            .table_layout
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .markdown_preview
+                            .get_or_insert_default()
+                            .table_layout = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Drop Size Target",
