@@ -11,6 +11,12 @@ path    = "src/gpui_platform.rs"
 
 [[bench]]
 harness           = false
+name              = "focus_cleanup"
+path              = "../gpui/benches/focus_cleanup.rs"
+required-features = ["bench-support"]
+
+[[bench]]
+harness           = false
 name              = "inspector_render"
 required-features = ["bench-support"]
 
@@ -34,6 +40,9 @@ gpui_linux.workspace = true
 console_error_panic_hook.workspace = true
 gpui_web.workspace                 = true
 
+[target.'cfg(target_os = "ios")'.dependencies]
+gpui_ios.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_wgpu = { workspace = true, optional = true }
 
@@ -52,7 +61,7 @@ inspector       = ["gpui/inspector"]
 # Threads in the browser: needs a nightly toolchain and a cross-origin-isolated
 # page. Off, gpui_web builds on stable.
 multithreaded   = ["gpui_web/multithreaded"]
-runtime_shaders = ["gpui_macos/runtime_shaders"]
+runtime_shaders = ["gpui_ios/runtime_shaders", "gpui_macos/runtime_shaders"]
 screen-capture  = ["gpui_linux/screen-capture", "gpui_macos/screen-capture", "gpui_windows/screen-capture", "gpui/screen-capture"]
 test-support    = ["gpui_macos/test-support", "gpui_wgpu/test-support", "gpui_windows/test-support", "gpui/test-support"]
 wayland         = ["gpui_linux/wayland"]
