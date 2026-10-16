@@ -81,6 +81,56 @@ async fn exited_load_error_after_drain(
     }
 }
 
+fn plugin_load_failure_notice(line: &str) -> Option<acp_v2::Notice> {
+    let (plugin, details) = line
+        .strip_prefix("Plugin ")?
+        .split_once(" failed to load (")?;
+    let (kind, details) = details.split_once(')')?;
+    Some(
+        acp_v2::Notice::new(
+            acp_v2::NoticeSeverity::Warning,
+            format!("Plugin {plugin} failed to load"),
+        )
+        .description(format!("{kind}{details}")),
+    )
+}
+
+fn forward_plugin_load_failures(
+    debug_log: &AcpDebugLog,
+    sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>>,
+    cx: &mut App,
+) -> Task<()> {
+    let (_backlog, messages) = debug_log.subscribe();
+    cx.spawn(async move |cx| {
+        while let Ok(message) = messages.recv().await {
+            let AcpDebugMessageContent::Stderr { line } = &message.message else {
+                continue;
+            };
+            let Some(notice) = plugin_load_failure_notice(line) else {
+                continue;
+            };
+            let threads = sessions
+                .borrow()
+                .values()
+                .map(|session| session.thread.clone())
+                .collect::<Vec<_>>();
+            for thread in threads {
+                thread
+                    .update(cx, |thread, cx| {
+                        if !thread
+                            .notices()
+                            .iter()
+                            .any(|(_, existing)| existing == &notice)
+                        {
+                            thread.push_notice(notice.clone(), cx);
+                        }
+                    })
+                    .ok();
+            }
+        }
+    })
+}
+
 #[derive(Debug, Error)]
 #[error("Unsupported version")]
 pub struct UnsupportedVersion;
