@@ -35,7 +35,7 @@ ENV PATH="/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
 # Match prepare.sh so configDir and cacheKeyFiles resolve against the checkout.
 WORKDIR /tmp/work
 COPY rust-toolchain.toml ./
-RUN rustup show active-toolchain >/dev/null \
+RUN rustup toolchain install \
     && chmod -R a+rwX /opt/cargo /opt/rustup
 COPY dprint.toml tombi.toml rustfmt.toml ./
 COPY .cargo/config.toml .cargo/config.toml
