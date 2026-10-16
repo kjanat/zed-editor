@@ -24,7 +24,10 @@ use extension::{
 };
 use fs::{FakeFs, Fs, RealFs, RemoveOptions};
 use futures::{AsyncReadExt, FutureExt, StreamExt, io::BufReader};
-use gpui::{AppContext as _, BackgroundExecutor, Entity, EntityId, TaskExt, TestAppContext};
+use gpui::{
+    AppContext as _, BackgroundExecutor, BorrowAppContext as _, Entity, EntityId, TaskExt,
+    TestAppContext,
+};
 use http_client::{FakeHttpClient, Response};
 use language::{
     BinaryStatus, LanguageConfig, LanguageMatcher, LanguageName, LanguageRegistry, QueryFiles,
@@ -106,6 +109,7 @@ fn remote_sync_entry(id: &str, manifest_body: &str) -> ExtensionIndexEntry {
     ExtensionIndexEntry {
         manifest: Arc::new(toml::from_str(&manifest).unwrap()),
         dev: false,
+        source: None,
     }
 }
 
@@ -412,6 +416,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         language_model_providers: BTreeMap::default(),
                     }),
                     dev: false,
+                    source: None,
                 },
             ),
             (
@@ -443,6 +448,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         language_model_providers: BTreeMap::default(),
                     }),
                     dev: false,
+                    source: None,
                 },
             ),
         ]
@@ -630,6 +636,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                 language_model_providers: BTreeMap::default(),
             }),
             dev: false,
+            source: None,
         },
     );
     expected_index.themes.insert(
@@ -4747,4 +4754,450 @@ impl Extension for FakeExtension {
     ) -> anyhow::Result<DebugRequest> {
         anyhow::bail!("not supported by FakeExtension")
     }
+}
+
+fn git_in(directory: &Path, args: &[&str]) -> String {
+    let output = futures::executor::block_on(
+        util::command::new_command("git")
+            .args(args)
+            .current_dir(directory)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output(),
+    )
+    .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+struct GitExtensionRemote {
+    _tree: TempTree,
+    url: String,
+    bare: PathBuf,
+    seed: PathBuf,
+    subdirectory: Option<&'static str>,
+}
+
+impl GitExtensionRemote {
+    fn new(extension_id: &str, subdirectory: Option<&'static str>) -> Self {
+        let tree = TempTree::new(json!({ "remote.git": {}, "seed": {} }));
+        let root = tree.path().canonicalize().unwrap();
+        let bare = root.join("remote.git");
+        let seed = root.join("seed");
+        git_in(
+            &bare,
+            &["-c", "init.defaultBranch=master", "init", "--bare"],
+        );
+        git_in(&seed, &["-c", "init.defaultBranch=master", "init"]);
+        let remote = Self {
+            _tree: tree,
+            url: bare.to_string_lossy().into_owned(),
+            bare,
+            seed,
+            subdirectory,
+        };
+        remote.publish(extension_id, "0.1.0");
+        remote
+    }
+
+    fn publish(&self, extension_id: &str, version: &str) -> String {
+        let directory = match self.subdirectory {
+            Some(subdirectory) => self.seed.join(subdirectory),
+            None => self.seed.clone(),
+        };
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("extension.toml"),
+            format!(
+                "id = \"{extension_id}\"\nname = \"Git Extension\"\nversion = \"{version}\"\nschema_version = 1\n"
+            ),
+        )
+        .unwrap();
+        git_in(&self.seed, &["add", "-A"]);
+        git_in(&self.seed, &["commit", "-m", version]);
+        git_in(
+            &self.seed,
+            &["push", &self.bare.to_string_lossy(), "HEAD:master"],
+        );
+        git_in(&self.seed, &["rev-parse", "HEAD"])
+    }
+
+    fn source(&self) -> crate::GitExtensionSource {
+        crate::GitExtensionSource {
+            url: self.url.clone(),
+            reference: Some("master".into()),
+            path: self.subdirectory.map(str::to_string),
+        }
+    }
+}
+
+async fn git_extension_store(
+    cx: &mut TestAppContext,
+) -> (TempTree, PathBuf, Entity<ExtensionStore>, gpui::Task<()>) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let fs = RealFs::new(None, cx.executor());
+    let tree = TempTree::new(json!({ "installed": {}, "work": {}, "build": {} }));
+    let extensions_dir = tree.path().canonicalize().unwrap();
+    let http_client = FakeHttpClient::with_200_response();
+    let store = cx.new(|cx| {
+        ExtensionStore::new(
+            extensions_dir.clone(),
+            Some(extensions_dir.join("build")),
+            Arc::new(ExtensionHostProxy::new()),
+            fs,
+            http_client.clone(),
+            http_client,
+            None,
+            NodeRuntime::unavailable(),
+            cx,
+        )
+    });
+    let mut events = cx.events(&store);
+    let executor = cx.executor();
+    let debounce = cx.executor().spawn(async move {
+        while let Some(event) = events.next().await {
+            if let Event::StartedReloading = event {
+                executor.advance_clock(RELOAD_DEBOUNCE_DURATION);
+            }
+        }
+    });
+    let initial_load = store.read_with(cx, |store, _| store.initial_index_load.clone());
+    initial_load.await;
+    (tree, extensions_dir, store, debounce)
+}
+
+fn installed_source(
+    store: &Entity<ExtensionStore>,
+    extension_id: &str,
+    cx: &mut TestAppContext,
+) -> Option<crate::InstalledGitSource> {
+    store.read_with(cx, |store, _| {
+        store
+            .extension_index
+            .extensions
+            .get(extension_id)
+            .and_then(|entry| entry.source.clone())
+    })
+}
+
+fn installed_version(
+    store: &Entity<ExtensionStore>,
+    extension_id: &str,
+    cx: &mut TestAppContext,
+) -> Option<Arc<str>> {
+    store.read_with(cx, |store, _| {
+        store
+            .extension_index
+            .extensions
+            .get(extension_id)
+            .map(|entry| entry.manifest.version.clone())
+    })
+}
+
+#[gpui::test]
+async fn test_install_git_extension(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    let commit = git_in(&remote.seed, &["rev-parse", "HEAD"]);
+
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+
+    let entry = store.read_with(cx, |store, _| {
+        store.extension_index.extensions["git-extension"].clone()
+    });
+    assert!(entry.dev);
+    let source = entry
+        .source
+        .expect("the index should record the git source");
+    assert_eq!(source.commit, commit);
+    assert_eq!(source.url, remote.url);
+    let installed = std::fs::symlink_metadata(extensions_dir.join("installed/git-extension"))
+        .expect("the extension should be installed");
+    assert!(installed.file_type().is_symlink());
+    let record: crate::InstalledGitSource = toml::from_str(
+        &std::fs::read_to_string(extensions_dir.join("sources/git-extension.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record, source);
+}
+
+#[gpui::test]
+async fn test_install_git_extension_rejects_mismatched_id(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+
+    let result = store
+        .update(cx, |store, cx| {
+            store.install_git_extension("other".into(), remote.source(), cx)
+        })
+        .await;
+
+    let error = result.expect_err("a mismatched id should fail the install");
+    assert!(
+        format!("{error:#}").contains("declares extension id git-extension, expected other"),
+        "{error:#}"
+    );
+    assert!(!extensions_dir.join("installed/other").exists());
+    assert!(!extensions_dir.join("sources/other").exists());
+    assert!(!extensions_dir.join("sources/other.toml").exists());
+    store.read_with(cx, |store, _| {
+        assert!(!store.extension_index.extensions.contains_key("other"));
+    });
+}
+
+#[gpui::test]
+async fn test_install_git_extension_from_subdirectory(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", Some("editors/ext"));
+
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_link(extensions_dir.join("installed/git-extension")).unwrap(),
+        extensions_dir.join("sources/git-extension/editors/ext")
+    );
+    assert_eq!(
+        installed_source(&store, "git-extension", cx)
+            .and_then(|source| source.path)
+            .as_deref(),
+        Some("editors/ext")
+    );
+}
+
+#[gpui::test]
+async fn test_git_extension_update_check(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+    let fetch_head = extensions_dir.join("sources/git-extension/.git/FETCH_HEAD");
+    let fetched_at = std::fs::metadata(&fetch_head).unwrap().modified().unwrap();
+
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&fetch_head).unwrap().modified().unwrap(),
+        fetched_at,
+        "an unchanged remote should not be fetched again"
+    );
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.1.0")
+    );
+
+    let second_commit = remote.publish("git-extension", "0.2.0");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .unwrap();
+    assert_eq!(
+        installed_source(&store, "git-extension", cx).map(|source| source.commit),
+        Some(second_commit.clone())
+    );
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.2.0")
+    );
+
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|settings, cx| {
+            settings.update_user_settings(cx, |content| {
+                content
+                    .extension
+                    .auto_update_extensions
+                    .insert("git-extension".into(), false);
+            });
+        });
+    });
+    remote.publish("git-extension", "0.3.0");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .unwrap();
+    assert_eq!(
+        installed_source(&store, "git-extension", cx).map(|source| source.commit),
+        Some(second_commit)
+    );
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.2.0")
+    );
+}
+
+#[gpui::test]
+async fn test_git_extension_source_survives_index_rebuild(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+    let source = installed_source(&store, "git-extension", cx);
+
+    std::fs::remove_file(extensions_dir.join("index.json")).unwrap();
+    store.update(cx, |store, cx| store.reload(None, cx)).await;
+
+    assert!(source.is_some());
+    assert_eq!(installed_source(&store, "git-extension", cx), source);
+}
+
+#[gpui::test]
+async fn test_uninstall_git_extension_removes_clone(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+
+    store
+        .update(cx, |store, cx| {
+            store.uninstall_extension("git-extension".into(), cx)
+        })
+        .await
+        .unwrap();
+
+    assert!(std::fs::symlink_metadata(extensions_dir.join("installed/git-extension")).is_err());
+    assert!(!extensions_dir.join("sources/git-extension").exists());
+    assert!(!extensions_dir.join("sources/git-extension.toml").exists());
+    store.read_with(cx, |store, _| {
+        assert!(
+            !store
+                .extension_index
+                .extensions
+                .contains_key("git-extension")
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_install_git_extensions_continues_after_a_failure(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let first = GitExtensionRemote::new("first-extension", None);
+    let second = GitExtensionRemote::new("second-extension", None);
+
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extensions(
+                vec![
+                    ("mismatched".into(), first.source()),
+                    ("second-extension".into(), second.source()),
+                ],
+                cx,
+            )
+        })
+        .await;
+
+    store.read_with(cx, |store, _| {
+        assert!(!store.extension_index.extensions.contains_key("mismatched"));
+        assert!(
+            store
+                .extension_index
+                .extensions
+                .contains_key("second-extension")
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_git_extensions_to_install_follow_settings(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+
+    let content: settings::ExtensionSettingsContent = serde_json::from_value(json!({
+        "auto_install_extensions": {
+            "html": true,
+            "git-extension": { "git": remote.url, "ref": "master" },
+            "zed-ldap": { "git": "https://example.com/zed-ldap" },
+            "turborepo": {
+                "git": "https://example.com/zed-turborepo",
+                "ref": "master",
+                "path": "crates/turbo-zed"
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        content.auto_install_extensions["turborepo"],
+        settings::AutoInstallExtensionContent::Git {
+            git: "https://example.com/zed-turborepo".into(),
+            reference: Some("master".into()),
+            path: Some("crates/turbo-zed".into()),
+        }
+    );
+    let extension_settings = crate::ExtensionSettings {
+        auto_install_extensions: content.auto_install_extensions,
+        ..Default::default()
+    };
+    assert!(extension_settings.should_auto_install("zed-ldap"));
+    assert_eq!(
+        extension_settings
+            .marketplace_extensions()
+            .map(|id| id.as_ref())
+            .collect::<Vec<_>>(),
+        ["html"]
+    );
+
+    let mut to_install = store.read_with(cx, |store, _| {
+        store
+            .git_extensions_to_install(&extension_settings)
+            .into_iter()
+            .map(|(extension_id, _)| extension_id)
+            .collect::<Vec<_>>()
+    });
+    to_install.sort();
+    assert_eq!(to_install, [Arc::from("turborepo"), Arc::from("zed-ldap")]);
+
+    let mut moved = extension_settings;
+    moved.auto_install_extensions.insert(
+        "git-extension".into(),
+        settings::AutoInstallExtensionContent::Git {
+            git: remote.url.clone(),
+            reference: Some("release".into()),
+            path: None,
+        },
+    );
+    let to_install = store.read_with(cx, |store, _| {
+        store
+            .git_extensions_to_install(&moved)
+            .into_iter()
+            .map(|(extension_id, _)| extension_id)
+            .collect::<Vec<_>>()
+    });
+    assert!(to_install.contains(&Arc::from("git-extension")));
 }
