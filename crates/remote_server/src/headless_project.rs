@@ -599,6 +599,7 @@ impl HeadlessProject {
                     level: Some(prompt_to_proto(prompt)),
                     lsp_name: prompt.lsp_name.clone(),
                     message: prompt.message.clone(),
+                    language_server_id: prompt.server_id.to_proto(),
                 });
                 let prompt = prompt.clone();
                 cx.background_spawn(async move {

@@ -1273,6 +1273,7 @@ impl LocalLspStore {
                             _ => PromptLevel::Info,
                         };
                         let request = LanguageServerPromptRequest::new(
+                            server_id,
                             level,
                             params.message,
                             actions,
@@ -1338,8 +1339,14 @@ impl LocalLspStore {
                         lsp::MessageType::WARNING => PromptLevel::Warning,
                         _ => PromptLevel::Info,
                     };
-                    let request =
-                        LanguageServerPromptRequest::new(level, params.message, vec![], name, tx);
+                    let request = LanguageServerPromptRequest::new(
+                        server_id,
+                        level,
+                        params.message,
+                        vec![],
+                        name,
+                        tx,
+                    );
 
                     let _ = this.update(&mut cx, |_, cx| {
                         cx.emit(LspStoreEvent::LanguageServerPrompt(request));
@@ -17729,6 +17736,7 @@ struct LspBufferSnapshot {
 #[derive(Clone, Debug)]
 pub struct LanguageServerPromptRequest {
     pub id: usize,
+    pub server_id: LanguageServerId,
     pub level: PromptLevel,
     pub message: String,
     pub actions: Vec<MessageActionItem>,
@@ -17738,6 +17746,7 @@ pub struct LanguageServerPromptRequest {
 
 impl LanguageServerPromptRequest {
     pub fn new(
+        server_id: LanguageServerId,
         level: PromptLevel,
         message: String,
         actions: Vec<MessageActionItem>,
@@ -17747,6 +17756,7 @@ impl LanguageServerPromptRequest {
         let id = NEXT_PROMPT_REQUEST_ID.fetch_add(1, atomic::Ordering::AcqRel);
         LanguageServerPromptRequest {
             id,
+            server_id,
             level,
             message,
             actions,
@@ -17764,13 +17774,14 @@ impl LanguageServerPromptRequest {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn test(
+        server_id: LanguageServerId,
         level: PromptLevel,
         message: String,
         actions: Vec<MessageActionItem>,
         lsp_name: String,
     ) -> Self {
         let (tx, _rx) = async_channel::unbounded();
-        LanguageServerPromptRequest::new(level, message, actions, lsp_name, tx)
+        LanguageServerPromptRequest::new(server_id, level, message, actions, lsp_name, tx)
     }
 }
 impl PartialEq for LanguageServerPromptRequest {

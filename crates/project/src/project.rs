@@ -6137,6 +6137,7 @@ impl Project {
         this.update(&mut cx, |_, cx| {
             cx.emit(Event::LanguageServerPrompt(
                 LanguageServerPromptRequest::new(
+                    LanguageServerId::from_proto(envelope.payload.language_server_id),
                     proto_to_prompt(envelope.payload.level.context("Invalid prompt level")?),
                     envelope.payload.message,
                     actions.clone(),
