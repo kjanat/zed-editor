@@ -1805,6 +1805,103 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_requested_file_is_not_blocked_by_earlier_slow_file(cx: &mut TestAppContext) {
+        use workspace::Item as _;
+
+        init_test(cx);
+
+        const FILE_COUNT: usize = MAX_CONCURRENT_OBJECT_READS + 4;
+
+        let names = (0..FILE_COUNT)
+            .map(|index| format!("f{index:02}.txt"))
+            .collect::<Vec<_>>();
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        let mut tree = serde_json::Map::new();
+        tree.insert(".git".to_owned(), json!({}));
+        for (index, name) in names.iter().enumerate() {
+            tree.insert(name.clone(), json!(format!("new-{index:02}\n")));
+        }
+        fs.insert_tree(project_root, serde_json::Value::Object(tree))
+            .await;
+
+        let merge_base = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_str(), format!("old-{index:02}\n")))
+            .collect::<Vec<_>>();
+        let oids = fs.set_merge_base_content_for_repo(&dot_git, &merge_base);
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs, [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let requested = PathKey::with_sort_prefix(2, rel_path("f05.txt").into_arc());
+        cx.update_window_entity(&branch_diff, |diff, window, cx| {
+            diff.move_to_path(requested, window, cx)
+        });
+        cx.run_until_parked();
+
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let shown = |cx: &mut VisualTestContext| {
+            editor
+                .update(cx, |editor, cx| {
+                    editor.buffer().read(cx).snapshot(cx).text()
+                })
+                .lines()
+                .filter(|line| line.starts_with("new-"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let active_path = |cx: &mut VisualTestContext| {
+            branch_diff.read_with(cx, |diff, cx| {
+                diff.active_project_path(cx)
+                    .map(|project_path| project_path.path.as_unix_str().to_owned())
+            })
+        };
+
+        assert!(gate.is_waiting(oids[5]));
+        assert!(gate.is_waiting(oids[0]));
+        assert!(shown(cx).is_empty());
+
+        assert!(gate.release(oids[5]));
+        cx.run_until_parked();
+        assert_eq!(shown(cx), vec!["new-05".to_owned()]);
+        assert!(gate.is_waiting(oids[0]));
+        assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
+
+        assert!(gate.release(oids[0]));
+        cx.run_until_parked();
+        assert_eq!(shown(cx), vec!["new-00".to_owned(), "new-05".to_owned()]);
+        assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
+
+        gate.open();
+        cx.run_until_parked();
+        let expected = (0..FILE_COUNT)
+            .map(|index| format!("new-{index:02}"))
+            .collect::<Vec<_>>();
+        assert_eq!(shown(cx), expected);
+        assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
+    }
+
+    #[gpui::test]
     async fn test_go_to_prev_hunk_multibuffer(cx: &mut TestAppContext) {
         init_test(cx);
 
