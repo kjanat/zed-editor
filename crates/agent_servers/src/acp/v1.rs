@@ -227,8 +227,9 @@ impl AcpSessionList {
     pub(super) fn send_info_update(
         &self,
         session_id: acp_v2::SessionId,
-        update: acp_v2::SessionInfoUpdate,
+        update: impl Into<acp_thread::AgentSessionInfoUpdate>,
     ) {
+        let update = update.into();
         self.updates_tx
             .try_send(acp_thread::SessionListUpdate::SessionInfo { session_id, update })
             .log_err();
@@ -3548,7 +3549,7 @@ mod tests {
                 json!({"updatedAt": null, "_meta": {}}),
                 Some("Agent title"),
                 Some("Agent title"),
-                Some(acp_v2::Meta::new()),
+                Some(v2_terminal_meta("session")),
                 None,
             ),
             (
@@ -3576,7 +3577,7 @@ mod tests {
                 panic!("session-info list update");
             };
             assert_eq!(updated_id, session_id);
-            assert_eq!(update, expected_update);
+            assert_eq!(update, expected_update.into());
             listed.apply_update(update);
             assert_eq!(listed.title.as_deref(), expected_list_title);
             assert_eq!(listed.meta, expected_meta);
@@ -4011,7 +4012,13 @@ mod tests {
                 "replacement"
             );
             assert_eq!(tool.terminals().cloned().collect::<Vec<_>>(), terminals);
-            assert_eq!(tool.meta, Some(v2_terminal_meta("replacement")));
+            assert_eq!(
+                tool.meta,
+                Some(
+                    serde_json::from_value(json!({"scope": "replacement", "old": true}))
+                        .expect("patched metadata")
+                )
+            );
             assert_eq!(tool.raw_input, Some(json!({"path": "./a/../b"})));
             assert_eq!(tool.locations.len(), 1);
         });
@@ -4224,7 +4231,7 @@ mod tests {
                 panic!("historical updates retain first-seen rows");
             };
             assert_eq!(user.content.source_blocks().len(), 3);
-            assert_eq!(user.meta, Some(acp_v2::Meta::new()));
+            assert_eq!(user.meta, Some(v2_terminal_meta("user")));
             assert_eq!(later.content.to_markdown(cx), "later");
             let [
                 AssistantMessageChunk::Message { block, meta, .. },
@@ -9683,10 +9690,7 @@ fn handle_session_notification(
     if let acp::SessionUpdate::SessionInfoUpdate(info_update) = &notification.update
         && let Some(session_list) = ctx.session_list.borrow().as_ref()
     {
-        session_list.send_info_update(
-            session_id.clone(),
-            acp_thread::session_info_update_from_v1(info_update.clone()),
-        );
+        session_list.send_info_update(session_id.clone(), info_update.clone());
     }
 
     // Abandoned loads can keep replaying until their wire operation settles.
