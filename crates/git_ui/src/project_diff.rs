@@ -1901,6 +1901,81 @@ mod tests {
         assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
     }
 
+    #[gpui::test]
+    async fn test_restarted_refresh_keeps_pending_folds(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            project_root,
+            json!({
+                ".git": {},
+                "f01.txt": "new-01\n",
+                "f02.txt": "new-02\n",
+                "f03.txt": "new-03\n",
+            }),
+        )
+        .await;
+        let oids = fs.set_merge_base_content_for_repo(
+            &dot_git,
+            &[
+                ("f00.txt", "deleted-00\n".into()),
+                ("f01.txt", "old-01\n".into()),
+                ("f02.txt", "old-02\n".into()),
+                ("f03.txt", "old-03\n".into()),
+            ],
+        );
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs, [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        assert!(gate.release(oids[0]));
+        cx.run_until_parked();
+        assert!(gate.is_waiting(oids[1]));
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let deleted_buffer = editor
+            .update(cx, |editor, cx| {
+                editor
+                    .buffer()
+                    .read(cx)
+                    .snapshot(cx)
+                    .buffers_with_paths()
+                    .find(|(_, path_key)| path_key.path.as_unix_str() == "f00.txt")
+                    .map(|(buffer, _)| buffer.remote_id())
+            })
+            .expect("the deleted file should have registered");
+
+        let requested = PathKey::with_sort_prefix(2, rel_path("f03.txt").into_arc());
+        cx.update_window_entity(&branch_diff, |diff, window, cx| {
+            diff.move_to_path(requested, window, cx)
+        });
+        gate.open();
+        cx.run_until_parked();
+
+        assert!(
+            editor.update(cx, |editor, cx| editor.is_buffer_folded(deleted_buffer, cx)),
+            "the deleted file should be folded after the restarted refresh"
+        );
+    }
+
     fn run_until_settled(cx: &mut VisualTestContext) {
         for _ in 0..100_000 {
             if !cx.executor().tick() {

@@ -27,7 +27,7 @@ use project::{
     },
 };
 use settings::{GitPanelGroupBy, GitPanelSortBy, Settings, SettingsStore};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, mem, sync::Arc};
 use theme::ActiveTheme;
 use ui::{CommonAnimationExt as _, KeyBinding, prelude::*};
 use util::{ResultExt as _, rel_path::RelPath};
@@ -57,6 +57,7 @@ pub struct DiffMultibuffer {
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     pending_scroll: Option<PathKey>,
+    pending_folds: Vec<BufferId>,
     review_comment_count: usize,
     empty_label: SharedString,
     _task: Task<Result<()>>,
@@ -169,6 +170,7 @@ impl DiffMultibuffer {
             multibuffer,
             buffer_subscriptions: Default::default(),
             pending_scroll: None,
+            pending_folds: Vec::new(),
             review_comment_count: 0,
             empty_label: empty_label.into(),
             _task: task,
@@ -700,8 +702,6 @@ impl DiffMultibuffer {
             (entries, this.pending_scroll.clone())
         })?;
 
-        let mut buffers_to_fold = Vec::new();
-
         // Ordered, so excerpts don't shift under the reader as later files arrive. The requested
         // file goes first, and its selection then anchors the viewport.
         let requested_entry = requested_path.and_then(|path_key| entries.remove_entry(&path_key));
@@ -734,7 +734,7 @@ impl DiffMultibuffer {
                             window,
                             cx,
                         ) {
-                            buffers_to_fold.push(buffer_id);
+                            this.pending_folds.push(buffer_id);
                         }
                     })
                     .ok();
@@ -742,6 +742,7 @@ impl DiffMultibuffer {
             }
         }
         this.update(cx, |this, cx| {
+            let buffers_to_fold = mem::take(&mut this.pending_folds);
             if !buffers_to_fold.is_empty() {
                 this.editor.update(cx, |editor, cx| {
                     editor
