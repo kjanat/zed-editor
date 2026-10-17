@@ -4906,9 +4906,19 @@ async fn git_extension_store_with_http(
 ) -> (TempTree, PathBuf, Entity<ExtensionStore>, gpui::Task<()>) {
     init_test(cx);
     cx.executor().allow_parking();
-    let fs = RealFs::new(None, cx.executor());
     let tree = TempTree::new(json!({ "installed": {}, "work": {}, "build": {} }));
     let extensions_dir = tree.path().to_path_buf();
+    let (store, debounce) = extension_store_in(&extensions_dir, http_client, cx).await;
+    (tree, extensions_dir, store, debounce)
+}
+
+async fn extension_store_in(
+    extensions_dir: &Path,
+    http_client: Arc<HttpClientWithUrl>,
+    cx: &mut TestAppContext,
+) -> (Entity<ExtensionStore>, gpui::Task<()>) {
+    let fs = RealFs::new(None, cx.executor());
+    let extensions_dir = extensions_dir.to_path_buf();
     let store = cx.new(|cx| {
         ExtensionStore::new(
             extensions_dir.clone(),
@@ -4933,7 +4943,7 @@ async fn git_extension_store_with_http(
     });
     let initial_load = store.read_with(cx, |store, _| store.initial_index_load.clone());
     initial_load.await;
-    (tree, extensions_dir, store, debounce)
+    (store, debounce)
 }
 
 fn installed_source(
@@ -5126,6 +5136,90 @@ async fn test_failed_git_replacement_keeps_installed_extension(cx: &mut TestAppC
             .unwrap()
             .count(),
         0
+    );
+}
+
+#[gpui::test]
+async fn test_failed_git_source_commit_restores_previous_checkout(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+
+    remote.publish("git-extension", "0.2.0");
+    let record_path = extensions_dir.join("sources/git-extension.toml");
+    std::fs::remove_file(&record_path).unwrap();
+    std::fs::create_dir(&record_path).unwrap();
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect_err("a record that cannot be written should fail the install");
+
+    let manifest =
+        std::fs::read_to_string(extensions_dir.join("installed/git-extension/extension.toml"))
+            .expect("the installed extension should still resolve");
+    assert!(manifest.contains("version = \"0.1.0\""), "{manifest}");
+    assert!(record_path.is_dir());
+    assert_eq!(
+        std::fs::read_dir(extensions_dir.join("staging"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[gpui::test]
+async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    let source = remote.source();
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), source.clone(), cx)
+        })
+        .await
+        .unwrap();
+    let index_path = extensions_dir.join("index.json");
+    assert!(index_path.exists());
+
+    let commit = remote.publish("git-extension", "0.2.0");
+    let (fs, builder, staging_dir, sources_dir) = store.read_with(cx, |store, _| {
+        (
+            store.fs.clone(),
+            store.builder.clone(),
+            store.staging_dir.clone(),
+            store.sources_dir.clone(),
+        )
+    });
+    crate::build_git_source(
+        fs,
+        &builder,
+        &staging_dir,
+        &sources_dir,
+        &index_path,
+        "git-extension",
+        &source,
+    )
+    .await
+    .unwrap();
+    assert!(!index_path.exists());
+    drop(store);
+
+    let (restarted, _restarted_debounce) =
+        extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
+    assert_eq!(
+        installed_version(&restarted, "git-extension", cx).as_deref(),
+        Some("0.2.0")
+    );
+    assert_eq!(
+        installed_source(&restarted, "git-extension", cx).map(|source| source.commit),
+        Some(commit)
     );
 }
 

@@ -396,6 +396,7 @@ async fn build_git_source(
     builder: &ExtensionBuilder,
     staging_dir: &Path,
     sources_dir: &Path,
+    index_path: &Path,
     extension_id: &str,
     source: &GitExtensionSource,
 ) -> Result<PathBuf> {
@@ -433,36 +434,72 @@ async fn build_git_source(
         )
         .await?;
 
-    let live = git_source_dir(sources_dir, extension_id);
-    fs.remove_dir(
-        &live,
-        RemoveOptions {
-            recursive: true,
-            ignore_if_not_exists: true,
-        },
-    )
-    .await?;
-    fs.rename(
-        directory,
-        &live,
-        RenameOptions {
-            overwrite: true,
-            ignore_if_exists: true,
-            create_parents: true,
-        },
-    )
-    .await?;
-    let installed = InstalledGitSource {
+    let record = toml::to_string(&InstalledGitSource {
         url: source.url.clone(),
         reference: source.reference.clone(),
         path: source.path.clone(),
         commit,
-    };
-    fs.write(
-        &git_source_record_path(sources_dir, extension_id),
-        toml::to_string(&installed)?.as_bytes(),
+    })?;
+    fs.remove_file(
+        index_path,
+        RemoveOptions {
+            recursive: false,
+            ignore_if_not_exists: true,
+        },
     )
     .await?;
+
+    let live = git_source_dir(sources_dir, extension_id);
+    let mut backup = tempfile::tempdir_in(staging_dir)?;
+    let previous = fs
+        .is_dir(&live)
+        .await
+        .then(|| backup.path().join(extension_id));
+    if let Some(previous) = &previous {
+        fs.rename(&live, previous, RenameOptions::default()).await?;
+    }
+    let committed = async {
+        fs.rename(
+            directory,
+            &live,
+            RenameOptions {
+                overwrite: true,
+                ignore_if_exists: true,
+                create_parents: true,
+            },
+        )
+        .await?;
+        fs.atomic_write(git_source_record_path(sources_dir, extension_id), record)
+            .await
+    }
+    .await;
+    if let Err(error) = committed {
+        fs.remove_dir(
+            &live,
+            RemoveOptions {
+                recursive: true,
+                ignore_if_not_exists: true,
+            },
+        )
+        .await
+        .log_err();
+        backup.disable_cleanup(true);
+        if let Some(previous) = &previous {
+            fs.rename(previous, &live, RenameOptions::default())
+                .await
+                .log_err();
+        }
+        fs.remove_dir(
+            backup.path(),
+            RemoveOptions {
+                recursive: false,
+                ignore_if_not_exists: true,
+            },
+        )
+        .await
+        .log_err();
+        return Err(error);
+    }
     Ok(git_source_extension_path(
         sources_dir,
         extension_id,
@@ -1215,6 +1252,7 @@ impl ExtensionStore {
         let builder = self.builder.clone();
         let staging_dir = self.staging_dir.clone();
         let sources_dir = self.sources_dir.clone();
+        let index_path = self.index_path.clone();
         let git_source_lock = self.git_source_lock.clone();
 
         cx.spawn(async move |this, cx| {
@@ -1238,6 +1276,7 @@ impl ExtensionStore {
                         let builder = builder.clone();
                         let staging_dir = staging_dir.clone();
                         let sources_dir = sources_dir.clone();
+                        let index_path = index_path.clone();
                         let extension_id = extension_id.clone();
                         async move {
                             let installed =
@@ -1257,6 +1296,7 @@ impl ExtensionStore {
                                     &builder,
                                     &staging_dir,
                                     &sources_dir,
+                                    &index_path,
                                     &extension_id,
                                     &source,
                                 )
@@ -1297,6 +1337,7 @@ impl ExtensionStore {
         let builder = self.builder.clone();
         let staging_dir = self.staging_dir.clone();
         let sources_dir = self.sources_dir.clone();
+        let index_path = self.index_path.clone();
         let extensions_dir = self.extensions_dir();
         let git_source_lock = self.git_source_lock.clone();
 
@@ -1314,6 +1355,7 @@ impl ExtensionStore {
                             &builder,
                             &staging_dir,
                             &sources_dir,
+                            &index_path,
                             &extension_id,
                             &source,
                         )
