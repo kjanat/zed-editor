@@ -3,7 +3,10 @@ use collections::{HashMap, HashSet};
 use fs::Fs;
 use gpui::{AsyncApp, Entity};
 use language::language_settings::{LanguageSettings, PrettierSettings};
-use language::{Buffer, Diff, Language, OffsetUtf16};
+use language::{
+    Anchor, Buffer, Diff, Language, OffsetRangeExt as _, OffsetUtf16, TextBufferSnapshot,
+    ToOffsetUtf16 as _,
+};
 use lsp::{LanguageServer, LanguageServerId};
 use node_runtime::NodeRuntime;
 use paths::default_prettier_dir;
@@ -350,13 +353,14 @@ impl Prettier {
         buffer: &Entity<Buffer>,
         buffer_path: Option<PathBuf>,
         ignore_dir: Option<PathBuf>,
-        range_utf16: Option<Range<OffsetUtf16>>,
+        ranges: Option<&[Range<Anchor>]>,
         request_timeout: Duration,
         cx: &mut AsyncApp,
     ) -> anyhow::Result<Diff> {
-        match self {
+        let ranges = ranges.filter(|ranges| !ranges.is_empty());
+        let (snapshot, formatted_text) = match self {
             Self::Real(local) => {
-                let params = buffer
+                let (snapshot, params) = buffer
                     .update(cx, |buffer, cx| {
                         let buffer_language = buffer.language().map(|language| language.as_ref());
                         let language_settings = LanguageSettings::for_buffer(&buffer, cx);
@@ -473,8 +477,11 @@ impl Prettier {
                             ignore_path,
                         );
 
-                        anyhow::Ok(FormatParams {
-                            text: buffer.text(),
+                        let snapshot = buffer.text_snapshot();
+                        let range_utf16 =
+                            ranges.map(|ranges| encompassing_range_utf16(&snapshot, ranges));
+                        anyhow::Ok((snapshot.clone(), FormatParams {
+                            text: snapshot.text(),
                             options: FormatOptions {
                                 path: buffer_path,
                                 parser,
@@ -484,7 +491,7 @@ impl Prettier {
                                 range_start: range_utf16.as_ref().map(|r| r.start.0),
                                 range_end: range_utf16.as_ref().map(|r| r.end.0),
                             },
-                        })
+                        }))
                 })
                 .context("building prettier request")?;
 
@@ -493,60 +500,74 @@ impl Prettier {
                     .request::<Format>(params, request_timeout)
                     .await
                     .into_response()?;
-                let diff_task = buffer.update(cx, |buffer, cx| buffer.diff(response.text, cx));
-                Ok(diff_task.await)
+                (snapshot, response.text)
             }
             #[cfg(any(test, feature = "test-support"))]
-            Self::Test(_) => Ok(buffer
-                .update(cx, |buffer, cx| {
-                    match buffer
-                        .language()
-                        .map(|language| language.lsp_id())
-                        .as_deref()
-                    {
-                        Some("rust") => anyhow::bail!("prettier does not support Rust"),
-                        Some(_other) => {
-                            let buffer_language =
-                                buffer.language().map(|language| language.as_ref());
-                            let language_settings = LanguageSettings::for_buffer(buffer, cx);
-                            let prettier_settings = &language_settings.prettier;
-                            let parser = prettier_parser_name(
-                                buffer_path.as_deref(),
-                                buffer_language,
-                                prettier_settings,
-                            )?;
+            Self::Test(_) => buffer.update(cx, |buffer, cx| {
+                match buffer
+                    .language()
+                    .map(|language| language.lsp_id())
+                    .as_deref()
+                {
+                    Some("rust") => anyhow::bail!("prettier does not support Rust"),
+                    Some(_other) => {
+                        let buffer_language = buffer.language().map(|language| language.as_ref());
+                        let language_settings = LanguageSettings::for_buffer(buffer, cx);
+                        let prettier_settings = &language_settings.prettier;
+                        let parser = prettier_parser_name(
+                            buffer_path.as_deref(),
+                            buffer_language,
+                            prettier_settings,
+                        )?;
 
-                            let formatted_text = if let Some(range) = &range_utf16 {
-                                let text = buffer.text();
-                                let start_byte = buffer.offset_utf16_to_offset(range.start);
-                                let insert_at = text[start_byte..]
-                                    .find('\n')
-                                    .map(|pos| start_byte + pos)
-                                    .unwrap_or(text.len());
-                                let mut suffix = RANGE_FORMAT_SUFFIX.to_string();
-                                if let Some(parser) = &parser {
-                                    suffix = format!("{suffix}\n{parser}");
-                                }
-                                let mut result = String::new();
-                                result.push_str(&text[..insert_at]);
-                                result.push_str(&suffix);
-                                result.push_str(&text[insert_at..]);
-                                result
-                            } else {
-                                let mut text = buffer.text() + FORMAT_SUFFIX;
-                                if let Some(parser) = &parser {
-                                    text = format!("{text}\n{parser}");
-                                }
-                                text
-                            };
+                        let snapshot = buffer.text_snapshot();
+                        let formatted_text = if let Some(ranges) = ranges {
+                            let range = encompassing_range_utf16(&snapshot, ranges);
+                            let text = snapshot.text();
+                            let start_byte = snapshot.offset_utf16_to_offset(range.start);
+                            let insert_at = text[start_byte..]
+                                .find('\n')
+                                .map(|pos| start_byte + pos)
+                                .unwrap_or(text.len());
+                            let mut suffix = RANGE_FORMAT_SUFFIX.to_string();
+                            if let Some(parser) = &parser {
+                                suffix = format!("{suffix}\n{parser}");
+                            }
+                            let mut result = String::new();
+                            result.push_str(&text[..insert_at]);
+                            result.push_str(&suffix);
+                            result.push_str(&text[insert_at..]);
+                            result
+                        } else {
+                            let mut text = snapshot.text() + FORMAT_SUFFIX;
+                            if let Some(parser) = &parser {
+                                text = format!("{text}\n{parser}");
+                            }
+                            text
+                        };
 
-                            Ok(buffer.diff(formatted_text, cx))
-                        }
-                        None => panic!("Should not format buffer without a language with prettier"),
+                        Ok((snapshot, formatted_text))
                     }
-                })?
-                .await),
+                    None => panic!("Should not format buffer without a language with prettier"),
+                }
+            })?,
+        };
+
+        let mut diff = cx
+            .update(|cx| Buffer::diff_from(&snapshot, formatted_text, cx))
+            .await;
+        if let Some(ranges) = ranges {
+            let byte_ranges = ranges
+                .iter()
+                .map(|range| range.to_offset(&snapshot))
+                .collect::<Vec<_>>();
+            diff.edits.retain(|(edit_range, _)| {
+                byte_ranges.iter().any(|selection_range| {
+                    edit_range.start < selection_range.end && edit_range.end > selection_range.start
+                })
+            });
         }
+        Ok(diff)
     }
 
     pub async fn clear_cache(&self, request_timeout: Duration) -> anyhow::Result<()> {
@@ -621,6 +642,19 @@ fn prettier_parser_name(
     };
 
     Ok(parser.map(ToOwned::to_owned))
+}
+
+fn encompassing_range_utf16(
+    snapshot: &TextBufferSnapshot,
+    ranges: &[Range<Anchor>],
+) -> Range<OffsetUtf16> {
+    let mut start = OffsetUtf16(usize::MAX);
+    let mut end = OffsetUtf16(0);
+    for range in ranges {
+        start.0 = start.0.min(range.start.to_offset_utf16(snapshot).0);
+        end.0 = end.0.max(range.end.to_offset_utf16(snapshot).0);
+    }
+    start..end
 }
 
 async fn has_prettier_in_node_modules(fs: &dyn Fs, path: &Path) -> anyhow::Result<bool> {

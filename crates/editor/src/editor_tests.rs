@@ -22008,6 +22008,218 @@ async fn test_format_edits_stay_undoable_after_undo_during_format(cx: &mut TestA
     });
 }
 
+async fn format_via_lsp_while_typing(
+    cx: &mut TestAppContext,
+    capabilities: lsp::ServerCapabilities,
+    edits: Vec<lsp::TextEdit>,
+) -> String {
+    init_test(cx, |settings| {
+        settings.defaults.formatter = Some(FormatterList::Single(Formatter::LanguageServer(
+            settings::LanguageServerFormatterSpecifier::Current,
+        )));
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_file(path!("/file.rs"), "a\nb\n".into()).await;
+
+    let project = Project::test(fs.clone(), [path!("/").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities,
+            ..Default::default()
+        },
+    );
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/file.rs"), cx)
+        })
+        .await
+        .unwrap();
+
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        build_editor_with_project(project.clone(), multi_buffer, window, cx)
+    });
+
+    let fake_server = fake_servers.next().await.unwrap();
+    let formatting_lock = Arc::new(futures::lock::Mutex::new(()));
+    fake_server.set_request_handler::<lsp::request::Formatting, _, _>({
+        let lock = formatting_lock.clone();
+        let edits = edits.clone();
+        move |_params, _| {
+            let lock = lock.clone();
+            let edits = edits.clone();
+            async move {
+                lock.lock().await;
+                Ok(Some(edits))
+            }
+        }
+    });
+    fake_server.set_request_handler::<lsp::request::RangeFormatting, _, _>({
+        let lock = formatting_lock.clone();
+        move |_params, _| {
+            let lock = lock.clone();
+            let edits = edits.clone();
+            async move {
+                lock.lock().await;
+                Ok(Some(edits))
+            }
+        }
+    });
+
+    let formatting_guard = formatting_lock.lock().await;
+    let format = editor.update_in(cx, |editor, window, cx| {
+        editor.perform_format(
+            project.clone(),
+            FormatTrigger::Manual,
+            FormatTarget::Buffers(editor.buffer().read(cx).all_buffers()),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    buffer.update(cx, |buffer, cx| buffer.edit([(2..2, "x")], None, cx));
+
+    drop(formatting_guard);
+    format.await.unwrap();
+    editor.update(cx, |editor, cx| editor.text(cx))
+}
+
+#[gpui::test]
+async fn test_lsp_whole_document_format_keeps_text_typed_during_request(cx: &mut TestAppContext) {
+    let text = format_via_lsp_while_typing(
+        cx,
+        lsp::ServerCapabilities {
+            document_formatting_provider: Some(lsp::OneOf::Left(true)),
+            ..Default::default()
+        },
+        vec![lsp::TextEdit::new(
+            lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(2, 0)),
+            "a;\nb;\n".to_string(),
+        )],
+    )
+    .await;
+    assert_eq!(text, "a;\nxb;\n");
+}
+
+#[gpui::test]
+async fn test_lsp_format_edits_resolve_in_the_requested_text(cx: &mut TestAppContext) {
+    let text = format_via_lsp_while_typing(
+        cx,
+        lsp::ServerCapabilities {
+            document_formatting_provider: Some(lsp::OneOf::Left(true)),
+            ..Default::default()
+        },
+        vec![
+            lsp::TextEdit::new(
+                lsp::Range::new(lsp::Position::new(0, 1), lsp::Position::new(0, 1)),
+                ";".to_string(),
+            ),
+            lsp::TextEdit::new(
+                lsp::Range::new(lsp::Position::new(1, 1), lsp::Position::new(1, 1)),
+                ";".to_string(),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(text, "a;\nxb;\n");
+}
+
+#[gpui::test]
+async fn test_lsp_range_format_edits_resolve_in_the_requested_text(cx: &mut TestAppContext) {
+    let text = format_via_lsp_while_typing(
+        cx,
+        lsp::ServerCapabilities {
+            document_range_formatting_provider: Some(lsp::OneOf::Left(true)),
+            ..Default::default()
+        },
+        vec![
+            lsp::TextEdit::new(
+                lsp::Range::new(lsp::Position::new(0, 1), lsp::Position::new(0, 1)),
+                ";".to_string(),
+            ),
+            lsp::TextEdit::new(
+                lsp::Range::new(lsp::Position::new(1, 1), lsp::Position::new(1, 1)),
+                ";".to_string(),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(text, "a;\nxb;\n");
+}
+
+#[cfg(not(windows))]
+#[gpui::test]
+async fn test_external_format_keeps_text_typed_while_command_runs(cx: &mut TestAppContext) {
+    let signals = TempTree::new(json!({}));
+    let received = signals.path().join("received");
+    let release = signals.path().join("release");
+    let script = format!(
+        "cat > '{received}.tmp' && mv '{received}.tmp' '{received}' && \
+         while [ ! -e '{release}' ]; do sleep 0.01; done && sed 's/$/;/' '{received}'",
+        received = received.display(),
+        release = release.display(),
+    );
+    init_test(cx, |_| {});
+    update_test_language_settings(cx, &|settings| {
+        settings.defaults.formatter = Some(FormatterList::Single(Formatter::External {
+            command: "sh".into(),
+            arguments: Some(vec!["-c".to_string(), script.clone()]),
+        }));
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_file(path!("/file.rs"), "a\nb\n".into()).await;
+
+    let project = Project::test(fs, [path!("/").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/file.rs"), cx)
+        })
+        .await
+        .unwrap();
+
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        build_editor_with_project(project.clone(), multi_buffer, window, cx)
+    });
+
+    cx.executor().allow_parking();
+    let format = editor.update_in(cx, |editor, window, cx| {
+        editor.perform_format(
+            project.clone(),
+            FormatTrigger::Manual,
+            FormatTarget::Buffers(editor.buffer().read(cx).all_buffers()),
+            window,
+            cx,
+        )
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !received.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the formatter never received the buffer"
+        );
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read_to_string(&received).unwrap(), "a\nb\n");
+
+    buffer.update(cx, |buffer, cx| buffer.edit([(2..2, "x")], None, cx));
+    std::fs::write(&release, "").unwrap();
+    format.await.unwrap();
+
+    assert_eq!(editor.update(cx, |editor, cx| editor.text(cx)), "a;\nxb;\n");
+}
+
 #[gpui::test]
 async fn test_markdown_save_respects_disabled_trailing_whitespace_removal(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
