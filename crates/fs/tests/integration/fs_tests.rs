@@ -1709,6 +1709,9 @@ async fn test_realfs_metadata_of_link_to_removed_directory(executor: BackgroundE
         .expect("metadata call succeeds")
         .expect("metadata returned");
     assert!(metadata.is_symlink);
+
+    gpui::block_on(fs.remove_file(&link, RemoveOptions::default())).unwrap();
+    assert!(std::fs::symlink_metadata(&link).is_err());
 }
 
 #[gpui::test]

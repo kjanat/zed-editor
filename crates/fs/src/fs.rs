@@ -1020,9 +1020,8 @@ impl Fs for RealFs {
 
     async fn remove_file(&self, path: &Path, options: RemoveOptions) -> Result<()> {
         #[cfg(windows)]
-        if let Ok(Some(metadata)) = self.metadata(path).await
-            && metadata.is_symlink
-            && metadata.is_dir
+        if let Ok(metadata) = smol::fs::symlink_metadata(path).await
+            && std::os::windows::fs::FileTypeExt::is_symlink_dir(&metadata.file_type())
         {
             self.remove_dir(
                 path,
