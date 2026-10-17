@@ -619,7 +619,7 @@ async fn build_git_source(
         .extensions
         .get(extension_id)
         .context("the fetched extension is missing from the staged index")?;
-    validate_git_language_queries(&fs, &staged_extension, &entry.manifest, &wasm_host.proxy)
+    validate_git_language_resources(&fs, &staged_extension, &entry.manifest, &wasm_host.proxy)
         .await?;
     if entry.manifest.lib.kind.is_some() {
         let wasm_bytes = fs
@@ -762,7 +762,7 @@ impl GitSourceTransaction<'_> {
     }
 }
 
-async fn validate_git_language_queries(
+async fn validate_git_language_resources(
     fs: &Arc<dyn Fs>,
     extension_dir: &Path,
     manifest: &ExtensionManifest,
@@ -775,6 +775,34 @@ async fn validate_git_language_queries(
                 .load(&language_dir.join(LanguageConfig::FILE_NAME))
                 .await?;
             let config = LanguageConfig::from_toml(&config)?;
+            let rules_path = language_dir.join(SemanticTokenRules::FILE_NAME);
+            if fs
+                .metadata(&rules_path)
+                .await
+                .with_context(|| format!("checking {}", SemanticTokenRules::FILE_NAME))?
+                .is_some()
+            {
+                let contents = fs
+                    .load(&rules_path)
+                    .await
+                    .with_context(|| format!("reading {}", SemanticTokenRules::FILE_NAME))?;
+                SemanticTokenRules::parse(&contents)
+                    .with_context(|| format!("validating {}", SemanticTokenRules::FILE_NAME))?;
+            }
+            let tasks_path = language_dir.join(TaskTemplates::FILE_NAME);
+            if fs
+                .metadata(&tasks_path)
+                .await
+                .with_context(|| format!("checking {}", TaskTemplates::FILE_NAME))?
+                .is_some()
+            {
+                let contents = fs
+                    .load(&tasks_path)
+                    .await
+                    .with_context(|| format!("reading {}", TaskTemplates::FILE_NAME))?;
+                serde_json_lenient::from_str::<TaskTemplates>(&contents)
+                    .with_context(|| format!("validating {}", TaskTemplates::FILE_NAME))?;
+            }
             let Some(grammar_name) = config.grammar.clone() else {
                 return Ok(());
             };
@@ -805,7 +833,7 @@ async fn validate_git_language_queries(
             anyhow::Ok(())
         }
         .await;
-        result.with_context(|| format!("validating language queries in {language_path}"))?;
+        result.with_context(|| format!("validating language resources in {language_path}"))?;
     }
     Ok(())
 }

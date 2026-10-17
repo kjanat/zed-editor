@@ -313,8 +313,7 @@
 				}
 				isValid() {
 					return Number.isInteger(this.purposeId) && this.purposeId > 0
-						&& (this.restrictionType === Z.NOT_ALLOWED || this.restrictionType === Z.REQUIRE_CONSENT
-							|| this.restrictionType === Z.REQUIRE_LI);
+						&& (this.restrictionType === Z.NOT_ALLOWED || this.restrictionType === Z.REQUIRE_CONSENT || this.restrictionType === Z.REQUIRE_LI);
 				}
 				isSameAs(e) {
 					return this.purposeId === e.purposeId && this.restrictionType === e.restrictionType;
@@ -360,10 +359,7 @@
 					}
 				}
 				restrictPurposeToLegalBasis(e) {
-					let t = Array.from(this.gvl.vendorIds),
-						i = e.hash,
-						s = t[t.length - 1],
-						r = [...Array(s).keys()].map(o => o + 1);
+					let t = Array.from(this.gvl.vendorIds), i = e.hash, s = t[t.length - 1], r = [...Array(s).keys()].map(o => o + 1);
 					if (!this.has(i)) this.map.set(i, new Set(r)), this.bitLength = 0;
 					else for (let o = 1; o <= s; o++) this.map.get(i).add(o);
 				}
@@ -936,8 +932,7 @@
 						else {
 							let i = !!(t && t.isForVendors);
 							(!i || e[v.supportOOB] === !0) && this[2].push(N.VENDORS_DISCLOSED),
-								i
-								&& (e[v.supportOOB] && e[v.vendorsAllowed].size > 0 && this[2].push(N.VENDORS_ALLOWED), this[2].push(N.PUBLISHER_TC));
+								i && (e[v.supportOOB] && e[v.vendorsAllowed].size > 0 && this[2].push(N.VENDORS_ALLOWED), this[2].push(N.PUBLISHER_TC));
 						}
 					}
 				}
@@ -1017,15 +1012,9 @@
 									let c = t.vendors[a];
 									if (!c || c.deletedDate) s.unset(a);
 									else if (c[r].length === 0) {
-										if (
-											r === 'legIntPurposes' && c.purposes.length === 0 && c.legIntPurposes.length === 0
-											&& c.specialPurposes.length > 0
-										) {
+										if (r === 'legIntPurposes' && c.purposes.length === 0 && c.legIntPurposes.length === 0 && c.specialPurposes.length > 0) {
 											s.set(a);
-										} else if (
-											r === 'legIntPurposes' && c.purposes.length > 0 && c.legIntPurposes.length === 0
-											&& c.specialPurposes.length > 0
-										) {
+										} else if (r === 'legIntPurposes' && c.purposes.length > 0 && c.legIntPurposes.length === 0 && c.specialPurposes.length > 0) {
 											s.set(a);
 										} else if (e.isServiceSpecific) {
 											if (c.flexiblePurposes.length === 0) s.unset(a);
@@ -1050,9 +1039,7 @@
 					if (!i.isReady) throw new q('Unable to encode TCModel tcModel.gvl.readyPromise is not resolved');
 					e = e.clone(),
 						e.consentLanguage = i.language.slice(0, 2).toUpperCase(),
-						t?.version > 0 && t?.version <= this.processor.length
-							? e.version = t.version
-							: e.version = this.processor.length;
+						t?.version > 0 && t?.version <= this.processor.length ? e.version = t.version : e.version = this.processor.length;
 					let s = e.version - 1;
 					if (!this.processor[s]) throw new q(`Invalid version: ${e.version}`);
 					return this.processor[s](e, i);
@@ -1130,9 +1117,7 @@
 				static baseUrl_;
 				static set baseUrl(e) {
 					if (/^https?:\/\/vendorlist\.consensu\.org\//.test(e)) {
-						throw new oe(
-							'Invalid baseUrl!  You may not pull directly from vendorlist.consensu.org and must provide your own cache',
-						);
+						throw new oe('Invalid baseUrl!  You may not pull directly from vendorlist.consensu.org and must provide your own cache');
 					}
 					e.length > 0 && e[e.length - 1] !== '/' && (e += '/'), this.baseUrl_ = e;
 				}
@@ -1192,16 +1177,12 @@
 					let t = !1;
 					return e == null && n.LANGUAGE_CACHE.size > 0
 						? (n.LANGUAGE_CACHE = new Map(), t = !0)
-						: typeof e == 'string' && this.consentLanguages.has(e.toUpperCase())
-							&& (n.LANGUAGE_CACHE.delete(e.toUpperCase()), t = !0),
+						: typeof e == 'string' && this.consentLanguages.has(e.toUpperCase()) && (n.LANGUAGE_CACHE.delete(e.toUpperCase()), t = !0),
 						t;
 				}
 				static emptyCache(e) {
 					let t = !1;
-					return Number.isInteger(e) && e >= 0
-						? (n.CACHE.delete(e), t = !0)
-						: e === void 0 && (n.CACHE = new Map(), t = !0),
-						t;
+					return Number.isInteger(e) && e >= 0 ? (n.CACHE.delete(e), t = !0) : e === void 0 && (n.CACHE = new Map(), t = !0), t;
 				}
 				cacheLanguage() {
 					n.LANGUAGE_CACHE.has(this.cacheLang_)
@@ -1304,11 +1285,7 @@
 					};
 				}
 				static cloneVendorUrls(e) {
-					return e.map(t => ({
-						langId: t.langId,
-						privacy: t.privacy,
-						...t.legIntClaim ? { legIntClaim: t.legIntClaim } : {},
-					}));
+					return e.map(t => ({ langId: t.langId, privacy: t.privacy, ...t.legIntClaim ? { legIntClaim: t.legIntClaim } : {} }));
 				}
 				static cloneVendor(e) {
 					return {
@@ -1321,9 +1298,7 @@
 						features: Array.from(e.features),
 						specialFeatures: Array.from(e.specialFeatures),
 						...e.overflow ? { overflow: { httpGetLimit: e.overflow.httpGetLimit } } : {},
-						...typeof e.cookieMaxAgeSeconds == 'number' || e.cookieMaxAgeSeconds === null
-							? { cookieMaxAgeSeconds: e.cookieMaxAgeSeconds }
-							: {},
+						...typeof e.cookieMaxAgeSeconds == 'number' || e.cookieMaxAgeSeconds === null ? { cookieMaxAgeSeconds: e.cookieMaxAgeSeconds } : {},
 						...e.usesCookies !== void 0 ? { usesCookies: e.usesCookies } : {},
 						...e.policyUrl ? { policyUrl: e.policyUrl } : {},
 						...e.cookieRefresh !== void 0 ? { cookieRefresh: e.cookieRefresh } : {},
@@ -1668,9 +1643,7 @@
 					return e;
 				}
 				set numCustomPurposes(e) {
-					if (this.numCustomPurposes_ = parseInt(e, 10), this.numCustomPurposes_ < 0) {
-						throw new W('numCustomPurposes', e);
-					}
+					if (this.numCustomPurposes_ = parseInt(e, 10), this.numCustomPurposes_ < 0) throw new W('numCustomPurposes', e);
 				}
 				updated() {
 					let e = new Date(), t = new Date(Date.UTC(e.getUTCFullYear(), e.getUTCMonth(), e.getUTCDate()));
@@ -1699,9 +1672,7 @@
 					let i = e.split('.'), s = i.length;
 					t || (t = new Ne());
 					for (let r = 0; r < s; r++) {
-						let o = i[r],
-							c = pe.decode(o.charAt(0)).substr(0, S.segmentType),
-							u = ke.ID_TO_KEY[L.decode(c, S.segmentType).toString()];
+						let o = i[r], c = pe.decode(o.charAt(0)).substr(0, S.segmentType), u = ke.ID_TO_KEY[L.decode(c, S.segmentType).toString()];
 						ze.decode(o, t, u);
 					}
 					return t;
@@ -1846,10 +1817,7 @@
 						'\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0437\u0430 \u043F\u043E\u0432\u0435\u0440\u0438\u0442\u0435\u043B\u043D\u043E\u0441\u0442',
 					description:
 						'\u041F\u0435\u0440\u0441\u043E\u043D\u0430\u043B\u0438\u0437\u0438\u0440\u0430\u0439\u0442\u0435 \u0432\u0430\u0448\u0438\u0442\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0437\u0430 \u043F\u043E\u0432\u0435\u0440\u0438\u0442\u0435\u043B\u043D\u043E\u0441\u0442 \u0442\u0443\u043A. \u041C\u043E\u0436\u0435\u0442\u0435 \u0434\u0430 \u0438\u0437\u0431\u0435\u0440\u0435\u0442\u0435 \u043A\u043E\u0438 \u0432\u0438\u0434\u043E\u0432\u0435 \u0431\u0438\u0441\u043A\u0432\u0438\u0442\u043A\u0438 \u0438 \u0442\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438 \u0437\u0430 \u043F\u0440\u043E\u0441\u043B\u0435\u0434\u044F\u0432\u0430\u043D\u0435 \u0440\u0430\u0437\u0440\u0435\u0448\u0430\u0432\u0430\u0442\u0435.',
-					tabs: {
-						purposes: '\u0426\u0435\u043B\u0438',
-						vendors: '\u0414\u043E\u0441\u0442\u0430\u0432\u0447\u0438\u0446\u0438',
-					},
+					tabs: { purposes: '\u0426\u0435\u043B\u0438', vendors: '\u0414\u043E\u0441\u0442\u0430\u0432\u0447\u0438\u0446\u0438' },
 					purposeItem: {
 						partners:
 							'{count, plural, one {# \u043F\u0430\u0440\u0442\u043D\u044C\u043E\u0440} other {# \u043F\u0430\u0440\u0442\u043D\u044C\u043E\u0440\u0430}}',
@@ -2055,36 +2023,17 @@
 				description: 'Addaswch eich gosodiadau preifatrwydd yma. Gallwch ddewis pa fathau o gwcis a thechnolegau tracio rydych yn eu caniat\xE1u.',
 			},
 			consentTypes: {
-				necessary: {
-					title: 'Cwbl angenrheidiol',
-					description: "Mae'r cwcis hyn yn hanfodol i'r wefan weithredu'n iawn ac ni ellir eu hanalluogi.",
-				},
-				functionality: {
-					title: 'Swyddogaeth',
-					description: "Mae'r cwcis hyn yn galluogi swyddogaeth a phersonoli gwell o'r wefan.",
-				},
-				marketing: {
-					title: 'Marchnata',
-					description: 'Defnyddir y cwcis hyn i ddarparu hysbysebion perthnasol a thracio eu heffeithiolrwydd.',
-				},
+				necessary: { title: 'Cwbl angenrheidiol', description: "Mae'r cwcis hyn yn hanfodol i'r wefan weithredu'n iawn ac ni ellir eu hanalluogi." },
+				functionality: { title: 'Swyddogaeth', description: "Mae'r cwcis hyn yn galluogi swyddogaeth a phersonoli gwell o'r wefan." },
+				marketing: { title: 'Marchnata', description: 'Defnyddir y cwcis hyn i ddarparu hysbysebion perthnasol a thracio eu heffeithiolrwydd.' },
 				measurement: {
 					title: 'Dadansoddeg',
 					description: "Mae'r cwcis hyn yn ein helpu i ddeall sut mae ymwelwyr yn rhyngweithio \xE2'r wefan a gwella ei pherfformiad.",
 				},
-				experience: {
-					title: 'Profiad',
-					description: "Mae'r cwcis hyn yn ein helpu i ddarparu profiad defnyddiwr gwell a phrofi nodweddion newydd.",
-				},
+				experience: { title: 'Profiad', description: "Mae'r cwcis hyn yn ein helpu i ddarparu profiad defnyddiwr gwell a phrofi nodweddion newydd." },
 			},
-			frame: {
-				title: 'Derbyn caniat\xE2d {category} i weld y cynnwys hwn.',
-				actionButton: 'Galluogi caniat\xE2d {category}',
-			},
-			legalLinks: {
-				privacyPolicy: 'Polisi preifatrwydd',
-				cookiePolicy: 'Polisi cwcis',
-				termsOfService: 'Telerau gwasanaeth',
-			},
+			frame: { title: 'Derbyn caniat\xE2d {category} i weld y cynnwys hwn.', actionButton: 'Galluogi caniat\xE2d {category}' },
+			legalLinks: { privacyPolicy: 'Polisi preifatrwydd', cookiePolicy: 'Polisi cwcis', termsOfService: 'Telerau gwasanaeth' },
 			iab: {
 				banner: {
 					title: 'Gosodiadau preifatrwydd',
@@ -2177,10 +2126,7 @@
 					title: 'Funktionalitet',
 					description: 'Disse cookies muligg\xF8r forbedret funktionalitet og personalisering af hjemmesiden.',
 				},
-				marketing: {
-					title: 'Markedsf\xF8ring',
-					description: 'Disse cookies bruges til at levere relevante annoncer og spore deres effektivitet.',
-				},
+				marketing: { title: 'Markedsf\xF8ring', description: 'Disse cookies bruges til at levere relevante annoncer og spore deres effektivitet.' },
 				measurement: {
 					title: 'Analyse',
 					description: 'Disse cookies hj\xE6lper os med at forst\xE5, hvordan bes\xF8gende interagerer med hjemmesiden og forbedre dens ydeevne.',
@@ -2190,15 +2136,8 @@
 					description: 'Disse cookies hj\xE6lper os med at levere en bedre brugeroplevelse og teste nye funktioner.',
 				},
 			},
-			frame: {
-				title: 'Accepter {category}-samtykke for at se dette indhold.',
-				actionButton: 'Aktiv\xE9r {category}-samtykke',
-			},
-			legalLinks: {
-				privacyPolicy: 'Privatlivspolitik',
-				cookiePolicy: 'Cookiepolitik',
-				termsOfService: 'Servicevilk\xE5r',
-			},
+			frame: { title: 'Accepter {category}-samtykke for at se dette indhold.', actionButton: 'Aktiv\xE9r {category}-samtykke' },
+			legalLinks: { privacyPolicy: 'Privatlivspolitik', cookiePolicy: 'Cookiepolitik', termsOfService: 'Servicevilk\xE5r' },
 			iab: {
 				banner: {
 					title: 'Privatlivsindstillinger',
@@ -2272,12 +2211,7 @@
 			},
 		},
 		ai = {
-			common: {
-				acceptAll: 'Alle akzeptieren',
-				rejectAll: 'Alle ablehnen',
-				customize: 'Anpassen',
-				save: 'Einstellungen speichern',
-			},
+			common: { acceptAll: 'Alle akzeptieren', rejectAll: 'Alle ablehnen', customize: 'Anpassen', save: 'Einstellungen speichern' },
 			cookieBanner: {
 				title: 'Wir respektieren Deine Privatsph\xE4re.',
 				description:
@@ -2310,15 +2244,8 @@
 					description: 'Diese Cookies helfen uns dabei, ein besseres Nutzerlebnis zu bieten und neue Funktionen zu testen.',
 				},
 			},
-			frame: {
-				title: 'Akzeptieren Sie {category}, um diesen Inhalt anzuzeigen.',
-				actionButton: 'Zustimmung f\xFCr {category} aktivieren',
-			},
-			legalLinks: {
-				privacyPolicy: 'Datenschutzerkl\xE4rung',
-				cookiePolicy: 'Cookie-Richtlinie',
-				termsOfService: 'Nutzungsbedingungen',
-			},
+			frame: { title: 'Akzeptieren Sie {category}, um diesen Inhalt anzuzeigen.', actionButton: 'Zustimmung f\xFCr {category} aktivieren' },
+			legalLinks: { privacyPolicy: 'Datenschutzerkl\xE4rung', cookiePolicy: 'Cookie-Richtlinie', termsOfService: 'Nutzungsbedingungen' },
 			iab: {
 				banner: {
 					title: 'Datenschutz-Einstellungen',
@@ -2466,10 +2393,7 @@
 					title: '\u03A1\u03C5\u03B8\u03BC\u03AF\u03C3\u03B5\u03B9\u03C2 \u03B1\u03C0\u03BF\u03C1\u03C1\u03AE\u03C4\u03BF\u03C5',
 					description:
 						'\u03A0\u03C1\u03BF\u03C3\u03B1\u03C1\u03BC\u03CC\u03C3\u03C4\u03B5 \u03C4\u03B9\u03C2 \u03C1\u03C5\u03B8\u03BC\u03AF\u03C3\u03B5\u03B9\u03C2 \u03B1\u03C0\u03BF\u03C1\u03C1\u03AE\u03C4\u03BF\u03C5 \u03C3\u03B1\u03C2 \u03B5\u03B4\u03CE. \u039C\u03C0\u03BF\u03C1\u03B5\u03AF\u03C4\u03B5 \u03BD\u03B1 \u03B5\u03C0\u03B9\u03BB\u03AD\u03BE\u03B5\u03C4\u03B5 \u03C0\u03BF\u03B9\u03BF\u03C5\u03C2 \u03C4\u03CD\u03C0\u03BF\u03C5\u03C2 cookies \u03BA\u03B1\u03B9 \u03C4\u03B5\u03C7\u03BD\u03BF\u03BB\u03BF\u03B3\u03B9\u03CE\u03BD \u03C0\u03B1\u03C1\u03B1\u03BA\u03BF\u03BB\u03BF\u03CD\u03B8\u03B7\u03C3\u03B7\u03C2 \u03B5\u03C0\u03B9\u03C4\u03C1\u03AD\u03C0\u03B5\u03C4\u03B5.',
-					tabs: {
-						purposes: '\u03A3\u03BA\u03BF\u03C0\u03BF\u03AF',
-						vendors: '\u03A3\u03C5\u03BD\u03B5\u03C1\u03B3\u03AC\u03C4\u03B5\u03C2',
-					},
+					tabs: { purposes: '\u03A3\u03BA\u03BF\u03C0\u03BF\u03AF', vendors: '\u03A3\u03C5\u03BD\u03B5\u03C1\u03B3\u03AC\u03C4\u03B5\u03C2' },
 					purposeItem: {
 						partners: '{count} \u03C3\u03C5\u03BD\u03B5\u03C1\u03B3\u03AC\u03C4\u03B5\u03C2',
 						vendorsUseLegitimateInterest:
@@ -2552,29 +2476,16 @@
 					title: 'Strictly Necessary',
 					description: 'These cookies are essential for the website to function properly and cannot be disabled.',
 				},
-				functionality: {
-					title: 'Functionality',
-					description: 'These cookies enable enhanced functionality and personalization of the website.',
-				},
-				marketing: {
-					title: 'Marketing',
-					description: 'These cookies are used to deliver relevant advertisements and track their effectiveness.',
-				},
+				functionality: { title: 'Functionality', description: 'These cookies enable enhanced functionality and personalization of the website.' },
+				marketing: { title: 'Marketing', description: 'These cookies are used to deliver relevant advertisements and track their effectiveness.' },
 				measurement: {
 					title: 'Analytics',
 					description: 'These cookies help us understand how visitors interact with the website and improve its performance.',
 				},
-				experience: {
-					title: 'Experience',
-					description: 'These cookies help us provide a better user experience and test new features.',
-				},
+				experience: { title: 'Experience', description: 'These cookies help us provide a better user experience and test new features.' },
 			},
 			frame: { title: 'Accept {category} consent to view this content.', actionButton: 'Enable {category} consent' },
-			legalLinks: {
-				privacyPolicy: 'Privacy Policy',
-				cookiePolicy: 'Cookie Policy',
-				termsOfService: 'Terms of Service',
-			},
+			legalLinks: { privacyPolicy: 'Privacy Policy', cookiePolicy: 'Cookie Policy', termsOfService: 'Terms of Service' },
 			iab: {
 				banner: {
 					title: 'Privacy Settings',
@@ -2647,12 +2558,7 @@
 			},
 		},
 		li = {
-			common: {
-				acceptAll: 'Aceptar todo',
-				rejectAll: 'Rechazar todo',
-				customize: 'Personalizar',
-				save: 'Guardar ajustes',
-			},
+			common: { acceptAll: 'Aceptar todo', rejectAll: 'Rechazar todo', customize: 'Personalizar', save: 'Guardar ajustes' },
 			cookieBanner: {
 				title: 'Valoramos tu privacidad',
 				description:
@@ -2667,10 +2573,7 @@
 					title: 'Necesario',
 					description: 'Estas cookies son esenciales para que el sitio web funcione correctamente y no pueden ser deshabilitadas.',
 				},
-				functionality: {
-					title: 'Funcionalidad',
-					description: 'Estas cookies permiten una mejor funcionalidad y personalizaci\xF3n del sitio web.',
-				},
+				functionality: { title: 'Funcionalidad', description: 'Estas cookies permiten una mejor funcionalidad y personalizaci\xF3n del sitio web.' },
 				marketing: {
 					title: 'Marketing',
 					description: 'Estas cookies se utilizan para ofrecer anuncios relevantes y realizar un seguimiento de su eficacia.',
@@ -2684,15 +2587,8 @@
 					description: 'Estas cookies nos ayudan a proporcionar una mejor experiencia de usuario y a probar nuevas funciones.',
 				},
 			},
-			frame: {
-				title: 'Acepta {category} para ver este contenido.',
-				actionButton: 'Habilitar consentimiento de {category}',
-			},
-			legalLinks: {
-				privacyPolicy: 'Pol\xEDtica de Privacidad',
-				cookiePolicy: 'Pol\xEDtica de Cookies',
-				termsOfService: 'T\xE9rminos de Servicio',
-			},
+			frame: { title: 'Acepta {category} para ver este contenido.', actionButton: 'Habilitar consentimiento de {category}' },
+			legalLinks: { privacyPolicy: 'Pol\xEDtica de Privacidad', cookiePolicy: 'Pol\xEDtica de Cookies', termsOfService: 'T\xE9rminos de Servicio' },
 			iab: {
 				banner: {
 					title: 'Configuraci\xF3n de privacidad',
@@ -2767,12 +2663,7 @@
 			},
 		},
 		ui = {
-			common: {
-				acceptAll: 'N\xF5ustu k\xF5igiga',
-				rejectAll: 'Keeldu k\xF5igist',
-				customize: 'Kohanda',
-				save: 'Salvesta seaded',
-			},
+			common: { acceptAll: 'N\xF5ustu k\xF5igiga', rejectAll: 'Keeldu k\xF5igist', customize: 'Kohanda', save: 'Salvesta seaded' },
 			cookieBanner: {
 				title: 'Hindame teie privaatsust',
 				description:
@@ -2799,20 +2690,13 @@
 					title: 'Anal\xFC\xFCtika',
 					description: 'Need k\xFCpsised aitavad meil m\xF5ista, kuidas k\xFClastajad veebisaidiga suhtlevad, ja parandada selle toimivust.',
 				},
-				experience: {
-					title: 'Kogemus',
-					description: 'Need k\xFCpsised aitavad meil pakkuda paremat kasutajakogemust ja testida uusi funktsioone.',
-				},
+				experience: { title: 'Kogemus', description: 'Need k\xFCpsised aitavad meil pakkuda paremat kasutajakogemust ja testida uusi funktsioone.' },
 			},
 			frame: {
 				title: 'Selle sisu vaatamiseks n\xF5ustuge kategooria {category} n\xF5usolekuga.',
 				actionButton: 'Luba kategooria {category} n\xF5usolek',
 			},
-			legalLinks: {
-				privacyPolicy: 'Privaatsuspoliitika',
-				cookiePolicy: 'K\xFCpsiste poliitika',
-				termsOfService: 'Kasutustingimused',
-			},
+			legalLinks: { privacyPolicy: 'Privaatsuspoliitika', cookiePolicy: 'K\xFCpsiste poliitika', termsOfService: 'Kasutustingimused' },
 			iab: {
 				banner: {
 					title: 'Privaatsusseaded',
@@ -2885,12 +2769,7 @@
 			},
 		},
 		di = {
-			common: {
-				acceptAll: 'Hyv\xE4ksy kaikki',
-				rejectAll: 'Hylk\xE4\xE4 kaikki',
-				customize: 'Mukauta',
-				save: 'Tallenna asetukset',
-			},
+			common: { acceptAll: 'Hyv\xE4ksy kaikki', rejectAll: 'Hylk\xE4\xE4 kaikki', customize: 'Mukauta', save: 'Tallenna asetukset' },
 			cookieBanner: {
 				title: 'Arvostamme yksityisyytt\xE4si',
 				description:
@@ -2928,11 +2807,7 @@
 				title: 'Hyv\xE4ksy {category}, jotta voit tarkastella t\xE4t\xE4 sis\xE4lt\xF6\xE4.',
 				actionButton: 'Ota {category} k\xE4ytt\xF6\xF6n',
 			},
-			legalLinks: {
-				privacyPolicy: 'Tietosuojak\xE4yt\xE4nt\xF6',
-				cookiePolicy: 'Ev\xE4stek\xE4yt\xE4nt\xF6',
-				termsOfService: 'K\xE4ytt\xF6ehdot',
-			},
+			legalLinks: { privacyPolicy: 'Tietosuojak\xE4yt\xE4nt\xF6', cookiePolicy: 'Ev\xE4stek\xE4yt\xE4nt\xF6', termsOfService: 'K\xE4ytt\xF6ehdot' },
 			iab: {
 				banner: {
 					title: 'Tietosuoja-asetukset',
@@ -3006,12 +2881,7 @@
 			},
 		},
 		pi = {
-			common: {
-				acceptAll: 'Accepter tout',
-				rejectAll: 'Tout rejeter',
-				customize: 'Personnaliser',
-				save: 'Enregistrer les param\xE8tres',
-			},
+			common: { acceptAll: 'Accepter tout', rejectAll: 'Tout rejeter', customize: 'Personnaliser', save: 'Enregistrer les param\xE8tres' },
 			cookieBanner: {
 				title: 'Nous respectons votre vie priv\xE9e',
 				description:
@@ -3045,10 +2915,7 @@
 					description: 'Ces cookies nous permettent de fournir une meilleure exp\xE9rience utilisateur et de tester de nouvelles fonctionnalit\xE9s.',
 				},
 			},
-			frame: {
-				title: 'Acceptez {category} pour afficher ce contenu.',
-				actionButton: 'Activer le consentement {category}',
-			},
+			frame: { title: 'Acceptez {category} pour afficher ce contenu.', actionButton: 'Activer le consentement {category}' },
 			legalLinks: {
 				privacyPolicy: 'Politique de Confidentialit\xE9',
 				cookiePolicy: 'Politique des Cookies',
@@ -3128,12 +2995,7 @@
 			},
 		},
 		gi = {
-			common: {
-				acceptAll: 'Glac le Gach Rud',
-				rejectAll: 'Di\xFAltaigh do Gach Rud',
-				customize: 'Saincheap',
-				save: 'S\xE1bh\xE1il Socruithe',
-			},
+			common: { acceptAll: 'Glac le Gach Rud', rejectAll: 'Di\xFAltaigh do Gach Rud', customize: 'Saincheap', save: 'S\xE1bh\xE1il Socruithe' },
 			cookieBanner: {
 				title: 'Tugaimid luach do do phr\xEDobh\xE1ideachas',
 				description:
@@ -3169,15 +3031,8 @@
 						'Cabhra\xEDonn na fian\xE1in seo linn taith\xED \xFAs\xE1ideora n\xEDos fearr a shol\xE1thar agus gn\xE9ithe nua a th\xE1st\xE1il.',
 				},
 			},
-			frame: {
-				title: 'Glac le toili\xFA {category} chun an t-\xE1bhar seo a fheice\xE1il.',
-				actionButton: 'Cumasaigh toili\xFA {category}',
-			},
-			legalLinks: {
-				privacyPolicy: 'Beartas Pr\xEDobh\xE1ideachta',
-				cookiePolicy: 'Beartas Fian\xE1n',
-				termsOfService: 'T\xE9arma\xED Seirbh\xEDse',
-			},
+			frame: { title: 'Glac le toili\xFA {category} chun an t-\xE1bhar seo a fheice\xE1il.', actionButton: 'Cumasaigh toili\xFA {category}' },
+			legalLinks: { privacyPolicy: 'Beartas Pr\xEDobh\xE1ideachta', cookiePolicy: 'Beartas Fian\xE1n', termsOfService: 'T\xE9arma\xED Seirbh\xEDse' },
 			iab: {
 				banner: {
 					title: 'Socruithe pr\xEDobh\xE1ideachais',
@@ -3420,10 +3275,7 @@
 					description: 'Ovi kola\u010Di\u0107i nam poma\u017Eu pru\u017Eiti bolje korisni\u010Dko iskustvo i testirati nove zna\u010Dajke.',
 				},
 			},
-			frame: {
-				title: 'Prihvatite {category} privolu za prikaz ovog sadr\u017Eaja.',
-				actionButton: 'Omogu\u0107i {category} privolu',
-			},
+			frame: { title: 'Prihvatite {category} privolu za prikaz ovog sadr\u017Eaja.', actionButton: 'Omogu\u0107i {category} privolu' },
 			legalLinks: {
 				privacyPolicy: 'Pravila o privatnosti',
 				cookiePolicy: 'Pravila o kola\u010Di\u0107ima',
@@ -3627,12 +3479,7 @@
 			},
 		},
 		ki = {
-			common: {
-				acceptAll: 'Terima Semua',
-				rejectAll: 'Tolak Semua',
-				customize: 'Sesuaikan',
-				save: 'Simpan Pengaturan',
-			},
+			common: { acceptAll: 'Terima Semua', rejectAll: 'Tolak Semua', customize: 'Sesuaikan', save: 'Simpan Pengaturan' },
 			cookieBanner: {
 				title: 'Kami menghargai privasi Anda',
 				description:
@@ -3647,14 +3494,8 @@
 					title: 'Sangat Diperlukan',
 					description: 'Cookie ini penting agar situs web dapat berfungsi dengan baik dan tidak dapat dinonaktifkan.',
 				},
-				functionality: {
-					title: 'Fungsionalitas',
-					description: 'Cookie ini memungkinkan peningkatan fungsionalitas dan personalisasi situs web.',
-				},
-				marketing: {
-					title: 'Pemasaran',
-					description: 'Cookie ini digunakan untuk menampilkan iklan yang relevan dan melacak efektivitasnya.',
-				},
+				functionality: { title: 'Fungsionalitas', description: 'Cookie ini memungkinkan peningkatan fungsionalitas dan personalisasi situs web.' },
+				marketing: { title: 'Pemasaran', description: 'Cookie ini digunakan untuk menampilkan iklan yang relevan dan melacak efektivitasnya.' },
 				measurement: {
 					title: 'Analitik',
 					description: 'Cookie ini membantu kami memahami bagaimana pengunjung berinteraksi dengan situs web dan meningkatkan kinerjanya.',
@@ -3665,11 +3506,7 @@
 				},
 			},
 			frame: { title: 'Setujui {category} untuk melihat konten ini.', actionButton: 'Aktifkan persetujuan {category}' },
-			legalLinks: {
-				privacyPolicy: 'Kebijakan Privasi',
-				cookiePolicy: 'Kebijakan Cookie',
-				termsOfService: 'Syarat Layanan',
-			},
+			legalLinks: { privacyPolicy: 'Kebijakan Privasi', cookiePolicy: 'Kebijakan Cookie', termsOfService: 'Syarat Layanan' },
 			iab: {
 				banner: {
 					title: 'Pengaturan Privasi',
@@ -3741,12 +3578,7 @@
 			},
 		},
 		vi = {
-			common: {
-				acceptAll: 'Sam\xFEykkja allt',
-				rejectAll: 'Hafna \xF6llu',
-				customize: 'S\xE9rsn\xED\xF0a',
-				save: 'Vista stillingar',
-			},
+			common: { acceptAll: 'Sam\xFEykkja allt', rejectAll: 'Hafna \xF6llu', customize: 'S\xE9rsn\xED\xF0a', save: 'Vista stillingar' },
 			cookieBanner: {
 				title: 'Vi\xF0 metum fri\xF0helgi \xFE\xEDna',
 				description:
@@ -3781,15 +3613,8 @@
 					description: '\xDEessar vafrak\xF6kur hj\xE1lpa okkur a\xF0 veita betri notendaupplifun og pr\xF3fa n\xFDja eiginleika.',
 				},
 			},
-			frame: {
-				title: 'Sam\xFEykktu {category} sam\xFEykki til a\xF0 sko\xF0a \xFEetta efni.',
-				actionButton: 'Virkja {category} sam\xFEykki',
-			},
-			legalLinks: {
-				privacyPolicy: 'Pers\xF3nuverndarstefna',
-				cookiePolicy: 'Stefna um vafrak\xF6kur',
-				termsOfService: '\xDEj\xF3nustuskilm\xE1lar',
-			},
+			frame: { title: 'Sam\xFEykktu {category} sam\xFEykki til a\xF0 sko\xF0a \xFEetta efni.', actionButton: 'Virkja {category} sam\xFEykki' },
+			legalLinks: { privacyPolicy: 'Pers\xF3nuverndarstefna', cookiePolicy: 'Stefna um vafrak\xF6kur', termsOfService: '\xDEj\xF3nustuskilm\xE1lar' },
 			iab: {
 				banner: {
 					title: 'Pers\xF3nuverndastillingar',
@@ -3865,12 +3690,7 @@
 			},
 		},
 		yi = {
-			common: {
-				acceptAll: 'Accetta tutto',
-				rejectAll: 'Rifiuta tutto',
-				customize: 'Personalizza',
-				save: 'Salva impostazioni',
-			},
+			common: { acceptAll: 'Accetta tutto', rejectAll: 'Rifiuta tutto', customize: 'Personalizza', save: 'Salva impostazioni' },
 			cookieBanner: {
 				title: 'Rispettiamo la tua privacy',
 				description:
@@ -3902,15 +3722,8 @@
 					description: 'Questi cookies ci aiutano a fornire una migliore esperienza utente e per testare nuove funzionalit\xE0.',
 				},
 			},
-			frame: {
-				title: 'Accetta {category} per visualizzare questo contenuto',
-				actionButton: 'Abilita consenso {category}',
-			},
-			legalLinks: {
-				privacyPolicy: 'Informativa sulla Privacy',
-				cookiePolicy: 'Politica sui Cookie',
-				termsOfService: 'Termini di Servizio',
-			},
+			frame: { title: 'Accetta {category} per visualizzare questo contenuto', actionButton: 'Abilita consenso {category}' },
+			legalLinks: { privacyPolicy: 'Informativa sulla Privacy', cookiePolicy: 'Politica sui Cookie', termsOfService: 'Termini di Servizio' },
 			iab: {
 				banner: {
 					title: 'Impostazioni di privacy',
@@ -3984,12 +3797,7 @@
 			},
 		},
 		bi = {
-			common: {
-				acceptAll: 'All akzept\xE9ieren',
-				rejectAll: 'All refus\xE9ieren',
-				customize: 'Upassen',
-				save: 'Astellunge sp\xE4icheren',
-			},
+			common: { acceptAll: 'All akzept\xE9ieren', rejectAll: 'All refus\xE9ieren', customize: 'Upassen', save: 'Astellunge sp\xE4icheren' },
 			cookieBanner: {
 				title: 'Mir sch\xE4tzen \xC4r Privatsph\xE4r',
 				description:
@@ -4027,11 +3835,7 @@
 				title: 'Akzept\xE9iert {category} Zoust\xEBmmung fir d\xEBsen Inhalt ze gesinn.',
 				actionButton: '{category} Zoust\xEBmmung aktiv\xE9ieren',
 			},
-			legalLinks: {
-				privacyPolicy: 'Dateschutzrichtlinn',
-				cookiePolicy: 'Cookie-Politik',
-				termsOfService: 'Notzungsbedingungen',
-			},
+			legalLinks: { privacyPolicy: 'Dateschutzrichtlinn', cookiePolicy: 'Cookie-Politik', termsOfService: 'Notzungsbedingungen' },
 			iab: {
 				banner: {
 					title: 'Privatsph\xE4r Astellungen',
@@ -4106,12 +3910,7 @@
 			},
 		},
 		wi = {
-			common: {
-				acceptAll: 'Priimti visus',
-				rejectAll: 'Atmesti visus',
-				customize: 'Tinkinti',
-				save: 'I\u0161saugoti nustatymus',
-			},
+			common: { acceptAll: 'Priimti visus', rejectAll: 'Atmesti visus', customize: 'Tinkinti', save: 'I\u0161saugoti nustatymus' },
 			cookieBanner: {
 				title: 'Mes vertiname j\u016Bs\u0173 privatum\u0105',
 				description:
@@ -4131,10 +3930,7 @@
 					title: 'Funkcionalumo',
 					description: '\u0160ie slapukai \u012Fgalina i\u0161pl\u0117stin\u012F funkcionalum\u0105 ir svetain\u0117s personalizavim\u0105.',
 				},
-				marketing: {
-					title: 'Rinkodaros',
-					description: '\u0160ie slapukai naudojami pateikti aktualius skelbimus ir sekti j\u0173 efektyvum\u0105.',
-				},
+				marketing: { title: 'Rinkodaros', description: '\u0160ie slapukai naudojami pateikti aktualius skelbimus ir sekti j\u0173 efektyvum\u0105.' },
 				measurement: {
 					title: 'Analitikos',
 					description: '\u0160ie slapukai padeda mums suprasti, kaip lankytojai s\u0105veikauja su svetaine, ir pagerinti jos veikim\u0105.',
@@ -4148,11 +3944,7 @@
 				title: 'Priimkite {category} sutikim\u0105, kad gal\u0117tum\u0117te per\u017Ei\u016Br\u0117ti \u0161\u012F turin\u012F.',
 				actionButton: '\u012Egalinti {category} sutikim\u0105',
 			},
-			legalLinks: {
-				privacyPolicy: 'Privatumo politika',
-				cookiePolicy: 'Slapuk\u0173 politika',
-				termsOfService: 'Naudojimosi s\u0105lygos',
-			},
+			legalLinks: { privacyPolicy: 'Privatumo politika', cookiePolicy: 'Slapuk\u0173 politika', termsOfService: 'Naudojimosi s\u0105lygos' },
 			iab: {
 				banner: {
 					title: 'Privatumo nustatymai',
@@ -4351,12 +4143,7 @@
 			},
 		},
 		Ii = {
-			common: {
-				acceptAll: 'A\u010B\u010Betta kollox',
-				rejectAll: 'Irrifjuta kollox',
-				customize: 'Personalizza',
-				save: 'Issejvja s-settings',
-			},
+			common: { acceptAll: 'A\u010B\u010Betta kollox', rejectAll: 'Irrifjuta kollox', customize: 'Personalizza', save: 'Issejvja s-settings' },
 			cookieBanner: {
 				title: 'Napprezzaw il-privatezza tieg\u0127ek',
 				description:
@@ -4390,15 +4177,8 @@
 					description: 'Dawn il-cookies jg\u0127inuna nipprovdu esperjenza a\u0127jar g\u0127all-utent u nittestjaw karatteristi\u010Bi \u0121odda.',
 				},
 			},
-			frame: {
-				title: "A\u010B\u010Betta l-kunsens ta' {category} biex tara dan il-kontenut.",
-				actionButton: "Attiva l-kunsens ta' {category}",
-			},
-			legalLinks: {
-				privacyPolicy: 'Politika tal-Privatezza',
-				cookiePolicy: 'Politika tal-Cookies',
-				termsOfService: 'Termini tas-Servizz',
-			},
+			frame: { title: "A\u010B\u010Betta l-kunsens ta' {category} biex tara dan il-kontenut.", actionButton: "Attiva l-kunsens ta' {category}" },
+			legalLinks: { privacyPolicy: 'Politika tal-Privatezza', cookiePolicy: 'Politika tal-Cookies', termsOfService: 'Termini tas-Servizz' },
 			iab: {
 				banner: {
 					title: 'Settings tal-privatezza',
@@ -4473,12 +4253,7 @@
 			},
 		},
 		ji = {
-			common: {
-				acceptAll: 'Godta alle',
-				rejectAll: 'Avsl\xE5 alle',
-				customize: 'Tilpass',
-				save: 'Lagre innstillinger',
-			},
+			common: { acceptAll: 'Godta alle', rejectAll: 'Avsl\xE5 alle', customize: 'Tilpass', save: 'Lagre innstillinger' },
 			cookieBanner: {
 				title: 'Vi verdsetter ditt personvern',
 				description:
@@ -4512,10 +4287,7 @@
 					description: 'Disse informasjonskapslene hjelper oss med \xE5 gi en bedre brukeropplevelse og teste nye funksjoner.',
 				},
 			},
-			frame: {
-				title: 'Godta {category}-samtykke for \xE5 se dette innholdet.',
-				actionButton: 'Aktiver {category}-samtykke',
-			},
+			frame: { title: 'Godta {category}-samtykke for \xE5 se dette innholdet.', actionButton: 'Aktiver {category}-samtykke' },
 			legalLinks: {
 				privacyPolicy: 'Personvernerkl\xE6ring',
 				cookiePolicy: 'Retningslinjer for informasjonskapsler',
@@ -4595,12 +4367,7 @@
 			},
 		},
 		Si = {
-			common: {
-				acceptAll: 'Alles accepteren',
-				rejectAll: 'Alles weigeren',
-				customize: 'Aanpassen',
-				save: 'Instellingen opslaan',
-			},
+			common: { acceptAll: 'Alles accepteren', rejectAll: 'Alles weigeren', customize: 'Aanpassen', save: 'Instellingen opslaan' },
 			cookieBanner: {
 				title: 'Wij hechten waarde aan uw privacy',
 				description:
@@ -4632,15 +4399,8 @@
 					description: 'Deze cookies helpen ons om een betere gebruikerservaring te bieden en nieuwe functies te testen',
 				},
 			},
-			frame: {
-				title: 'Accepteer {category} om deze inhoud te bekijken',
-				actionButton: 'Schakel {category} toestemming in',
-			},
-			legalLinks: {
-				privacyPolicy: 'Privacybeleid',
-				cookiePolicy: 'Cookiebeleid',
-				termsOfService: 'Servicevoorwaarden',
-			},
+			frame: { title: 'Accepteer {category} om deze inhoud te bekijken', actionButton: 'Schakel {category} toestemming in' },
+			legalLinks: { privacyPolicy: 'Privacybeleid', cookiePolicy: 'Cookiebeleid', termsOfService: 'Servicevoorwaarden' },
 			iab: {
 				banner: {
 					title: 'Privacy-instellingen',
@@ -4746,10 +4506,7 @@
 					description: 'Desse informasjonskapslane hjelper oss \xE5 gi ei betre brukaroppleving og teste nye funksjonar.',
 				},
 			},
-			frame: {
-				title: 'Godta {category}-samtykke for \xE5 sj\xE5 dette innhaldet.',
-				actionButton: 'Aktiver {category}-samtykke',
-			},
+			frame: { title: 'Godta {category}-samtykke for \xE5 sj\xE5 dette innhaldet.', actionButton: 'Aktiver {category}-samtykke' },
 			legalLinks: {
 				privacyPolicy: 'Personvernerkl\xE6ring',
 				cookiePolicy: 'Retningslinjer for informasjonskapslar',
@@ -4828,12 +4585,7 @@
 			},
 		},
 		zi = {
-			common: {
-				acceptAll: 'Zaakceptuj wszystkie',
-				rejectAll: 'Odrzu\u0107 wszystkie',
-				customize: 'Dostosuj',
-				save: 'Zapisz ustawienia',
-			},
+			common: { acceptAll: 'Zaakceptuj wszystkie', rejectAll: 'Odrzu\u0107 wszystkie', customize: 'Dostosuj', save: 'Zapisz ustawienia' },
 			cookieBanner: {
 				title: 'Cenimy Twoj\u0105 prywatno\u015B\u0107',
 				description:
@@ -4872,11 +4624,7 @@
 				title: 'Zaakceptuj zgod\u0119 na {category}, aby wy\u015Bwietli\u0107 t\u0119 tre\u015B\u0107.',
 				actionButton: 'W\u0142\u0105cz zgod\u0119 na {category}',
 			},
-			legalLinks: {
-				privacyPolicy: 'Polityka prywatno\u015Bci',
-				cookiePolicy: 'Polityka plik\xF3w cookie',
-				termsOfService: 'Regulamin',
-			},
+			legalLinks: { privacyPolicy: 'Polityka prywatno\u015Bci', cookiePolicy: 'Polityka plik\xF3w cookie', termsOfService: 'Regulamin' },
 			iab: {
 				banner: {
 					title: 'Ustawienia prywatno\u015Bci',
@@ -4951,12 +4699,7 @@
 			},
 		},
 		Pi = {
-			common: {
-				acceptAll: 'Aceitar todos',
-				rejectAll: 'Rejeitar todos',
-				customize: 'Personalizar',
-				save: 'Salvar configura\xE7\xF5es',
-			},
+			common: { acceptAll: 'Aceitar todos', rejectAll: 'Rejeitar todos', customize: 'Personalizar', save: 'Salvar configura\xE7\xF5es' },
 			cookieBanner: {
 				title: 'Respeitamos a sua privacidade',
 				description:
@@ -4972,10 +4715,7 @@
 					title: 'Estritamente necess\xE1rio',
 					description: 'Estes cookies s\xE3o essenciais para o site funcionar corretamente e n\xE3o podem ser desativados.',
 				},
-				functionality: {
-					title: 'Funcionalidade',
-					description: 'Estes cookies permitem funcionalidades aprimoradas e personaliza\xE7\xE3o do site.',
-				},
+				functionality: { title: 'Funcionalidade', description: 'Estes cookies permitem funcionalidades aprimoradas e personaliza\xE7\xE3o do site.' },
 				marketing: {
 					title: 'Marketing',
 					description: 'Estes cookies s\xE3o utilizados para fornecer publicidade relevante e rastrear a sua efic\xE1cia.',
@@ -4990,11 +4730,7 @@
 				},
 			},
 			frame: { title: 'Aceite {category} para ver este conte\xFAdo', actionButton: 'Ativar consentimento {category}' },
-			legalLinks: {
-				privacyPolicy: 'Pol\xEDtica de Privacidade',
-				cookiePolicy: 'Pol\xEDtica de Cookies',
-				termsOfService: 'Termos de Servi\xE7o',
-			},
+			legalLinks: { privacyPolicy: 'Pol\xEDtica de Privacidade', cookiePolicy: 'Pol\xEDtica de Cookies', termsOfService: 'Termos de Servi\xE7o' },
 			iab: {
 				banner: {
 					title: 'Configura\xE7\xF5es de privacidade',
@@ -5069,12 +4805,7 @@
 			},
 		},
 		Ti = {
-			common: {
-				acceptAll: 'Acceptar tut',
-				rejectAll: 'Refusar tut',
-				customize: 'Persunalisar',
-				save: 'Memorisar las configuraziuns',
-			},
+			common: { acceptAll: 'Acceptar tut', rejectAll: 'Refusar tut', customize: 'Persunalisar', save: 'Memorisar las configuraziuns' },
 			cookieBanner: {
 				title: 'Nus stimain vossa sfera privata',
 				description:
@@ -5094,10 +4825,7 @@
 					title: 'Funcziunalitad',
 					description: "Quests cookies permettan funcziunalitads avanzadas e la persunalisaziun da la pagina d'internet.",
 				},
-				marketing: {
-					title: 'Marketing',
-					description: 'Quests cookies vegnan duvrads per mussar reclamas relevantas e per evaluar lur efficacitad.',
-				},
+				marketing: { title: 'Marketing', description: 'Quests cookies vegnan duvrads per mussar reclamas relevantas e per evaluar lur efficacitad.' },
 				measurement: {
 					title: 'Analisa',
 					description: "Quests cookies ans gidan a chapir co ils visitaders interageschan cun la pagina d'internet e meglierar sia prestaziun.",
@@ -5107,10 +4835,7 @@
 					description: "Quests cookies ans gidan a porscher ina meglra experientscha d'utilisader e testar novas funcziuns.",
 				},
 			},
-			frame: {
-				title: 'Acceptai il consentiment da {category} per vesair quest cuntegn.',
-				actionButton: 'Activar il consentiment da {category}',
-			},
+			frame: { title: 'Acceptai il consentiment da {category} per vesair quest cuntegn.', actionButton: 'Activar il consentiment da {category}' },
 			legalLinks: {
 				privacyPolicy: 'Directivas da protecziun da datas',
 				cookiePolicy: 'Directivas da cookies',
@@ -5190,12 +4915,7 @@
 			},
 		},
 		Li = {
-			common: {
-				acceptAll: 'Accept\u0103 toate',
-				rejectAll: 'Respinge toate',
-				customize: 'Personalizeaz\u0103',
-				save: 'Salveaz\u0103 set\u0103rile',
-			},
+			common: { acceptAll: 'Accept\u0103 toate', rejectAll: 'Respinge toate', customize: 'Personalizeaz\u0103', save: 'Salveaz\u0103 set\u0103rile' },
 			cookieBanner: {
 				title: 'Pre\u021Buim confiden\u021Bialitatea ta',
 				description:
@@ -5468,15 +5188,8 @@
 					description: 'Ti pi\u0161kotki nam pomagajo zagotoviti bolj\u0161o uporabni\u0161ko izku\u0161njo in testirati nove funkcije.',
 				},
 			},
-			frame: {
-				title: 'Za ogled te vsebine sprejmite soglasje za kategorijo {category}.',
-				actionButton: 'Omogo\u010Di soglasje za {category}',
-			},
-			legalLinks: {
-				privacyPolicy: 'Pravilnik o zasebnosti',
-				cookiePolicy: 'Pravilnik o pi\u0161kotkih',
-				termsOfService: 'Pogoji uporabe',
-			},
+			frame: { title: 'Za ogled te vsebine sprejmite soglasje za kategorijo {category}.', actionButton: 'Omogo\u010Di soglasje za {category}' },
+			legalLinks: { privacyPolicy: 'Pravilnik o zasebnosti', cookiePolicy: 'Pravilnik o pi\u0161kotkih', termsOfService: 'Pogoji uporabe' },
 			iab: {
 				banner: {
 					title: 'Nastavitve zasebnosti',
@@ -5549,12 +5262,7 @@
 			},
 		},
 		xi = {
-			common: {
-				acceptAll: 'Acceptera alla',
-				rejectAll: 'Avvisa alla',
-				customize: 'Anpassa',
-				save: 'Spara inst\xE4llningar',
-			},
+			common: { acceptAll: 'Acceptera alla', rejectAll: 'Avvisa alla', customize: 'Anpassa', save: 'Spara inst\xE4llningar' },
 			cookieBanner: {
 				title: 'Vi v\xE4rdes\xE4tter din integritet',
 				description:
@@ -5588,15 +5296,8 @@
 					description: 'Dessa cookies hj\xE4lper oss att ge en b\xE4ttre anv\xE4ndarupplevelse och testa nya funktioner.',
 				},
 			},
-			frame: {
-				title: 'Acceptera {category}-samtycke f\xF6r att visa detta inneh\xE5ll.',
-				actionButton: 'Aktivera {category}-samtycke',
-			},
-			legalLinks: {
-				privacyPolicy: 'Integritetspolicy',
-				cookiePolicy: 'Cookiepolicy',
-				termsOfService: 'Anv\xE4ndarvillkor',
-			},
+			frame: { title: 'Acceptera {category}-samtycke f\xF6r att visa detta inneh\xE5ll.', actionButton: 'Aktivera {category}-samtycke' },
+			legalLinks: { privacyPolicy: 'Integritetspolicy', cookiePolicy: 'Cookiepolicy', termsOfService: 'Anv\xE4ndarvillkor' },
 			iab: {
 				banner: {
 					title: 'Integritetsinst\xE4llningar',
@@ -5712,15 +5413,8 @@
 						'\u8FD9\u4E9Bcookies\u5E2E\u52A9\u6211\u4EEC\u63D0\u4F9B\u66F4\u597D\u7684\u7528\u6237\u4F53\u9A8C\u5E76\u6D4B\u8BD5\u65B0\u529F\u80FD\u3002',
 				},
 			},
-			frame: {
-				title: '\u63A5\u53D7 {category} \u4EE5\u67E5\u770B\u6B64\u5185\u5BB9\u3002',
-				actionButton: '\u542F\u7528 {category} \u540C\u610F',
-			},
-			legalLinks: {
-				privacyPolicy: '\u9690\u79C1\u653F\u7B56',
-				cookiePolicy: 'Cookie\u653F\u7B56',
-				termsOfService: '\u670D\u52A1\u6761\u6B3E',
-			},
+			frame: { title: '\u63A5\u53D7 {category} \u4EE5\u67E5\u770B\u6B64\u5185\u5BB9\u3002', actionButton: '\u542F\u7528 {category} \u540C\u610F' },
+			legalLinks: { privacyPolicy: '\u9690\u79C1\u653F\u7B56', cookiePolicy: 'Cookie\u653F\u7B56', termsOfService: '\u670D\u52A1\u6761\u6B3E' },
 			iab: {
 				banner: {
 					title: '\u9690\u79C1\u8BBE\u7F6E',
@@ -5855,9 +5549,7 @@
 		return i;
 	}
 	function Mt(n) {
-		return n
-			? n.split(',').map(e => e.split(';')[0]?.trim().toLowerCase()).filter(e => !!e).map(e => e.split('-')[0] ?? e)
-			: [];
+		return n ? n.split(',').map(e => e.split(';')[0]?.trim().toLowerCase()).filter(e => !!e).map(e => e.split('-')[0] ?? e) : [];
 	}
 	function Di(n, e) {
 		let t = e?.fallback ?? 'en';
@@ -6095,12 +5787,10 @@
 								...T,
 								...g,
 								iabCustomVendorConsents: g.iabCustomVendorConsents ?? T?.iabCustomVendorConsents,
-								iabCustomVendorLegitimateInterests: g.iabCustomVendorLegitimateInterests
-									?? T?.iabCustomVendorLegitimateInterests,
+								iabCustomVendorLegitimateInterests: g.iabCustomVendorLegitimateInterests ?? T?.iabCustomVendorLegitimateInterests,
 							},
 						};
-					(!V.iabCustomVendorConsents || Object.keys(V.iabCustomVendorConsents).length === 0)
-					&& delete V.iabCustomVendorConsents,
+					(!V.iabCustomVendorConsents || Object.keys(V.iabCustomVendorConsents).length === 0) && delete V.iabCustomVendorConsents,
 						(!V.iabCustomVendorLegitimateInterests || Object.keys(V.iabCustomVendorLegitimateInterests).length === 0)
 						&& delete V.iabCustomVendorLegitimateInterests;
 					try {
@@ -6182,8 +5872,7 @@
 				function X(g, f) {
 					let k = f?.storageKey || h.ln;
 					try {
-						typeof window < 'u' && window.localStorage
-							&& (window.localStorage.removeItem(k), k !== h.AQ && window.localStorage.removeItem(h.AQ));
+						typeof window < 'u' && window.localStorage && (window.localStorage.removeItem(k), k !== h.AQ && window.localStorage.removeItem(h.AQ));
 					} catch (j) {
 						console.warn('Failed to remove consent from localStorage:', j);
 					}
@@ -6198,9 +5887,7 @@
 				t.d(e, { YA: () => o, tJ: () => a });
 				let i = () => {};
 				function s(c) {
-					return c
-						? { log: (...u) => console.log('[c15t]', ...u), debug: (...u) => console.debug('[c15t]', ...u) }
-						: { log: i, debug: i };
+					return c ? { log: (...u) => console.log('[c15t]', ...u), debug: (...u) => console.debug('[c15t]', ...u) } : { log: i, debug: i };
 				}
 				let r = s(!1);
 				function o() {
@@ -6229,10 +5916,7 @@
 				}
 				let r = 17e11;
 				function o() {
-					let c = crypto.getRandomValues(new Uint8Array(20)),
-						u = Date.now() - r,
-						p = Math.floor(u / 4294967296),
-						d = u >>> 0;
+					let c = crypto.getRandomValues(new Uint8Array(20)), u = Date.now() - r, p = Math.floor(u / 4294967296), d = u >>> 0;
 					return c[0] = p >>> 24 & 255,
 						c[1] = p >>> 16 & 255,
 						c[2] = p >>> 8 & 255,
@@ -6278,9 +5962,7 @@
 							if (F.status === 204) return r = null, null;
 							if (!F.ok) throw new Error(`Failed to fetch GVL: ${F.status} ${F.statusText}`);
 							let O = await F.json();
-							if (!O.vendorListVersion || !O.purposes || !O.vendors) {
-								throw new Error('Invalid GVL response: missing required fields');
-							}
+							if (!O.vendorListVersion || !O.purposes || !O.vendors) throw new Error('Invalid GVL response: missing required fields');
 							return r = O, O;
 						} finally {
 							s.delete(C);
@@ -6354,8 +6036,7 @@
 					}, k.parameter);
 				}
 				function p() {
-					typeof window > 'u' || r
-						|| (window.__tcfapi || (window.__tcfapi = a()), c(), window.addEventListener('message', u), r = !0);
+					typeof window > 'u' || r || (window.__tcfapi || (window.__tcfapi = a()), c(), window.addEventListener('message', u), r = !0);
 				}
 				function d() {
 					return typeof window > 'u' || !window.__tcfapi ? [] : window.__tcfapi.queue ?? [];
@@ -6376,17 +6057,13 @@
 				async function h(g, f, k) {
 					let { TCModel: j, TCString: I, GVL: z } = await b(), T = new z(f), E = new j(T);
 					E.cmpId = k.cmpId,
-						E.cmpVersion = typeof k.cmpVersion == 'number'
-							? k.cmpVersion
-							: Number.parseInt(String(k.cmpVersion ?? '1'), 10) || 1,
+						E.cmpVersion = typeof k.cmpVersion == 'number' ? k.cmpVersion : Number.parseInt(String(k.cmpVersion ?? '1'), 10) || 1,
 						E.consentScreen = k.consentScreen ?? 1,
 						E.consentLanguage = k.consentLanguage ?? 'EN',
 						E.publisherCountryCode = k.publisherCountryCode ?? 'US',
 						E.isServiceSpecific = k.isServiceSpecific ?? !0;
 					for (let [V, _] of Object.entries(g.purposeConsents)) _ && E.purposeConsents.set(Number(V));
-					for (let [V, _] of Object.entries(g.purposeLegitimateInterests)) {
-						_ && E.purposeLegitimateInterests.set(Number(V));
-					}
+					for (let [V, _] of Object.entries(g.purposeLegitimateInterests)) _ && E.purposeLegitimateInterests.set(Number(V));
 					for (let [V, _] of Object.entries(g.vendorConsents)) {
 						let R = Number(V);
 						_ && Number.isFinite(R) && E.vendorConsents.set(R);
@@ -6473,12 +6150,7 @@
 								purpose: { consents: se, legitimateInterests: ie },
 								vendor: { consents: Ie, legitimateInterests: Ft },
 								specialFeatureOptins: Bt,
-								publisher: {
-									consents: {},
-									legitimateInterests: {},
-									customPurpose: { consents: {}, legitimateInterests: {} },
-									restrictions: {},
-								},
+								publisher: { consents: {}, legitimateInterests: {}, customPurpose: { consents: {}, legitimateInterests: {} }, restrictions: {} },
 							};
 						return B || (R = Dt), Dt;
 					}
@@ -6584,13 +6256,7 @@
 					};
 				}
 				var F = t('./src/libs/iab-tcf/fetch-gvl.ts');
-				let O = {
-					necessary: [1],
-					marketing: [2, 3, 4],
-					experience: [5, 6],
-					measurement: [7, 8, 9],
-					functionality: [10, 11],
-				};
+				let O = { necessary: [1], marketing: [2, 3, 4], experience: [5, 6], measurement: [7, 8, 9], functionality: [10, 11] };
 				function X(g) {
 					let f = { necessary: !1, marketing: !1, experience: !1, measurement: !1, functionality: !1 };
 					for (let [k, j] of Object.entries(O)) {
@@ -6603,9 +6269,7 @@
 			},
 			'./src/libs/iab-tcf/store.ts'(n, e, t) {
 				t.d(e, { yx: () => c });
-				var i = t('./src/libs/cookie/index.ts'),
-					s = t('./src/libs/generate-subject-id.ts'),
-					r = t('./src/libs/iab-tcf/cmp-defaults.ts');
+				var i = t('./src/libs/cookie/index.ts'), s = t('./src/libs/generate-subject-id.ts'), r = t('./src/libs/iab-tcf/cmp-defaults.ts');
 				function o(l) {
 					return {
 						config: l,
@@ -6659,13 +6323,7 @@
 							let { purposeConsents: w, purposeLegitimateInterests: C } = u(h.gvl, !0),
 								{ vendorConsents: A, vendorLegitimateInterests: x } = p(h.gvl, h.nonIABVendors, !0),
 								D = d(h.gvl, !0);
-							b({
-								purposeConsents: w,
-								purposeLegitimateInterests: C,
-								vendorConsents: A,
-								vendorLegitimateInterests: x,
-								specialFeatureOptIns: D,
-							});
+							b({ purposeConsents: w, purposeLegitimateInterests: C, vendorConsents: A, vendorLegitimateInterests: x, specialFeatureOptIns: D });
 						},
 						rejectAll: () => {
 							let { iab: h } = l();
@@ -6673,13 +6331,7 @@
 							let w = { 1: !0 }, C = {};
 							for (let F of Object.keys(h.gvl.purposes)) Number(F) !== 1 && (w[Number(F)] = !1, C[Number(F)] = !1);
 							let { vendorConsents: A, vendorLegitimateInterests: x } = p(h.gvl, h.nonIABVendors, !1), D = d(h.gvl, !1);
-							b({
-								purposeConsents: w,
-								purposeLegitimateInterests: C,
-								vendorConsents: A,
-								vendorLegitimateInterests: x,
-								specialFeatureOptIns: D,
-							});
+							b({ purposeConsents: w, purposeLegitimateInterests: C, vendorConsents: A, vendorLegitimateInterests: x, specialFeatureOptIns: D });
 						},
 						save: async () => {
 							let { iab: h, locationInfo: w, user: C, callbacks: A } = l();
@@ -6694,9 +6346,7 @@
 									vendorLegitimateInterests: f,
 									specialFeatureOptIns: k,
 								} = h,
-								{ generateTCString: j, iabPurposesToC15tConsents: I } = await Promise.resolve().then(
-									t.bind(t, './src/libs/iab-tcf/index.ts'),
-								),
+								{ generateTCString: j, iabPurposesToC15tConsents: I } = await Promise.resolve().then(t.bind(t, './src/libs/iab-tcf/index.ts')),
 								z = {};
 							for (let ee of Object.keys(D.vendors)) z[Number(ee)] = !0;
 							let T = await j(
@@ -6941,19 +6591,10 @@
 		let i = {
 				...n.retryConfig,
 				...t?.retryConfig || {},
-				retryableStatusCodes: t?.retryConfig?.retryableStatusCodes ?? n.retryConfig.retryableStatusCodes
-					?? de.retryableStatusCodes,
-				nonRetryableStatusCodes: t?.retryConfig?.nonRetryableStatusCodes ?? n.retryConfig.nonRetryableStatusCodes
-					?? de.nonRetryableStatusCodes,
+				retryableStatusCodes: t?.retryConfig?.retryableStatusCodes ?? n.retryConfig.retryableStatusCodes ?? de.retryableStatusCodes,
+				nonRetryableStatusCodes: t?.retryConfig?.nonRetryableStatusCodes ?? n.retryConfig.nonRetryableStatusCodes ?? de.nonRetryableStatusCodes,
 			},
-			{
-				maxRetries: s,
-				initialDelayMs: r,
-				backoffFactor: o,
-				retryableStatusCodes: a,
-				nonRetryableStatusCodes: c,
-				retryOnNetworkError: u,
-			} = i,
+			{ maxRetries: s, initialDelayMs: r, backoffFactor: o, retryableStatusCodes: a, nonRetryableStatusCodes: c, retryOnNetworkError: u } = i,
 			p = 0,
 			d = r,
 			l = null;
@@ -6976,20 +6617,14 @@
 			try {
 				let A = await b(w.toString(), C), x = null, D = null;
 				try {
-					A.headers.get('content-type')?.includes('application/json') && A.status !== 204
-						&& A.headers.get('content-length') !== '0'
+					A.headers.get('content-type')?.includes('application/json') && A.status !== 204 && A.headers.get('content-length') !== '0'
 						? x = await A.json()
 						: A.status === 204 && (x = null);
 				} catch (f) {
 					D = f;
 				}
 				if (D) {
-					let f = me(
-						!1,
-						null,
-						{ message: 'Failed to parse response', status: A.status, code: 'PARSE_ERROR', cause: D },
-						A,
-					);
+					let f = me(!1, null, { message: 'Failed to parse response', status: A.status, code: 'PARSE_ERROR', cause: D }, A);
 					if (t?.onError?.(f, e), t?.throw) throw new Error('Failed to parse response');
 					return f;
 				}
@@ -7006,9 +6641,8 @@
 					}, A);
 				l = X;
 				let g = !1;
-				if (c?.includes(A.status)) {
-					(0, K.YA)().debug(`Not retrying request to ${e} with status ${A.status} (nonRetryableStatusCodes)`), g = !1;
-				} else if (typeof i.shouldRetry == 'function') {
+				if (c?.includes(A.status)) (0, K.YA)().debug(`Not retrying request to ${e} with status ${A.status} (nonRetryableStatusCodes)`), g = !1;
+				else if (typeof i.shouldRetry == 'function') {
 					try {
 						g = i.shouldRetry(A, { attemptsMade: p, url: w.toString(), method: C.method || 'GET' }),
 							(0, K.YA)().debug(`Custom retry strategy for ${e} with status ${A.status}: ${g}`);
@@ -7024,12 +6658,7 @@
 			} catch (A) {
 				if (A && A.message === 'Failed to parse response') throw A;
 				let x = !(A instanceof Response),
-					D = me(!1, null, {
-						message: A instanceof Error ? A.message : String(A),
-						status: 0,
-						code: 'NETWORK_ERROR',
-						cause: A,
-					}, null);
+					D = me(!1, null, { message: A instanceof Error ? A.message : String(A), status: 0, code: 'NETWORK_ERROR', cause: A }, null);
 				if (l = D, !(x && u) || p >= (s ?? 0)) {
 					if (t?.onError?.(D, e), t?.throw) throw A;
 					return D;
@@ -7037,8 +6666,7 @@
 				p++, await Je(d ?? 0), d = (d ?? 0) * (o ?? 2);
 			}
 		}
-		let y = l
-			|| me(!1, null, { message: `Request failed after ${s} retries`, status: 0, code: 'MAX_RETRIES_EXCEEDED' }, null);
+		let y = l || me(!1, null, { message: `Request failed after ${s} retries`, status: 0, code: 'MAX_RETRIES_EXCEEDED' }, null);
 		if (t?.onError?.(y, e), t?.throw) throw new Error(`Request failed after ${s} retries`);
 		return y;
 	}
@@ -7172,8 +6800,7 @@
 				let c = s[a];
 				try {
 					(0, K.YA)().log('Retrying consent submission:', c),
-						(await _e(n, Oe.POST_SUBJECT, { method: 'POST', body: c })).ok
-						&& ((0, K.YA)().log('Successfully resubmitted consent'), o.push(a));
+						(await _e(n, Oe.POST_SUBJECT, { method: 'POST', body: c })).ok && ((0, K.YA)().log('Successfully resubmitted consent'), o.push(a));
 				} catch (u) {
 					console.warn('Failed to resend consent submission:', u);
 				}
@@ -7220,8 +6847,7 @@
 					try {
 						(0, K.YA)().log('Retrying identify user submission:', a);
 						let c = `${Oe.PATCH_SUBJECT}/${a.id}`, { id: u, ...p } = a;
-						(await _e(n, c, { method: 'PATCH', body: p })).ok
-							&& ((0, K.YA)().log('Successfully resubmitted identify user'), r.push(o));
+						(await _e(n, c, { method: 'PATCH', body: p })).ok && ((0, K.YA)().log('Successfully resubmitted identify user'), r.push(o));
 					} catch (c) {
 						console.warn('Failed to resend identify user submission:', c);
 					}
@@ -7251,12 +6877,7 @@
 				&& ((0, Y._y)(
 					{
 						consents: e?.body?.preferences || {},
-						consentInfo: {
-							time: Date.now(),
-							subjectId: i,
-							externalId: e?.body?.externalSubjectId,
-							identityProvider: e?.body?.identityProvider,
-						},
+						consentInfo: { time: Date.now(), subjectId: i, externalId: e?.body?.externalSubjectId, identityProvider: e?.body?.identityProvider },
 					},
 					void 0,
 					n,
@@ -7467,8 +7088,7 @@
 			},
 			i = 'NONE';
 		if (n) {
-			let s = n.toUpperCase(),
-				r = e && typeof e == 'string' ? (e.includes('-') ? e.split('-').pop() : e).toUpperCase() : null;
+			let s = n.toUpperCase(), r = e && typeof e == 'string' ? (e.includes('-') ? e.split('-').pop() : e).toUpperCase() : null;
 			if (s === 'CA' && r && t.CA_QC_REGIONS.has(r)) return 'QC_LAW25';
 			let o = [
 				{ sets: [t.EU, t.EEA, t.UK], code: 'GDPR' },
@@ -7497,11 +7117,7 @@
 		return n?.onSuccess && await n.onSuccess(e), e;
 	}
 	async function ns(n, e, t) {
-		let i = e?.headers?.['x-c15t-country'] ?? 'GB',
-			s = e?.headers?.['x-c15t-region'] ?? null,
-			r,
-			o,
-			a = e?.headers?.['accept-language'] ?? null;
+		let i = e?.headers?.['x-c15t-country'] ?? 'GB', s = e?.headers?.['x-c15t-region'] ?? null, r, o, a = e?.headers?.['accept-language'] ?? null;
 		if (n?.translations && Object.keys(n.translations).length > 0) {
 			let d = n.translations, l = Array.from(new Set(['en', ...Object.keys(d)])), y = n.defaultLanguage ?? 'en';
 			r = (0, le.selectLanguage)(l, { header: a, fallback: y });
@@ -7535,12 +7151,7 @@
 			typeof window < 'u'
 				&& (0, Y._y)(
 					{
-						consentInfo: {
-							time: Date.now(),
-							subjectId: t,
-							externalId: e?.body?.externalSubjectId,
-							identityProvider: e?.body?.identityProvider,
-						},
+						consentInfo: { time: Date.now(), subjectId: t, externalId: e?.body?.externalSubjectId, identityProvider: e?.body?.identityProvider },
 						consents: e?.body?.preferences || {},
 					},
 					void 0,
@@ -7592,8 +7203,7 @@
 		}
 		if (n.mode === 'custom') return `custom:${Object.keys(n.endpointHandlers || {}).sort().join(',')}${t}`;
 		let i = '';
-		return 'headers' in n && n.headers
-			&& (i = `:headers:${Object.keys(n.headers).sort().map(r => `${r}=${n.headers?.[r]}`).join(',')}`),
+		return 'headers' in n && n.headers && (i = `:headers:${Object.keys(n.headers).sort().map(r => `${r}=${n.headers?.[r]}`).join(',')}`),
 			`c15t:${n.backendURL || ''}${i}${t}`;
 	}
 	function wt(n) {
@@ -7621,11 +7231,7 @@
 			}
 			case 'offline': {
 				let s = n.store?.iab;
-				i = new At(
-					n.storageConfig,
-					n.store?.initialTranslationConfig,
-					s ? { enabled: s.enabled, vendorIds: s.vendors, gvl: s.gvl } : void 0,
-				);
+				i = new At(n.storageConfig, n.store?.initialTranslationConfig, s ? { enabled: s.enabled, vendorIds: s.vendors, gvl: s.gvl } : void 0);
 				break;
 			}
 			default: {
@@ -7688,9 +7294,7 @@
 	function ds(n) {
 		let e = n.getAttribute('data-category');
 		if (e) {
-			if (!Te.W.includes(e)) {
-				throw new Error(`Invalid category attribute "${e}" on iframe. Must be one of: ${Te.W.join(', ')}`);
-			}
+			if (!Te.W.includes(e)) throw new Error(`Invalid category attribute "${e}" on iframe. Must be one of: ${Te.W.join(', ')}`);
 			return e;
 		}
 	}
@@ -7727,8 +7331,7 @@
 					o.addedNodes.forEach(a => {
 						if (a.nodeType === Node.ELEMENT_NODE) {
 							let c = a;
-							c.tagName && c.tagName.toUpperCase() === 'IFRAME'
-								&& (zt(c, s), c.hasAttribute('data-category') && (r = !0));
+							c.tagName && c.tagName.toUpperCase() === 'IFRAME' && (zt(c, s), c.hasAttribute('data-category') && (r = !0));
 							let u = c.querySelectorAll?.('iframe');
 							u && u.length > 0 && u.forEach(p => {
 								zt(p, s), p.hasAttribute('data-category') && (r = !0);
@@ -7776,14 +7379,11 @@
 			if (!e.vendorConsents[t]) return !1;
 		}
 		return !(n.iabPurposes && n.iabPurposes.length > 0 && !n.iabPurposes.every(i => e.purposeConsents[i] === !0)
-			|| n.iabLegIntPurposes && n.iabLegIntPurposes.length > 0
-				&& !n.iabLegIntPurposes.every(i => e.purposeLegitimateInterests[i] === !0)
-			|| n.iabSpecialFeatures && n.iabSpecialFeatures.length > 0
-				&& !n.iabSpecialFeatures.every(i => e.specialFeatureOptIns[i] === !0));
+			|| n.iabLegIntPurposes && n.iabLegIntPurposes.length > 0 && !n.iabLegIntPurposes.every(i => e.purposeLegitimateInterests[i] === !0)
+			|| n.iabSpecialFeatures && n.iabSpecialFeatures.length > 0 && !n.iabSpecialFeatures.every(i => e.specialFeatureOptIns[i] === !0));
 	}
 	function we(n, e, t) {
-		return t?.model === 'iab' && t.iabConsent
-				&& (n.vendorId !== void 0 || n.iabPurposes || n.iabLegIntPurposes || n.iabSpecialFeatures)
+		return t?.model === 'iab' && t.iabConsent && (n.vendorId !== void 0 || n.iabPurposes || n.iabLegIntPurposes || n.iabSpecialFeatures)
 			? ms(n, t.iabConsent)
 			: tt(n.category, e);
 	}
@@ -7791,24 +7391,13 @@
 		let s = [];
 		return n.forEach(r => {
 			if (!r.alwaysLoad && !we(r, e, i)) return;
-			if (Me(r.id)) {
-				return void r.onConsentChange?.({
-					id: r.id,
-					elementId: Ct(r.id, r.anonymizeId !== !1, t),
-					hasConsent: we(r, e, i),
-					consents: e,
-				});
-			}
-			if (r.src && r.textContent) {
-				throw new Error(`Script '${r.id}' cannot have both 'src' and 'textContent'. Choose one.`);
-			}
+			if (Me(r.id)) return void r.onConsentChange?.({ id: r.id, elementId: Ct(r.id, r.anonymizeId !== !1, t), hasConsent: we(r, e, i), consents: e });
+			if (r.src && r.textContent) throw new Error(`Script '${r.id}' cannot have both 'src' and 'textContent'. Choose one.`);
 			if (!r.src && !r.textContent && !r.callbackOnly) {
 				throw new Error(`Script '${r.id}' must have either 'src', 'textContent', or 'callbackOnly' set to true.`);
 			}
 			if (r.callbackOnly === !0) {
-				let l = r.anonymizeId !== !1,
-					y = Ct(r.id, l, t),
-					m = { id: r.id, elementId: y, consents: e, hasConsent: we(r, e, i) };
+				let l = r.anonymizeId !== !1, y = Ct(r.id, l, t), m = { id: r.id, elementId: y, consents: e, hasConsent: we(r, e, i) };
 				r.onBeforeLoad && r.onBeforeLoad(m), r.onLoad && r.onLoad(m), It(r.id, null), s.push(r.id);
 				return;
 			}
@@ -7920,12 +7509,7 @@
 					o && (o.remove(), Pe(i));
 				}
 				let r = { ...s.scriptIdMap };
-				delete r[i],
-					e({
-						scripts: s.scripts.filter(o => o.id !== i),
-						loadedScripts: { ...s.loadedScripts, [i]: !1 },
-						scriptIdMap: r,
-					});
+				delete r[i], e({ scripts: s.scripts.filter(o => o.id !== i), loadedScripts: { ...s.loadedScripts, [i]: !1 }, scriptIdMap: r });
 			},
 			reloadScript: i => {
 				let s = n();
@@ -7994,17 +7578,8 @@
 		else if (e === 'necessary') { for (let f of c) A[f.name] = f.disabled === !0 ? f.defaultValue : !1; }
 		let D = b?.subjectId;
 		D || (D = (0, Vt.L)());
-		let F = t().consentInfo?.externalId || t().user?.id,
-			O = t().consentInfo?.identityProvider || t().user?.identityProvider,
-			X = js(w, A, C, h, c);
-		if (
-			i({
-				consents: A,
-				selectedConsents: A,
-				activeUI: 'none',
-				consentInfo: { time: x, subjectId: D, externalId: F, identityProvider: O },
-			}), X
-		) {
+		let F = t().consentInfo?.externalId || t().user?.id, O = t().consentInfo?.identityProvider || t().user?.identityProvider, X = js(w, A, C, h, c);
+		if (i({ consents: A, selectedConsents: A, activeUI: 'none', consentInfo: { time: x, subjectId: D, externalId: F, identityProvider: O } }), X) {
 			let f = {
 				type: e,
 				subjectId: D,
@@ -8074,9 +7649,7 @@
 		if (t !== null) {
 			be(e, { isLoadingGVL: !0, nonIABVendors: n.customVendors ?? [] });
 			try {
-				let { initializeIABStub: s, fetchGVL: r, createCMPApi: o } = await Promise.resolve().then(
-					U.bind(U, './src/libs/iab-tcf/index.ts'),
-				);
+				let { initializeIABStub: s, fetchGVL: r, createCMPApi: o } = await Promise.resolve().then(U.bind(U, './src/libs/iab-tcf/index.ts'));
 				s();
 				let a;
 				if (t) a = t;
@@ -8113,9 +7686,7 @@
 	async function Ts(n, e) {
 		let { set: t } = e;
 		try {
-			let { decodeTCString: i, iabPurposesToC15tConsents: s } = await Promise.resolve().then(
-					U.bind(U, './src/libs/iab-tcf/index.ts'),
-				),
+			let { decodeTCString: i, iabPurposesToC15tConsents: s } = await Promise.resolve().then(U.bind(U, './src/libs/iab-tcf/index.ts')),
 				r = await i(n),
 				o = (0, Y.If)(e.get().storageConfig),
 				a = { ...r.vendorConsents, ...o?.iabCustomVendorConsents ?? {} },
@@ -8149,11 +7720,7 @@
 				branding: n.branding ?? 'c15t',
 				hasFetchedBanner: !0,
 				lastBannerFetchData: n,
-				locationInfo: {
-					countryCode: c?.countryCode ?? null,
-					regionCode: c?.regionCode ?? null,
-					jurisdiction: n.jurisdiction ?? null,
-				},
+				locationInfo: { countryCode: c?.countryCode ?? null, regionCode: c?.regionCode ?? null, jurisdiction: n.jurisdiction ?? null },
 			};
 		return o === null && (d.activeUI = u ? 'banner' : 'none'),
 			p && (d.consents = p, d.selectedConsents = p),
@@ -8176,13 +7743,9 @@
 			});
 	}
 	function Wn(n, e, t, i) {
-		let { set: s, get: r } = e,
-			{ consentInfo: o, iab: a } = r(),
-			c = a?.config.enabled && !i,
-			u = a?.config.enabled && !c;
+		let { set: s, get: r } = e, { consentInfo: o, iab: a } = r(), c = a?.config.enabled && !i, u = a?.config.enabled && !c;
 		c && console.warn('IAB mode disabled: Server returned 200 without GVL. Client IAB settings overridden.');
-		let { consentModel: p, autoGrantedConsents: d } = Yn(n.jurisdiction ?? null, u, o, r().overrides?.gpc),
-			l = Es(n, e, t, u);
+		let { consentModel: p, autoGrantedConsents: d } = Yn(n.jurisdiction ?? null, u, o, r().overrides?.gpc), l = Es(n, e, t, u);
 		if (
 			c && a
 				? l.iab = { ...a, config: { ...a.config, enabled: !1 } }
@@ -8233,11 +7796,7 @@
 		try {
 			let { language: r, country: o, region: a } = n.get().overrides ?? {},
 				{ data: c, error: u } = await t.init({
-					headers: {
-						...r && { 'accept-language': r },
-						...o && { 'x-c15t-country': o },
-						...a && { 'x-c15t-region': a },
-					},
+					headers: { ...r && { 'accept-language': r }, ...o && { 'x-c15t-country': o }, ...a && { 'x-c15t-region': a } },
 					onError: i.onError
 						? p => {
 							i.onError?.({ error: p.error?.message || 'Unknown error' });
@@ -8337,35 +7896,30 @@
 				if (d) {
 					if (d.logBlockedRequests !== !1) {
 						let y = l.rule?.id ?? 'unknown';
-						console.warn('[c15t] Network request blocked by consent manager', {
-							method: l.method,
-							url: l.url,
-							ruleId: y,
-						});
+						console.warn('[c15t] Network request blocked by consent manager', { method: l.method, url: l.url, ruleId: y });
 					}
 					d.onRequestBlocked && d.onRequestBlocked(l);
 				}
 			},
 			c = () => o || n().consents,
 			u = () => {
-				typeof window > 'u' || !(typeof window.fetch == 'function') || t
-					|| (t = window.fetch,
-						window.fetch = (l, y) => {
-							let b = n().networkBlocker;
-							if (!t) throw new Error('Network blocker fetch wrapper not initialized.');
-							if (!(b?.enabled && b?.rules && b?.rules.length > 0)) return t.call(window, l, y);
-							let w = 'GET';
-							y?.method ? w = y.method : l instanceof Request && (w = l.method);
-							let C;
-							C = typeof l == 'string' || l instanceof URL ? l.toString() : l.url;
-							let A = c(), { shouldBlock: x, rule: D } = Fn({ url: C, method: w }, A, b);
-							if (x) {
-								a(b, { method: w, url: C, rule: D });
-								let F = new Response(null, { status: 451, statusText: 'Request blocked by consent manager' });
-								return Promise.resolve(F);
-							}
-							return t.call(window, l, y);
-						});
+				typeof window > 'u' || !(typeof window.fetch == 'function') || t || (t = window.fetch,
+					window.fetch = (l, y) => {
+						let b = n().networkBlocker;
+						if (!t) throw new Error('Network blocker fetch wrapper not initialized.');
+						if (!(b?.enabled && b?.rules && b?.rules.length > 0)) return t.call(window, l, y);
+						let w = 'GET';
+						y?.method ? w = y.method : l instanceof Request && (w = l.method);
+						let C;
+						C = typeof l == 'string' || l instanceof URL ? l.toString() : l.url;
+						let A = c(), { shouldBlock: x, rule: D } = Fn({ url: C, method: w }, A, b);
+						if (x) {
+							a(b, { method: w, url: C, rule: D });
+							let F = new Response(null, { status: 451, statusText: 'Request blocked by consent manager' });
+							return Promise.resolve(F);
+						}
+						return t.call(window, l, y);
+					});
 			},
 			p = () => {
 				typeof window > 'u'
@@ -8376,11 +7930,7 @@
 						s = window.XMLHttpRequest.prototype.send,
 						window.XMLHttpRequest.prototype.open = function(l, y, m, b, h) {
 							let w = this;
-							if (w.__c15tMethod = l, w.__c15tUrl = y, !i) {
-								throw new Error(
-									'Network blocker XHR open wrapper not initialized.',
-								);
-							}
+							if (w.__c15tMethod = l, w.__c15tUrl = y, !i) throw new Error('Network blocker XHR open wrapper not initialized.');
 							return i.call(this, l, y, m ?? !0, b, h);
 						},
 						window.XMLHttpRequest.prototype.send = function(l) {
@@ -8419,8 +7969,7 @@
 				if (e({ networkBlocker: d }), !y) {
 					if (!r || typeof window > 'u') return;
 					t && (window.fetch = t, t = null),
-						i && s
-						&& (window.XMLHttpRequest.prototype.open = i, window.XMLHttpRequest.prototype.send = s, i = null, s = null),
+						i && s && (window.XMLHttpRequest.prototype.open = i, window.XMLHttpRequest.prototype.send = s, i = null, s = null),
 						o = null,
 						r = !1;
 					return;
@@ -8431,8 +7980,7 @@
 				r
 					&& (typeof window > 'u'
 						|| (t && (window.fetch = t, t = null),
-							i && s
-							&& (window.XMLHttpRequest.prototype.open = i, window.XMLHttpRequest.prototype.send = s, i = null, s = null),
+							i && s && (window.XMLHttpRequest.prototype.open = i, window.XMLHttpRequest.prototype.send = s, i = null, s = null),
 							o = null,
 							r = !1));
 			},
@@ -8448,16 +7996,8 @@
 			}
 		},
 		Hs = (n, e = {}) => {
-			let {
-				namespace: t = 'c15tStore',
-				iab: i,
-				ssrData: s,
-				initialConsentCategories: r,
-				initialTranslationConfig: o,
-				enabled: a,
-				debug: c,
-				...u
-			} = e;
+			let { namespace: t = 'c15tStore', iab: i, ssrData: s, initialConsentCategories: r, initialTranslationConfig: o, enabled: a, debug: c, ...u } =
+				e;
 			(0, K.tJ)(e.debug === !0);
 			let p = Bn(e.storageConfig),
 				d = qt((l, y) => ({
@@ -8471,9 +8011,7 @@
 							consents: p.consents,
 							selectedConsents: p.consents,
 							consentInfo: p.consentInfo,
-							user: p.consentInfo?.externalId
-								? { id: p.consentInfo.externalId, identityProvider: p.consentInfo.identityProvider }
-								: void 0,
+							user: p.consentInfo?.externalId ? { id: p.consentInfo.externalId, identityProvider: p.consentInfo.identityProvider } : void 0,
 							activeUI: 'none',
 							isLoadingConsentInfo: !1,
 						}
@@ -8485,11 +8023,7 @@
 						!Bn() && !h.consentInfo && !h.isLoadingConsentInfo && l({ activeUI: 'banner' });
 					},
 					setSelectedConsent: (m, b) => {
-						l(h =>
-							h.consentTypes.find(C => C.name === m)?.disabled
-								? h
-								: { selectedConsents: { ...h.selectedConsents, [m]: b } }
-						);
+						l(h => h.consentTypes.find(C => C.name === m)?.disabled ? h : { selectedConsents: { ...h.selectedConsents, [m]: b } });
 					},
 					saveConsents: async (m, b) => await Ss({ manager: n, type: m, get: y, set: l, options: b }),
 					setConsent: (m, b) => {
@@ -8498,8 +8032,7 @@
 					},
 					resetConsents: () => {
 						l(() => {
-							let m = Te.y.reduce((h, w) => (h[w.name] = w.defaultValue, h), {}),
-								b = { consents: m, selectedConsents: m, consentInfo: null };
+							let m = Te.y.reduce((h, w) => (h[w.name] = w.defaultValue, h), {}), b = { consents: m, selectedConsents: m, consentInfo: null };
 							return (0, Y.jD)(void 0, e.storageConfig), b;
 						});
 					},
@@ -8520,14 +8053,7 @@
 						}
 					},
 					setLocationInfo: m => l({ locationInfo: m }),
-					initConsentManager: () =>
-						xn({
-							manager: n,
-							ssrData: e.ssrData,
-							initialTranslationConfig: e.initialTranslationConfig,
-							get: y,
-							set: l,
-						}),
+					initConsentManager: () => xn({ manager: n, ssrData: e.ssrData, initialTranslationConfig: e.initialTranslationConfig, get: y, set: l }),
 					getDisplayedConsents: () => {
 						let { consentCategories: m, consentTypes: b } = y();
 						return b.filter(h => m.includes(h.name));
@@ -8553,15 +8079,7 @@
 							h
 							&& (String(b?.externalId) === String(m.id) && b?.identityProvider === m.identityProvider
 								|| (await n.identifyUser({ body: { id: h, externalId: m.id, identityProvider: m.identityProvider } }),
-									l({
-										consentInfo: {
-											...b,
-											time: b?.time || Date.now(),
-											subjectId: h,
-											externalId: m.id,
-											identityProvider: m.identityProvider,
-										},
-									})));
+									l({ consentInfo: { ...b, time: b?.time || Date.now(), subjectId: h, externalId: m.id, identityProvider: m.identityProvider } })));
 					},
 					setOverrides:
 						async m => (l({ overrides: { ...y().overrides, ...m } }),
@@ -8573,8 +8091,7 @@
 				}));
 			return d.getState().initializeIframeBlocker(),
 				e.networkBlocker && (d.setState({ networkBlocker: e.networkBlocker }), d.getState().initializeNetworkBlocker()),
-				e.scripts && e.scripts.length > 0
-				&& d.getState().updateConsentCategories(e.scripts.flatMap(l => Hn(l.category))),
+				e.scripts && e.scripts.length > 0 && d.getState().updateConsentCategories(e.scripts.flatMap(l => Hn(l.category))),
 				typeof window < 'u'
 				&& (window[t] = d,
 					d.getState().callbacks.onConsentSet?.({ preferences: d.getState().consents }),
@@ -8592,17 +8109,7 @@
 		}:${e}`;
 	}
 	function Jn(n, e) {
-		let {
-				mode: t,
-				backendURL: i,
-				store: s,
-				translations: r,
-				storageConfig: o,
-				enabled: a,
-				iab: c,
-				consentCategories: u,
-				debug: p,
-			} = n,
+		let { mode: t, backendURL: i, store: s, translations: r, storageConfig: o, enabled: a, iab: c, consentCategories: u, debug: p } = n,
 			d = $s({
 				mode: t,
 				backendURL: i,

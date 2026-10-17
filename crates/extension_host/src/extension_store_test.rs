@@ -6981,7 +6981,7 @@ async fn test_git_queries_are_validated_with_the_staged_grammar(executor: Backgr
         .await
         .expect("valid manifest");
     let proxy = Arc::new(ExtensionHostProxy::new());
-    crate::validate_git_language_queries(&filesystem, root, &manifest, &proxy)
+    crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
         .await
         .expect("valid queries need no live grammar registration");
     fs.remove_file(
@@ -6994,7 +6994,7 @@ async fn test_git_queries_are_validated_with_the_staged_grammar(executor: Backgr
     for query_file in QueryFiles::all().query_files() {
         let query_path = root.join("languages/html").join(query_file.file_name());
         fs.insert_file(&query_path, b"(".to_vec()).await;
-        let error = crate::validate_git_language_queries(&filesystem, root, &manifest, &proxy)
+        let error = crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
             .await
             .expect_err("every supported query kind must be parsed");
         assert!(format!("{error:#}").contains("languages/html"));
@@ -7032,12 +7032,12 @@ async fn test_git_queries_are_validated_with_the_staged_grammar(executor: Backgr
         b"(jinja) @tag".to_vec(),
     )
     .await;
-    crate::validate_git_language_queries(&filesystem, root, &manifest, &proxy)
+    crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
         .await
         .expect_err("staged HTML must reject nodes accepted by the installed HTML-Jinja grammar");
     fs.insert_file(&grammar_path, b"invalid wasm".to_vec())
         .await;
-    crate::validate_git_language_queries(&filesystem, root, &manifest, &proxy)
+    crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
         .await
         .expect_err("invalid grammar must fail before swapping");
 }
@@ -7120,4 +7120,174 @@ async fn test_git_update_rejects_invalid_language_queries(cx: &mut TestAppContex
         installed_version(&store, "git-extension", cx).as_deref(),
         Some("0.3.0")
     );
+}
+
+const VALID_GIT_LANGUAGE_METADATA: [(&str, &str); 2] = [
+    (
+        settings::SemanticTokenRules::FILE_NAME,
+        r#"[
+            // Language metadata accepts JSONC.
+            {"token_type": "function", "style": ["function",],},
+        ]"#,
+    ),
+    (
+        task::TaskTemplates::FILE_NAME,
+        r#"[
+            // Task metadata uses the same lenient parser as the runtime loader.
+            {"label": "Print", "command": "echo", "args": ["hello",],},
+        ]"#,
+    ),
+];
+
+#[gpui::test]
+async fn test_git_language_metadata_validation_without_grammar(executor: BackgroundExecutor) {
+    let fs = FakeFs::new(executor);
+    let root = Path::new(path!("/extension"));
+    fs.insert_tree(
+        root,
+        json!({
+            "extension.toml": "id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\nschema_version = 1\nlanguages = [\"languages/plain\"]\n",
+            "languages": {"plain": {
+                "config.toml": "name = \"Test Plain\"\n",
+            }},
+        }),
+    )
+    .await;
+    let filesystem: Arc<dyn Fs> = fs.clone();
+    let manifest = ExtensionManifest::load(filesystem.clone(), root)
+        .await
+        .expect("valid grammarless language manifest");
+    let proxy = ExtensionHostProxy::new();
+    crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
+        .await
+        .expect("missing optional language metadata is valid");
+    let language_dir = root.join("languages/plain");
+    for (file_name, contents) in VALID_GIT_LANGUAGE_METADATA {
+        fs.insert_file(language_dir.join(file_name), contents.as_bytes().to_vec())
+            .await;
+    }
+    crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
+        .await
+        .expect("comments and trailing commas are valid without a grammar");
+
+    for (file_name, valid_contents) in VALID_GIT_LANGUAGE_METADATA {
+        let resource_path = language_dir.join(file_name);
+        for invalid_contents in [b"[".as_slice(), b"[123]".as_slice(), b"\xff".as_slice()] {
+            fs.insert_file(&resource_path, invalid_contents.to_vec())
+                .await;
+            let error =
+                crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
+                    .await
+                    .expect_err("present malformed or unreadable metadata must fail");
+            let message = format!("{error:#}");
+            assert!(message.contains(file_name), "{message}");
+            assert!(message.contains("languages/plain"), "{message}");
+        }
+        fs.remove_file(&resource_path, RemoveOptions::default())
+            .await
+            .expect("remove unreadable metadata");
+        fs.create_dir(&resource_path)
+            .await
+            .expect("directory in place of metadata file");
+        let error = crate::validate_git_language_resources(&filesystem, root, &manifest, &proxy)
+            .await
+            .expect_err("an existing metadata path that cannot be read is not absent");
+        assert!(format!("{error:#}").contains(file_name));
+        fs.remove_dir(&resource_path, RemoveOptions::default())
+            .await
+            .expect("remove metadata directory");
+        fs.insert_file(&resource_path, valid_contents.as_bytes().to_vec())
+            .await;
+    }
+}
+
+#[gpui::test]
+async fn test_git_update_rejects_invalid_language_metadata(cx: &mut TestAppContext) {
+    for (file_name, invalid_contents) in [
+        (settings::SemanticTokenRules::FILE_NAME, "["),
+        (
+            settings::SemanticTokenRules::FILE_NAME,
+            r#"[{"token_type": 123}]"#,
+        ),
+        (task::TaskTemplates::FILE_NAME, "["),
+        (
+            task::TaskTemplates::FILE_NAME,
+            r#"[{"label": "Missing command"}]"#,
+        ),
+    ] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        let language_dir = remote.seed.join("languages/plain");
+        std::fs::create_dir_all(&language_dir).expect("grammarless language directory");
+        std::fs::write(language_dir.join("config.toml"), "name = \"Test Plain\"\n")
+            .expect("grammarless language config");
+        for (metadata_name, contents) in VALID_GIT_LANGUAGE_METADATA {
+            std::fs::write(language_dir.join(metadata_name), contents)
+                .expect("valid language metadata");
+        }
+        remote.publish("git-extension", "0.1.1");
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("valid JSONC language metadata installs");
+        let original_source = installed_source(&store, "git-extension", cx);
+        let record_path = extensions_dir.join("sources/git-extension.toml");
+        let original_record = std::fs::read(&record_path).expect("installed source record");
+        let installed_resource = extensions_dir
+            .join("installed/git-extension/languages/plain")
+            .join(file_name);
+        let original_resource =
+            std::fs::read(&installed_resource).expect("installed language metadata");
+        let original_manifest =
+            std::fs::read(extensions_dir.join("sources/git-extension/extension.toml"))
+                .expect("installed checkout manifest");
+
+        std::fs::write(language_dir.join(file_name), invalid_contents)
+            .expect("invalid language metadata");
+        remote.publish("git-extension", "0.2.0");
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("update failure is reported");
+        let failures = git_failures(&store, cx);
+        assert_eq!(failures.len(), 1);
+        let failure = failures.first().expect("git update failure notification");
+        assert!(failure.message.contains(file_name), "{failure:?}");
+        assert!(failure.message.contains("languages/plain"), "{failure:?}");
+        assert_eq!(
+            installed_source(&store, "git-extension", cx),
+            original_source
+        );
+        assert_eq!(
+            std::fs::read(&record_path).expect("source record remains readable"),
+            original_record
+        );
+        assert_eq!(
+            std::fs::read(&installed_resource).expect("previous metadata remains readable"),
+            original_resource
+        );
+        assert_eq!(
+            std::fs::read(extensions_dir.join("sources/git-extension/extension.toml"))
+                .expect("previous checkout remains readable"),
+            original_manifest
+        );
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("0.1.1")
+        );
+
+        std::fs::write(language_dir.join(file_name), &original_resource).expect("repair metadata");
+        remote.publish("git-extension", "0.3.0");
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("repaired metadata updates");
+        assert!(git_failures(&store, cx).is_empty());
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("0.3.0")
+        );
+    }
 }
