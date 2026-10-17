@@ -38,7 +38,7 @@ All `markdown_preview` settings can be configured in user settings or overridden
 in a project's `.zed/settings.json`. For example, use the full pane width for a
 project with wide tables:
 
-```json
+```json [settings]
 {
   "markdown_preview": {
     "limit_content_width": false
@@ -58,7 +58,7 @@ entry's width. `"auto"`, the default, shows a grid while it fits the preview
 and switches a wide table with long cells to entries. Hovering a table shows a
 button that switches that table between the two layouts.
 
-```json
+```json [settings]
 {
   "markdown_preview": {
     "table_layout": "list"
