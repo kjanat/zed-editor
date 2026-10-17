@@ -384,7 +384,9 @@ Zed fetches the repository with the `git` command, so private repositories
 work through your git credentials. It builds the extension like a dev
 extension, which needs Rust and the `wasm32-wasip2` target for extensions with
 a `Cargo.toml`. When Zed checks for extension updates, it fetches again if the
-remote ref has moved and rebuilds the extension.
+remote ref has moved and rebuilds the extension. If a fetched commit fails to
+build or declares another extension id, Zed keeps the version already
+installed.
 
 ## Suggest Extensions
 
