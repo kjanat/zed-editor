@@ -7511,6 +7511,13 @@ struct UnshapedText {
     chars: usize,
     width: Pixels,
     multibyte_text: Option<Arc<str>>,
+    after_window: bool,
+}
+
+struct PendingUnshaped {
+    len: usize,
+    chars: usize,
+    after_window: bool,
 }
 
 impl UnshapedText {
@@ -7668,52 +7675,39 @@ impl LineWithInvisibles {
             return ShapedCoverage::Covered;
         }
         let mut x = Pixels::ZERO;
-        let mut shaped: Option<Range<Pixels>> = None;
-        let mut visible_unshaped = Vec::new();
+        let mut window_start = Pixels::ZERO;
+        let mut window_end = None;
+        let mut uncovered_before_window = false;
+        let mut uncovered_after_window = false;
         for fragment in &self.fragments {
             let fragment_x = x..x + fragment.width();
             x = fragment_x.end;
-            match fragment {
-                LineFragment::Text(line) if line.len > 0 => {
-                    shaped = Some(match shaped {
-                        Some(shaped) => shaped.start..fragment_x.end,
-                        None => fragment_x,
-                    });
-                }
-                LineFragment::Unshaped(_) => {
-                    if fragment_x.start < visible.end && visible.start < fragment_x.end {
-                        visible_unshaped.push(fragment_x);
-                    }
-                }
-                LineFragment::Text(_) | LineFragment::Element { .. } => {}
+            let LineFragment::Unshaped(unshaped) = fragment else {
+                continue;
+            };
+            let is_visible = fragment_x.start < visible.end && visible.start < fragment_x.end;
+            if unshaped.after_window {
+                window_end.get_or_insert(fragment_x.start);
+                uncovered_after_window |= is_visible;
+            } else {
+                window_start = fragment_x.end;
+                uncovered_before_window |= is_visible;
             }
         }
-        let Some(shaped) = shaped else {
-            return if visible_unshaped.is_empty() {
-                ShapedCoverage::Covered
-            } else {
-                ShapedCoverage::ShortOnLeft {
-                    deficit: visible.end - visible.start,
-                    shaped_width: Pixels::ZERO,
-                }
-            };
-        };
-        let shaped_width = shaped.end - shaped.start;
-        if visible_unshaped
-            .iter()
-            .any(|unshaped| unshaped.end <= shaped.start)
-        {
+        let window_end = window_end.unwrap_or(x);
+        let shaped_width = (window_end - window_start).max(Pixels::ZERO);
+        if uncovered_before_window {
             ShapedCoverage::ShortOnLeft {
-                deficit: shaped.start - visible.start,
+                deficit: (window_start - visible.start).max(Pixels::ZERO),
                 shaped_width,
             }
-        } else if visible_unshaped.is_empty() {
-            ShapedCoverage::Covered
-        } else {
+        } else if uncovered_after_window {
             ShapedCoverage::ShortOnRight {
-                deficit: visible.end - shaped.end,
+                deficit: (visible.end - window_end).max(Pixels::ZERO),
                 shaped_width,
             }
+        } else {
+            ShapedCoverage::Covered
         }
     }
 
@@ -7766,20 +7760,21 @@ impl LineWithInvisibles {
         fragments: &mut SmallVec<[LineFragment; 1]>,
         width: &mut Pixels,
         len: &mut usize,
-        unshaped: &mut Option<(usize, usize)>,
+        unshaped: &mut Option<PendingUnshaped>,
         unshaped_text: &mut String,
         em_advance: Pixels,
     ) {
-        if let Some((unshaped_len, unshaped_chars)) = unshaped.take() {
-            let unshaped_width = em_advance * unshaped_chars as f32;
+        if let Some(pending) = unshaped.take() {
+            let unshaped_width = em_advance * pending.chars as f32;
             *width += unshaped_width;
-            *len += unshaped_len;
+            *len += pending.len;
             fragments.push(LineFragment::Unshaped(UnshapedText {
-                len: unshaped_len,
-                chars: unshaped_chars,
+                len: pending.len,
+                chars: pending.chars,
                 width: unshaped_width,
-                multibyte_text: (unshaped_len != unshaped_chars)
+                multibyte_text: (pending.len != pending.chars)
                     .then(|| Arc::from(unshaped_text.as_str())),
+                after_window: pending.after_window,
             }));
         }
         unshaped_text.clear();
@@ -7802,7 +7797,7 @@ impl LineWithInvisibles {
         let mut layouts = Vec::with_capacity(max_line_count);
         let mut fragments: SmallVec<[LineFragment; 1]> = SmallVec::new();
         let mut row_column = 0;
-        let mut unshaped: Option<(usize, usize)> = None;
+        let mut unshaped: Option<PendingUnshaped> = None;
         let mut unshaped_text = String::new();
         let mut line = String::new();
         // Byte offset into the logical line used to position invisible markers.
@@ -8002,9 +7997,29 @@ impl LineWithInvisibles {
                                     font_size,
                                     window,
                                 );
-                                let pending = unshaped.get_or_insert((0, 0));
-                                pending.0 += skipped_len;
-                                pending.1 += chars;
+                                let after_window = shape_window
+                                    .as_ref()
+                                    .is_some_and(|shape_window| row_column >= shape_window.start);
+                                if unshaped
+                                    .as_ref()
+                                    .is_some_and(|pending| pending.after_window != after_window)
+                                {
+                                    Self::push_unshaped(
+                                        &mut fragments,
+                                        &mut width,
+                                        &mut len,
+                                        &mut unshaped,
+                                        &mut unshaped_text,
+                                        em_advance,
+                                    );
+                                }
+                                let pending = unshaped.get_or_insert(PendingUnshaped {
+                                    len: 0,
+                                    chars: 0,
+                                    after_window,
+                                });
+                                pending.len += skipped_len;
+                                pending.chars += chars;
                                 unshaped_text.push_str(skipped_text);
                                 line_byte_offset += skipped_len;
                                 row_column += chars;
@@ -14145,6 +14160,7 @@ mod tests {
             chars: 8,
             width: px(80.),
             multibyte_text: Some(Arc::from(text.as_str())),
+            after_window: false,
         };
         assert_eq!(unshaped.x_for_index(4), px(40.));
         assert_eq!(unshaped.x_for_index(4 + 3 * 2), px(60.));
@@ -14159,6 +14175,7 @@ mod tests {
             chars: 8,
             width: px(80.),
             multibyte_text: None,
+            after_window: false,
         };
         assert_eq!(ascii.x_for_index(6), px(60.));
         assert_eq!(ascii.index_for_x(px(65.)), 6);
@@ -14401,12 +14418,13 @@ mod tests {
         }
     }
 
-    fn unshaped_fragment(chars: usize, width: Pixels) -> LineFragment {
+    fn unshaped_fragment(chars: usize, width: Pixels, after_window: bool) -> LineFragment {
         LineFragment::Unshaped(UnshapedText {
             len: chars,
             chars,
             width,
             multibyte_text: None,
+            after_window,
         })
     }
 
@@ -14431,7 +14449,7 @@ mod tests {
         let shaped_width = shape("iii", cx).width();
 
         let lines = [windowed_line(
-            smallvec![unshaped_fragment(100, px(1000.)), shape("iii", cx)],
+            smallvec![unshaped_fragment(100, px(1000.), false), shape("iii", cx)],
             100..103,
         )];
         let visible = px(500.)..px(800.);
@@ -14458,7 +14476,7 @@ mod tests {
         let lines = [windowed_line(
             smallvec![
                 shape("iii", cx),
-                unshaped_fragment(100, px(1000.)),
+                unshaped_fragment(100, px(1000.), true),
                 shape("", cx)
             ],
             0..3,
@@ -14488,14 +14506,14 @@ mod tests {
         );
 
         let lines = [windowed_line(
-            smallvec![unshaped_fragment(100, px(1000.))],
+            smallvec![unshaped_fragment(100, px(1000.), false)],
             200..300,
         )];
         let visible = px(500.)..px(800.);
         assert_eq!(
             lines[0].shaped_coverage(&visible),
             ShapedCoverage::ShortOnLeft {
-                deficit: px(300.),
+                deficit: px(500.),
                 shaped_width: Pixels::ZERO,
             }
         );
@@ -14506,6 +14524,34 @@ mod tests {
             &visible
         ));
         assert_eq!(windows, [Some(100..300)]);
+
+        let lines = [windowed_line(
+            smallvec![
+                unshaped_fragment(100, px(1000.), false),
+                shape("iii", cx),
+                unshaped_fragment(100, px(1000.), false),
+                shape("iii", cx),
+                unshaped_fragment(100, px(1000.), true),
+            ],
+            200..203,
+        )];
+        let gap_start = px(1000.) + shaped_width;
+        let visible = gap_start + px(100.)..gap_start + px(400.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnLeft {
+                deficit: px(900.),
+                shaped_width,
+            }
+        );
+        let mut windows = [Some(200..203)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        let widened = windows[0].clone().unwrap_or_default();
+        assert!(widened.start < 200 && widened.end == 203, "{widened:?}");
     }
 
     #[gpui::test]
