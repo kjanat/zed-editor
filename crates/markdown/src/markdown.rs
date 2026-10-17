@@ -53,6 +53,7 @@ use pulldown_cmark::{Alignment, BlockQuoteKind};
 use sum_tree::TreeMap;
 use theme::SyntaxTheme;
 use ui::{Checkbox, CopyButton, ScrollAxes, Scrollbars, Tooltip, WithScrollbar, prelude::*};
+use unicode_width::UnicodeWidthStr;
 use util::ResultExt;
 
 use crate::parser::CodeBlockKind;
@@ -2778,6 +2779,7 @@ impl Element for MarkdownElement {
         let mut rendered_metadata_block = false;
         let table_plan = TablePlan::new(
             &parsed_markdown.events,
+            &parsed_markdown.source,
             self.style.table_layout,
             self.markdown.read(cx),
         );
@@ -4134,7 +4136,7 @@ impl TableEvents {
         None
     }
 
-    fn column_chars(&self, events: &[(Range<usize>, MarkdownEvent)]) -> Vec<usize> {
+    fn column_chars(&self, events: &[(Range<usize>, MarkdownEvent)], source: &str) -> Vec<usize> {
         let mut column_chars = vec![0; self.header_cells.len()];
         for cells in iter::once(&self.header_cells).chain(self.rows.iter().map(|row| &row.cells)) {
             for (column, cell) in cells.iter().enumerate() {
@@ -4142,10 +4144,10 @@ impl TableEvents {
                     .iter()
                     .map(|(range, event)| match event {
                         MarkdownEvent::Text | MarkdownEvent::Code | MarkdownEvent::InlineHtml => {
-                            range.len()
+                            source.get(range.clone()).map_or(0, UnicodeWidthStr::width)
                         }
                         MarkdownEvent::SubstitutedText(text)
-                        | MarkdownEvent::SubstitutedCode(text) => text.len(),
+                        | MarkdownEvent::SubstitutedCode(text) => text.width(),
                         _ => 0,
                     })
                     .sum::<usize>();
@@ -4258,6 +4260,7 @@ struct TablePlan {
 impl TablePlan {
     fn new(
         events: &[(Range<usize>, MarkdownEvent)],
+        source: &str,
         layout: Option<MarkdownTableLayout>,
         markdown: &Markdown,
     ) -> Self {
@@ -4291,7 +4294,7 @@ impl TablePlan {
                 index = table.end + 1;
                 continue;
             }
-            let column_chars = table.column_chars(events);
+            let column_chars = table.column_chars(events, source);
             if markdown.table_arrangement(range.start, layout) == TableArrangement::List {
                 steps.push(PlannedStep::events(next_unplanned..table.start));
                 let compact_columns = column_chars
@@ -9288,6 +9291,22 @@ mod tests {
         cx.simulate_resize(size(px(800.), px(600.)));
         cx.run_until_parked();
         assert!(!is_list_layout(cx));
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_measures_fields_in_characters(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | Ä | Ö | Notes |
+            | --- | --- | --- |
+            | éééééééééé | üüüüüüüüüü | a note long enough to span the whole entry |
+        "};
+        let (_, _, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
+        assert!(is_list_layout(cx));
+        assert!(
+            cx.debug_bounds("markdown_table_fields_0_0").is_some(),
+            "ten accented characters should count as a short field"
+        );
     }
 
     #[gpui::test]
