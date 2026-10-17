@@ -2044,16 +2044,7 @@ impl MarkdownElement {
                 .debug_selector(move || format!("markdown_image_{image_start}"))
                 .min_w_0()
                 .when_some(label_bounds, |wrapper, label_bounds| {
-                    wrapper.relative().child(
-                        canvas(
-                            move |image_bounds, _window, _cx| label_bounds.set(Some(image_bounds)),
-                            |_, _, _, _| {},
-                        )
-                        .size_full()
-                        .absolute()
-                        .top_0()
-                        .left_0(),
-                    )
+                    wrapper.relative().child(bounds_recorder(label_bounds))
                 });
             let wrapper = if !self.style.prevent_mouse_interaction
                 && let Some(url) = enclosing_link_url
@@ -2066,16 +2057,7 @@ impl MarkdownElement {
                 wrapper
                     .relative()
                     .cursor_pointer()
-                    .child(
-                        canvas(
-                            move |image_bounds, _window, _cx| bounds.set(Some(image_bounds)),
-                            |_, _, _, _| {},
-                        )
-                        .size_full()
-                        .absolute()
-                        .top_0()
-                        .left_0(),
-                    )
+                    .child(bounds_recorder(bounds))
                     .on_click(move |_, window, cx| {
                         if let Some(ref on_url_click) = url_click {
                             on_url_click(click_url.clone(), window, cx);
@@ -3902,6 +3884,17 @@ fn render_table_arrangement_toggle(
         )
 }
 
+fn bounds_recorder(bounds: Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement {
+    canvas(
+        move |element_bounds, _window, _cx| bounds.set(Some(element_bounds)),
+        |_, _, _, _| {},
+    )
+    .size_full()
+    .absolute()
+    .top_0()
+    .left_0()
+}
+
 fn render_wrap_code_block_button(
     id: usize,
     is_wrapped: bool,
@@ -4977,6 +4970,15 @@ impl MarkdownElementBuilder {
                 .into_any_element()
         } else {
             checkbox.visualization_only(true).into_any_element()
+        };
+
+        let checkbox = match self.push_element_label() {
+            Some(label_bounds) => div()
+                .relative()
+                .child(checkbox)
+                .child(bounds_recorder(label_bounds))
+                .into_any_element(),
+            None => checkbox,
         };
 
         let mut checkbox_container = h_flex().w_full();
@@ -9109,12 +9111,20 @@ mod tests {
 
     #[gpui::test]
     fn test_table_list_layout_drag_from_an_image_label_stays_in_its_entry(cx: &mut TestAppContext) {
-        let source = indoc::indoc! {"
-            | ![](icon.png) | Notes |
-            | --- | --- |
-            | first | alpha |
-            | second | beta |
-        "};
+        assert_drag_from_a_header_element_stays_in_its_entry("![](icon.png)", cx);
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_drag_from_a_checkbox_label_stays_in_its_entry(
+        cx: &mut TestAppContext,
+    ) {
+        assert_drag_from_a_header_element_stays_in_its_entry("[x]", cx);
+    }
+
+    fn assert_drag_from_a_header_element_stays_in_its_entry(header: &str, cx: &mut TestAppContext) {
+        let source =
+            format!("| {header} | Notes |\n| --- | --- |\n| first | alpha |\n| second | beta |\n");
+        let source = source.as_str();
         let (markdown, rendered_text, cx) =
             open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
         assert!(is_list_layout(cx));
@@ -9122,7 +9132,7 @@ mod tests {
         let label = cx
             .debug_bounds("markdown_table_label_1_0")
             .expect("the second entry should label its first column");
-        let image_point = point(label.left() + px(2.), label.center().y);
+        let element_point = point(label.left() + px(4.), label.center().y);
         let row_start = source.find("| second").expect("second row");
         let beta_start = source.find("beta").expect("beta cell");
         let beta_end = beta_start + "beta".len();
@@ -9130,8 +9140,8 @@ mod tests {
             let rendered_text = rendered_text.borrow();
             let rendered_text = rendered_text.as_ref().expect("markdown should be rendered");
             let label_index = rendered_text
-                .source_index_for_position(image_point)
-                .expect("an image label should map to its value cell");
+                .source_index_for_position(element_point)
+                .expect("a header element should map to its value cell");
             assert!(
                 (row_start..beta_start).contains(&label_index),
                 "{label_index} should fall inside the second row"
@@ -9144,7 +9154,7 @@ mod tests {
             point(beta_bounds.right() - px(1.), beta_bounds.center().y)
         };
 
-        cx.simulate_mouse_down(image_point, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_down(element_point, MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_move(beta_right, MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_up(beta_right, MouseButton::Left, Modifiers::default());
 
