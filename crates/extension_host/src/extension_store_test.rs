@@ -6155,3 +6155,33 @@ async fn test_git_update_check_follows_the_ref_git_fetches(cx: &mut TestAppConte
         "a ref that resolves to the installed tag should not be fetched again"
     );
 }
+
+#[gpui::test]
+async fn test_git_update_rebuilds_a_missing_checkout(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+    let installed_commit =
+        installed_source(&store, "git-extension", cx).map(|source| source.commit);
+
+    std::fs::remove_dir_all(extensions_dir.join("sources/git-extension")).unwrap();
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .unwrap();
+
+    assert!(git_failures(&store, cx).is_empty());
+    let manifest =
+        std::fs::read_to_string(extensions_dir.join("installed/git-extension/extension.toml"))
+            .unwrap();
+    assert!(manifest.contains("version = \"0.1.0\""), "{manifest}");
+    assert_eq!(
+        installed_source(&store, "git-extension", cx).map(|source| source.commit),
+        installed_commit
+    );
+}

@@ -1376,13 +1376,29 @@ impl ExtensionStore {
                             };
                             let source = installed.source();
                             let result = async {
-                                let Some(remote_commit) =
-                                    remote_commit(&sources_dir, &source).await?
-                                else {
-                                    return anyhow::Ok(false);
-                                };
-                                if remote_commit == installed.commit {
-                                    return Ok(false);
+                                let checkout_intact = ExtensionStore::add_extension_to_index(
+                                    fs.clone(),
+                                    git_source_extension_path(
+                                        &sources_dir,
+                                        &extension_id,
+                                        source.path.as_deref(),
+                                    ),
+                                    &sources_dir,
+                                    &mut ExtensionIndex::default(),
+                                    proxy.clone(),
+                                )
+                                .await
+                                .is_ok();
+                                if checkout_intact {
+                                    match remote_commit(&sources_dir, &source).await? {
+                                        Some(remote_commit)
+                                            if remote_commit == installed.commit =>
+                                        {
+                                            return anyhow::Ok(false);
+                                        }
+                                        Some(_) => {}
+                                        None => return Ok(false),
+                                    }
                                 }
                                 build_git_source(
                                     fs,
