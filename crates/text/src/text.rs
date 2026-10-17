@@ -478,6 +478,9 @@ impl History {
     }
 
     fn merge_transactions(&mut self, transaction: TransactionId, destination: TransactionId) {
+        if self.transaction(destination).is_none() {
+            return;
+        }
         if let Some(transaction) = self.forget(transaction)
             && let Some(destination) = self.transaction_mut(destination)
         {

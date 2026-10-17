@@ -2683,8 +2683,15 @@ impl Buffer {
     where
         T: AsRef<str> + Send + 'static,
     {
-        let old_text = self.as_rope().clone();
-        let base_version = self.version();
+        Self::diff_from(&self.text, new_text, cx)
+    }
+
+    pub fn diff_from<T>(snapshot: &text::BufferSnapshot, new_text: T, cx: &App) -> Task<Diff>
+    where
+        T: AsRef<str> + Send + 'static,
+    {
+        let old_text = snapshot.as_rope().clone();
+        let base_version = snapshot.version().clone();
         cx.background_spawn(async move {
             let old_text = old_text.to_string();
             let mut new_text = new_text.as_ref().to_owned();
