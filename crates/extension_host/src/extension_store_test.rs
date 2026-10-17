@@ -6157,6 +6157,49 @@ async fn test_git_update_check_follows_the_ref_git_fetches(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+async fn test_git_update_reports_a_deleted_ref(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    remote.push_ref("HEAD", "refs/heads/release");
+    let mut source = remote.source();
+    source.reference = Some("release".into());
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), source, cx)
+        })
+        .await
+        .unwrap();
+
+    git_in(
+        &remote.seed,
+        &[
+            "push",
+            &remote.bare.to_string_lossy(),
+            "--delete",
+            "release",
+        ],
+    );
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .unwrap();
+
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures[0]
+            .message
+            .contains("the repository no longer advertises release"),
+        "{}",
+        failures[0].message
+    );
+    let manifest =
+        std::fs::read_to_string(extensions_dir.join("installed/git-extension/extension.toml"))
+            .unwrap();
+    assert!(manifest.contains("version = \"0.1.0\""), "{manifest}");
+}
+
+#[gpui::test]
 async fn test_git_update_rebuilds_a_missing_checkout(cx: &mut TestAppContext) {
     let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
     let remote = GitExtensionRemote::new("git-extension", None);

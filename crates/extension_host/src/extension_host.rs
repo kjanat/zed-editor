@@ -597,6 +597,10 @@ async fn remote_commit(directory: &Path, source: &GitExtensionSource) -> Result<
     Ok(resolve_advertised_ref(&refs, reference).map(str::to_string))
 }
 
+fn is_commit_sha(reference: &str) -> bool {
+    matches!(reference.len(), 40 | 64) && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn resolve_advertised_ref<'a>(refs: &HashMap<&str, &'a str>, reference: &str) -> Option<&'a str> {
     [
         reference.to_string(),
@@ -1397,7 +1401,15 @@ impl ExtensionStore {
                                             return anyhow::Ok(false);
                                         }
                                         Some(_) => {}
-                                        None => return Ok(false),
+                                        None => {
+                                            let reference =
+                                                source.reference.as_deref().unwrap_or("HEAD");
+                                            anyhow::ensure!(
+                                                is_commit_sha(reference),
+                                                "the repository no longer advertises {reference}"
+                                            );
+                                            return Ok(false);
+                                        }
                                     }
                                 }
                                 build_git_source(
