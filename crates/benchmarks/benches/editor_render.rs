@@ -431,6 +431,41 @@ fn render_highlighted_editor(cx: &mut BenchAppContext) {
     });
 }
 
+#[gpui::bench]
+fn editor_render_one_megabyte_line(cx: &mut BenchAppContext) {
+    render_one_long_line("0123456789", cx);
+}
+
+#[gpui::bench]
+fn editor_render_one_megabyte_multibyte_line(cx: &mut BenchAppContext) {
+    render_one_long_line("é中 ", cx);
+}
+
+fn render_one_long_line(pattern: &str, cx: &mut BenchAppContext) {
+    init_context(cx);
+
+    let text = pattern.repeat(1024 * 1024 / pattern.len());
+    let columns = text.chars().count() as f64;
+    let buffer = cx.update(|cx| MultiBuffer::build_simple(&text, cx));
+    let mut window = cx.add_empty_window();
+    let editor = window.update(|window, cx| {
+        let editor = window.replace_root(cx, |window, cx| {
+            let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+            editor.set_style(editor::EditorStyle::default(), window, cx);
+            editor.set_soft_wrap_mode(language::language_settings::SoftWrap::None, cx);
+            editor
+        });
+        window.focus(&editor.focus_handle(cx), cx);
+        editor
+    });
+
+    let mut scroll_x = 0.;
+    cx.bench_renderer(editor, move |editor, window, cx| {
+        scroll_x = (scroll_x + 40.) % columns;
+        editor.set_scroll_position(gpui::point(scroll_x, 0.), window, cx);
+    });
+}
+
 fn init_context(cx: &mut BenchAppContext) {
     cx.update(|cx| {
         let store = SettingsStore::test(cx);
@@ -456,6 +491,8 @@ gpui::bench_group!(
     editor_render,
     editor_render_with_editorconfig,
     editor_render_highlighted,
-    editor_render_highlighted_minimap
+    editor_render_highlighted_minimap,
+    editor_render_one_megabyte_line,
+    editor_render_one_megabyte_multibyte_line
 );
 gpui::bench_main!(benches);
