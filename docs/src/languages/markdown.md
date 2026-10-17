@@ -35,10 +35,12 @@ def fib(n):
 ### Preview Settings
 
 All `markdown_preview` settings can be configured in user settings or overridden
-in a project's `.zed/settings.json`. For example, use the full pane width for a
-project with wide tables:
+in a project's `.zed/settings.json`. Settings ({#kb zed::OpenSettings}) lists
+them under Editor > Miscellaneous. For example, to use the full pane width for
+a project with wide tables, turn off Limit Markdown Preview Width there, or add
+to your settings file:
 
-```json
+```json [settings]
 {
   "markdown_preview": {
     "limit_content_width": false
@@ -51,10 +53,29 @@ To constrain the preview to a different width, set `limit_content_width` to
 from user settings, or from a parent directory's project settings. Changes
 apply to open previews; untitled previews use user settings.
 
+`table_layout` sets how tables render. `"table"` keeps the grid. `"list"`
+renders each row as an entry, with the table headers as field labels.
+Adjacent short fields share a compact row, and long fields span the entry's
+width. `"auto"`, the default, shows a grid while it fits the preview
+and switches a wide table with long cells to entries. Hovering a table shows a
+button that switches that table between the two layouts. A table with only a
+header row always renders as a grid.
+
+Configure it in Settings ({#kb zed::OpenSettings}) under
+Editor > Miscellaneous > Markdown Table Layout, or add to your settings file:
+
+```json [settings]
+{
+  "markdown_preview": {
+    "table_layout": "list"
+  }
+}
+```
+
 Projects can also override `font_family`, `code_font_family`, `font_size`,
-`theme`, and `open_markdown_files_in_preview`. Automatic opening is decided
-for each file when it is opened; changing that preference does not replace
-editors that are already open.
+`theme`, `table_layout`, and `open_markdown_files_in_preview`. Automatic
+opening is decided for each file when it is opened; changing that preference
+does not replace editors that are already open.
 
 Temporary preview zoom affects only that preview. Persistent font-size changes
 update the nearest project settings file that specifies a preview font size,

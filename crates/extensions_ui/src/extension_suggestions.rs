@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(notification_ids(&workspace, cx), Vec::new());
     }
 
-    #[gpui::test]
+    #[gpui::test(iterations = 10)]
     async fn test_suggestion_returns_after_uninstall(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         install_emmet_on_disk(&app_state, cx).await;

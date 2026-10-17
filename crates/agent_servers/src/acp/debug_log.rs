@@ -126,10 +126,13 @@ impl AcpDebugMessage {
     }
 }
 
+type StderrWatcher = Box<dyn FnMut(&str) -> bool + Send>;
+
 #[derive(Default)]
 struct AcpDebugLogState {
     messages: VecDeque<AcpDebugMessage>,
     subscribers: Vec<async_channel::Sender<AcpDebugMessage>>,
+    stderr_watchers: Vec<StderrWatcher>,
 }
 
 #[derive(Clone, Default)]
@@ -152,6 +155,28 @@ impl AcpDebugLog {
         let (sender, receiver) = async_channel::unbounded();
         state.subscribers.push(sender);
         (backlog, receiver)
+    }
+
+    pub(super) fn watch_stderr<T: Send + 'static>(
+        &self,
+        capacity: usize,
+        parse: impl Fn(&str) -> Option<T> + Send + 'static,
+    ) -> async_channel::Receiver<T> {
+        let (sender, receiver) = async_channel::bounded(capacity);
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stderr_watchers
+            .push(Box::new(move |line| {
+                let Some(value) = parse(line) else {
+                    return !sender.is_closed();
+                };
+                match sender.try_send(value) {
+                    Ok(()) | Err(async_channel::TrySendError::Full(_)) => true,
+                    Err(async_channel::TrySendError::Closed(_)) => false,
+                }
+            }));
+        receiver
     }
 
     pub(super) fn record_line(&self, direction: AcpDebugMessageDirection, line: &str) {
@@ -177,6 +202,9 @@ impl AcpDebugLog {
 
             for sender in &state.subscribers {
                 sender.try_send(message.clone()).log_err();
+            }
+            if let AcpDebugMessageContent::Stderr { line } = &message.message {
+                state.stderr_watchers.retain_mut(|watch| watch(line));
             }
         }
     }
@@ -313,6 +341,38 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"next","method":"session/new","params":{}}"#,
         );
         assert_eq!(debug_log.trailing_stderr().as_deref(), Some("recent error"));
+    }
+
+    #[test]
+    fn stderr_watcher_keeps_a_bounded_queue_of_parsed_lines() {
+        let debug_log = AcpDebugLog::default();
+        let receiver =
+            debug_log.watch_stderr(2, |line| line.strip_prefix("keep ").map(str::to_owned));
+
+        debug_log.record_line(AcpDebugMessageDirection::Stderr, "skip 0");
+        for index in 1..=4 {
+            debug_log.record_line(AcpDebugMessageDirection::Stderr, &format!("keep {index}"));
+        }
+        debug_log.record_line(
+            AcpDebugMessageDirection::Incoming,
+            r#"{"jsonrpc":"2.0","method":"keep 5"}"#,
+        );
+
+        assert_eq!(receiver.len(), 2);
+        assert_eq!(receiver.try_recv().as_deref(), Ok("1"));
+        assert_eq!(receiver.try_recv().as_deref(), Ok("2"));
+        assert!(receiver.try_recv().is_err());
+
+        drop(receiver);
+        debug_log.record_line(AcpDebugMessageDirection::Stderr, "keep 6");
+        assert!(
+            debug_log
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .stderr_watchers
+                .is_empty()
+        );
     }
 
     #[test]

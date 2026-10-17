@@ -15,7 +15,7 @@ use futures::{
 };
 use gpui::{AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use language::{
-    Buffer, LanguageRegistry, LocalFile, OffsetUtf16,
+    Anchor, Buffer, LanguageRegistry, LocalFile,
     language_settings::{Formatter, LanguageSettings},
 };
 use lsp::{LanguageServer, LanguageServerId, LanguageServerName};
@@ -711,7 +711,7 @@ pub fn prettier_plugins_for_language(
 pub(super) async fn format_with_prettier(
     prettier_store: &WeakEntity<PrettierStore>,
     buffer: &Entity<Buffer>,
-    range_utf16: Option<Range<OffsetUtf16>>,
+    ranges: Option<&[Range<Anchor>]>,
     cx: &mut AsyncApp,
 ) -> Option<Result<language::Diff>> {
     let prettier_instance = prettier_store
@@ -748,14 +748,7 @@ pub(super) async fn format_with_prettier(
             });
 
             let format_result = prettier
-                .format(
-                    buffer,
-                    buffer_path,
-                    ignore_dir,
-                    range_utf16,
-                    request_timeout,
-                    cx,
-                )
+                .format(buffer, buffer_path, ignore_dir, ranges, request_timeout, cx)
                 .await
                 .with_context(|| format!("{} failed to format buffer", prettier_description));
 

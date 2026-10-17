@@ -65,6 +65,7 @@ pub struct FakeGitRepositoryState {
     pub index_contents: HashMap<RepoPath, Vec<u8>>,
     // everything in commit contents is in oids
     pub merge_base_contents: HashMap<RepoPath, Oid>,
+    pub merge_base_mode_changes: HashSet<RepoPath>,
     pub oids: HashMap<Oid, Vec<u8>>,
     pub blames: HashMap<RepoPath, Blame>,
     pub blames_at_revision: HashMap<(RepoPath, Oid), Blame>,
@@ -86,6 +87,8 @@ pub struct FakeGitRepositoryState {
     pub stash_entries: GitStash,
     pub commit_template: Option<GitCommitTemplate>,
     pub blob_read_gate: Option<FakeBlobReadGate>,
+    pub load_revisions_calls: Vec<Vec<String>>,
+    pub simulated_load_revisions_error_path: Option<String>,
 }
 
 impl FakeGitRepositoryState {
@@ -107,6 +110,7 @@ impl FakeGitRepositoryState {
             worktrees_requiring_force_delete: Default::default(),
             refs: HashMap::from_iter([("HEAD".into(), "abc".into())]),
             merge_base_contents: Default::default(),
+            merge_base_mode_changes: Default::default(),
             oids: Default::default(),
             remotes: HashMap::default(),
             remote_default_branches: HashMap::default(),
@@ -117,6 +121,8 @@ impl FakeGitRepositoryState {
             commit_history: Vec::new(),
             stash_entries: Default::default(),
             commit_template: None,
+            load_revisions_calls: Vec::new(),
+            simulated_load_revisions_error_path: None,
         }
     }
 }
@@ -356,7 +362,9 @@ impl GitRepository for FakeGitRepository {
             for path in tracked_paths {
                 let status = match (state.merge_base_contents.get(path), contents.get(path)) {
                     (Some(oid), Some(content)) => {
-                        if state.oids.get(oid).context("merge-base blob is missing")? == content {
+                        if state.oids.get(oid).context("merge-base blob is missing")? == content
+                            && !state.merge_base_mode_changes.contains(path)
+                        {
                             continue;
                         }
                         TreeDiffStatus::Modified { old: *oid }
@@ -386,6 +394,14 @@ impl GitRepository for FakeGitRepository {
         revisions: Vec<String>,
     ) -> BoxFuture<'_, Result<Vec<Option<Vec<u8>>>>> {
         let fut = self.with_state_async(false, move |state| {
+            state.load_revisions_calls.push(revisions.clone());
+            if let Some(error_path) = &state.simulated_load_revisions_error_path
+                && revisions
+                    .iter()
+                    .any(|rev| rev.split_once(':').map(|(_, path)| path) == Some(error_path))
+            {
+                anyhow::bail!("simulated load_revisions failure for {error_path}");
+            }
             Ok(revisions
                 .into_iter()
                 .map(|rev| {

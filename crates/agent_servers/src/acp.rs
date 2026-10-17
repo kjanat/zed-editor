@@ -31,12 +31,14 @@ use gpui::{App, AsyncApp, Entity, SharedString, Subscription, Task, WeakEntity};
 use project::agent_server_store::{AgentServerCommand, AgentServerStore};
 use project::context_server_store::ContextServerConfiguration;
 use project::{AgentId, Project};
-use std::{cell::RefCell, process::ExitStatus, rc::Rc, sync::Arc};
+use std::{cell::RefCell, path::PathBuf, process::ExitStatus, rc::Rc, sync::Arc};
 use task::SpawnInTerminal;
 use thiserror::Error;
 use util::ResultExt as _;
+use util::path_list::PathList;
 
 const EXIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const PLUGIN_NOTICE_QUEUE_CAPACITY: usize = 16;
 
 fn mcp_configurations_for_project(
     project: &Entity<Project>,
@@ -62,6 +64,22 @@ fn mcp_configurations_for_project(
         .collect()
 }
 
+fn work_dirs_from_session_info(cwd: PathBuf, additional_directories: Vec<PathBuf>) -> PathList {
+    let mut seen_paths = HashSet::default();
+    let mut paths = Vec::with_capacity(1 + additional_directories.len());
+
+    seen_paths.insert(cwd.clone());
+    paths.push(cwd);
+
+    for path in additional_directories {
+        if seen_paths.insert(path.clone()) {
+            paths.push(path);
+        }
+    }
+
+    PathList::new(&paths)
+}
+
 async fn exited_load_error_after_drain(
     status: ExitStatus,
     drained: impl Future<Output = ()>,
@@ -79,6 +97,48 @@ async fn exited_load_error_after_drain(
         status,
         stderr: debug_log.trailing_stderr().map(SharedString::from),
     }
+}
+
+fn plugin_load_failure_notice(line: &str) -> Option<acp_v2::Notice> {
+    let (plugin, details) = line
+        .strip_prefix("Plugin ")?
+        .split_once(" failed to load (")?;
+    let (kind, details) = details.split_once(')')?;
+    Some(
+        acp_v2::Notice::new(
+            acp_v2::NoticeSeverity::Warning,
+            format!("Plugin {plugin} failed to load"),
+        )
+        .description(format!("{kind}{details}")),
+    )
+}
+
+fn forward_plugin_load_failures(
+    debug_log: &AcpDebugLog,
+    sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>>,
+    cx: &mut App,
+) -> Task<()> {
+    let notices = debug_log.watch_stderr(PLUGIN_NOTICE_QUEUE_CAPACITY, plugin_load_failure_notice);
+    cx.spawn(async move |cx| {
+        while let Ok(notice) = notices.recv().await {
+            let threads = sessions
+                .borrow()
+                .values()
+                .filter_map(|session| session.thread.upgrade())
+                .collect::<Vec<_>>();
+            for thread in threads {
+                thread.update(cx, |thread, cx| {
+                    if !thread
+                        .notices()
+                        .iter()
+                        .any(|(_, existing)| existing == &notice)
+                    {
+                        thread.push_notice(notice.clone(), cx);
+                    }
+                });
+            }
+        }
+    })
 }
 
 #[derive(Debug, Error)]
@@ -172,7 +232,7 @@ impl ForegroundWorkItem for ClientDisconnectWork {
             if let Some(thread) = thread.upgrade() {
                 thread.update(cx, |thread, cx| {
                     thread.cancel_outstanding_elicitations(cx);
-                    thread.disconnect_submissions(cx);
+                    thread.handle_connection_lost(cx);
                     cx.notify();
                 });
             }

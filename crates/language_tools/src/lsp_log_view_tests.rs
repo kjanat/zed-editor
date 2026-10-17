@@ -198,6 +198,75 @@ async fn test_lsp_log_view_labels_registered_supplementary_servers(cx: &mut Test
 }
 
 #[gpui::test]
+async fn test_supplementary_server_log_messages_reach_the_log_store(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(path!("/the-root"), json!({ "test.rs": "" }))
+        .await;
+    let project = Project::test(fs, [path!("/the-root").as_ref()], cx).await;
+    let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
+    let log_store = cx.new(|cx| LogStore::new(false, cx));
+    log_store.update(cx, |store, cx| store.add_project(&project, cx));
+
+    let server_id = LanguageServerId(100);
+    let (server, fake_server) = lsp::FakeLanguageServer::new(
+        server_id,
+        lsp::LanguageServerBinary {
+            path: "path/to/prettier".into(),
+            arguments: Vec::new(),
+            env: None,
+        },
+        "prettier".to_string(),
+        Default::default(),
+        &mut cx.to_async(),
+    );
+    lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store.register_supplementary_language_server_for_test(
+            server_id,
+            LanguageServerName::new_static("prettier (default)"),
+            Arc::new(server),
+            cx,
+        );
+    });
+    let server_key = LanguageServerLogKey::new(
+        LanguageServerKind::Supplementary {
+            project: project.downgrade(),
+        },
+        server_id,
+    );
+    let logged_messages = |cx: &mut TestAppContext| {
+        log_store.read_with(cx, |store, _| {
+            store
+                .server_logs(&server_key)
+                .map(|logs| {
+                    logs.iter()
+                        .map(|log| log.as_ref().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+    };
+
+    fake_server.notify::<lsp::notification::LogMessage>(lsp::LogMessageParams {
+        typ: lsp::MessageType::INFO,
+        message: "prettier says hi".to_string(),
+    });
+    cx.run_until_parked();
+    assert_eq!(logged_messages(cx), ["prettier says hi"]);
+
+    lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store.unregister_supplementary_language_server_for_test(server_id, cx);
+    });
+    fake_server.notify::<lsp::notification::LogMessage>(lsp::LogMessageParams {
+        typ: lsp::MessageType::INFO,
+        message: "after removal".to_string(),
+    });
+    cx.run_until_parked();
+    assert!(log_store.read_with(cx, |store, _| store.language_servers.is_empty()));
+}
+
+#[gpui::test]
 async fn test_lsp_log_view_rpc_checkbox_tracks_view_ownership(cx: &mut TestAppContext) {
     init_test(cx);
 

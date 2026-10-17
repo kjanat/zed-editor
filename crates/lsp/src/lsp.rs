@@ -571,6 +571,7 @@ impl LanguageServer {
         let stdin = server.stdin.take().unwrap();
         let stdout = server.stdout.take().unwrap();
         let stderr = server.stderr.take().unwrap();
+        let fallback_name = server_name.clone();
         let server = Self::new_internal(
             server_id,
             server_name,
@@ -586,16 +587,27 @@ impl LanguageServer {
             cx,
             move |notification| {
                 log::info!(
-                    "Language server with id {} sent unhandled notification {}:\n{}",
-                    server_id,
-                    notification.method,
-                    serde_json::to_string_pretty(&notification.params).unwrap(),
+                    "{}",
+                    Self::unhandled_notification_message(server_id, &fallback_name, notification)
                 );
                 false
             },
         );
 
         Ok(server)
+    }
+
+    fn unhandled_notification_message(
+        server_id: LanguageServerId,
+        server_name: &LanguageServerName,
+        notification: &NotificationOrRequest,
+    ) -> String {
+        let params = serde_json::to_string_pretty(&notification.params)
+            .unwrap_or_else(|_| "<unserializable params>".to_string());
+        format!(
+            "Language server {} (id {server_id}) sent unhandled notification {}:\n{params}",
+            server_name.0, notification.method
+        )
     }
 
     fn new_internal<Stdin, Stdout, Stderr, F>(
@@ -2929,6 +2941,25 @@ mod tests {
             |_| false,
         );
         (server, stdout_writer, output)
+    }
+
+    #[test]
+    fn test_unhandled_notification_message_names_the_server() {
+        let message = LanguageServer::unhandled_notification_message(
+            LanguageServerId(7),
+            &LanguageServerName("the-lsp".into()),
+            &NotificationOrRequest {
+                id: None,
+                method: "window/logMessage".to_string(),
+                params: Some(serde_json::json!({ "type": 3, "message": "hi" })),
+            },
+        );
+        assert!(
+            message.contains("Language server the-lsp (id 7)"),
+            "{message}"
+        );
+        assert!(message.contains("window/logMessage"), "{message}");
+        assert!(message.contains("\"message\": \"hi\""), "{message}");
     }
 
     async fn write_non_lsp_output_and_close(mut stdout: async_pipe::PipeWriter) {

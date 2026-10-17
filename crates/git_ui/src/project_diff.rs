@@ -1014,7 +1014,7 @@ mod tests {
     use editor::test::editor_test_context::{EditorTestContext, assert_state_with_diff};
     use gpui::{TestAppContext, VisualTestContext};
     use multi_buffer::PathKey;
-    use project::{FakeFs, git_store::MAX_CONCURRENT_OBJECT_READS};
+    use project::{FakeFs, Fs as _, git_store::MAX_CONCURRENT_OBJECT_READS};
     use serde_json::json;
     use settings::{DiffViewStyle, GitPanelGroupBy, GitPanelSortBy, SettingsStore};
     use std::path::Path;
@@ -1729,6 +1729,77 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[gpui::test(iterations = 10)]
+    async fn test_many_hunk_file_keeps_every_hunk_in_order(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        const HUNK_COUNT: usize = 50;
+        const LINES_PER_HUNK: usize = 10;
+
+        let base_lines = (0..HUNK_COUNT * LINES_PER_HUNK)
+            .map(|row| format!("line {row:03}"))
+            .collect::<Vec<_>>();
+        let current_lines = base_lines
+            .iter()
+            .enumerate()
+            .map(|(row, line)| {
+                if row % LINES_PER_HUNK == 0 {
+                    format!("new-{:02}", row / LINES_PER_HUNK)
+                } else {
+                    line.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "a.txt": current_lines.join("\n") + "\n",
+                "b.txt": "new-b\n",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[
+                ("a.txt", base_lines.join("\n") + "\n"),
+                ("b.txt", "old-b\n".to_owned()),
+            ],
+        );
+
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        cx.run_until_parked();
+
+        cx.focus(&workspace);
+        cx.update(|window, cx| {
+            window.dispatch_action(project_diff::Diff.boxed_clone(), cx);
+        });
+        cx.run_until_parked();
+
+        let item = workspace.read_with(cx, |workspace, cx| {
+            workspace.active_item_as::<ProjectDiff>(cx).unwrap()
+        });
+        let editor = item.read_with(cx, |item, cx| item.editor(cx).read(cx).rhs_editor().clone());
+        let text = editor.update(cx, |editor, cx| {
+            editor.buffer().read(cx).snapshot(cx).text()
+        });
+
+        let actual = text
+            .lines()
+            .filter(|line| line.starts_with("new-"))
+            .collect::<Vec<_>>();
+        let mut expected = (0..HUNK_COUNT)
+            .map(|hunk| format!("new-{hunk:02}"))
+            .collect::<Vec<_>>();
+        expected.push("new-b".to_owned());
+        assert_eq!(actual, expected);
+    }
+
     #[gpui::test]
     async fn test_merge_base_loading_is_incremental(cx: &mut TestAppContext) {
         init_test(cx);
@@ -1802,6 +1873,381 @@ mod tests {
             .map(|index| format!("new-{index:02}"))
             .collect::<Vec<_>>();
         assert_eq!(shown(cx), expected);
+    }
+
+    #[gpui::test]
+    async fn test_requested_file_is_not_blocked_by_earlier_slow_file(cx: &mut TestAppContext) {
+        use workspace::Item as _;
+
+        init_test(cx);
+
+        const FILE_COUNT: usize = MAX_CONCURRENT_OBJECT_READS + 4;
+
+        let names = (0..FILE_COUNT)
+            .map(|index| format!("f{index:02}.txt"))
+            .collect::<Vec<_>>();
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        let mut tree = serde_json::Map::new();
+        tree.insert(".git".to_owned(), json!({}));
+        for (index, name) in names.iter().enumerate() {
+            tree.insert(name.clone(), json!(format!("new-{index:02}\n")));
+        }
+        fs.insert_tree(project_root, serde_json::Value::Object(tree))
+            .await;
+
+        let merge_base = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_str(), format!("old-{index:02}\n")))
+            .collect::<Vec<_>>();
+        let oids = fs.set_merge_base_content_for_repo(&dot_git, &merge_base);
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs, [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let requested = PathKey::with_sort_prefix(2, rel_path("f05.txt").into_arc());
+        cx.update_window_entity(&branch_diff, |diff, window, cx| {
+            diff.move_to_path(requested, window, cx)
+        });
+        cx.run_until_parked();
+
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let shown = |cx: &mut VisualTestContext| {
+            editor
+                .update(cx, |editor, cx| {
+                    editor.buffer().read(cx).snapshot(cx).text()
+                })
+                .lines()
+                .filter(|line| line.starts_with("new-"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let active_path = |cx: &mut VisualTestContext| {
+            branch_diff.read_with(cx, |diff, cx| {
+                diff.active_project_path(cx)
+                    .map(|project_path| project_path.path.as_unix_str().to_owned())
+            })
+        };
+
+        assert!(gate.is_waiting(oids[5]));
+        assert!(gate.is_waiting(oids[0]));
+        assert!(shown(cx).is_empty());
+
+        assert!(gate.release(oids[5]));
+        cx.run_until_parked();
+        assert_eq!(shown(cx), vec!["new-05".to_owned()]);
+        assert!(gate.is_waiting(oids[0]));
+        assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
+
+        assert!(gate.release(oids[0]));
+        cx.run_until_parked();
+        assert_eq!(shown(cx), vec!["new-00".to_owned(), "new-05".to_owned()]);
+        assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
+
+        gate.open();
+        cx.run_until_parked();
+        let expected = (0..FILE_COUNT)
+            .map(|index| format!("new-{index:02}"))
+            .collect::<Vec<_>>();
+        assert_eq!(shown(cx), expected);
+        assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
+    }
+
+    #[gpui::test]
+    async fn test_restarted_refresh_keeps_pending_folds(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            project_root,
+            json!({
+                ".git": {},
+                "f01.txt": "new-01\n",
+                "f02.txt": "new-02\n",
+                "f03.txt": "new-03\n",
+            }),
+        )
+        .await;
+        let oids = fs.set_merge_base_content_for_repo(
+            &dot_git,
+            &[
+                ("f00.txt", "deleted-00\n".into()),
+                ("f01.txt", "old-01\n".into()),
+                ("f02.txt", "old-02\n".into()),
+                ("f03.txt", "old-03\n".into()),
+            ],
+        );
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs, [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        assert!(gate.release(oids[0]));
+        cx.run_until_parked();
+        assert!(gate.is_waiting(oids[1]));
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let deleted_buffer = editor
+            .update(cx, |editor, cx| {
+                editor
+                    .buffer()
+                    .read(cx)
+                    .snapshot(cx)
+                    .buffers_with_paths()
+                    .find(|(_, path_key)| path_key.path.as_unix_str() == "f00.txt")
+                    .map(|(buffer, _)| buffer.remote_id())
+            })
+            .expect("the deleted file should have registered");
+
+        let requested = PathKey::with_sort_prefix(2, rel_path("f03.txt").into_arc());
+        cx.update_window_entity(&branch_diff, |diff, window, cx| {
+            diff.move_to_path(requested, window, cx)
+        });
+        gate.open();
+        cx.run_until_parked();
+
+        assert!(
+            editor.update(cx, |editor, cx| editor.is_buffer_folded(deleted_buffer, cx)),
+            "the deleted file should be folded after the restarted refresh"
+        );
+    }
+
+    enum UntrackedFoldInterruption {
+        DisableCollapse,
+        RemoveFile,
+    }
+
+    async fn untracked_file_folded_after_interrupted_refresh(
+        cx: &mut TestAppContext,
+        interruption: UntrackedFoldInterruption,
+    ) -> bool {
+        init_test(cx);
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    let git_panel = settings.git_panel.get_or_insert_default();
+                    git_panel.group_by = Some(GitPanelGroupBy::None);
+                    git_panel.collapse_untracked_diff = Some(true);
+                });
+            });
+        });
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            project_root,
+            json!({
+                ".git": {},
+                "a.txt": "untracked\n",
+                "b.txt": "new-b\n",
+            }),
+        )
+        .await;
+        fs.set_head_for_repo(&dot_git, &[("b.txt", "old-b\n".into())], "deadbeef");
+        fs.set_index_for_repo(&dot_git, &[("b.txt", "old-b\n".into())]);
+        let oids = fs.set_merge_base_content_for_repo(&dot_git, &[("b.txt", "old-b\n".into())]);
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs.clone(), [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        assert!(gate.is_waiting(oids[0]));
+
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let untracked_buffer = editor
+            .update(cx, |editor, cx| {
+                editor
+                    .buffer()
+                    .read(cx)
+                    .snapshot(cx)
+                    .buffers_with_paths()
+                    .find(|(_, path_key)| path_key.path.as_unix_str() == "a.txt")
+                    .map(|(buffer, _)| buffer.remote_id())
+            })
+            .expect("the untracked file should have registered");
+
+        match interruption {
+            UntrackedFoldInterruption::DisableCollapse => cx.update(|_, cx| {
+                cx.update_global::<SettingsStore, _>(|store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings
+                            .git_panel
+                            .get_or_insert_default()
+                            .collapse_untracked_diff = Some(false);
+                    });
+                });
+            }),
+            UntrackedFoldInterruption::RemoveFile => fs
+                .remove_file(&project_root.join("a.txt"), Default::default())
+                .await
+                .unwrap(),
+        }
+        cx.run_until_parked();
+        gate.open();
+        cx.run_until_parked();
+
+        editor.update(cx, |editor, cx| {
+            editor.is_buffer_folded(untracked_buffer, cx)
+        })
+    }
+
+    #[gpui::test]
+    async fn test_disabling_collapse_during_refresh_drops_pending_fold(cx: &mut TestAppContext) {
+        assert!(
+            !untracked_file_folded_after_interrupted_refresh(
+                cx,
+                UntrackedFoldInterruption::DisableCollapse
+            )
+            .await
+        );
+    }
+
+    #[gpui::test]
+    async fn test_removed_file_drops_pending_fold(cx: &mut TestAppContext) {
+        assert!(
+            !untracked_file_folded_after_interrupted_refresh(
+                cx,
+                UntrackedFoldInterruption::RemoveFile
+            )
+            .await
+        );
+    }
+
+    fn run_until_settled(cx: &mut VisualTestContext) {
+        for _ in 0..100_000 {
+            if !cx.executor().tick() {
+                cx.run_until_parked();
+                return;
+            }
+        }
+        panic!("tasks kept running without settling");
+    }
+
+    #[gpui::test]
+    async fn test_requested_file_without_hunks_does_not_restart_refresh(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            project_root,
+            json!({
+                ".git": {},
+                "f00.txt": "new-00\n",
+                "f01.txt": "new-01\n",
+                "f02.txt": "same-02\n",
+                "f03.txt": "new-03\n",
+            }),
+        )
+        .await;
+        let oids = fs.set_merge_base_content_for_repo(
+            &dot_git,
+            &[
+                ("f00.txt", "old-00\n".into()),
+                ("f01.txt", "old-01\n".into()),
+                ("f02.txt", "same-02\n".into()),
+                ("f03.txt", "old-03\n".into()),
+            ],
+        );
+        fs.set_merge_base_mode_changes_for_repo(&dot_git, &["f02.txt"]);
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs, [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let requested = PathKey::with_sort_prefix(2, rel_path("f02.txt").into_arc());
+        cx.update_window_entity(&branch_diff, |diff, window, cx| {
+            diff.move_to_path(requested, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(gate.is_waiting(oids[2]));
+
+        assert!(gate.release(oids[2]));
+        run_until_settled(cx);
+        assert!(
+            !gate.is_waiting(oids[2]),
+            "loading a requested file without hunks should not start another refresh"
+        );
+        assert!(gate.is_waiting(oids[0]));
+
+        gate.open();
+        run_until_settled(cx);
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let shown = editor
+            .update(cx, |editor, cx| {
+                editor.buffer().read(cx).snapshot(cx).text()
+            })
+            .lines()
+            .filter(|line| line.starts_with("new-"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(shown, ["new-00", "new-01", "new-03"]);
     }
 
     #[gpui::test]

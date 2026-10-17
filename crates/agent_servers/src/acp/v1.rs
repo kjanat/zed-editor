@@ -1,10 +1,10 @@
 use super::{
     AcpDebugLog, AcpDebugMessage, AcpSession, ClientContext, ConfigOptions, FlattenAcpResult as _,
     ForegroundWork, UnsupportedVersion, drain_foreground_queue, enqueue_notification,
-    enqueue_request, first_class_terminal_auth_task, handle_v2_complete_elicitation,
-    handle_v2_create_elicitation, map_acp_error, mcp_configurations_for_project, respond_err,
-    respond_result, runtime, session_thread, terminal_auth_task_id, transport,
-    with_v2_client_ingress,
+    enqueue_request, first_class_terminal_auth_task, forward_plugin_load_failures,
+    handle_v2_complete_elicitation, handle_v2_create_elicitation, map_acp_error,
+    mcp_configurations_for_project, respond_err, respond_result, runtime, session_thread,
+    terminal_auth_task_id, transport, with_v2_client_ingress, work_dirs_from_session_info,
 };
 use acp_thread::{
     AgentConnection, AgentSessionInfo, AgentSessionList, AgentSessionListRequest,
@@ -21,7 +21,7 @@ use agent_client_protocol::{
 };
 use anyhow::anyhow;
 use async_channel;
-use collections::{HashMap, HashSet};
+use collections::HashMap;
 use futures::channel::mpsc;
 use futures::future::Shared;
 use futures::{Future, FutureExt as _};
@@ -88,6 +88,7 @@ pub struct AcpConnection {
     dispatch_tx: mpsc::UnboundedSender<ForegroundWork>,
     _wait_task: Task<()>,
     _stderr_task: Shared<Task<()>>,
+    _plugin_failure_task: Task<()>,
 }
 
 #[derive(Clone, Default)]
@@ -670,6 +671,8 @@ impl AcpConnection {
             let defaults = defaults.clone();
             move |cx| defaults.observe_settings(agent_id, cx)
         });
+        let plugin_failure_task =
+            cx.update(|cx| forward_plugin_load_failures(&debug_log, sessions.clone(), cx));
 
         Ok(Self {
             id: agent_id,
@@ -690,6 +693,7 @@ impl AcpConnection {
             dispatch_tx,
             _wait_task: wait_task,
             _stderr_task: stderr_task,
+            _plugin_failure_task: plugin_failure_task,
             _child: Some(child),
         })
     }
@@ -715,6 +719,8 @@ impl AcpConnection {
         let agent_id = AgentId::new("test");
         let defaults = AcpConnectionDefaults::default();
         let settings_subscription = defaults.observe_settings(agent_id.clone(), cx);
+        let debug_log = AcpDebugLog::default();
+        let plugin_failure_task = forward_plugin_load_failures(&debug_log, sessions.clone(), cx);
 
         Self {
             id: agent_id,
@@ -730,7 +736,7 @@ impl AcpConnection {
             defaults,
             _child: None,
             session_list: None,
-            debug_log: AcpDebugLog::default(),
+            debug_log,
             _settings_subscription: settings_subscription,
             _runtime: runtime::ClientRuntime::from_test_tasks(
                 dispatch_tx.clone(),
@@ -740,6 +746,7 @@ impl AcpConnection {
             dispatch_tx,
             _wait_task: Task::ready(()),
             _stderr_task: Task::ready(()).shared(),
+            _plugin_failure_task: plugin_failure_task,
         }
     }
 
@@ -1174,22 +1181,6 @@ fn session_directories_from_work_dirs(
         cwd,
         additional_directories,
     })
-}
-
-fn work_dirs_from_session_info(cwd: PathBuf, additional_directories: Vec<PathBuf>) -> PathList {
-    let mut seen_paths = HashSet::default();
-    let mut paths = Vec::with_capacity(1 + additional_directories.len());
-
-    seen_paths.insert(cwd.clone());
-    paths.push(cwd);
-
-    for path in additional_directories {
-        if seen_paths.insert(path.clone()) {
-            paths.push(path);
-        }
-    }
-
-    PathList::new(&paths)
 }
 
 fn emit_load_error_to_all_sessions(
@@ -1645,12 +1636,15 @@ impl AgentConnection for AcpConnection {
         })
     }
 
-    fn cancel(&self, session_id: &acp_v2::SessionId, _cx: &mut App) {
+    fn cancel(&self, session_id: &acp_v2::SessionId, _cx: &mut App) -> Result<()> {
+        let params = acp::CancelNotification::new(acp::SessionId::new(session_id.0.clone()));
+        self.connection
+            .send_notification(params)
+            .map_err(map_acp_error)?;
         if let Some(session) = self.sessions.borrow_mut().get_mut(session_id) {
             session.suppress_abort_err = true;
         }
-        let params = acp::CancelNotification::new(acp::SessionId::new(session_id.0.clone()));
-        self.connection.send_notification(params).log_err();
+        Ok(())
     }
 
     fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
@@ -1969,7 +1963,7 @@ pub mod test_support {
             self.inner.retry(session_id, cx)
         }
 
-        fn cancel(&self, session_id: &acp_v2::SessionId, cx: &mut App) {
+        fn cancel(&self, session_id: &acp_v2::SessionId, cx: &mut App) -> Result<()> {
             self.inner.cancel(session_id, cx)
         }
 
@@ -2428,7 +2422,8 @@ mod tests {
             )
             .data(data);
             *response_error.lock().expect("response error") = original.clone();
-            cx.update(|cx| harness.connection.cancel(&session_id, cx));
+            cx.update(|cx| harness.connection.cancel(&session_id, cx))
+                .expect("cancellation succeeds");
             assert!(
                 harness
                     .connection
@@ -7103,6 +7098,149 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         assert_agent_exit_preserves_final_output(true, cx).await;
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn plugin_load_failures_on_stderr_become_thread_notices(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let store = settings::SettingsStore::test(cx);
+            cx.set_global(store);
+        });
+        cx.executor().allow_parking();
+
+        let directory = tempfile::tempdir().expect("create working directory");
+        let project = project::Project::example([directory.path()], &mut cx.to_async()).await;
+        let agent_server_store =
+            project.read_with(cx, |project, _| project.agent_server_store().downgrade());
+        let initialize_response =
+            serde_json::to_string(&acp::InitializeResponse::new(ProtocolVersion::V1))
+                .expect("serialize initialization");
+        let session_response = serde_json::to_string(&acp::NewSessionResponse::new(
+            acp::SessionId::new("plugin-agent"),
+        ))
+        .expect("serialize session");
+        let prompt_response =
+            serde_json::to_string(&acp::PromptResponse::new(acp::StopReason::EndTurn))
+                .expect("serialize prompt response");
+        let script = format!(
+            r#"
+read_request() {{
+    IFS= read -r request || exit 2
+    request_id=$(printf '%s' "$request" | sed -n 's/.*"id":\("[^"]*"\).*/\1/p')
+    test -n "$request_id" || exit 3
+}}
+respond() {{
+    printf '{{"jsonrpc":"2.0","id":%s,"result":%s}}\n' "$request_id" "$1"
+}}
+read_request
+respond '{initialize_response}'
+read_request
+respond '{session_response}'
+read_request
+printf '%s\n' 'unrelated stderr' >&2
+printf '%s\n' 'Plugin rust-analyzer failed to load (lsp-config-invalid) from /plugins/rust-analyzer/.lsp.json: command resolved to an empty string' >&2
+printf '%s\n' 'Plugin rust-analyzer failed to load (lsp-config-invalid) from /plugins/rust-analyzer/.lsp.json: command resolved to an empty string' >&2
+printf '%s\n' 'Plugin formatter failed to load (generic-error): manifest missing' >&2
+respond '{prompt_response}'
+cat >/dev/null
+"#
+        );
+        let command = AgentServerCommand {
+            path: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            env: None,
+        };
+        let timeout = cx
+            .background_executor
+            .timer(std::time::Duration::from_secs(5))
+            .fuse();
+        let exchange = async {
+            let connection = Rc::new(
+                AcpConnection::stdio(
+                    AgentId::new("plugin-agent"),
+                    project.clone(),
+                    command,
+                    agent_server_store,
+                    None,
+                    HashMap::default(),
+                    &mut cx.to_async(),
+                )
+                .await
+                .expect("initialize scripted agent"),
+            );
+            let thread = cx
+                .update(|cx| {
+                    connection.clone().new_session(
+                        project,
+                        PathList::new(&[directory.path()]),
+                        cx,
+                    )
+                })
+                .await
+                .expect("create scripted session");
+            connection.sessions.borrow_mut().insert(
+                acp_v2::SessionId::new("released-thread"),
+                AcpSession {
+                    thread: gpui::WeakEntity::new_invalid(),
+                    connection: std::rc::Weak::new(),
+                    suppress_abort_err: false,
+                    session_modes: None,
+                    config_options: None,
+                    default_config_task: None,
+                    _release_subscription: gpui::Subscription::new(|| {}),
+                },
+            );
+            let (notice_sender, notice_receiver) = async_channel::unbounded();
+            let _subscription = cx.update(|cx| {
+                cx.subscribe(&thread, move |_, event, _| {
+                    if let acp_thread::AcpThreadEvent::NoticesUpdated = event {
+                        notice_sender.try_send(()).expect("capture notice event");
+                    }
+                })
+            });
+            thread
+                .update(cx, |thread, cx| thread.send_raw("Load plugins", cx))
+                .await
+                .expect("prompt should be answered")
+                .expect("prompt should finish");
+            for _ in 0..2 {
+                notice_receiver.recv().await.expect("receive notice event");
+            }
+            cx.run_until_parked();
+
+            thread.read_with(cx, |thread, _| {
+                assert_eq!(
+                    thread.notices(),
+                    &[
+                        (
+                            0,
+                            acp_v2::Notice::new(
+                                acp_v2::NoticeSeverity::Warning,
+                                "Plugin rust-analyzer failed to load",
+                            )
+                            .description(
+                                "lsp-config-invalid from /plugins/rust-analyzer/.lsp.json: command resolved to an empty string",
+                            ),
+                        ),
+                        (
+                            1,
+                            acp_v2::Notice::new(
+                                acp_v2::NoticeSeverity::Warning,
+                                "Plugin formatter failed to load",
+                            )
+                            .description("generic-error: manifest missing"),
+                        ),
+                    ]
+                );
+            });
+        }
+        .fuse();
+        futures::pin_mut!(exchange, timeout);
+        futures::select! {
+            _ = exchange => {}
+            _ = timeout => panic!("timed out waiting for plugin notices"),
+        }
     }
 
     #[cfg(unix)]

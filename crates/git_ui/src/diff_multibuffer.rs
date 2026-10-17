@@ -4,7 +4,7 @@ use crate::{
     git_panel_settings::GitPanelSettings,
 };
 use anyhow::Result;
-use buffer_diff::BufferDiff;
+use buffer_diff::{BufferDiff, BufferDiffSnapshot};
 use collections::{HashMap, HashSet};
 use editor::{
     EditorEvent, EditorSettings, SelectionEffects, SplittableEditor, actions::GoToHunk,
@@ -17,17 +17,17 @@ use gpui::{
     App, AppContext as _, AsyncWindowContext, Entity, EventEmitter, FocusHandle, Focusable, Render,
     SharedString, Subscription, Task, WeakEntity,
 };
-use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt};
-use multi_buffer::{MultiBuffer, PathKey};
+use language::{Anchor, Buffer, BufferId, BufferSnapshot, Capability, OffsetRangeExt, Point};
+use multi_buffer::{ExcerptRange, MultiBuffer, PathKey};
 use project::{
-    ConflictSet, Project, ProjectPath,
+    ConflictSet, ConflictSetSnapshot, Project, ProjectPath,
     git_store::{
         Repository,
         diff_buffer_list::{self, BranchDiffEvent, DiffBase},
     },
 };
 use settings::{GitPanelGroupBy, GitPanelSortBy, Settings, SettingsStore};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, mem, sync::Arc};
 use theme::ActiveTheme;
 use ui::{CommonAnimationExt as _, KeyBinding, prelude::*};
 use util::{ResultExt as _, rel_path::RelPath};
@@ -40,6 +40,97 @@ use ztracing::instrument;
 /// Loading every changed file at once makes the first one land no sooner than the
 /// last, leaving a large diff on a spinner. Throughput flattens past this point.
 const MAX_CONCURRENT_BUFFER_LOADS: usize = 16;
+
+struct DiffExcerptInputs {
+    buffer_snapshot: BufferSnapshot,
+    diff_snapshot: BufferDiffSnapshot,
+    conflicts: Option<ConflictSetSnapshot>,
+    context_line_count: u32,
+}
+
+struct DiffExcerpts {
+    buffer_snapshot: BufferSnapshot,
+    diff_snapshot: BufferDiffSnapshot,
+    conflicts: Option<ConflictSetSnapshot>,
+    context_line_count: u32,
+    ranges: Vec<ExcerptRange<Point>>,
+}
+
+impl DiffExcerpts {
+    fn refreshed(self, current: DiffExcerptInputs) -> Self {
+        if self.is_current(&current) {
+            self
+        } else {
+            current.build()
+        }
+    }
+
+    fn is_current(&self, inputs: &DiffExcerptInputs) -> bool {
+        let diff = &self.diff_snapshot;
+        let current_diff = &inputs.diff_snapshot;
+        self.buffer_snapshot.version() == inputs.buffer_snapshot.version()
+            && diff.buffer_version() == current_diff.buffer_version()
+            && diff.base_text_exists() == current_diff.base_text_exists()
+            && diff.base_text().remote_id() == current_diff.base_text().remote_id()
+            && diff.base_text().version() == current_diff.base_text().version()
+            && self.context_line_count == inputs.context_line_count
+            && match (&self.conflicts, &inputs.conflicts) {
+                (Some(conflicts), Some(current)) => {
+                    Arc::ptr_eq(&conflicts.conflicts, &current.conflicts)
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl DiffExcerptInputs {
+    fn read(
+        display_buffer: &Entity<Buffer>,
+        diff: &Entity<BufferDiff>,
+        conflict_set: Option<&Entity<ConflictSet>>,
+        cx: &App,
+    ) -> Self {
+        Self {
+            buffer_snapshot: display_buffer.read(cx).snapshot(),
+            diff_snapshot: diff.read(cx).snapshot(cx),
+            conflicts: conflict_set.map(|conflict_set| conflict_set.read(cx).snapshot()),
+            context_line_count: multibuffer_context_lines(cx),
+        }
+    }
+
+    fn build(self) -> DiffExcerpts {
+        let snapshot = &self.buffer_snapshot;
+        let conflict_ranges = self
+            .conflicts
+            .as_ref()
+            .map(|conflicts| {
+                conflicts
+                    .conflicts
+                    .iter()
+                    .map(|conflict| conflict.range.to_point(snapshot))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|conflict_ranges| !conflict_ranges.is_empty());
+        let ranges = conflict_ranges.unwrap_or_else(|| {
+            self.diff_snapshot
+                .hunks_intersecting_range(
+                    Anchor::min_max_range_for_buffer(snapshot.remote_id()),
+                    snapshot,
+                )
+                .map(|diff_hunk| diff_hunk.buffer_range.to_point(snapshot))
+                .collect()
+        });
+        let ranges = multi_buffer::build_excerpt_ranges(ranges, self.context_line_count, snapshot);
+        DiffExcerpts {
+            buffer_snapshot: self.buffer_snapshot,
+            diff_snapshot: self.diff_snapshot,
+            conflicts: self.conflicts,
+            context_line_count: self.context_line_count,
+            ranges,
+        }
+    }
+}
 
 struct BufferSubscriptions {
     _diff: Entity<BufferDiff>,
@@ -57,6 +148,7 @@ pub struct DiffMultibuffer {
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     pending_scroll: Option<PathKey>,
+    pending_folds: Vec<BufferId>,
     review_comment_count: usize,
     empty_label: SharedString,
     _task: Task<Result<()>>,
@@ -169,6 +261,7 @@ impl DiffMultibuffer {
             multibuffer,
             buffer_subscriptions: Default::default(),
             pending_scroll: None,
+            pending_folds: Vec::new(),
             review_comment_count: 0,
             empty_label: empty_label.into(),
             _task: task,
@@ -264,22 +357,40 @@ impl DiffMultibuffer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(position) = self.multibuffer.read(cx).location_for_path(&path_key, cx) {
-            self.editor.update(cx, |editor, cx| {
-                editor.rhs_editor().update(cx, |editor, cx| {
-                    editor.change_selections(
-                        SelectionEffects::scroll(Autoscroll::focused()),
-                        window,
-                        cx,
-                        |s| {
-                            s.select_ranges([position..position]);
-                        },
-                    )
-                })
-            });
-        } else {
-            self.pending_scroll = Some(path_key);
+        if self.scroll_to_path(&path_key, window, cx) {
+            return;
         }
+        self.pending_scroll = Some(path_key);
+        if !self._task.is_ready() {
+            self._task = window.spawn(cx, {
+                let this = cx.weak_entity();
+                async |cx| Self::refresh(this, cx).await
+            });
+        }
+    }
+
+    fn scroll_to_path(
+        &mut self,
+        path_key: &PathKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(position) = self.multibuffer.read(cx).location_for_path(path_key, cx) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.rhs_editor().update(cx, |editor, cx| {
+                editor.change_selections(
+                    SelectionEffects::scroll(Autoscroll::focused()),
+                    window,
+                    cx,
+                    |s| {
+                        s.select_ranges([position..position]);
+                    },
+                )
+            })
+        });
+        true
     }
 
     pub(crate) fn autoscroll(&self, cx: &mut Context<Self>) {
@@ -445,6 +556,7 @@ impl DiffMultibuffer {
         main_buffer: Entity<Buffer>,
         diff: Entity<BufferDiff>,
         conflict_set: Option<Entity<ConflictSet>>,
+        excerpts: DiffExcerpts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BufferId> {
@@ -506,39 +618,21 @@ impl DiffMultibuffer {
             },
         );
 
-        let snapshot = display_buffer.read(cx).snapshot();
-        let diff_snapshot = diff.read(cx).snapshot(cx);
-
-        let excerpt_ranges = {
-            let diff_hunk_ranges = diff_snapshot
-                .hunks_intersecting_range(
-                    Anchor::min_max_range_for_buffer(snapshot.remote_id()),
-                    &snapshot,
-                )
-                .map(|diff_hunk| diff_hunk.buffer_range.to_point(&snapshot));
-            let conflict_ranges = conflict_set.as_ref().and_then(|conflict_set| {
-                let conflicts = conflict_set.read(cx).snapshot();
-                let conflicts = conflicts
-                    .conflicts
-                    .iter()
-                    .map(|conflict| conflict.range.to_point(&snapshot))
-                    .collect::<Vec<_>>();
-                (!conflicts.is_empty()).then_some(conflicts)
-            });
-
-            conflict_ranges.unwrap_or_else(|| diff_hunk_ranges.collect())
-        };
-
-        let buffer_id = snapshot.text.remote_id();
-        let mut needs_fold = false;
+        let buffer_id = excerpts.buffer_snapshot.text.remote_id();
+        let should_fold = file_status.is_deleted()
+            || (file_status.is_untracked()
+                && GitPanelSettings::get_global(cx).collapse_untracked_diff);
+        if !should_fold {
+            self.pending_folds.retain(|pending| *pending != buffer_id);
+        }
 
         let (was_empty, is_excerpt_newly_added) = self.editor.update(cx, |editor, cx| {
             let was_empty = editor.rhs_editor().read(cx).buffer().read(cx).is_empty();
-            let is_newly_added = editor.update_excerpts_for_path(
+            let is_newly_added = editor.update_excerpt_ranges_for_path(
                 path_key.clone(),
                 display_buffer,
-                excerpt_ranges,
-                multibuffer_context_lines(cx),
+                &excerpts.buffer_snapshot,
+                excerpts.ranges,
                 diff,
                 cx,
             );
@@ -550,9 +644,9 @@ impl DiffMultibuffer {
             (was_empty, is_newly_added)
         });
 
-        self.editor.update(cx, |editor, cx| {
-            editor.rhs_editor().update(cx, |editor, cx| {
-                if was_empty {
+        if was_empty {
+            self.editor.update(cx, |editor, cx| {
+                editor.rhs_editor().update(cx, |editor, cx| {
                     editor.change_selections(
                         SelectionEffects::no_scroll(),
                         window,
@@ -563,16 +657,9 @@ impl DiffMultibuffer {
                             ])
                         },
                     );
-                }
-                if is_excerpt_newly_added
-                    && (file_status.is_deleted()
-                        || (file_status.is_untracked()
-                            && GitPanelSettings::get_global(cx).collapse_untracked_diff))
-                {
-                    needs_fold = true;
-                }
-            })
-        });
+                })
+            });
+        }
 
         if self.multibuffer.read(cx).is_empty()
             && self
@@ -588,10 +675,10 @@ impl DiffMultibuffer {
             });
         }
         if self.pending_scroll.as_ref() == Some(&path_key) {
-            self.move_to_path(path_key, window, cx);
+            self.scroll_to_path(&path_key, window, cx);
         }
 
-        needs_fold.then_some(buffer_id)
+        (is_excerpt_newly_added && should_fold).then_some(buffer_id)
     }
 
     fn buffer_ranges_changed(
@@ -609,6 +696,8 @@ impl DiffMultibuffer {
         if display_buffer.read(cx).is_dirty() {
             return;
         }
+        let excerpts =
+            DiffExcerptInputs::read(&display_buffer, &diff, conflict_set.as_ref(), cx).build();
         self.register_buffer(
             repo_path,
             path_key,
@@ -617,6 +706,7 @@ impl DiffMultibuffer {
             main_buffer,
             diff,
             conflict_set,
+            excerpts,
             window,
             cx,
         );
@@ -624,7 +714,7 @@ impl DiffMultibuffer {
 
     #[instrument(skip(this, cx))]
     pub(crate) async fn refresh(this: WeakEntity<Self>, cx: &mut AsyncWindowContext) -> Result<()> {
-        let entries = this.update(cx, |this, cx| {
+        let (mut entries, requested_path) = this.update(cx, |this, cx| {
             let (repo, buffers_to_load) = this.branch_diff.update(cx, |branch_diff, cx| {
                 let load_buffers = branch_diff.load_buffers(cx);
                 (branch_diff.repo().cloned(), load_buffers)
@@ -667,6 +757,7 @@ impl DiffMultibuffer {
                     if let Some(repo_path) = repo_path_by_display_id.get(&buffer_id) {
                         this.buffer_subscriptions.remove(repo_path);
                     }
+                    this.pending_folds.retain(|pending| *pending != buffer_id);
                     editor.rhs_editor().update(cx, |editor, cx| {
                         conflict_view::buffers_removed(editor, &[buffer_id], cx);
                     });
@@ -679,13 +770,14 @@ impl DiffMultibuffer {
             this.buffer_subscriptions
                 .retain(|repo_path, _| live_repo_paths.contains(repo_path));
 
-            entries
+            (entries, this.pending_scroll.clone())
         })?;
 
-        let mut buffers_to_fold = Vec::new();
-
-        // Ordered, so excerpts don't shift under the reader as later files arrive.
-        let mut loads = stream::iter(entries.into_iter().map(|(path_key, entry)| {
+        // Ordered, so excerpts don't shift under the reader as later files arrive. The requested
+        // file goes first, and its selection then anchors the viewport.
+        let requested_entry = requested_path.and_then(|path_key| entries.remove_entry(&path_key));
+        let entries = requested_entry.into_iter().chain(entries);
+        let mut loads = stream::iter(entries.map(|(path_key, entry)| {
             let diff_buffer_list::DiffBuffer {
                 repo_path,
                 file_status,
@@ -700,8 +792,23 @@ impl DiffMultibuffer {
             // case this loop never awaits and starves the foreground thread.
             yield_now().await;
             if let Some(loaded_buffer) = loaded.log_err() {
+                let inputs = cx.update(|_, cx| {
+                    DiffExcerptInputs::read(
+                        &loaded_buffer.display_buffer,
+                        &loaded_buffer.diff,
+                        loaded_buffer.conflict_set.as_ref(),
+                        cx,
+                    )
+                })?;
+                let excerpts = cx.background_spawn(async move { inputs.build() }).await;
                 cx.update(|window, cx| {
                     this.update(cx, |this, cx| {
+                        let excerpts = excerpts.refreshed(DiffExcerptInputs::read(
+                            &loaded_buffer.display_buffer,
+                            &loaded_buffer.diff,
+                            loaded_buffer.conflict_set.as_ref(),
+                            cx,
+                        ));
                         if let Some(buffer_id) = this.register_buffer(
                             repo_path,
                             path_key,
@@ -710,10 +817,11 @@ impl DiffMultibuffer {
                             loaded_buffer.main_buffer,
                             loaded_buffer.diff,
                             loaded_buffer.conflict_set,
+                            excerpts,
                             window,
                             cx,
                         ) {
-                            buffers_to_fold.push(buffer_id);
+                            this.pending_folds.push(buffer_id);
                         }
                     })
                     .ok();
@@ -721,6 +829,7 @@ impl DiffMultibuffer {
             }
         }
         this.update(cx, |this, cx| {
+            let buffers_to_fold = mem::take(&mut this.pending_folds);
             if !buffers_to_fold.is_empty() {
                 this.editor.update(cx, |editor, cx| {
                     editor
@@ -1057,4 +1166,97 @@ fn tree_sort_path(repo_path: &RelPath) -> Arc<RelPath> {
     RelPath::from_unix_str(&synthetic)
         .map(|path| path.into_arc())
         .unwrap_or_else(|_| repo_path.into_arc())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn read_inputs(
+        buffer: &Entity<Buffer>,
+        diff: &Entity<BufferDiff>,
+        conflicts: Option<ConflictSetSnapshot>,
+        cx: &mut TestAppContext,
+    ) -> DiffExcerptInputs {
+        cx.update(|cx| {
+            let mut inputs = DiffExcerptInputs::read(buffer, diff, None, cx);
+            inputs.conflicts = conflicts;
+            inputs
+        })
+    }
+
+    #[gpui::test]
+    async fn test_diff_excerpts_go_stale_when_their_inputs_change(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| Buffer::local("one\ntwo\nthree\n", cx));
+        let snapshot = buffer.read_with(cx, |buffer, _| buffer.text_snapshot());
+        let diff = cx.new(|cx| BufferDiff::new(&snapshot, None, None, cx));
+        diff.update(cx, |diff, cx| {
+            diff.set_base_text(Some("one\nTWO\nthree\n".into()), snapshot.clone(), cx)
+        })
+        .await;
+        cx.run_until_parked();
+
+        let excerpts = read_inputs(&buffer, &diff, None, cx).build();
+        assert_eq!(excerpts.ranges.len(), 1);
+        assert!(excerpts.is_current(&read_inputs(&buffer, &diff, None, cx)));
+
+        let unchanged = excerpts.refreshed(read_inputs(&buffer, &diff, None, cx));
+        assert_eq!(
+            unchanged
+                .ranges
+                .iter()
+                .map(|range| range.primary.start.row)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "zero\n")], None, cx));
+        assert!(
+            !unchanged.is_current(&read_inputs(&buffer, &diff, None, cx)),
+            "a buffer edit should make the excerpts stale"
+        );
+        let rebuilt = unchanged.refreshed(read_inputs(&buffer, &diff, None, cx));
+        assert!(rebuilt.is_current(&read_inputs(&buffer, &diff, None, cx)));
+        assert_eq!(
+            rebuilt
+                .ranges
+                .iter()
+                .map(|range| range.primary.start.row)
+                .collect::<Vec<_>>(),
+            [2],
+            "rebuilt excerpts should follow the edited buffer"
+        );
+
+        let excerpts = read_inputs(&buffer, &diff, None, cx).build();
+        let snapshot = buffer.read_with(cx, |buffer, _| buffer.text_snapshot());
+        diff.update(cx, |diff, cx| {
+            diff.set_base_text(Some("zero\none\ntwo\nthree\n".into()), snapshot, cx)
+        })
+        .await;
+        cx.run_until_parked();
+        let current = read_inputs(&buffer, &diff, None, cx);
+        assert!(
+            !excerpts.is_current(&current),
+            "a new diff base should make the excerpts stale"
+        );
+        assert!(current.build().ranges.is_empty());
+
+        let buffer_id = buffer.read_with(cx, |buffer, _| buffer.remote_id());
+        let conflicts = ConflictSetSnapshot {
+            buffer_id,
+            conflicts: Arc::from([]),
+        };
+        let excerpts = read_inputs(&buffer, &diff, Some(conflicts.clone()), cx).build();
+        assert!(excerpts.is_current(&read_inputs(&buffer, &diff, Some(conflicts), cx)));
+        let replaced = ConflictSetSnapshot {
+            buffer_id,
+            conflicts: Arc::from([]),
+        };
+        assert!(
+            !excerpts.is_current(&read_inputs(&buffer, &diff, Some(replaced), cx)),
+            "a new conflict set should make the excerpts stale"
+        );
+        assert!(!excerpts.is_current(&read_inputs(&buffer, &diff, None, cx)));
+    }
 }

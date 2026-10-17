@@ -3175,6 +3175,132 @@ impl EditorElement {
         processed_ranges
     }
 
+    fn shape_window(
+        row: DisplayRow,
+        snapshot: &EditorSnapshot,
+        scroll_x: Pixels,
+        editor_width: Pixels,
+        em_advance: Pixels,
+    ) -> Option<Range<usize>> {
+        if !snapshot.mode.is_full()
+            || em_advance <= Pixels::ZERO
+            || snapshot.line_len(row) <= SHAPE_WINDOW_MIN_LINE_LEN
+            || row_has_right_to_left_text(snapshot, row)
+        {
+            return None;
+        }
+        let first_visible_column = (scroll_x / em_advance).floor().max(0.) as usize;
+        let visible_columns = (editor_width / em_advance).ceil().max(1.) as usize;
+        Some(
+            first_visible_column.saturating_sub(visible_columns)
+                ..first_visible_column + 2 * visible_columns,
+        )
+    }
+
+    fn shape_windows(
+        rows: Range<DisplayRow>,
+        snapshot: &EditorSnapshot,
+        scroll_x: Pixels,
+        editor_width: Pixels,
+        em_advance: Pixels,
+    ) -> Vec<Option<Range<usize>>> {
+        (rows.start.0..rows.end.0)
+            .map(|row| {
+                Self::shape_window(
+                    DisplayRow(row),
+                    snapshot,
+                    scroll_x,
+                    editor_width,
+                    em_advance,
+                )
+            })
+            .collect()
+    }
+
+    fn shape_windows_cover(line_layouts: &[LineWithInvisibles], visible: &Range<Pixels>) -> bool {
+        line_layouts
+            .iter()
+            .all(|line| line.shaped_coverage(visible) == ShapedCoverage::Covered)
+    }
+
+    fn widen_shape_windows(
+        line_layouts: &[LineWithInvisibles],
+        shape_windows: &mut [Option<Range<usize>>],
+        visible: &Range<Pixels>,
+    ) -> bool {
+        let visible_width = visible.end - visible.start;
+        let mut widened = false;
+        for (line, shape_window) in line_layouts.iter().zip(shape_windows.iter_mut()) {
+            let Some(shape_window) = shape_window else {
+                continue;
+            };
+            let growth = |deficit: Pixels, shaped_width: Pixels| {
+                let window_chars = shape_window.len().max(1);
+                let advance = shaped_width / window_chars as f32;
+                let needed = if advance > Pixels::ZERO {
+                    ((deficit + visible_width) / advance).ceil() as usize
+                } else {
+                    window_chars
+                };
+                needed.max(window_chars)
+            };
+            let previous = shape_window.clone();
+            match line.shaped_coverage(visible) {
+                ShapedCoverage::Covered => {}
+                ShapedCoverage::ShortOnLeft {
+                    deficit,
+                    shaped_width,
+                } => {
+                    shape_window.start = shape_window
+                        .start
+                        .saturating_sub(growth(deficit, shaped_width));
+                }
+                ShapedCoverage::ShortOnRight {
+                    deficit,
+                    shaped_width,
+                } => {
+                    shape_window.end += growth(deficit, shaped_width);
+                }
+            }
+            widened |= *shape_window != previous;
+        }
+        widened
+    }
+
+    fn layout_lines_in_shape_windows(
+        rows: Range<DisplayRow>,
+        snapshot: &EditorSnapshot,
+        style: &EditorStyle,
+        editor_width: Pixels,
+        is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
+        bg_segments_per_row: &[Vec<(Range<DisplayPoint>, Hsla)>],
+        scroll_x: Pixels,
+        visible: &Range<Pixels>,
+        em_advance: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<LineWithInvisibles> {
+        let mut shape_windows =
+            Self::shape_windows(rows.clone(), snapshot, scroll_x, editor_width, em_advance);
+        loop {
+            let line_layouts = Self::layout_lines(
+                rows.clone(),
+                snapshot,
+                style,
+                editor_width,
+                is_row_soft_wrapped,
+                bg_segments_per_row,
+                &shape_windows,
+                em_advance,
+                window,
+                cx,
+            );
+            if !Self::widen_shape_windows(&line_layouts, &mut shape_windows, visible) {
+                return line_layouts;
+            }
+        }
+    }
+
     fn layout_lines(
         rows: Range<DisplayRow>,
         snapshot: &EditorSnapshot,
@@ -3182,6 +3308,8 @@ impl EditorElement {
         editor_width: Pixels,
         is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
         bg_segments_per_row: &[Vec<(Range<DisplayPoint>, Hsla)>],
+        shape_windows: &[Option<Range<usize>>],
+        em_advance: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<LineWithInvisibles> {
@@ -3228,6 +3356,7 @@ impl EditorElement {
                         invisibles: Vec::new(),
                         diagnostic_underline_severity_ranges: Vec::new(),
                         point_diagnostics: Vec::new(),
+                        shape_window: None,
                         font_size,
                     }
                 })
@@ -3248,6 +3377,8 @@ impl EditorElement {
                 editor_width,
                 is_row_soft_wrapped,
                 bg_segments_per_row,
+                shape_windows,
+                em_advance,
                 window,
                 cx,
             )
@@ -7358,6 +7489,7 @@ pub(crate) struct LineWithInvisibles {
     invisibles: Vec<Invisible>,
     diagnostic_underline_severity_ranges: Vec<(Range<usize>, lsp::DiagnosticSeverity)>,
     point_diagnostics: Vec<PointDiagnostic>,
+    shape_window: Option<Range<usize>>,
     len: usize,
     pub(crate) width: Pixels,
     font_size: Pixels,
@@ -7371,6 +7503,50 @@ enum LineFragment {
         size: Size<Pixels>,
         len: usize,
     },
+    Unshaped(UnshapedText),
+}
+
+struct UnshapedText {
+    len: usize,
+    chars: usize,
+    width: Pixels,
+    multibyte_text: Option<Arc<str>>,
+    after_window: bool,
+}
+
+struct PendingUnshaped {
+    len: usize,
+    chars: usize,
+    after_window: bool,
+}
+
+impl UnshapedText {
+    fn x_for_index(&self, index: usize) -> Pixels {
+        if self.chars == 0 {
+            return Pixels::ZERO;
+        }
+        let index = index.min(self.len);
+        let column = match &self.multibyte_text {
+            Some(text) => text[..text.floor_char_boundary(index)].chars().count(),
+            None => index,
+        };
+        self.width * (column as f32 / self.chars as f32)
+    }
+
+    fn index_for_x(&self, x: Pixels) -> usize {
+        if self.chars == 0 {
+            return 0;
+        }
+        let fraction = (x / self.width).clamp(0., 1.);
+        let column = ((self.chars as f32 * fraction) as usize).min(self.chars - 1);
+        match &self.multibyte_text {
+            Some(text) => text
+                .char_indices()
+                .nth(column)
+                .map_or(self.len, |(byte, _)| byte),
+            None => column,
+        }
+    }
 }
 
 impl fmt::Debug for LineFragment {
@@ -7382,21 +7558,226 @@ impl fmt::Debug for LineFragment {
                 .field("size", size)
                 .field("len", len)
                 .finish(),
+            LineFragment::Unshaped(unshaped) => f
+                .debug_struct("Unshaped")
+                .field("len", &unshaped.len)
+                .field("chars", &unshaped.chars)
+                .field("width", &unshaped.width)
+                .finish(),
         }
     }
 }
 
+impl LineFragment {
+    fn len(&self) -> usize {
+        match self {
+            LineFragment::Text(line) => line.len,
+            LineFragment::Element { len, .. } => *len,
+            LineFragment::Unshaped(unshaped) => unshaped.len,
+        }
+    }
+
+    fn width(&self) -> Pixels {
+        match self {
+            LineFragment::Text(line) => line.width,
+            LineFragment::Element { size, .. } => size.width,
+            LineFragment::Unshaped(unshaped) => unshaped.width,
+        }
+    }
+}
+
+const SHAPE_WINDOW_MIN_LINE_LEN: u32 = 8192;
+const MAX_AUTOSCROLL_RELAYOUTS: usize = 4;
+
+fn row_has_right_to_left_text(snapshot: &EditorSnapshot, row: DisplayRow) -> bool {
+    for chunk in snapshot.text_chunks(row) {
+        let (row_text, row_ends) = match chunk.find('\n') {
+            Some(newline) => (&chunk[..newline], true),
+            None => (chunk, false),
+        };
+        if !row_text.is_ascii()
+            && row_text.chars().any(|character| {
+                matches!(
+                    unicode_bidi::bidi_class(character),
+                    unicode_bidi::BidiClass::R
+                        | unicode_bidi::BidiClass::AL
+                        | unicode_bidi::BidiClass::RLE
+                        | unicode_bidi::BidiClass::RLO
+                        | unicode_bidi::BidiClass::RLI
+                )
+            })
+        {
+            return true;
+        }
+        if row_ends {
+            return false;
+        }
+    }
+    false
+}
+
+#[derive(Debug, PartialEq)]
+enum ShapedCoverage {
+    Covered,
+    ShortOnLeft {
+        deficit: Pixels,
+        shaped_width: Pixels,
+    },
+    ShortOnRight {
+        deficit: Pixels,
+        shaped_width: Pixels,
+    },
+}
+
+enum RowSegment<'a> {
+    Shaped(&'a str),
+    Skipped { text: &'a str, chars: usize },
+}
+
+fn row_segments<'a>(
+    text: &'a str,
+    column: usize,
+    shape_window: &Range<usize>,
+) -> SmallVec<[RowSegment<'a>; 3]> {
+    let byte_len_before = |text: &str, column: usize, target: usize| {
+        let wanted = target.saturating_sub(column);
+        match text.char_indices().nth(wanted) {
+            Some((byte, _)) => (byte, wanted),
+            None => (text.len(), text.chars().count()),
+        }
+    };
+    let mut segments = SmallVec::new();
+    let (before_len, before_chars) = byte_len_before(text, column, shape_window.start);
+    if before_len > 0 {
+        segments.push(RowSegment::Skipped {
+            text: &text[..before_len],
+            chars: before_chars,
+        });
+    }
+    let rest = &text[before_len..];
+    let (shaped_len, _) = byte_len_before(rest, column + before_chars, shape_window.end);
+    if shaped_len > 0 {
+        segments.push(RowSegment::Shaped(&rest[..shaped_len]));
+    }
+    let after = &rest[shaped_len..];
+    if !after.is_empty() {
+        segments.push(RowSegment::Skipped {
+            text: after,
+            chars: after.chars().count(),
+        });
+    }
+    segments
+}
+
 impl LineWithInvisibles {
+    fn shaped_coverage(&self, visible: &Range<Pixels>) -> ShapedCoverage {
+        if self.shape_window.is_none() {
+            return ShapedCoverage::Covered;
+        }
+        let mut x = Pixels::ZERO;
+        let mut window_start = Pixels::ZERO;
+        let mut window_end = None;
+        let mut uncovered_before_window = false;
+        let mut uncovered_after_window = false;
+        for fragment in &self.fragments {
+            let fragment_x = x..x + fragment.width();
+            x = fragment_x.end;
+            let LineFragment::Unshaped(unshaped) = fragment else {
+                continue;
+            };
+            let is_visible = fragment_x.start < visible.end && visible.start < fragment_x.end;
+            if unshaped.after_window {
+                window_end.get_or_insert(fragment_x.start);
+                uncovered_after_window |= is_visible;
+            } else {
+                window_start = fragment_x.end;
+                uncovered_before_window |= is_visible;
+            }
+        }
+        let window_end = window_end.unwrap_or(x);
+        let shaped_width = (window_end - window_start).max(Pixels::ZERO);
+        if uncovered_before_window {
+            ShapedCoverage::ShortOnLeft {
+                deficit: (window_start - visible.start).max(Pixels::ZERO),
+                shaped_width,
+            }
+        } else if uncovered_after_window {
+            ShapedCoverage::ShortOnRight {
+                deficit: (visible.end - window_end).max(Pixels::ZERO),
+                shaped_width,
+            }
+        } else {
+            ShapedCoverage::Covered
+        }
+    }
+
     fn index_fragments(fragments: &[LineFragment]) -> Option<SegmentIndex> {
         // Single-fragment lines already delegate lookup directly to GPUI.
         if fragments.len() <= 1 {
             return None;
         }
-        SegmentIndex::new(fragments.iter().map(|fragment| match fragment {
-            LineFragment::Text(line) => (line.len, f32::from(line.width)),
-            LineFragment::Element { len, size, .. } => (*len, f32::from(size.width)),
-        }))
+        SegmentIndex::new(
+            fragments
+                .iter()
+                .map(|fragment| (fragment.len(), f32::from(fragment.width()))),
+        )
         .log_err()
+    }
+
+    fn push_shaped_text(
+        line: &mut String,
+        styles: &mut Vec<TextRun>,
+        fragments: &mut SmallVec<[LineFragment; 1]>,
+        width: &mut Pixels,
+        len: &mut usize,
+        bg_segments: &[(Range<DisplayPoint>, Hsla)],
+        min_contrast: f32,
+        font_size: Pixels,
+        window: &mut Window,
+    ) {
+        if line.is_empty() {
+            return;
+        }
+        let split_runs;
+        let text_runs: &[TextRun] = if bg_segments.is_empty() {
+            styles
+        } else {
+            split_runs = Self::split_runs_by_bg_segments(styles, bg_segments, min_contrast, *len);
+            &split_runs
+        };
+        let shaped_line =
+            window
+                .text_system()
+                .shape_line(line.as_str().into(), font_size, text_runs, None);
+        *width += shaped_line.width;
+        *len += shaped_line.len;
+        fragments.push(LineFragment::Text(shaped_line));
+        line.clear();
+        styles.clear();
+    }
+
+    fn push_unshaped(
+        fragments: &mut SmallVec<[LineFragment; 1]>,
+        width: &mut Pixels,
+        len: &mut usize,
+        unshaped: &mut Option<PendingUnshaped>,
+        unshaped_text: &mut String,
+        em_advance: Pixels,
+    ) {
+        if let Some(pending) = unshaped.take() {
+            let unshaped_width = em_advance * pending.chars as f32;
+            *width += unshaped_width;
+            *len += pending.len;
+            fragments.push(LineFragment::Unshaped(UnshapedText {
+                len: pending.len,
+                chars: pending.chars,
+                width: unshaped_width,
+                multibyte_text: (pending.len != pending.chars)
+                    .then(|| Arc::from(unshaped_text.as_str())),
+                after_window: pending.after_window,
+            }));
+        }
+        unshaped_text.clear();
     }
 
     fn from_chunks<'a>(
@@ -7407,12 +7788,17 @@ impl LineWithInvisibles {
         text_width: Pixels,
         is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
         bg_segments_per_row: &[Vec<(Range<DisplayPoint>, Hsla)>],
+        shape_windows: &[Option<Range<usize>>],
+        em_advance: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<Self> {
         let text_style = &editor_style.text;
         let mut layouts = Vec::with_capacity(max_line_count);
         let mut fragments: SmallVec<[LineFragment; 1]> = SmallVec::new();
+        let mut row_column = 0;
+        let mut unshaped: Option<PendingUnshaped> = None;
+        let mut unshaped_text = String::new();
         let mut line = String::new();
         // Byte offset into the logical line used to position invisible markers.
         // Unlike `line`, this is not cleared when we flush `shape_line` for
@@ -7439,25 +7825,27 @@ impl LineWithInvisibles {
             replacement: None,
         }]) {
             if let Some(replacement) = highlighted_chunk.replacement {
-                if !line.is_empty() {
-                    let segments = bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]);
-                    let text_runs: &[TextRun] = if segments.is_empty() {
-                        &styles
-                    } else {
-                        &Self::split_runs_by_bg_segments(&styles, segments, min_contrast, len)
-                    };
-                    let shaped_line = window.text_system().shape_line(
-                        line.as_str().into(),
-                        font_size,
-                        text_runs,
-                        None,
-                    );
-                    width += shaped_line.width;
-                    len += shaped_line.len;
-
-                    fragments.push(LineFragment::Text(shaped_line));
-                    line.clear();
-                    styles.clear();
+                Self::push_shaped_text(
+                    &mut line,
+                    &mut styles,
+                    &mut fragments,
+                    &mut width,
+                    &mut len,
+                    bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]),
+                    min_contrast,
+                    font_size,
+                    window,
+                );
+                Self::push_unshaped(
+                    &mut fragments,
+                    &mut width,
+                    &mut len,
+                    &mut unshaped,
+                    &mut unshaped_text,
+                    em_advance,
+                );
+                if shape_windows.get(row).is_some_and(Option::is_some) {
+                    row_column += highlighted_chunk.text.chars().count();
                 }
 
                 match replacement {
@@ -7537,6 +7925,15 @@ impl LineWithInvisibles {
             } else {
                 for (ix, line_chunk) in highlighted_chunk.text.split('\n').enumerate() {
                     if ix > 0 {
+                        Self::push_unshaped(
+                            &mut fragments,
+                            &mut width,
+                            &mut len,
+                            &mut unshaped,
+                            &mut unshaped_text,
+                            em_advance,
+                        );
+                        row_column = 0;
                         let segments = bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]);
                         let text_runs = if segments.is_empty() {
                             &styles
@@ -7563,6 +7960,7 @@ impl LineWithInvisibles {
                                 &mut diagnostic_underline_severity_ranges,
                             ),
                             point_diagnostics: Vec::new(),
+                            shape_window: shape_windows.get(row).cloned().flatten(),
                             font_size,
                         });
 
@@ -7576,64 +7974,130 @@ impl LineWithInvisibles {
                         }
                     }
 
-                    if !line_chunk.is_empty() {
-                        let text_style = if let Some(style) = highlighted_chunk.style {
-                            Cow::Owned(text_style.clone().highlight(style))
-                        } else {
-                            Cow::Borrowed(text_style)
-                        };
-
-                        styles.push(TextRun {
-                            len: line_chunk.len(),
-                            font: text_style.font(),
-                            color: text_style.color,
-                            background_color: text_style.background_color,
-                            underline: text_style.underline,
-                            strikethrough: text_style.strikethrough,
-                        });
-
-                        if let Some(severity) = highlighted_chunk.diagnostic_underline_severity {
-                            diagnostic_underline_severity_ranges.push((
-                                line_byte_offset..line_byte_offset + line_chunk.len(),
-                                severity,
-                            ));
-                        }
-
-                        if editor_mode.is_full() && !highlighted_chunk.is_inlay {
-                            // Line wrap pads its contents with fake whitespaces,
-                            // avoid printing them
-                            let is_soft_wrapped = is_row_soft_wrapped(row);
-                            if highlighted_chunk.is_tab {
-                                if non_whitespace_added || !is_soft_wrapped {
-                                    invisibles.push(Invisible::Tab {
-                                        line_start_offset: line_byte_offset,
-                                        line_end_offset: line_byte_offset + line_chunk.len(),
-                                    });
+                    let shape_window = shape_windows.get(row).cloned().flatten();
+                    let segments = match &shape_window {
+                        Some(shape_window) => row_segments(line_chunk, row_column, shape_window),
+                        None => smallvec![RowSegment::Shaped(line_chunk)],
+                    };
+                    for segment in segments {
+                        let line_chunk = match segment {
+                            RowSegment::Skipped {
+                                text: skipped_text,
+                                chars,
+                            } => {
+                                let skipped_len = skipped_text.len();
+                                Self::push_shaped_text(
+                                    &mut line,
+                                    &mut styles,
+                                    &mut fragments,
+                                    &mut width,
+                                    &mut len,
+                                    bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]),
+                                    min_contrast,
+                                    font_size,
+                                    window,
+                                );
+                                let after_window = shape_window
+                                    .as_ref()
+                                    .is_some_and(|shape_window| row_column >= shape_window.start);
+                                if unshaped
+                                    .as_ref()
+                                    .is_some_and(|pending| pending.after_window != after_window)
+                                {
+                                    Self::push_unshaped(
+                                        &mut fragments,
+                                        &mut width,
+                                        &mut len,
+                                        &mut unshaped,
+                                        &mut unshaped_text,
+                                        em_advance,
+                                    );
                                 }
-                            } else {
-                                invisibles.extend(line_chunk.char_indices().filter_map(
-                                    |(index, c)| {
-                                        let is_whitespace = c.is_whitespace();
-                                        non_whitespace_added |= !is_whitespace;
-                                        if is_whitespace
-                                            && (non_whitespace_added || !is_soft_wrapped)
-                                        {
-                                            Some(Invisible::Whitespace {
-                                                line_start_offset: line_byte_offset + index,
-                                                line_end_offset: line_byte_offset
-                                                    + index
-                                                    + c.len_utf8(),
-                                            })
-                                        } else {
-                                            None
-                                        }
-                                    },
-                                ))
+                                let pending = unshaped.get_or_insert(PendingUnshaped {
+                                    len: 0,
+                                    chars: 0,
+                                    after_window,
+                                });
+                                pending.len += skipped_len;
+                                pending.chars += chars;
+                                unshaped_text.push_str(skipped_text);
+                                line_byte_offset += skipped_len;
+                                row_column += chars;
+                                continue;
                             }
+                            RowSegment::Shaped(text) => text,
+                        };
+                        Self::push_unshaped(
+                            &mut fragments,
+                            &mut width,
+                            &mut len,
+                            &mut unshaped,
+                            &mut unshaped_text,
+                            em_advance,
+                        );
+                        if shape_window.is_some() {
+                            row_column += line_chunk.chars().count();
                         }
+                        if !line_chunk.is_empty() {
+                            let text_style = if let Some(style) = highlighted_chunk.style {
+                                Cow::Owned(text_style.clone().highlight(style))
+                            } else {
+                                Cow::Borrowed(text_style)
+                            };
 
-                        line.push_str(line_chunk);
-                        line_byte_offset += line_chunk.len();
+                            styles.push(TextRun {
+                                len: line_chunk.len(),
+                                font: text_style.font(),
+                                color: text_style.color,
+                                background_color: text_style.background_color,
+                                underline: text_style.underline,
+                                strikethrough: text_style.strikethrough,
+                            });
+
+                            if let Some(severity) = highlighted_chunk.diagnostic_underline_severity
+                            {
+                                diagnostic_underline_severity_ranges.push((
+                                    line_byte_offset..line_byte_offset + line_chunk.len(),
+                                    severity,
+                                ));
+                            }
+
+                            if editor_mode.is_full() && !highlighted_chunk.is_inlay {
+                                // Line wrap pads its contents with fake whitespaces,
+                                // avoid printing them
+                                let is_soft_wrapped = is_row_soft_wrapped(row);
+                                if highlighted_chunk.is_tab {
+                                    if non_whitespace_added || !is_soft_wrapped {
+                                        invisibles.push(Invisible::Tab {
+                                            line_start_offset: line_byte_offset,
+                                            line_end_offset: line_byte_offset + line_chunk.len(),
+                                        });
+                                    }
+                                } else {
+                                    invisibles.extend(line_chunk.char_indices().filter_map(
+                                        |(index, c)| {
+                                            let is_whitespace = c.is_whitespace();
+                                            non_whitespace_added |= !is_whitespace;
+                                            if is_whitespace
+                                                && (non_whitespace_added || !is_soft_wrapped)
+                                            {
+                                                Some(Invisible::Whitespace {
+                                                    line_start_offset: line_byte_offset + index,
+                                                    line_end_offset: line_byte_offset
+                                                        + index
+                                                        + c.len_utf8(),
+                                                })
+                                            } else {
+                                                None
+                                            }
+                                        },
+                                    ))
+                                }
+                            }
+
+                            line.push_str(line_chunk);
+                            line_byte_offset += line_chunk.len();
+                        }
                     }
                 }
             }
@@ -7794,6 +8258,9 @@ impl LineWithInvisibles {
                     line_elements.push(element);
 
                     fragment_origin.x += size.width;
+                }
+                LineFragment::Unshaped(unshaped) => {
+                    fragment_origin.x += unshaped.width;
                 }
             }
         }
@@ -7961,6 +8428,7 @@ impl LineWithInvisibles {
                     (line.len(), line.width, Some(line))
                 }
                 LineFragment::Element { size, len, .. } => (*len, size.width, None),
+                LineFragment::Unshaped(unshaped) => (unshaped.len, unshaped.width, None),
             };
             let fragment_end = fragment_start + fragment_len;
             if has_points {
@@ -7996,6 +8464,8 @@ impl LineWithInvisibles {
                             glyphs.next();
                         }
                         glyphs.peek().map_or(line.width, |glyph| glyph.position.x)
+                    } else if let LineFragment::Unshaped(unshaped) = fragment {
+                        unshaped.x_for_index(index)
                     } else {
                         Pixels::ZERO
                     };
@@ -8067,6 +8537,9 @@ impl LineWithInvisibles {
                 }
                 LineFragment::Element { size, .. } => {
                     fragment_origin.x += size.width;
+                }
+                LineFragment::Unshaped(unshaped) => {
+                    fragment_origin.x += unshaped.width;
                 }
             }
         }
@@ -8204,38 +8677,39 @@ impl LineWithInvisibles {
                 && let Some(fragment) = self.fragments.get(segment_index)
             {
                 return px(segment.horizontal.start)
-                    + match fragment {
-                        LineFragment::Text(line) => line.x_for_index(index - segment.source.start),
-                        LineFragment::Element { .. } => Pixels::ZERO,
-                    };
+                    + Self::x_within_fragment(fragment, index - segment.source.start);
             }
         }
         let mut fragment_start_x = Pixels::ZERO;
         let mut fragment_start_index = 0;
 
         for fragment in &self.fragments {
-            match fragment {
-                LineFragment::Text(shaped_line) => {
-                    let fragment_end_index = fragment_start_index + shaped_line.len;
-                    if index < fragment_end_index {
-                        return fragment_start_x
-                            + shaped_line.x_for_index(index - fragment_start_index);
-                    }
-                    fragment_start_x += shaped_line.width;
-                    fragment_start_index = fragment_end_index;
-                }
-                LineFragment::Element { len, size, .. } => {
-                    let fragment_end_index = fragment_start_index + len;
-                    if index < fragment_end_index {
-                        return fragment_start_x;
-                    }
-                    fragment_start_x += size.width;
-                    fragment_start_index = fragment_end_index;
-                }
+            let fragment_end_index = fragment_start_index + fragment.len();
+            if index < fragment_end_index {
+                return fragment_start_x
+                    + Self::x_within_fragment(fragment, index - fragment_start_index);
             }
+            fragment_start_x += fragment.width();
+            fragment_start_index = fragment_end_index;
         }
 
         fragment_start_x
+    }
+
+    fn x_within_fragment(fragment: &LineFragment, index: usize) -> Pixels {
+        match fragment {
+            LineFragment::Text(line) => line.x_for_index(index),
+            LineFragment::Element { .. } => Pixels::ZERO,
+            LineFragment::Unshaped(unshaped) => unshaped.x_for_index(index),
+        }
+    }
+
+    fn index_within_fragment(fragment: &LineFragment, x: Pixels) -> Option<usize> {
+        match fragment {
+            LineFragment::Text(line) => line.index_for_x(x),
+            LineFragment::Element { .. } => Some(0),
+            LineFragment::Unshaped(unshaped) => Some(unshaped.index_for_x(x)),
+        }
     }
 
     pub fn index_for_x(&self, x: Pixels) -> Option<usize> {
@@ -8246,12 +8720,7 @@ impl LineWithInvisibles {
             {
                 return Some(
                     segment.source.start
-                        + match fragment {
-                            LineFragment::Text(line) => {
-                                line.index_for_x(x - px(segment.horizontal.start))?
-                            }
-                            LineFragment::Element { .. } => 0,
-                        },
+                        + Self::index_within_fragment(fragment, x - px(segment.horizontal.start))?,
                 );
             }
         }
@@ -8259,26 +8728,15 @@ impl LineWithInvisibles {
         let mut fragment_start_index = 0;
 
         for fragment in &self.fragments {
-            match fragment {
-                LineFragment::Text(shaped_line) => {
-                    let fragment_end_x = fragment_start_x + shaped_line.width;
-                    if x < fragment_end_x {
-                        return Some(
-                            fragment_start_index + shaped_line.index_for_x(x - fragment_start_x)?,
-                        );
-                    }
-                    fragment_start_x = fragment_end_x;
-                    fragment_start_index += shaped_line.len;
-                }
-                LineFragment::Element { len, size, .. } => {
-                    let fragment_end_x = fragment_start_x + size.width;
-                    if x < fragment_end_x {
-                        return Some(fragment_start_index);
-                    }
-                    fragment_start_index += len;
-                    fragment_start_x = fragment_end_x;
-                }
+            let fragment_end_x = fragment_start_x + fragment.width();
+            if x < fragment_end_x {
+                return Some(
+                    fragment_start_index
+                        + Self::index_within_fragment(fragment, x - fragment_start_x)?,
+                );
             }
+            fragment_start_x = fragment_end_x;
+            fragment_start_index += fragment.len();
         }
 
         None
@@ -8294,29 +8752,23 @@ impl LineWithInvisibles {
                     LineFragment::Text(line) => {
                         line.font_id_for_index(index - segment.source.start)
                     }
-                    LineFragment::Element { .. } => None,
+                    LineFragment::Element { .. } | LineFragment::Unshaped { .. } => None,
                 };
             }
         }
         let mut fragment_start_index = 0;
 
         for fragment in &self.fragments {
-            match fragment {
-                LineFragment::Text(shaped_line) => {
-                    let fragment_end_index = fragment_start_index + shaped_line.len;
-                    if index < fragment_end_index {
-                        return shaped_line.font_id_for_index(index - fragment_start_index);
+            let fragment_end_index = fragment_start_index + fragment.len();
+            if index < fragment_end_index {
+                return match fragment {
+                    LineFragment::Text(shaped_line) => {
+                        shaped_line.font_id_for_index(index - fragment_start_index)
                     }
-                    fragment_start_index = fragment_end_index;
-                }
-                LineFragment::Element { len, .. } => {
-                    let fragment_end_index = fragment_start_index + len;
-                    if index < fragment_end_index {
-                        return None;
-                    }
-                    fragment_start_index = fragment_end_index;
-                }
+                    LineFragment::Element { .. } | LineFragment::Unshaped { .. } => None,
+                };
             }
+            fragment_start_index = fragment_end_index;
         }
 
         None
@@ -9125,13 +9577,22 @@ impl Element for EditorElement {
                         self.style.background,
                     );
 
-                    let mut line_layouts = Self::layout_lines(
+                    let layout_scroll_x =
+                        Pixels::from(scroll_position.x * f64::from(em_layout_width));
+                    let visible_text_x = |scroll_x: Pixels| {
+                        let start = scroll_x - gutter_dimensions.margin;
+                        start..start + text_width
+                    };
+                    let mut line_layouts = Self::layout_lines_in_shape_windows(
                         start_row..end_row,
                         &snapshot,
                         &self.style,
                         editor_width,
                         is_row_soft_wrapped,
                         &bg_segments_per_row,
+                        layout_scroll_x,
+                        &visible_text_x(layout_scroll_x),
+                        em_advance,
                         window,
                         cx,
                     );
@@ -9199,12 +9660,21 @@ impl Element for EditorElement {
                         })
                         .unwrap_or(Pixels::ZERO);
 
-                    let longest_line_width = layout_line(
-                        snapshot.longest_row(),
+                    let longest_row = snapshot.longest_row();
+                    let longest_line_width = layout_line_in_window(
+                        longest_row,
                         &snapshot,
                         style,
                         editor_width,
                         is_row_soft_wrapped,
+                        Self::shape_window(
+                            longest_row,
+                            &snapshot,
+                            layout_scroll_x,
+                            editor_width,
+                            em_advance,
+                        ),
+                        em_advance,
                         window,
                         cx,
                     )
@@ -9361,16 +9831,55 @@ impl Element for EditorElement {
                         }
                     });
 
-                    if !em_layout_width.is_zero() {
-                        scroll_position.x = window
-                            .pixel_snap_f64(scroll_position.x * f64::from(em_layout_width))
-                            / f64::from(em_layout_width);
-                    }
-
-                    let scroll_pixel_position = point(
-                        scroll_position.x * f64::from(em_layout_width),
-                        scroll_position.y * f64::from(line_height),
-                    );
+                    let mut relayouts = 0;
+                    let scroll_pixel_position = loop {
+                        if !em_layout_width.is_zero() {
+                            scroll_position.x = window
+                                .pixel_snap_f64(scroll_position.x * f64::from(em_layout_width))
+                                / f64::from(em_layout_width);
+                        }
+                        let scroll_pixel_position = point(
+                            scroll_position.x * f64::from(em_layout_width),
+                            scroll_position.y * f64::from(line_height),
+                        );
+                        let final_scroll_x = Pixels::from(scroll_pixel_position.x);
+                        let final_visible_text_x = visible_text_x(final_scroll_x);
+                        if Self::shape_windows_cover(&line_layouts, &final_visible_text_x) {
+                            break scroll_pixel_position;
+                        }
+                        line_layouts = Self::layout_lines_in_shape_windows(
+                            start_row..end_row,
+                            &snapshot,
+                            &self.style,
+                            editor_width,
+                            is_row_soft_wrapped,
+                            &bg_segments_per_row,
+                            final_scroll_x,
+                            &final_visible_text_x,
+                            em_advance,
+                            window,
+                            cx,
+                        );
+                        relayouts += 1;
+                        if !needs_horizontal_autoscroll.0 || relayouts == MAX_AUTOSCROLL_RELAYOUTS {
+                            break scroll_pixel_position;
+                        }
+                        let Some(new_scroll_position) = self.editor.update(cx, |editor, cx| {
+                            editor.autoscroll_horizontally(
+                                start_row,
+                                editor_width,
+                                scroll_width,
+                                em_advance,
+                                &line_layouts,
+                                autoscroll_request,
+                                window,
+                                cx,
+                            )
+                        }) else {
+                            break scroll_pixel_position;
+                        };
+                        scroll_position.x = new_scroll_position.x;
+                    };
                     let sticky_headers = if !is_minimap
                         && is_singleton
                         && EditorSettings::get_global(cx).sticky_scroll.enabled
@@ -10938,6 +11447,30 @@ pub fn layout_line(
     window: &mut Window,
     cx: &mut App,
 ) -> LineWithInvisibles {
+    layout_line_in_window(
+        row,
+        snapshot,
+        style,
+        text_width,
+        is_row_soft_wrapped,
+        None,
+        Pixels::ZERO,
+        window,
+        cx,
+    )
+}
+
+fn layout_line_in_window(
+    row: DisplayRow,
+    snapshot: &EditorSnapshot,
+    style: &EditorStyle,
+    text_width: Pixels,
+    is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
+    shape_window: Option<Range<usize>>,
+    em_advance: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> LineWithInvisibles {
     let use_tree_sitter =
         !snapshot.semantic_tokens_enabled || snapshot.use_tree_sitter_for_syntax(row, cx);
     let language_aware = LanguageAwareStyling {
@@ -10953,6 +11486,8 @@ pub fn layout_line(
         text_width,
         is_row_soft_wrapped,
         &[],
+        &[shape_window],
+        em_advance,
         window,
         cx,
     )
@@ -13284,13 +13819,19 @@ mod tests {
             let last_column = text.len() - 1;
             let x = layout.x_for_index(last_column);
             assert_eq!(layout.index_for_x(x + px(0.1)), Some(last_column));
+            assert_eq!(
+                layout.shape_window.is_some(),
+                text.len() > SHAPE_WINDOW_MIN_LINE_LEN as usize
+            );
             let measured = cx.update(|window, cx| {
-                layout_line(
+                layout_line_in_window(
                     DisplayRow(row as u32),
                     &state.position_map.snapshot,
                     &style,
                     px(500.),
                     |_| false,
+                    layout.shape_window.clone(),
+                    state.position_map.em_advance,
                     window,
                     cx,
                 )
@@ -13374,6 +13915,8 @@ mod tests {
                     px(500.),
                     |_| false,
                     &[],
+                    &[],
+                    Pixels::ZERO,
                     window,
                     cx,
                 );
@@ -13416,6 +13959,599 @@ mod tests {
                 }
             })
             .unwrap();
+    }
+
+    #[test]
+    fn test_row_segments_split_at_window_columns() {
+        let segment_parts = |text: &str, column: usize, window: Range<usize>| {
+            row_segments(text, column, &window)
+                .into_iter()
+                .map(|segment| match segment {
+                    RowSegment::Shaped(text) => format!("shaped {text}"),
+                    RowSegment::Skipped { text, chars } => {
+                        format!("skipped {}/{chars}", text.len())
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            segment_parts("abcdefgh", 0, 2..5),
+            ["skipped 2/2", "shaped cde", "skipped 3/3"]
+        );
+        assert_eq!(segment_parts("abcdefgh", 10, 2..5), ["skipped 8/8"]);
+        assert_eq!(
+            segment_parts("abcdefgh", 3, 2..5),
+            ["shaped ab", "skipped 6/6"]
+        );
+        assert_eq!(segment_parts("abc", 0, 0..10), ["shaped abc"]);
+        assert_eq!(
+            segment_parts("é中é中", 0, 1..3),
+            ["skipped 2/1", "shaped 中é", "skipped 3/1"]
+        );
+    }
+
+    fn draw_unwrapped_editor(
+        text: &str,
+        scroll_x: Option<f64>,
+        cx: &mut TestAppContext,
+    ) -> EditorLayout {
+        let window = cx.add_window(|window, cx| {
+            let buffer = MultiBuffer::build_simple(text, cx);
+            let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+            editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+            editor
+        });
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        cx.simulate_resize(size(px(500.), px(300.)));
+        let editor = window.root(cx).unwrap();
+        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+        cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                if let Some(scroll_x) = scroll_x {
+                    editor.set_scroll_position(point(scroll_x, 0.), window, cx);
+                }
+            });
+        });
+        let (_, state) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        state
+    }
+
+    fn shaped_text_len(layout: &LineWithInvisibles) -> usize {
+        layout
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment {
+                LineFragment::Text(line) => Some(line.len),
+                _ => None,
+            })
+            .sum()
+    }
+
+    #[gpui::test]
+    fn test_long_line_shapes_only_its_visible_window(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let text = "abcdefghij".repeat(20_000);
+        let state = draw_unwrapped_editor(&text, None, cx);
+        let layout = &state.position_map.line_layouts[0];
+        let em_advance = state.position_map.em_advance;
+        let visible_columns = (px(500.) / em_advance).ceil() as usize;
+
+        assert_eq!(layout.len, text.len());
+        assert!(matches!(
+            layout.fragments.as_slice(),
+            [LineFragment::Text(_), LineFragment::Unshaped { .. }, ..]
+        ));
+        let shaped = shaped_text_len(layout);
+        assert!(shaped > 0 && shaped <= 3 * visible_columns, "{shaped}");
+        assert!(layout.width >= em_advance * (text.len() - shaped) as f32);
+        assert!(state.position_map.scroll_max.x > 0.);
+    }
+
+    #[gpui::test]
+    fn test_long_line_hit_testing_after_horizontal_scroll(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let text = "abcdefghij".repeat(20_000);
+        let state = draw_unwrapped_editor(&text, Some(150_000.), cx);
+        let position_map = &state.position_map;
+        let layout = &position_map.line_layouts[0];
+        let shape_window = layout
+            .shape_window
+            .clone()
+            .expect("the long row should be shaped in a window");
+
+        assert!(matches!(
+            layout.fragments.as_slice(),
+            [
+                LineFragment::Unshaped { .. },
+                LineFragment::Text(_),
+                LineFragment::Unshaped { .. },
+                ..
+            ]
+        ));
+        let hit = position_map
+            .point_for_position(position_map.text_hitbox.origin + point(px(10.), px(2.)));
+        let column = hit.nearest_valid.column() as usize;
+        assert!(
+            shape_window.contains(&column),
+            "{column} outside {shape_window:?}"
+        );
+        assert!(column > 140_000);
+        assert_eq!(layout.index_for_x(layout.x_for_index(column)), Some(column));
+    }
+
+    #[gpui::test]
+    fn test_long_multibyte_line_hit_testing_lands_on_char_boundaries(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let text = "é中 ".repeat(20_000);
+        let state = draw_unwrapped_editor(&text, Some(30_000.), cx);
+        let position_map = &state.position_map;
+        let layout = &position_map.line_layouts[0];
+        assert!(layout.shape_window.is_some());
+        assert_eq!(layout.len, text.len());
+
+        for x in [px(0.), px(7.), px(33.), px(250.), px(480.)] {
+            let hit =
+                position_map.point_for_position(position_map.text_hitbox.origin + point(x, px(2.)));
+            let column = hit.nearest_valid.column() as usize;
+            assert!(text.is_char_boundary(column), "{column} splits a char");
+            assert!(column > 0);
+        }
+    }
+
+    #[gpui::test]
+    fn test_autoscroll_to_a_far_cursor_reshapes_the_window(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let text = "abcdefghij".repeat(20_000);
+        let cursor_column = 180_000;
+        let window = cx.add_window(|_, _| gpui::EmptyView);
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        let editor = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let buffer = MultiBuffer::build_simple(&text, cx);
+                let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+                editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+                editor
+            })
+        });
+        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+        cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.change_selections(SelectionEffects::default(), window, cx, |s| {
+                    s.select_ranges([Point::new(0, cursor_column)..Point::new(0, cursor_column)]);
+                });
+                assert_eq!(editor.scroll_position(cx).x, 0.);
+            });
+        });
+        let (_, state) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        let position_map = &state.position_map;
+        let layout = &position_map.line_layouts[0];
+        let scroll_pixels = position_map.em_layout_width * position_map.scroll_position.x as f32;
+        let cursor_x = layout.x_for_index(cursor_column as usize) - scroll_pixels;
+        assert!(
+            cursor_x >= px(0.) && cursor_x <= position_map.text_hitbox.size.width,
+            "cursor at {cursor_x:?} should be visible"
+        );
+        let shape_window = layout
+            .shape_window
+            .clone()
+            .expect("the long row should be shaped in a window");
+        assert!(
+            shape_window.contains(&(cursor_column as usize)),
+            "{shape_window:?}"
+        );
+    }
+
+    #[test]
+    fn test_unshaped_text_maps_bytes_to_char_columns() {
+        let text = format!("{}{}", "a".repeat(4), "中".repeat(4));
+        let unshaped = UnshapedText {
+            len: text.len(),
+            chars: 8,
+            width: px(80.),
+            multibyte_text: Some(Arc::from(text.as_str())),
+            after_window: false,
+        };
+        assert_eq!(unshaped.x_for_index(4), px(40.));
+        assert_eq!(unshaped.x_for_index(4 + 3 * 2), px(60.));
+        assert_eq!(unshaped.x_for_index(4 + 3 * 2 + 1), px(60.));
+        assert_eq!(unshaped.x_for_index(text.len()), px(80.));
+        assert_eq!(unshaped.index_for_x(px(35.)), 3);
+        assert_eq!(unshaped.index_for_x(px(65.)), 4 + 3 * 2);
+        assert_eq!(unshaped.index_for_x(px(500.)), 4 + 3 * 3);
+
+        let ascii = UnshapedText {
+            len: 8,
+            chars: 8,
+            width: px(80.),
+            multibyte_text: None,
+            after_window: false,
+        };
+        assert_eq!(ascii.x_for_index(6), px(60.));
+        assert_eq!(ascii.index_for_x(px(65.)), 6);
+    }
+
+    #[gpui::test]
+    fn test_autoscroll_to_a_far_cursor_after_an_ascii_prefix(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let ascii_len = 100_000;
+        let text = format!("{}{}", "a".repeat(ascii_len), "中".repeat(50_000));
+        let cursor_char_column = ascii_len + 40_000;
+        let cursor_byte = ascii_len + 3 * 40_000;
+        let window = cx.add_window(|_, _| gpui::EmptyView);
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        let editor = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let buffer = MultiBuffer::build_simple(&text, cx);
+                let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+                editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+                editor
+            })
+        });
+        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+        cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.change_selections(SelectionEffects::default(), window, cx, |s| {
+                    s.select_ranges([
+                        Point::new(0, cursor_byte as u32)..Point::new(0, cursor_byte as u32)
+                    ]);
+                });
+            });
+        });
+        let (_, state) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        let position_map = &state.position_map;
+        let layout = &position_map.line_layouts[0];
+        let shape_window = layout
+            .shape_window
+            .clone()
+            .expect("the long row should be shaped in a window");
+        assert!(
+            shape_window.contains(&cursor_char_column),
+            "{shape_window:?} should hold column {cursor_char_column}"
+        );
+        let scroll_pixels = position_map.em_layout_width * position_map.scroll_position.x as f32;
+        let cursor_x = layout.x_for_index(cursor_byte) - scroll_pixels;
+        assert!(
+            cursor_x >= px(0.) && cursor_x <= position_map.text_hitbox.size.width,
+            "cursor at {cursor_x:?} should be visible"
+        );
+    }
+
+    struct NarrowGlyphTextSystem(gpui::NoopTextSystem);
+
+    impl gpui::PlatformTextSystem for NarrowGlyphTextSystem {
+        fn add_fonts(&self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> {
+            self.0.add_fonts(fonts)
+        }
+
+        fn all_font_names(&self) -> Vec<String> {
+            self.0.all_font_names()
+        }
+
+        fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> {
+            self.0.font_id(descriptor)
+        }
+
+        fn font_metrics(&self, font_id: gpui::FontId) -> gpui::FontMetrics {
+            self.0.font_metrics(font_id)
+        }
+
+        fn typographic_bounds(
+            &self,
+            font_id: gpui::FontId,
+            glyph_id: gpui::GlyphId,
+        ) -> anyhow::Result<Bounds<f32>> {
+            self.0.typographic_bounds(font_id, glyph_id)
+        }
+
+        fn advance(
+            &self,
+            font_id: gpui::FontId,
+            glyph_id: gpui::GlyphId,
+        ) -> anyhow::Result<Size<f32>> {
+            self.0.advance(font_id, glyph_id)
+        }
+
+        fn glyph_for_char(&self, font_id: gpui::FontId, ch: char) -> Option<gpui::GlyphId> {
+            self.0.glyph_for_char(font_id, ch)
+        }
+
+        fn glyph_raster_bounds(
+            &self,
+            params: &gpui::RenderGlyphParams,
+        ) -> anyhow::Result<Bounds<gpui::DevicePixels>> {
+            self.0.glyph_raster_bounds(params)
+        }
+
+        fn rasterize_glyph(
+            &self,
+            params: &gpui::RenderGlyphParams,
+            raster_bounds: Bounds<gpui::DevicePixels>,
+        ) -> anyhow::Result<(Size<gpui::DevicePixels>, Vec<u8>)> {
+            self.0.rasterize_glyph(params, raster_bounds)
+        }
+
+        fn layout_line(
+            &self,
+            text: &str,
+            font_size: Pixels,
+            runs: &[gpui::FontRun],
+        ) -> gpui::LineLayout {
+            let mut layout = self.0.layout_line(text, font_size, runs);
+            let mut x = Pixels::ZERO;
+            for glyph in layout.runs.iter_mut().flat_map(|run| run.glyphs.iter_mut()) {
+                if text[glyph.index..].starts_with('i') {
+                    glyph.advance = glyph.advance * 0.25;
+                }
+                glyph.position.x = x;
+                x += glyph.advance;
+            }
+            layout.width = x;
+            layout
+        }
+
+        fn recommended_rendering_mode(
+            &self,
+            font_id: gpui::FontId,
+            font_size: Pixels,
+        ) -> gpui::TextRenderingMode {
+            self.0.recommended_rendering_mode(font_id, font_size)
+        }
+    }
+
+    #[test]
+    fn test_long_line_of_narrow_glyphs_shapes_the_visible_area() {
+        let mut cx = TestAppContext::build_with_text_system(
+            gpui::TestDispatcher::new(0),
+            None,
+            Arc::new(NarrowGlyphTextSystem(gpui::NoopTextSystem)),
+        );
+        init_test(&mut cx, |_| {});
+        let text = "i".repeat(200_000);
+        for scroll_x in [None, Some(100_000.)] {
+            let state = draw_unwrapped_editor(&text, scroll_x, &mut cx);
+            let position_map = &state.position_map;
+            let layout = &position_map.line_layouts[0];
+            let scroll_pixels =
+                position_map.em_layout_width * position_map.scroll_position.x as f32;
+            let visible =
+                scroll_pixels - px(50.)..scroll_pixels + position_map.text_hitbox.size.width;
+            assert!(layout.shape_window.is_some());
+            assert_eq!(
+                layout.shaped_coverage(&visible),
+                ShapedCoverage::Covered,
+                "{:?}",
+                layout.fragments
+            );
+        }
+    }
+
+    #[test]
+    fn test_autoscroll_to_a_far_cursor_past_narrow_glyphs() {
+        let mut cx = TestAppContext::build_with_text_system(
+            gpui::TestDispatcher::new(0),
+            None,
+            Arc::new(NarrowGlyphTextSystem(gpui::NoopTextSystem)),
+        );
+        init_test(&mut cx, |_| {});
+        let text = format!("{}{}", "i".repeat(100_000), "m".repeat(100_000));
+        let cursor_column = 150_000;
+        let window = cx.add_window(|_, _| gpui::EmptyView);
+        let cx = &mut VisualTestContext::from_window(*window, &mut cx);
+        let editor = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let buffer = MultiBuffer::build_simple(&text, cx);
+                let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+                editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+                editor
+            })
+        });
+        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+        cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.change_selections(SelectionEffects::default(), window, cx, |s| {
+                    s.select_ranges([Point::new(0, cursor_column)..Point::new(0, cursor_column)]);
+                });
+            });
+        });
+        let (_, state) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        let position_map = &state.position_map;
+        let layout = &position_map.line_layouts[0];
+        let scroll_pixels = position_map.em_layout_width * position_map.scroll_position.x as f32;
+        let cursor_x = layout.x_for_index(cursor_column as usize) - scroll_pixels;
+        assert!(
+            cursor_x >= px(0.) && cursor_x <= position_map.text_hitbox.size.width,
+            "cursor at {cursor_x:?} should be visible"
+        );
+    }
+
+    #[gpui::test]
+    fn test_long_right_to_left_rows_are_shaped_whole(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        for text in [
+            format!("{}שלום{}", "a".repeat(10_000), "b".repeat(10_000)),
+            format!("{}\u{202E}{}", "a".repeat(10_000), "b".repeat(10_000)),
+        ] {
+            let state = draw_unwrapped_editor(&text, Some(5_000.), cx);
+            let layout = &state.position_map.line_layouts[0];
+            assert_eq!(layout.shape_window, None);
+            assert_eq!(shaped_text_len(layout), text.len());
+        }
+    }
+
+    fn windowed_line(
+        fragments: SmallVec<[LineFragment; 1]>,
+        shape_window: Range<usize>,
+    ) -> LineWithInvisibles {
+        LineWithInvisibles {
+            width: fragments
+                .iter()
+                .fold(Pixels::ZERO, |width, fragment| width + fragment.width()),
+            len: fragments.iter().map(LineFragment::len).sum(),
+            fragments,
+            fragment_index: None,
+            invisibles: Vec::new(),
+            diagnostic_underline_severity_ranges: Vec::new(),
+            point_diagnostics: Vec::new(),
+            shape_window: Some(shape_window),
+            font_size: px(10.),
+        }
+    }
+
+    fn unshaped_fragment(chars: usize, width: Pixels, after_window: bool) -> LineFragment {
+        LineFragment::Unshaped(UnshapedText {
+            len: chars,
+            chars,
+            width,
+            multibyte_text: None,
+            after_window,
+        })
+    }
+
+    #[gpui::test]
+    fn test_shape_windows_widen_toward_uncovered_text(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| gpui::EmptyView);
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        let shape = |text: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                LineFragment::Text(window.text_system().shape_line(
+                    text.into(),
+                    px(10.),
+                    &[TextRun {
+                        len: text.len(),
+                        font: font("Helvetica"),
+                        ..Default::default()
+                    }],
+                    None,
+                ))
+            })
+        };
+        let shaped_width = shape("iii", cx).width();
+
+        let lines = [windowed_line(
+            smallvec![unshaped_fragment(100, px(1000.), false), shape("iii", cx)],
+            100..103,
+        )];
+        let visible = px(500.)..px(800.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnLeft {
+                deficit: px(500.),
+                shaped_width,
+            }
+        );
+        let mut windows = [Some(100..103)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        assert_eq!(windows, [Some(0..103)]);
+        assert!(!EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+
+        let lines = [windowed_line(
+            smallvec![
+                shape("iii", cx),
+                unshaped_fragment(100, px(1000.), true),
+                shape("", cx)
+            ],
+            0..3,
+        )];
+        let visible = Pixels::ZERO..px(300.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnRight {
+                deficit: px(300.) - shaped_width,
+                shaped_width,
+            }
+        );
+        let mut windows = [Some(0..3)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        let widened_end = windows[0].as_ref().map_or(0, |window| window.end);
+        assert!(
+            shaped_width * (widened_end as f32 / 3.) >= px(600.),
+            "{windows:?}"
+        );
+        assert_eq!(
+            lines[0].shaped_coverage(&(Pixels::ZERO..shaped_width)),
+            ShapedCoverage::Covered
+        );
+
+        let lines = [windowed_line(
+            smallvec![unshaped_fragment(100, px(1000.), false)],
+            200..300,
+        )];
+        let visible = px(500.)..px(800.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnLeft {
+                deficit: px(500.),
+                shaped_width: Pixels::ZERO,
+            }
+        );
+        let mut windows = [Some(200..300)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        assert_eq!(windows, [Some(100..300)]);
+
+        let lines = [windowed_line(
+            smallvec![
+                unshaped_fragment(100, px(1000.), false),
+                shape("iii", cx),
+                unshaped_fragment(100, px(1000.), false),
+                shape("iii", cx),
+                unshaped_fragment(100, px(1000.), true),
+            ],
+            200..203,
+        )];
+        let gap_start = px(1000.) + shaped_width;
+        let visible = gap_start + px(100.)..gap_start + px(400.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnLeft {
+                deficit: px(900.),
+                shaped_width,
+            }
+        );
+        let mut windows = [Some(200..203)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        let widened = windows[0].clone().unwrap_or_default();
+        assert!(widened.start < 200 && widened.end == 203, "{widened:?}");
     }
 
     #[gpui::test]
@@ -14039,6 +15175,7 @@ mod tests {
             invisibles: Vec::new(),
             diagnostic_underline_severity_ranges: vec![(0..1, ERROR)],
             point_diagnostics: Vec::new(),
+            shape_window: None,
             len: 1,
             width: px(3.25),
             font_size: px(13.),

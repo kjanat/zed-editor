@@ -24,6 +24,7 @@ use language::{
 use lsp::{LanguageServer, LanguageServerBinary, LanguageServerId, LanguageServerName};
 use node_runtime::{NodeRuntime, VersionStrategy};
 use parking_lot::Mutex;
+use project::lsp_store::log_store::GlobalLogStore;
 use project::project_settings::ProjectSettings;
 use project::{DisableAiSettings, Project};
 use request::DidChangeStatus;
@@ -241,6 +242,7 @@ pub struct Copilot {
     fs: Arc<dyn Fs>,
     node_runtime: NodeRuntime,
     server: CopilotServer,
+    project: Option<WeakEntity<Project>>,
     buffers: HashSet<WeakEntity<Buffer>>,
     server_id: LanguageServerId,
     /// The configuration last sent to the running server, since every settings
@@ -324,6 +326,7 @@ impl Copilot {
         node_runtime: NodeRuntime,
         cx: &mut Context<Self>,
     ) -> Self {
+        let project_handle = project.as_ref().map(Entity::downgrade);
         let send_focus_notification = project.map(|project| {
             cx.subscribe(&project, |this, project, e: &project::Event, cx| {
                 if let project::Event::ActiveEntryChanged(new_entry) = e
@@ -382,6 +385,7 @@ impl Copilot {
             fs,
             node_runtime,
             server: CopilotServer::Disabled,
+            project: project_handle,
             buffers: Default::default(),
             _subscriptions,
         };
@@ -406,6 +410,7 @@ impl Copilot {
                     if let Some(task) = shutdown {
                         task.detach();
                     }
+                    this.sync_log_store(cx);
                     cx.notify();
                 }
             } else {
@@ -533,12 +538,45 @@ impl Copilot {
         cx: &mut gpui::TestAppContext,
         initializer: impl FnOnce(&mut lsp::FakeLanguageServer),
     ) -> (Entity<Self>, lsp::FakeLanguageServer) {
-        use fs::FakeFs;
-        use gpui::Subscription;
-        use lsp::FakeLanguageServer;
-        use node_runtime::NodeRuntime;
+        let (server, fake_server) = Self::fake_language_server(cx, initializer);
+        let this = Self::fake_entity(
+            None,
+            CopilotServer::Running(RunningCopilotServer {
+                lsp: Arc::new(server),
+                sign_in_status: SignInStatus::Authorized,
+                registered_buffers: Default::default(),
+            }),
+            cx,
+        );
+        (this, fake_server)
+    }
 
-        let (server, mut fake_server) = FakeLanguageServer::new(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fake_for_project(
+        project: &Entity<Project>,
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<Self>, lsp::FakeLanguageServer) {
+        let (server, fake_server) = Self::fake_language_server(cx, |_| {});
+        let this = Self::fake_entity(Some(project.downgrade()), CopilotServer::Disabled, cx);
+        this.update(cx, |this, cx| {
+            this.set_server(
+                CopilotServer::Running(RunningCopilotServer {
+                    lsp: Arc::new(server),
+                    sign_in_status: SignInStatus::Authorized,
+                    registered_buffers: Default::default(),
+                }),
+                cx,
+            );
+        });
+        (this, fake_server)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn fake_language_server(
+        cx: &mut gpui::TestAppContext,
+        initializer: impl FnOnce(&mut lsp::FakeLanguageServer),
+    ) -> (LanguageServer, lsp::FakeLanguageServer) {
+        let (server, mut fake_server) = lsp::FakeLanguageServer::new(
             LanguageServerId(0),
             LanguageServerBinary {
                 path: "path/to/copilot".into(),
@@ -550,25 +588,34 @@ impl Copilot {
             &mut cx.to_async(),
         );
         initializer(&mut fake_server);
+        (server, fake_server)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn fake_entity(
+        project: Option<WeakEntity<Project>>,
+        server: CopilotServer,
+        cx: &mut gpui::TestAppContext,
+    ) -> Entity<Self> {
+        use fs::FakeFs;
+        use gpui::Subscription;
+        use node_runtime::NodeRuntime;
+
         let node_runtime = NodeRuntime::unavailable();
         let send_focus_notification = Subscription::new(|| {});
-        let this = cx.new(|cx| Self {
+        cx.new(|cx| Self {
             server_id: LanguageServerId(0),
             sent_configuration: None,
             fs: FakeFs::new(cx.background_executor().clone()),
             node_runtime,
-            server: CopilotServer::Running(RunningCopilotServer {
-                lsp: Arc::new(server),
-                sign_in_status: SignInStatus::Authorized,
-                registered_buffers: Default::default(),
-            }),
+            server,
+            project,
             _subscriptions: vec![
                 send_focus_notification,
                 cx.on_app_quit(Self::shutdown_language_server),
             ],
             buffers: Default::default(),
-        });
-        (this, fake_server)
+        })
     }
 
     async fn start_language_server(
@@ -726,30 +773,57 @@ impl Copilot {
             cx.notify();
 
             if env::var("ZED_FORCE_COPILOT_ERROR").is_ok() {
-                this.server = CopilotServer::Error(
-                    "Forced error for testing (ZED_FORCE_COPILOT_ERROR)".into(),
+                this.set_server(
+                    CopilotServer::Error(
+                        "Forced error for testing (ZED_FORCE_COPILOT_ERROR)".into(),
+                    ),
+                    cx,
                 );
                 return;
             }
 
             match server {
                 Ok((server, status)) => {
-                    this.server = CopilotServer::Running(RunningCopilotServer {
-                        lsp: server,
-                        sign_in_status: SignInStatus::SignedOut {
-                            awaiting_signing_in: awaiting_sign_in_after_start,
-                        },
-                        registered_buffers: Default::default(),
-                    });
+                    this.set_server(
+                        CopilotServer::Running(RunningCopilotServer {
+                            lsp: server,
+                            sign_in_status: SignInStatus::SignedOut {
+                                awaiting_signing_in: awaiting_sign_in_after_start,
+                            },
+                            registered_buffers: Default::default(),
+                        }),
+                        cx,
+                    );
                     this.update_sign_in_status(status, cx);
                 }
                 Err(error) => {
-                    this.server = CopilotServer::Error(error.to_string().into());
+                    this.set_server(CopilotServer::Error(error.to_string().into()), cx);
                     cx.notify()
                 }
             }
         })
         .ok();
+    }
+
+    fn set_server(&mut self, server: CopilotServer, cx: &mut Context<Self>) {
+        self.server = server;
+        self.sync_log_store(cx);
+    }
+
+    fn sync_log_store(&self, cx: &mut App) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let Some(log_store) = cx
+            .try_global::<GlobalLogStore>()
+            .map(|global| global.0.clone())
+        else {
+            return;
+        };
+        let server = self.language_server().cloned();
+        log_store.update(cx, |log_store, cx| {
+            log_store.sync_copilot_for_project(project, server, cx);
+        });
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -1458,6 +1532,7 @@ mod tests {
             fs: FakeFs::new(cx.background_executor().clone()),
             node_runtime: NodeRuntime::unavailable(),
             server: CopilotServer::Disabled,
+            project: None,
             buffers: Default::default(),
             _subscriptions: vec![],
         });
@@ -1807,6 +1882,7 @@ mod tests {
             fs: FakeFs::new(cx.background_executor().clone()),
             node_runtime: NodeRuntime::unavailable(),
             server: CopilotServer::Disabled,
+            project: None,
             buffers: Default::default(),
             _subscriptions: vec![],
         });
@@ -1912,6 +1988,39 @@ mod tests {
                 vec![(1, expected_position); 2]
             );
         }
+    }
+
+    #[gpui::test]
+    async fn test_copilot_registers_its_server_with_the_log_store(cx: &mut TestAppContext) {
+        use project::lsp_store::log_store::{self, LanguageServerKind, LanguageServerLogKey};
+
+        init_test(cx);
+        let log_store = cx.update(|cx| log_store::init(false, cx));
+        let fs = fs::FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        log_store.update(cx, |log_store, cx| log_store.add_project(&project, cx));
+
+        let (_copilot, fake_server) = Copilot::fake_for_project(&project, cx);
+        fake_server.notify::<lsp::notification::LogMessage>(lsp::LogMessageParams {
+            typ: lsp::MessageType::LOG,
+            message: "copilot started".to_string(),
+        });
+        cx.run_until_parked();
+
+        let server_key = LanguageServerLogKey::new(
+            LanguageServerKind::Supplementary {
+                project: project.downgrade(),
+            },
+            LanguageServerId(0),
+        );
+        let logs = log_store.read_with(cx, |log_store, _| {
+            log_store.server_logs(&server_key).map(|logs| {
+                logs.iter()
+                    .map(|log| log.as_ref().to_string())
+                    .collect::<Vec<_>>()
+            })
+        });
+        assert_eq!(logs, Some(vec!["copilot started".to_string()]));
     }
 
     fn init_test(cx: &mut TestAppContext) {

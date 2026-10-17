@@ -1932,6 +1932,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                         .menu({
                             let focus_handle = focus_handle.clone();
                             let workspace_handle = self.workspace.clone();
+                            let actions_menu_handle = self.actions_menu_handle.clone();
                             let create_new_window = self.create_new_window;
                             let open_action = workspace::Open {
                                 create_new_window: Some(create_new_window),
@@ -1954,6 +1955,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 Some(ContextMenu::build(window, cx, {
                                     let focus_handle = focus_handle.clone();
                                     let workspace_handle = workspace_handle.clone();
+                                    let actions_menu_handle = actions_menu_handle.clone();
                                     let open_action = open_action.clone();
                                     move |menu, _, _| {
                                         menu.context(focus_handle)
@@ -1969,7 +1971,10 @@ impl PickerDelegate for RecentProjectsDelegate {
                                                 Some(open_action.boxed_clone()),
                                                 {
                                                     let workspace_handle = workspace_handle.clone();
+                                                    let actions_menu_handle =
+                                                        actions_menu_handle.clone();
                                                     move |window, cx| {
+                                                        actions_menu_handle.hide(cx);
                                                         open_local_project(
                                                             workspace_handle.clone(),
                                                             create_new_window,
@@ -3093,6 +3098,113 @@ mod tests {
             initial_window_count + 1,
             "open_local_project with create_new_window=true should open a new window"
         );
+    }
+
+    struct PromptModal(FocusHandle);
+
+    impl workspace::ModalView for PromptModal {}
+
+    impl EventEmitter<DismissEvent> for PromptModal {}
+
+    impl Focusable for PromptModal {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.0.clone()
+        }
+    }
+
+    impl Render for PromptModal {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.0)
+        }
+    }
+
+    #[gpui::test]
+    async fn test_open_local_folders_from_actions_menu_with_enter(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.use_system_path_prompts = Some(false);
+                });
+            });
+        });
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/project"), json!({ "main.rs": "" }))
+            .await;
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/project"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        cx.run_until_parked();
+        let workspace = multi_workspace
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+
+        let cx = &mut VisualTestContext::from_window(multi_workspace.into(), cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            let focus_handle = workspace.focus_handle(cx);
+            RecentProjects::open(workspace, Some(false), Vec::new(), window, focus_handle, cx);
+        });
+        cx.run_until_parked();
+        draw(cx);
+
+        let recent_projects = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<RecentProjects>(cx)
+                .expect("the recent projects modal is open")
+        });
+        let picker =
+            recent_projects.read_with(cx, |recent_projects, _| recent_projects.picker.clone());
+
+        cx.dispatch_action(ToggleActionsMenu);
+        cx.run_until_parked();
+        for _ in 0..2 {
+            draw(cx);
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+        }
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(
+                picker
+                    .read(cx)
+                    .delegate
+                    .actions_menu_handle
+                    .is_focused(window, cx)
+            );
+        });
+
+        let prompts = std::rc::Rc::new(std::cell::Cell::new(0));
+        workspace.update(cx, |workspace, _| {
+            let prompts = prompts.clone();
+            workspace.set_prompt_for_open_path(Box::new(move |workspace, _, window, cx| {
+                prompts.set(prompts.get() + 1);
+                let (tx, rx) = futures::channel::oneshot::channel();
+                workspace
+                    .toggle_modal(window, cx, |_, cx| PromptModal(cx.focus_handle()))
+                    .detach();
+                tx.send(None).ok();
+                rx
+            }));
+        });
+
+        cx.dispatch_action(menu::SelectFirst);
+        cx.dispatch_action(menu::Confirm);
+        cx.run_until_parked();
+
+        assert_eq!(prompts.get(), 1, "Open Local Folders prompts for a path");
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_modal::<PromptModal>(cx).is_some());
+            assert!(workspace.active_modal::<RecentProjects>(cx).is_none());
+        });
     }
 
     fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
