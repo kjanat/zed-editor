@@ -2425,8 +2425,7 @@ impl MarkdownElement {
                 .image_link_for_position(window.mouse_position())
                 .is_some()
                 || rendered_text
-                    .source_index_for_position(window.mouse_position())
-                    .ok()
+                    .clickable_source_index_for_position(window.mouse_position())
                     .is_some_and(|source_index| {
                         rendered_text.link_for_source_index(source_index).is_some()
                             || rendered_text
@@ -2453,8 +2452,7 @@ impl MarkdownElement {
                     && hitbox.is_hovered(window)
                 {
                     let link = rendered_text
-                        .source_index_for_position(event.position)
-                        .ok()
+                        .clickable_source_index_for_position(event.position)
                         .and_then(|ix| rendered_text.link_for_source_index(ix))
                         .map(|link| link.destination_url.clone());
                     markdown.capture_for_context_menu(link, Some(&rendered_text));
@@ -2471,7 +2469,9 @@ impl MarkdownElement {
                         let position_result =
                             rendered_text.source_index_for_position(event.position);
 
-                        if let Ok(source_index) = position_result {
+                        if let Some(source_index) =
+                            rendered_text.clickable_source_index_for_position(event.position)
+                        {
                             if let Some(footnote_ref) =
                                 rendered_text.footnote_ref_for_source_index(source_index)
                             {
@@ -2572,7 +2572,7 @@ impl MarkdownElement {
                 } else {
                     let is_hitbox_hovered = hitbox.is_hovered(window);
                     let source_index = is_hitbox_hovered
-                        .then(|| rendered_text.source_index_for_position(event.position).ok())
+                        .then(|| rendered_text.clickable_source_index_for_position(event.position))
                         .flatten();
                     let hovered_url = is_hitbox_hovered
                         .then(|| rendered_text.image_link_for_position(event.position))
@@ -2604,7 +2604,8 @@ impl MarkdownElement {
             let rendered_text = rendered_text.clone();
             move |markdown, event: &MouseUpEvent, phase, window, cx| {
                 if phase.bubble() {
-                    let source_index = rendered_text.source_index_for_position(event.position).ok();
+                    let source_index =
+                        rendered_text.clickable_source_index_for_position(event.position);
                     if let Some(pressed_footnote_ref) = markdown.pressed_footnote_ref.take()
                         && source_index
                             .and_then(|ix| rendered_text.footnote_ref_for_source_index(ix))
@@ -5612,6 +5613,17 @@ impl RenderedText {
                     ..rendered_text.offset_utf16_to_offset(end),
             )
             .collect()
+    }
+
+    fn clickable_source_index_for_position(&self, position: Point<Pixels>) -> Option<usize> {
+        match self
+            .labels
+            .iter()
+            .find(|(label, _)| label.layout.bounds().contains(&position))
+        {
+            Some((label, _)) => label.source_index_for_position(position).ok(),
+            None => self.source_index_for_position(position).ok(),
+        }
     }
 
     fn source_index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
@@ -8874,6 +8886,39 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_table_list_layout_header_links_stay_clickable(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | [Docs](https://example.com/docs) | Notes |
+            | --- | --- |
+            | first | alpha |
+            | second | beta |
+        "};
+        let (view, cx) = open_link_interaction_test_window_with_table_layout(
+            source,
+            Some(MarkdownTableLayout::List),
+            cx,
+        );
+        let hovered_urls = view.read_with(cx, |view, _| view.hovered_urls.clone());
+        let opened_urls = view.read_with(cx, |view, _| view.opened_urls.clone());
+        let label = cx
+            .debug_bounds("markdown_table_label_1_0")
+            .expect("the second entry should label its first column");
+        let position = point(label.left() + px(2.), label.center().y);
+
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        assert_eq!(
+            hovered_urls.borrow().last(),
+            Some(&Some(SharedString::from("https://example.com/docs")))
+        );
+        cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        assert_eq!(
+            opened_urls.borrow().as_slice(),
+            [SharedString::from("https://example.com/docs")]
+        );
+    }
+
+    #[gpui::test]
     fn test_table_list_layout_drag_from_a_label_stays_in_its_entry(cx: &mut TestAppContext) {
         let source = indoc::indoc! {"
             | Name | Notes |
@@ -9554,6 +9599,7 @@ mod tests {
 
     struct LinkInteractionTestView {
         markdown: Entity<Markdown>,
+        table_layout: Option<MarkdownTableLayout>,
         rendered_text: Rc<RefCell<Option<RenderedText>>>,
         hovered_urls: Rc<RefCell<Vec<Option<SharedString>>>>,
         opened_urls: Rc<RefCell<Vec<SharedString>>>,
@@ -9566,7 +9612,10 @@ mod tests {
             div().size_full().child(CapturingMarkdownElement {
                 markdown_element: MarkdownElement::new(
                     self.markdown.clone(),
-                    MarkdownStyle::default(),
+                    MarkdownStyle {
+                        table_layout: self.table_layout,
+                        ..MarkdownStyle::default()
+                    },
                 )
                 .on_url_hover(move |url, _, _| hovered_urls.borrow_mut().push(url))
                 .on_url_click(move |url, _, _| opened_urls.borrow_mut().push(url)),
@@ -9579,10 +9628,19 @@ mod tests {
         source: &str,
         cx: &'a mut TestAppContext,
     ) -> (Entity<LinkInteractionTestView>, &'a mut VisualTestContext) {
+        open_link_interaction_test_window_with_table_layout(source, None, cx)
+    }
+
+    fn open_link_interaction_test_window_with_table_layout<'a>(
+        source: &str,
+        table_layout: Option<MarkdownTableLayout>,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<LinkInteractionTestView>, &'a mut VisualTestContext) {
         ensure_theme_initialized(cx);
         let markdown = cx.new(|cx| Markdown::new(source.to_string().into(), None, None, cx));
         let (view, cx) = cx.add_window_view(move |_, _| LinkInteractionTestView {
             markdown,
+            table_layout,
             rendered_text: Rc::new(RefCell::new(None)),
             hovered_urls: Rc::new(RefCell::new(Vec::new())),
             opened_urls: Rc::new(RefCell::new(Vec::new())),
