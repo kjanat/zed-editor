@@ -701,6 +701,30 @@ fn test_undo_redo() {
 }
 
 #[test]
+fn test_merge_into_a_missing_transaction_keeps_the_source() {
+    let mut buffer = Buffer::new(ReplicaId::LOCAL, BufferId::new(1).unwrap(), "1234");
+    buffer.set_group_interval(Duration::from_secs(0));
+
+    let destination = buffer.push_empty_transaction(Instant::now());
+    assert_eq!(buffer.undo().map(|(id, _)| id), Some(destination));
+    buffer.edit([(0..0, "a")]);
+    let source = buffer
+        .history
+        .undo_stack
+        .last()
+        .expect("the edit should have an undo entry")
+        .transaction
+        .id;
+    assert!(buffer.get_transaction(destination).is_none());
+
+    buffer.merge_transactions(source, destination);
+
+    assert!(buffer.get_transaction(source).is_some());
+    assert_eq!(buffer.undo().map(|(id, _)| id), Some(source));
+    assert_eq!(buffer.text(), "1234");
+}
+
+#[test]
 fn test_history() {
     let mut now = Instant::now();
     let mut buffer = Buffer::new(ReplicaId::LOCAL, BufferId::new(1).unwrap(), "123456");
