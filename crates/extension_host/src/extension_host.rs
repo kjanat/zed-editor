@@ -1670,11 +1670,20 @@ impl ExtensionStore {
         cx.spawn(async move |this, cx| {
             for extension_id in extensions {
                 let _source_guard = git_source_lock.lock().await;
-                let Some(indexed_url) = this.read_with(cx, |this, _| {
+                let Some(indexed_url) = this.read_with(cx, |this, cx| {
+                    let configured_source = ExtensionSettings::get_global(cx)
+                        .git_sources()
+                        .find(|(id, _)| *id == &extension_id)
+                        .map(|(_, source)| source);
                     this.extension_index
                         .extensions
                         .get(&extension_id)
                         .and_then(|entry| entry.source.as_ref())
+                        .filter(|installed| {
+                            configured_source
+                                .as_ref()
+                                .is_none_or(|source| installed.matches(source))
+                        })
                         .map(|source| source.url.clone())
                 })?
                 else {

@@ -6168,6 +6168,68 @@ async fn test_git_install_failures_are_reported_until_resolved(cx: &mut TestAppC
 }
 
 #[gpui::test]
+async fn test_git_update_preserves_rejected_source_replacement_failure(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    let wrong = GitExtensionRemote::new("other-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial install should succeed");
+    let original = installed_source(&store, "git-extension", cx);
+
+    for source in [
+        wrong.source(),
+        crate::GitExtensionSource {
+            reference: Some("missing-branch".into()),
+            ..remote.source()
+        },
+        crate::GitExtensionSource {
+            path: Some("missing-directory".into()),
+            ..remote.source()
+        },
+    ] {
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extensions(vec![("git-extension".into(), source.clone())], cx)
+            })
+            .await;
+        let failures = git_failures(&store, cx);
+        assert_eq!(failures.len(), 1);
+
+        let source_lock = store.read_with(cx, |store, _| store.git_source_lock.clone());
+        let source_guard = source_lock.lock().await;
+        let update = store.update(cx, |store, cx| store.check_for_git_updates(cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|settings, cx| {
+                settings.update_user_settings(cx, |content| {
+                    content.extension.auto_install_extensions.insert(
+                        "git-extension".into(),
+                        settings::AutoInstallExtensionContent::Git {
+                            git: source.url.clone(),
+                            reference: source.reference.clone(),
+                            path: source.path.clone(),
+                        },
+                    );
+                });
+            });
+        });
+        drop(source_guard);
+        update.await.expect("update check should succeed");
+
+        assert_eq!(installed_source(&store, "git-extension", cx), original);
+        assert_eq!(git_failures(&store, cx), failures);
+        assert_eq!(
+            store.update(cx, |store, _| store.take_git_extension_failures()),
+            failures
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_git_errors_redact_url_credentials(cx: &mut TestAppContext) {
     let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
     let url = "https://kjanat:ghp_hunter2hunter2hunter2@127.0.0.1:9/zed-ldap.git";
