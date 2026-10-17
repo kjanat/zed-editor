@@ -3216,24 +3216,88 @@ impl EditorElement {
             .collect()
     }
 
-    fn shape_windows_cover(
-        line_layouts: &[LineWithInvisibles],
-        scroll_x: Pixels,
-        editor_width: Pixels,
-        em_advance: Pixels,
-    ) -> bool {
-        if em_advance <= Pixels::ZERO {
-            return true;
-        }
-        let first_visible_column = (scroll_x / em_advance).floor().max(0.) as usize;
-        let last_visible_column = ((scroll_x + editor_width) / em_advance).ceil().max(0.) as usize;
+    fn shape_windows_cover(line_layouts: &[LineWithInvisibles], visible: &Range<Pixels>) -> bool {
         line_layouts
             .iter()
-            .filter_map(|line| line.shape_window.as_ref())
-            .all(|shape_window| {
-                shape_window.start <= first_visible_column
-                    && last_visible_column <= shape_window.end
-            })
+            .all(|line| line.shaped_coverage(visible) == ShapedCoverage::Covered)
+    }
+
+    fn widen_shape_windows(
+        line_layouts: &[LineWithInvisibles],
+        shape_windows: &mut [Option<Range<usize>>],
+        visible: &Range<Pixels>,
+    ) -> bool {
+        let visible_width = visible.end - visible.start;
+        let mut widened = false;
+        for (line, shape_window) in line_layouts.iter().zip(shape_windows.iter_mut()) {
+            let Some(shape_window) = shape_window else {
+                continue;
+            };
+            let growth = |deficit: Pixels, shaped_width: Pixels| {
+                let window_chars = shape_window.len().max(1);
+                let advance = shaped_width / window_chars as f32;
+                let needed = if advance > Pixels::ZERO {
+                    ((deficit + visible_width) / advance).ceil() as usize
+                } else {
+                    window_chars
+                };
+                needed.max(window_chars)
+            };
+            let previous = shape_window.clone();
+            match line.shaped_coverage(visible) {
+                ShapedCoverage::Covered => {}
+                ShapedCoverage::ShortOnLeft {
+                    deficit,
+                    shaped_width,
+                } => {
+                    shape_window.start = shape_window
+                        .start
+                        .saturating_sub(growth(deficit, shaped_width));
+                }
+                ShapedCoverage::ShortOnRight {
+                    deficit,
+                    shaped_width,
+                } => {
+                    shape_window.end += growth(deficit, shaped_width);
+                }
+            }
+            widened |= *shape_window != previous;
+        }
+        widened
+    }
+
+    fn layout_lines_in_shape_windows(
+        rows: Range<DisplayRow>,
+        snapshot: &EditorSnapshot,
+        style: &EditorStyle,
+        editor_width: Pixels,
+        is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
+        bg_segments_per_row: &[Vec<(Range<DisplayPoint>, Hsla)>],
+        scroll_x: Pixels,
+        visible: &Range<Pixels>,
+        em_advance: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<LineWithInvisibles> {
+        let mut shape_windows =
+            Self::shape_windows(rows.clone(), snapshot, scroll_x, editor_width, em_advance);
+        loop {
+            let line_layouts = Self::layout_lines(
+                rows.clone(),
+                snapshot,
+                style,
+                editor_width,
+                is_row_soft_wrapped,
+                bg_segments_per_row,
+                &shape_windows,
+                em_advance,
+                window,
+                cx,
+            );
+            if !Self::widen_shape_windows(&line_layouts, &mut shape_windows, visible) {
+                return line_layouts;
+            }
+        }
     }
 
     fn layout_lines(
@@ -7516,6 +7580,19 @@ impl LineFragment {
 
 const SHAPE_WINDOW_MIN_LINE_LEN: u32 = 8192;
 
+#[derive(Debug, PartialEq)]
+enum ShapedCoverage {
+    Covered,
+    ShortOnLeft {
+        deficit: Pixels,
+        shaped_width: Pixels,
+    },
+    ShortOnRight {
+        deficit: Pixels,
+        shaped_width: Pixels,
+    },
+}
+
 enum RowSegment<'a> {
     Shaped(&'a str),
     Skipped { text: &'a str, chars: usize },
@@ -7557,6 +7634,60 @@ fn row_segments<'a>(
 }
 
 impl LineWithInvisibles {
+    fn shaped_coverage(&self, visible: &Range<Pixels>) -> ShapedCoverage {
+        if self.shape_window.is_none() {
+            return ShapedCoverage::Covered;
+        }
+        let mut x = Pixels::ZERO;
+        let mut shaped: Option<Range<Pixels>> = None;
+        let mut visible_unshaped = Vec::new();
+        for fragment in &self.fragments {
+            let fragment_x = x..x + fragment.width();
+            x = fragment_x.end;
+            match fragment {
+                LineFragment::Text(line) if line.len > 0 => {
+                    shaped = Some(match shaped {
+                        Some(shaped) => shaped.start..fragment_x.end,
+                        None => fragment_x,
+                    });
+                }
+                LineFragment::Unshaped(_) => {
+                    if fragment_x.start < visible.end && visible.start < fragment_x.end {
+                        visible_unshaped.push(fragment_x);
+                    }
+                }
+                LineFragment::Text(_) | LineFragment::Element { .. } => {}
+            }
+        }
+        let Some(shaped) = shaped else {
+            return if visible_unshaped.is_empty() {
+                ShapedCoverage::Covered
+            } else {
+                ShapedCoverage::ShortOnLeft {
+                    deficit: visible.end - visible.start,
+                    shaped_width: Pixels::ZERO,
+                }
+            };
+        };
+        let shaped_width = shaped.end - shaped.start;
+        if visible_unshaped
+            .iter()
+            .any(|unshaped| unshaped.end <= shaped.start)
+        {
+            ShapedCoverage::ShortOnLeft {
+                deficit: shaped.start - visible.start,
+                shaped_width,
+            }
+        } else if visible_unshaped.is_empty() {
+            ShapedCoverage::Covered
+        } else {
+            ShapedCoverage::ShortOnRight {
+                deficit: visible.end - shaped.end,
+                shaped_width,
+            }
+        }
+    }
+
     fn index_fragments(fragments: &[LineFragment]) -> Option<SegmentIndex> {
         // Single-fragment lines already delegate lookup directly to GPUI.
         if fragments.len() <= 1 {
@@ -9404,21 +9535,19 @@ impl Element for EditorElement {
 
                     let layout_scroll_x =
                         Pixels::from(scroll_position.x * f64::from(em_layout_width));
-                    let shape_windows = Self::shape_windows(
-                        start_row..end_row,
-                        &snapshot,
-                        layout_scroll_x,
-                        editor_width,
-                        em_advance,
-                    );
-                    let mut line_layouts = Self::layout_lines(
+                    let visible_text_x = |scroll_x: Pixels| {
+                        let start = scroll_x - gutter_dimensions.margin;
+                        start..start + text_width
+                    };
+                    let mut line_layouts = Self::layout_lines_in_shape_windows(
                         start_row..end_row,
                         &snapshot,
                         &self.style,
                         editor_width,
                         is_row_soft_wrapped,
                         &bg_segments_per_row,
-                        &shape_windows,
+                        layout_scroll_x,
+                        &visible_text_x(layout_scroll_x),
                         em_advance,
                         window,
                         cx,
@@ -9669,27 +9798,17 @@ impl Element for EditorElement {
                         scroll_position.y * f64::from(line_height),
                     );
                     let final_scroll_x = Pixels::from(scroll_pixel_position.x);
-                    if !Self::shape_windows_cover(
-                        &line_layouts,
-                        final_scroll_x,
-                        editor_width,
-                        em_advance,
-                    ) {
-                        let shape_windows = Self::shape_windows(
-                            start_row..end_row,
-                            &snapshot,
-                            final_scroll_x,
-                            editor_width,
-                            em_advance,
-                        );
-                        line_layouts = Self::layout_lines(
+                    let final_visible_text_x = visible_text_x(final_scroll_x);
+                    if !Self::shape_windows_cover(&line_layouts, &final_visible_text_x) {
+                        line_layouts = Self::layout_lines_in_shape_windows(
                             start_row..end_row,
                             &snapshot,
                             &self.style,
                             editor_width,
                             is_row_soft_wrapped,
                             &bg_segments_per_row,
-                            &shape_windows,
+                            final_scroll_x,
+                            &final_visible_text_x,
                             em_advance,
                             window,
                             cx,
@@ -14043,6 +14162,241 @@ mod tests {
             cursor_x >= px(0.) && cursor_x <= position_map.text_hitbox.size.width,
             "cursor at {cursor_x:?} should be visible"
         );
+    }
+
+    struct NarrowGlyphTextSystem(gpui::NoopTextSystem);
+
+    impl gpui::PlatformTextSystem for NarrowGlyphTextSystem {
+        fn add_fonts(&self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> {
+            self.0.add_fonts(fonts)
+        }
+
+        fn all_font_names(&self) -> Vec<String> {
+            self.0.all_font_names()
+        }
+
+        fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> {
+            self.0.font_id(descriptor)
+        }
+
+        fn font_metrics(&self, font_id: gpui::FontId) -> gpui::FontMetrics {
+            self.0.font_metrics(font_id)
+        }
+
+        fn typographic_bounds(
+            &self,
+            font_id: gpui::FontId,
+            glyph_id: gpui::GlyphId,
+        ) -> anyhow::Result<Bounds<f32>> {
+            self.0.typographic_bounds(font_id, glyph_id)
+        }
+
+        fn advance(
+            &self,
+            font_id: gpui::FontId,
+            glyph_id: gpui::GlyphId,
+        ) -> anyhow::Result<Size<f32>> {
+            self.0.advance(font_id, glyph_id)
+        }
+
+        fn glyph_for_char(&self, font_id: gpui::FontId, ch: char) -> Option<gpui::GlyphId> {
+            self.0.glyph_for_char(font_id, ch)
+        }
+
+        fn glyph_raster_bounds(
+            &self,
+            params: &gpui::RenderGlyphParams,
+        ) -> anyhow::Result<Bounds<gpui::DevicePixels>> {
+            self.0.glyph_raster_bounds(params)
+        }
+
+        fn rasterize_glyph(
+            &self,
+            params: &gpui::RenderGlyphParams,
+            raster_bounds: Bounds<gpui::DevicePixels>,
+        ) -> anyhow::Result<(Size<gpui::DevicePixels>, Vec<u8>)> {
+            self.0.rasterize_glyph(params, raster_bounds)
+        }
+
+        fn layout_line(
+            &self,
+            text: &str,
+            font_size: Pixels,
+            runs: &[gpui::FontRun],
+        ) -> gpui::LineLayout {
+            let mut layout = self.0.layout_line(text, font_size, runs);
+            let mut x = Pixels::ZERO;
+            for glyph in layout.runs.iter_mut().flat_map(|run| run.glyphs.iter_mut()) {
+                if text[glyph.index..].starts_with('i') {
+                    glyph.advance = glyph.advance * 0.25;
+                }
+                glyph.position.x = x;
+                x += glyph.advance;
+            }
+            layout.width = x;
+            layout
+        }
+
+        fn recommended_rendering_mode(
+            &self,
+            font_id: gpui::FontId,
+            font_size: Pixels,
+        ) -> gpui::TextRenderingMode {
+            self.0.recommended_rendering_mode(font_id, font_size)
+        }
+    }
+
+    #[test]
+    fn test_long_line_of_narrow_glyphs_shapes_the_visible_area() {
+        let mut cx = TestAppContext::build_with_text_system(
+            gpui::TestDispatcher::new(0),
+            None,
+            Arc::new(NarrowGlyphTextSystem(gpui::NoopTextSystem)),
+        );
+        init_test(&mut cx, |_| {});
+        let text = "i".repeat(200_000);
+        for scroll_x in [None, Some(100_000.)] {
+            let state = draw_unwrapped_editor(&text, scroll_x, &mut cx);
+            let position_map = &state.position_map;
+            let layout = &position_map.line_layouts[0];
+            let scroll_pixels =
+                position_map.em_layout_width * position_map.scroll_position.x as f32;
+            let visible =
+                scroll_pixels - px(50.)..scroll_pixels + position_map.text_hitbox.size.width;
+            assert!(layout.shape_window.is_some());
+            assert_eq!(
+                layout.shaped_coverage(&visible),
+                ShapedCoverage::Covered,
+                "{:?}",
+                layout.fragments
+            );
+        }
+    }
+
+    fn windowed_line(
+        fragments: SmallVec<[LineFragment; 1]>,
+        shape_window: Range<usize>,
+    ) -> LineWithInvisibles {
+        LineWithInvisibles {
+            width: fragments
+                .iter()
+                .fold(Pixels::ZERO, |width, fragment| width + fragment.width()),
+            len: fragments.iter().map(LineFragment::len).sum(),
+            fragments,
+            fragment_index: None,
+            invisibles: Vec::new(),
+            diagnostic_underline_severity_ranges: Vec::new(),
+            point_diagnostics: Vec::new(),
+            shape_window: Some(shape_window),
+            font_size: px(10.),
+        }
+    }
+
+    fn unshaped_fragment(chars: usize, width: Pixels) -> LineFragment {
+        LineFragment::Unshaped(UnshapedText {
+            len: chars,
+            chars,
+            width,
+            multibyte_text: None,
+        })
+    }
+
+    #[gpui::test]
+    fn test_shape_windows_widen_toward_uncovered_text(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| gpui::EmptyView);
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        let shape = |text: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                LineFragment::Text(window.text_system().shape_line(
+                    text.into(),
+                    px(10.),
+                    &[TextRun {
+                        len: text.len(),
+                        font: font("Helvetica"),
+                        ..Default::default()
+                    }],
+                    None,
+                ))
+            })
+        };
+        let shaped_width = shape("iii", cx).width();
+
+        let lines = [windowed_line(
+            smallvec![unshaped_fragment(100, px(1000.)), shape("iii", cx)],
+            100..103,
+        )];
+        let visible = px(500.)..px(800.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnLeft {
+                deficit: px(500.),
+                shaped_width,
+            }
+        );
+        let mut windows = [Some(100..103)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        assert_eq!(windows, [Some(0..103)]);
+        assert!(!EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+
+        let lines = [windowed_line(
+            smallvec![
+                shape("iii", cx),
+                unshaped_fragment(100, px(1000.)),
+                shape("", cx)
+            ],
+            0..3,
+        )];
+        let visible = Pixels::ZERO..px(300.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnRight {
+                deficit: px(300.) - shaped_width,
+                shaped_width,
+            }
+        );
+        let mut windows = [Some(0..3)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        let widened_end = windows[0].as_ref().map_or(0, |window| window.end);
+        assert!(
+            shaped_width * (widened_end as f32 / 3.) >= px(600.),
+            "{windows:?}"
+        );
+        assert_eq!(
+            lines[0].shaped_coverage(&(Pixels::ZERO..shaped_width)),
+            ShapedCoverage::Covered
+        );
+
+        let lines = [windowed_line(
+            smallvec![unshaped_fragment(100, px(1000.))],
+            200..300,
+        )];
+        let visible = px(500.)..px(800.);
+        assert_eq!(
+            lines[0].shaped_coverage(&visible),
+            ShapedCoverage::ShortOnLeft {
+                deficit: px(300.),
+                shaped_width: Pixels::ZERO,
+            }
+        );
+        let mut windows = [Some(200..300)];
+        assert!(EditorElement::widen_shape_windows(
+            &lines,
+            &mut windows,
+            &visible
+        ));
+        assert_eq!(windows, [Some(100..300)]);
     }
 
     #[gpui::test]
