@@ -627,7 +627,7 @@ impl ExtensionBuilder {
     }
 }
 
-async fn populate_defaults(
+pub async fn populate_defaults(
     manifest: &mut ExtensionManifest,
     extension_path: &Path,
     fs: Arc<dyn Fs>,

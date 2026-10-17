@@ -561,6 +561,7 @@ async fn build_git_source(
     wasm_host: Arc<WasmHost>,
     extension_id: &str,
     source: &GitExtensionSource,
+    checkout_commit: Option<&str>,
 ) -> Result<PathBuf> {
     fs.create_dir(staging_dir).await?;
     recover_git_source(&fs, staging_dir, sources_dir, index_path, installed_dir).await?;
@@ -577,7 +578,10 @@ async fn build_git_source(
     let directory = checkout.path();
     run_git(directory, &["init"]).await?;
     run_git(directory, &["remote", "add", "origin", &source.url]).await?;
-    let reference = source.reference.as_deref().unwrap_or("HEAD");
+    // Repairs of pinned extensions preserve both the installed commit and configured source.
+    let reference = checkout_commit
+        .or(source.reference.as_deref())
+        .unwrap_or("HEAD");
     run_git(directory, &["fetch", "--depth", "1", "origin", reference]).await?;
     run_git(
         directory,
@@ -1691,12 +1695,10 @@ impl ExtensionStore {
     }
 
     pub fn check_for_git_updates(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let extension_settings = ExtensionSettings::get_global(cx);
         let extensions = self
             .extension_index
             .extensions
             .iter()
-            .filter(|(extension_id, _)| extension_settings.should_auto_update(extension_id))
             .filter_map(|(extension_id, entry)| entry.source.as_ref().map(|_| extension_id.clone()))
             .collect::<Vec<_>>();
         let fs = self.fs.clone();
@@ -1712,8 +1714,9 @@ impl ExtensionStore {
         cx.spawn(async move |this, cx| {
             for extension_id in extensions {
                 let _source_guard = git_source_lock.lock().await;
-                let Some(indexed_url) = this.read_with(cx, |this, cx| {
-                    let configured_source = ExtensionSettings::get_global(cx)
+                let Some((indexed_source, auto_update)) = this.read_with(cx, |this, cx| {
+                    let extension_settings = ExtensionSettings::get_global(cx);
+                    let configured_source = extension_settings
                         .git_sources()
                         .find(|(id, _)| *id == &extension_id)
                         .map(|(_, source)| source);
@@ -1726,11 +1729,17 @@ impl ExtensionStore {
                                 .as_ref()
                                 .is_none_or(|source| installed.matches(source))
                         })
-                        .map(|source| source.url.clone())
+                        .map(|source| {
+                            (
+                                source.clone(),
+                                extension_settings.should_auto_update(&extension_id),
+                            )
+                        })
                 })?
                 else {
                     continue;
                 };
+                let indexed_url = indexed_source.url.clone();
                 let _operation = match Self::begin_operation(
                     &this,
                     &extension_id,
@@ -1755,14 +1764,21 @@ impl ExtensionStore {
                         let wasm_host = wasm_host.clone();
                         let extension_id = extension_id.clone();
                         async move {
-                            let Some(installed) =
-                                load_git_source_record(&fs, &sources_dir, &extension_id).await
-                            else {
-                                return GitUpdate::RecordMissing;
+                            let installed =
+                                load_git_source_record(&fs, &sources_dir, &extension_id).await;
+                            let record_missing = installed.is_none();
+                            let installed = match installed {
+                                Some(installed) => installed,
+                                None if !auto_update => indexed_source,
+                                None => return GitUpdate::RecordMissing,
                             };
                             let source = installed.source();
                             let result = async {
                                 let checkout_intact = async {
+                                    anyhow::ensure!(
+                                        !record_missing,
+                                        "the installed source record is missing or unreadable"
+                                    );
                                     let extension_path = git_source_extension_path(
                                         &sources_dir,
                                         &extension_id,
@@ -1780,16 +1796,48 @@ impl ExtensionStore {
                                     let entry = index.extensions.get(&extension_id).context(
                                         "the checkout no longer declares the installed extension",
                                     )?;
+                                    let mut manifest = (*entry.manifest).clone();
+                                    extension::extension_builder::populate_defaults(
+                                        &mut manifest,
+                                        &extension_path,
+                                        fs.clone(),
+                                    )
+                                    .await?;
+                                    validate_git_theme_resources(&fs, &extension_path, &manifest)
+                                        .await?;
+                                    validate_git_snippet_resources(&fs, &extension_path, &manifest)
+                                        .await?;
+                                    validate_git_language_resources(
+                                        &fs,
+                                        &extension_path,
+                                        &manifest,
+                                        &proxy,
+                                    )
+                                    .await?;
                                     validate_git_compiled_artifacts(
                                         &fs,
                                         &extension_path,
-                                        &entry.manifest,
+                                        &manifest,
                                         &wasm_host,
                                     )
-                                    .await
+                                    .await?;
+                                    // Reindexing cannot rediscover deleted implicit resources.
+                                    let deleted = run_git(
+                                        &extension_path,
+                                        &["ls-files", "--deleted", "--", "."],
+                                    )
+                                    .await?;
+                                    anyhow::ensure!(
+                                        deleted.is_empty(),
+                                        "missing tracked resources: {deleted}"
+                                    );
+                                    Ok(())
                                 }
                                 .await;
                                 if checkout_intact.is_ok() {
+                                    if !auto_update {
+                                        return anyhow::Ok(false);
+                                    }
                                     match remote_commit(&sources_dir, &source).await? {
                                         Some(remote_commit)
                                             if remote_commit == installed.commit =>
@@ -1818,6 +1866,7 @@ impl ExtensionStore {
                                     wasm_host,
                                     &extension_id,
                                     &source,
+                                    (!auto_update).then_some(installed.commit.as_str()),
                                 )
                                 .await
                                 .with_context(|| {
@@ -1909,6 +1958,7 @@ impl ExtensionStore {
                             wasm_host,
                             &extension_id,
                             &source,
+                            None,
                         )
                         .await
                     }
