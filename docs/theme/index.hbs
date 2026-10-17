@@ -505,19 +505,19 @@
 				<!-- Livereload script (if served using the cli tool) -->
 				<script>
 					const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-				const wsAddress = wsProtocol + '//' + location.host + '/'
-					+ '{{{live_reload_endpoint}}}';
-				const socket = new WebSocket(wsAddress);
-				socket.onmessage = function(event) {
-					if (event.data === 'reload') {
-						socket.close();
-						location.reload();
-					}
-				};
+					const wsAddress = wsProtocol + '//' + location.host + '/'
+						+ '{{{live_reload_endpoint}}}';
+					const socket = new WebSocket(wsAddress);
+					socket.onmessage = function(event) {
+						if (event.data === 'reload') {
+							socket.close();
+							location.reload();
+						}
+					};
 
-				window.onbeforeunload = function() {
-					socket.close();
-				};
+					window.onbeforeunload = function() {
+						socket.close();
+					};
 				</script>
 			{{/if}}
 
@@ -548,27 +548,27 @@
 
 				<script>
 					(function() {
-					// Check for focused search result and bring into the view
-					const ensureVisible = () => {
-						const focused = document.querySelector('#searchresults li.focus');
+						// Check for focused search result and bring into the view
+						const ensureVisible = () => {
+							const focused = document.querySelector('#searchresults li.focus');
 
-						if (focused) {
-							focused.scrollIntoView({
-								block: 'nearest',
-								inline: 'nearest',
-							});
-						}
-					};
+							if (focused) {
+								focused.scrollIntoView({
+									block: 'nearest',
+									inline: 'nearest',
+								});
+							}
+						};
 
-					// 1. Listen for arrow key events
-					// 2. Wait for DOM to update
-					// 3. Call envsureVisible
-					document.addEventListener('keydown', function(e) {
-						if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-							requestAnimationFrame(ensureVisible);
-						}
-					});
-				})();
+						// 1. Listen for arrow key events
+						// 2. Wait for DOM to update
+						// 3. Call envsureVisible
+						document.addEventListener('keydown', function(e) {
+							if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+								requestAnimationFrame(ensureVisible);
+							}
+						});
+					})();
 				</script>
 			{{/if}}
 
@@ -585,16 +585,16 @@
 				{{#if mathjax_support}}
 					<script>
 						window.addEventListener('load', function() {
-					MathJax.Hub.Register.StartupHook('End', function() {
-						window.setTimeout(window.print, 100);
-					});
-				});
+							MathJax.Hub.Register.StartupHook('End', function() {
+								window.setTimeout(window.print, 100);
+							});
+						});
 					</script>
 				{{else}}
 					<script>
 						window.addEventListener('load', function() {
-					window.setTimeout(window.print, 100);
-				});
+							window.setTimeout(window.print, 100);
+						});
 					</script>
 				{{/if}}
 			{{/if}}

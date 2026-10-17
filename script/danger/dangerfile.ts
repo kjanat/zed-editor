@@ -117,11 +117,12 @@ if (includesIssueUrl) {
 
 const SELF_REVIEW_MARKER = "Remove this line to confirm you've reviewed this PR before submitting.";
 
-const readmeModified = danger.git.modified_files.includes('README.md') || danger.git.created_files.includes('README.md');
+const readmeModified = danger.git.modified_files.includes('README.md')
+	|| danger.git.created_files.includes('README.md');
 if (readmeModified) {
 	schedule(async () => {
 		const readmeDiff = await danger.git.diffForFile('README.md');
-		if (readmeDiff && readmeDiff.added.includes(SELF_REVIEW_MARKER)) {
+		if (readmeDiff?.added.includes(SELF_REVIEW_MARKER)) {
 			fail(
 				'Please self-review your PR before submitting — README.md contains a line that asks to be removed which you should have spotted.',
 			);
@@ -139,7 +140,7 @@ if (danger.git.deleted_files.includes('.rules')) {
 } else if (danger.git.modified_files.includes('.rules')) {
 	schedule(async () => {
 		const rulesDiff = await danger.git.diffForFile('.rules');
-		if (rulesDiff && rulesDiff.removed.includes(SELF_REVIEW_MARKER) && !rulesDiff.added.includes(SELF_REVIEW_MARKER)) {
+		if (rulesDiff?.removed.includes(SELF_REVIEW_MARKER) && !rulesDiff.added.includes(SELF_REVIEW_MARKER)) {
 			fail(
 				[
 					'This PR removes the mandatory agent self-review rule from `.rules` (the `> [!IMPORTANT]` README marker rule).',
