@@ -5228,6 +5228,208 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
     );
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GitSourceSwapInterruption {
+    BackupCreated,
+    CheckoutMovedOut,
+    NewCheckoutMovedIn,
+    FirstCheckoutMovedIn,
+    RecordWritten,
+}
+
+fn interrupt_git_source_swap(
+    extensions_dir: &Path,
+    interruption: GitSourceSwapInterruption,
+    new_manifest: &str,
+    new_record: &str,
+) {
+    use GitSourceSwapInterruption::*;
+    let live = extensions_dir.join("sources/git-extension");
+    let backup = extensions_dir.join("staging/git-source.previous");
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::write(backup.join("extension_id"), "git-extension").unwrap();
+    if matches!(
+        interruption,
+        CheckoutMovedOut | NewCheckoutMovedIn | RecordWritten
+    ) {
+        std::fs::rename(&live, backup.join("checkout")).unwrap();
+    }
+    if interruption != BackupCreated {
+        std::fs::write(backup.join("record.toml"), new_record).unwrap();
+    }
+    if matches!(
+        interruption,
+        NewCheckoutMovedIn | FirstCheckoutMovedIn | RecordWritten
+    ) {
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("extension.toml"), new_manifest).unwrap();
+    }
+    if interruption == RecordWritten {
+        std::fs::write(
+            extensions_dir.join("sources/git-extension.toml"),
+            new_record,
+        )
+        .unwrap();
+    }
+}
+
+#[gpui::test]
+async fn test_restart_finishes_an_interrupted_git_source_swap(cx: &mut TestAppContext) {
+    use GitSourceSwapInterruption::*;
+    for interruption in [
+        BackupCreated,
+        CheckoutMovedOut,
+        NewCheckoutMovedIn,
+        FirstCheckoutMovedIn,
+        RecordWritten,
+    ] {
+        let (_tree, extensions_dir, store, debounce) = git_extension_store(cx).await;
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|settings, cx| {
+                settings.update_user_settings(cx, |content| {
+                    content
+                        .extension
+                        .auto_update_extensions
+                        .insert("git-extension".into(), false);
+                });
+            });
+        });
+        let remote = GitExtensionRemote::new("git-extension", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .unwrap();
+        let record_path = extensions_dir.join("sources/git-extension.toml");
+        let old_record = std::fs::read_to_string(&record_path).unwrap();
+        let old_manifest =
+            std::fs::read_to_string(extensions_dir.join("sources/git-extension/extension.toml"))
+                .unwrap();
+        let old_commit = installed_source(&store, "git-extension", cx)
+            .unwrap()
+            .commit;
+        let new_record = old_record.replace(&old_commit, &remote.publish("git-extension", "0.2.0"));
+        if interruption == FirstCheckoutMovedIn {
+            store
+                .update(cx, |store, cx| {
+                    store.uninstall_extension("git-extension".into(), cx)
+                })
+                .await
+                .unwrap();
+        }
+        drop((store, debounce));
+        interrupt_git_source_swap(
+            &extensions_dir,
+            interruption,
+            &old_manifest.replace("0.1.0", "0.2.0"),
+            &new_record,
+        );
+
+        let (restarted, _restarted_debounce) =
+            extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
+        let expected = match interruption {
+            FirstCheckoutMovedIn => None,
+            RecordWritten => Some(("0.2.0", &new_record)),
+            _ => Some(("0.1.0", &old_record)),
+        };
+        assert_eq!(
+            installed_version(&restarted, "git-extension", cx).as_deref(),
+            expected.map(|(version, _)| version),
+            "{interruption:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&record_path).ok().as_ref(),
+            expected.map(|(_, record)| record),
+            "{interruption:?}"
+        );
+        assert_eq!(
+            extensions_dir.join("sources/git-extension").exists(),
+            expected.is_some(),
+            "{interruption:?}"
+        );
+        assert_eq!(
+            std::fs::read_dir(extensions_dir.join("staging"))
+                .unwrap()
+                .count(),
+            0,
+            "{interruption:?}"
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_git_install_restores_an_interrupted_swap_first(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+    let old_record =
+        std::fs::read_to_string(extensions_dir.join("sources/git-extension.toml")).unwrap();
+    let old_manifest =
+        std::fs::read_to_string(extensions_dir.join("sources/git-extension/extension.toml"))
+            .unwrap();
+    let old_commit = installed_source(&store, "git-extension", cx)
+        .unwrap()
+        .commit;
+    let commit = remote.publish("git-extension", "0.2.0");
+    interrupt_git_source_swap(
+        &extensions_dir,
+        GitSourceSwapInterruption::NewCheckoutMovedIn,
+        &old_manifest.replace("0.1.0", "0.2.0"),
+        &old_record.replace(&old_commit, &commit),
+    );
+
+    let other = GitExtensionRemote::new("other-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), other.source(), cx)
+        })
+        .await
+        .expect_err("a source declaring another id should fail the install");
+    assert_eq!(
+        std::fs::read_to_string(extensions_dir.join("installed/git-extension/extension.toml"))
+            .unwrap(),
+        old_manifest
+    );
+    assert_eq!(
+        std::fs::read_to_string(extensions_dir.join("sources/git-extension.toml")).unwrap(),
+        old_record
+    );
+    assert_eq!(
+        std::fs::read_dir(extensions_dir.join("staging"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.2.0")
+    );
+    assert_eq!(
+        installed_source(&store, "git-extension", cx).map(|source| source.commit),
+        Some(commit)
+    );
+    assert_eq!(
+        std::fs::read_dir(extensions_dir.join("staging"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
 #[gpui::test]
 async fn test_git_extension_on_annotated_tag_is_not_refetched(cx: &mut TestAppContext) {
     let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;

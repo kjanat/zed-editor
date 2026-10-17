@@ -374,6 +374,75 @@ fn git_source_extension_path(
     }
 }
 
+const GIT_SOURCE_BACKUP_ID: &str = "extension_id";
+const GIT_SOURCE_BACKUP_CHECKOUT: &str = "checkout";
+const GIT_SOURCE_BACKUP_RECORD: &str = "record.toml";
+
+fn git_source_backup_dir(staging_dir: &Path) -> PathBuf {
+    staging_dir.join("git-source.previous")
+}
+
+async fn recover_git_source(
+    fs: &Arc<dyn Fs>,
+    staging_dir: &Path,
+    sources_dir: &Path,
+    index_path: &Path,
+) -> Result<()> {
+    let backup = git_source_backup_dir(staging_dir);
+    let Ok(extension_id) = fs.load(&backup.join(GIT_SOURCE_BACKUP_ID)).await else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        is_single_path_component(&extension_id),
+        "git source backup names extension {extension_id:?}"
+    );
+    fs.remove_file(
+        index_path,
+        RemoveOptions {
+            recursive: false,
+            ignore_if_not_exists: true,
+        },
+    )
+    .await?;
+    let live = git_source_dir(sources_dir, &extension_id);
+    let previous = backup.join(GIT_SOURCE_BACKUP_CHECKOUT);
+    let intended = fs.load(&backup.join(GIT_SOURCE_BACKUP_RECORD)).await.ok();
+    let committed = match &intended {
+        Some(intended) => {
+            fs.is_dir(&live).await
+                && fs
+                    .load(&git_source_record_path(sources_dir, &extension_id))
+                    .await
+                    .is_ok_and(|record| &record == intended)
+        }
+        None => false,
+    };
+    if !committed {
+        let has_previous = fs.is_dir(&previous).await;
+        if has_previous || intended.is_some() {
+            fs.remove_dir(
+                &live,
+                RemoveOptions {
+                    recursive: true,
+                    ignore_if_not_exists: true,
+                },
+            )
+            .await?;
+        }
+        if has_previous {
+            fs.rename(&previous, &live, RenameOptions::default())
+                .await?;
+        }
+    }
+    let discarded = tempfile::tempdir_in(staging_dir)?;
+    fs.rename(
+        &backup,
+        &discarded.path().join(extension_id),
+        RenameOptions::default(),
+    )
+    .await
+}
+
 async fn run_git(directory: &Path, args: &[&str]) -> Result<String> {
     let output = util::command::new_command("git")
         .args(args)
@@ -401,6 +470,16 @@ async fn build_git_source(
     source: &GitExtensionSource,
 ) -> Result<PathBuf> {
     fs.create_dir(staging_dir).await?;
+    recover_git_source(&fs, staging_dir, sources_dir, index_path).await?;
+    let backup = git_source_backup_dir(staging_dir);
+    fs.remove_dir(
+        &backup,
+        RemoveOptions {
+            recursive: true,
+            ignore_if_not_exists: true,
+        },
+    )
+    .await?;
     let checkout = tempfile::tempdir_in(staging_dir)?;
     let directory = checkout.path();
     run_git(directory, &["init"]).await?;
@@ -450,15 +529,20 @@ async fn build_git_source(
     .await?;
 
     let live = git_source_dir(sources_dir, extension_id);
-    let mut backup = tempfile::tempdir_in(staging_dir)?;
-    let previous = fs
-        .is_dir(&live)
-        .await
-        .then(|| backup.path().join(extension_id));
-    if let Some(previous) = &previous {
-        fs.rename(&live, previous, RenameOptions::default()).await?;
-    }
     let committed = async {
+        fs.create_dir(&backup).await?;
+        fs.atomic_write(backup.join(GIT_SOURCE_BACKUP_ID), extension_id.to_string())
+            .await?;
+        if fs.is_dir(&live).await {
+            fs.rename(
+                &live,
+                &backup.join(GIT_SOURCE_BACKUP_CHECKOUT),
+                RenameOptions::default(),
+            )
+            .await?;
+        }
+        fs.atomic_write(backup.join(GIT_SOURCE_BACKUP_RECORD), record.clone())
+            .await?;
         fs.rename(
             directory,
             &live,
@@ -473,33 +557,10 @@ async fn build_git_source(
             .await
     }
     .await;
-    if let Err(error) = committed {
-        fs.remove_dir(
-            &live,
-            RemoveOptions {
-                recursive: true,
-                ignore_if_not_exists: true,
-            },
-        )
+    recover_git_source(&fs, staging_dir, sources_dir, index_path)
         .await
         .log_err();
-        backup.disable_cleanup(true);
-        if let Some(previous) = &previous {
-            fs.rename(previous, &live, RenameOptions::default())
-                .await
-                .log_err();
-        }
-        fs.remove_dir(
-            backup.path(),
-            RemoveOptions {
-                recursive: false,
-                ignore_if_not_exists: true,
-            },
-        )
-        .await
-        .log_err();
-        return Err(error);
-    }
+    committed?;
     Ok(git_source_extension_path(
         sources_dir,
         extension_id,
@@ -763,6 +824,16 @@ impl ExtensionStore {
             remote_clients: HashMap::default(),
             initial_index_load: Task::ready(()).shared(),
         };
+
+        cx.foreground_executor()
+            .block_on(recover_git_source(
+                &this.fs,
+                &this.staging_dir,
+                &this.sources_dir,
+                &this.index_path,
+            ))
+            .context("recovering an interrupted git extension install")
+            .log_err();
 
         // The extensions store maintains an index file, which contains a complete
         // list of the installed extensions and the resources that they provide.
