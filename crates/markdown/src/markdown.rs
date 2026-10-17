@@ -2109,9 +2109,11 @@ impl MarkdownElement {
     ) {
         let row_index = builder.table.row_index;
         match structure {
-            TableStructure::OpenFields => builder.push_structural_div(
+            TableStructure::OpenFields { first_column } => builder.push_structural_div(
                 div()
-                    .debug_selector(move || format!("markdown_table_fields_{row_index}"))
+                    .debug_selector(move || {
+                        format!("markdown_table_fields_{row_index}_{first_column}")
+                    })
                     .flex()
                     .flex_wrap()
                     .gap_x_6()
@@ -2745,6 +2747,7 @@ impl Element for MarkdownElement {
                         self.style.selection_background_color,
                     )
                 }),
+                next_search_highlight_ix: 0,
             }
         };
 
@@ -4148,31 +4151,31 @@ impl TableEvents {
         steps.push(PlannedStep::events(self.start..self.start + 1));
         for row in &self.rows {
             steps.push(PlannedStep::events(row.start..row.start + 1));
-            let grouped_columns = (0..row.cells.len())
-                .filter(|column| compact_columns.get(*column).copied().unwrap_or(false))
-                .collect::<Vec<_>>();
-            let groups_fields = grouped_columns.len() >= 2;
-            let mut group_pushed = false;
-            for (column, cell) in row.cells.iter().enumerate() {
-                if !groups_fields || !grouped_columns.contains(&column) {
+            let is_compact = |column: usize| compact_columns.get(column).copied().unwrap_or(false);
+            let mut column = 0;
+            while let Some(cell) = row.cells.get(column) {
+                let run_end = (column..row.cells.len())
+                    .find(|column| !is_compact(*column))
+                    .unwrap_or(row.cells.len());
+                if run_end - column < 2 {
                     self.push_field(column, cell, steps);
+                    column += 1;
                     continue;
                 }
-                if group_pushed {
-                    continue;
-                }
-                group_pushed = true;
-                steps.push(PlannedStep::Structure(TableStructure::OpenFields));
-                for grouped_column in &grouped_columns {
-                    if let Some(grouped_cell) = row.cells.get(*grouped_column) {
-                        steps.push(PlannedStep::Structure(TableStructure::OpenField {
-                            column: *grouped_column,
-                        }));
-                        self.push_field(*grouped_column, grouped_cell, steps);
-                        steps.push(PlannedStep::Structure(TableStructure::CloseField));
-                    }
+                steps.push(PlannedStep::Structure(TableStructure::OpenFields {
+                    first_column: column,
+                }));
+                for (grouped_column, grouped_cell) in
+                    row.cells.iter().enumerate().take(run_end).skip(column)
+                {
+                    steps.push(PlannedStep::Structure(TableStructure::OpenField {
+                        column: grouped_column,
+                    }));
+                    self.push_field(grouped_column, grouped_cell, steps);
+                    steps.push(PlannedStep::Structure(TableStructure::CloseField));
                 }
                 steps.push(PlannedStep::Structure(TableStructure::CloseFields));
+                column = run_end;
             }
             steps.push(PlannedStep::events(row.end..row.end + 1));
         }
@@ -4195,7 +4198,7 @@ impl TableEvents {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TableStructure {
-    OpenFields,
+    OpenFields { first_column: usize },
     CloseFields,
     OpenField { column: usize },
     CloseField,
@@ -4448,26 +4451,29 @@ struct MarkdownHighlights {
     search_match_color: Hsla,
     active_search_match_color: Hsla,
     selection: Option<(Range<usize>, Hsla)>,
+    /// Index of the first search highlight that may intersect the next line.
+    next_search_highlight_ix: usize,
 }
 
 impl MarkdownHighlights {
     /// Returns the highlighted ranges intersecting the given source range,
     /// clamped to it, in paint order.
     fn highlights_for_line(
-        &self,
+        &mut self,
         source_range: Range<usize>,
     ) -> SmallVec<[(Range<usize>, Hsla); 1]> {
         let mut highlights = SmallVec::new();
 
-        let first_candidate = self
-            .search_highlights
-            .partition_point(|range| range.end <= source_range.start);
+        self.next_search_highlight_ix += self.search_highlights[self.next_search_highlight_ix..]
+            .iter()
+            .take_while(|range| range.end <= source_range.start)
+            .count();
 
         for (ix, range) in self
             .search_highlights
             .iter()
             .enumerate()
-            .skip(first_candidate)
+            .skip(self.next_search_highlight_ix)
         {
             if range.start >= source_range.end {
                 break;
@@ -5317,6 +5323,12 @@ impl RenderedLine {
             .binary_search_by_key(&source_index, |probe| probe.source_index)
         {
             Ok(ix) => &self.source_mappings[ix],
+            Err(0) => {
+                return self
+                    .source_mappings
+                    .first()
+                    .map_or(0, |mapping| mapping.rendered_index);
+            }
             Err(ix) => &self.source_mappings[ix - 1],
         };
         (mapping.rendered_index + (source_index - mapping.source_index)).min(self.layout.len())
@@ -5532,7 +5544,10 @@ impl RenderedText {
                 continue;
             };
             let line_source_start = first_mapping.source_index;
-            if range.end <= line_source_start || range.start >= line.source_end {
+            if range.end <= line_source_start {
+                break;
+            }
+            if range.start >= line.source_end {
                 continue;
             }
             let wrapped_line_segments = line.wrapped_line_segments();
@@ -8777,7 +8792,7 @@ mod tests {
             }
 
             let fields = cx
-                .debug_bounds(format!("markdown_table_fields_{row}").leak())
+                .debug_bounds(format!("markdown_table_fields_{row}_0").leak())
                 .expect("short columns should share a compact group");
             let field_bounds = (0..3)
                 .map(|column| {
@@ -8808,6 +8823,35 @@ mod tests {
                 .lines
                 .iter()
                 .any(|line| line.layout.text() == "code" && !line.code_chips.is_empty())
+        );
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_keeps_fields_in_source_order(cx: &mut TestAppContext) {
+        let description = "a description long enough to span the whole entry";
+        let source = format!(
+            "| ID | Description | State | Owner |\n| --- | --- | --- | --- |\n| 7 | {description} | open | kaj |\n"
+        );
+        let (_, rendered_text, cx) =
+            open_table_layout_view(&source, Some(MarkdownTableLayout::List), px(800.), cx);
+        assert!(is_list_layout(cx));
+
+        assert_eq!(
+            rendered_line_texts(&rendered_text),
+            ["7", description, "open", "kaj"]
+        );
+        assert!(cx.debug_bounds("markdown_table_fields_0_0").is_none());
+        assert!(cx.debug_bounds("markdown_table_fields_0_2").is_some());
+
+        let rendered_text = rendered_text.borrow();
+        let rendered_text = rendered_text.as_ref().expect("markdown should be rendered");
+        let description_start = source.find(description).expect("description cell");
+        let description_range = description_start..description_start + description.len();
+        assert_eq!(rendered_text.text_for_range(description_range), description);
+        let word_start = description_start + "a ".len();
+        assert_eq!(
+            rendered_text.surrounding_word_range(word_start),
+            word_start..word_start + "description".len()
         );
     }
 
@@ -8950,6 +8994,21 @@ mod tests {
         cx.simulate_mouse_up(beta_right, MouseButton::Left, Modifiers::default());
 
         let row_start = source.find("| second").expect("second row");
+        {
+            let rendered_text = rendered_text.borrow();
+            let rendered_text = rendered_text.as_ref().expect("markdown should be rendered");
+            let label_index = rendered_text
+                .source_index_for_position(label.center())
+                .expect("a label should map to its value cell");
+            assert_eq!(
+                rendered_text.surrounding_word_range(label_index),
+                beta_start..beta_end
+            );
+            assert_eq!(
+                rendered_text.surrounding_line_range(label_index),
+                beta_start..beta_end
+            );
+        }
         let selection = markdown.read_with(cx, |markdown, _| markdown.selection.clone());
         assert!(
             selection.start >= row_start && selection.end <= beta_end,
