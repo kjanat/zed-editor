@@ -65,6 +65,7 @@ pub struct FakeGitRepositoryState {
     pub index_contents: HashMap<RepoPath, Vec<u8>>,
     // everything in commit contents is in oids
     pub merge_base_contents: HashMap<RepoPath, Oid>,
+    pub merge_base_mode_changes: HashSet<RepoPath>,
     pub oids: HashMap<Oid, Vec<u8>>,
     pub blames: HashMap<RepoPath, Blame>,
     pub blames_at_revision: HashMap<(RepoPath, Oid), Blame>,
@@ -107,6 +108,7 @@ impl FakeGitRepositoryState {
             worktrees_requiring_force_delete: Default::default(),
             refs: HashMap::from_iter([("HEAD".into(), "abc".into())]),
             merge_base_contents: Default::default(),
+            merge_base_mode_changes: Default::default(),
             oids: Default::default(),
             remotes: HashMap::default(),
             remote_default_branches: HashMap::default(),
@@ -356,7 +358,9 @@ impl GitRepository for FakeGitRepository {
             for path in tracked_paths {
                 let status = match (state.merge_base_contents.get(path), contents.get(path)) {
                     (Some(oid), Some(content)) => {
-                        if state.oids.get(oid).context("merge-base blob is missing")? == content {
+                        if state.oids.get(oid).context("merge-base blob is missing")? == content
+                            && !state.merge_base_mode_changes.contains(path)
+                        {
                             continue;
                         }
                         TreeDiffStatus::Modified { old: *oid }

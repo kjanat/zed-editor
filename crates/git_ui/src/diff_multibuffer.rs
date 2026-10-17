@@ -264,28 +264,40 @@ impl DiffMultibuffer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(position) = self.multibuffer.read(cx).location_for_path(&path_key, cx) {
-            self.editor.update(cx, |editor, cx| {
-                editor.rhs_editor().update(cx, |editor, cx| {
-                    editor.change_selections(
-                        SelectionEffects::scroll(Autoscroll::focused()),
-                        window,
-                        cx,
-                        |s| {
-                            s.select_ranges([position..position]);
-                        },
-                    )
-                })
-            });
-        } else {
-            self.pending_scroll = Some(path_key);
-            if !self._task.is_ready() {
-                self._task = window.spawn(cx, {
-                    let this = cx.weak_entity();
-                    async |cx| Self::refresh(this, cx).await
-                });
-            }
+        if self.scroll_to_path(&path_key, window, cx) {
+            return;
         }
+        self.pending_scroll = Some(path_key);
+        if !self._task.is_ready() {
+            self._task = window.spawn(cx, {
+                let this = cx.weak_entity();
+                async |cx| Self::refresh(this, cx).await
+            });
+        }
+    }
+
+    fn scroll_to_path(
+        &mut self,
+        path_key: &PathKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(position) = self.multibuffer.read(cx).location_for_path(path_key, cx) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.rhs_editor().update(cx, |editor, cx| {
+                editor.change_selections(
+                    SelectionEffects::scroll(Autoscroll::focused()),
+                    window,
+                    cx,
+                    |s| {
+                        s.select_ranges([position..position]);
+                    },
+                )
+            })
+        });
+        true
     }
 
     pub(crate) fn autoscroll(&self, cx: &mut Context<Self>) {
@@ -594,7 +606,7 @@ impl DiffMultibuffer {
             });
         }
         if self.pending_scroll.as_ref() == Some(&path_key) {
-            self.move_to_path(path_key, window, cx);
+            self.scroll_to_path(&path_key, window, cx);
         }
 
         needs_fold.then_some(buffer_id)

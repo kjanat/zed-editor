@@ -2749,6 +2749,13 @@ impl FakeFs {
         .unwrap()
     }
 
+    pub fn set_merge_base_mode_changes_for_repo(&self, dot_git: &Path, paths: &[&str]) {
+        self.with_git_state(dot_git, true, |state| {
+            state.merge_base_mode_changes = paths.iter().map(|path| repo_path(path)).collect();
+        })
+        .unwrap();
+    }
+
     pub fn install_blob_read_gate_for_repo(&self, dot_git: &Path) -> FakeBlobReadGate {
         let gate = FakeBlobReadGate::default();
         self.with_git_state(dot_git, false, |state| {

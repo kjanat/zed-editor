@@ -1901,6 +1901,93 @@ mod tests {
         assert_eq!(active_path(cx).as_deref(), Some("f05.txt"));
     }
 
+    fn run_until_settled(cx: &mut VisualTestContext) {
+        for _ in 0..100_000 {
+            if !cx.executor().tick() {
+                cx.run_until_parked();
+                return;
+            }
+        }
+        panic!("tasks kept running without settling");
+    }
+
+    #[gpui::test]
+    async fn test_requested_file_without_hunks_does_not_restart_refresh(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            project_root,
+            json!({
+                ".git": {},
+                "f00.txt": "new-00\n",
+                "f01.txt": "new-01\n",
+                "f02.txt": "same-02\n",
+                "f03.txt": "new-03\n",
+            }),
+        )
+        .await;
+        let oids = fs.set_merge_base_content_for_repo(
+            &dot_git,
+            &[
+                ("f00.txt", "old-00\n".into()),
+                ("f01.txt", "old-01\n".into()),
+                ("f02.txt", "same-02\n".into()),
+                ("f03.txt", "old-03\n".into()),
+            ],
+        );
+        fs.set_merge_base_mode_changes_for_repo(&dot_git, &["f02.txt"]);
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs, [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let requested = PathKey::with_sort_prefix(2, rel_path("f02.txt").into_arc());
+        cx.update_window_entity(&branch_diff, |diff, window, cx| {
+            diff.move_to_path(requested, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(gate.is_waiting(oids[2]));
+
+        assert!(gate.release(oids[2]));
+        run_until_settled(cx);
+        assert!(
+            !gate.is_waiting(oids[2]),
+            "loading a requested file without hunks should not start another refresh"
+        );
+        assert!(gate.is_waiting(oids[0]));
+
+        gate.open();
+        run_until_settled(cx);
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let shown = editor
+            .update(cx, |editor, cx| {
+                editor.buffer().read(cx).snapshot(cx).text()
+            })
+            .lines()
+            .filter(|line| line.starts_with("new-"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(shown, ["new-00", "new-01", "new-03"]);
+    }
+
     #[gpui::test]
     async fn test_go_to_prev_hunk_multibuffer(cx: &mut TestAppContext) {
         init_test(cx);
