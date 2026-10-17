@@ -28,7 +28,7 @@ use gpui::{
     AppContext as _, BackgroundExecutor, BorrowAppContext as _, Entity, EntityId, TaskExt,
     TestAppContext,
 };
-use http_client::{FakeHttpClient, Response};
+use http_client::{FakeHttpClient, HttpClientWithUrl, Response};
 use language::{
     BinaryStatus, LanguageConfig, LanguageMatcher, LanguageName, LanguageRegistry, QueryFiles,
 };
@@ -4854,12 +4854,50 @@ impl GitExtensionRemote {
 async fn git_extension_store(
     cx: &mut TestAppContext,
 ) -> (TempTree, PathBuf, Entity<ExtensionStore>, gpui::Task<()>) {
+    git_extension_store_with_http(cx, FakeHttpClient::with_200_response()).await
+}
+
+fn marketplace_serving(
+    extension_id: &'static str,
+    version: &'static str,
+) -> Arc<HttpClientWithUrl> {
+    FakeHttpClient::create(move |request| async move {
+        if !request
+            .uri()
+            .path()
+            .ends_with(&format!("/extensions/{extension_id}/download"))
+        {
+            return Ok(Response::builder().status(404).body("not found".into())?);
+        }
+        let manifest = format!(
+            "id = \"{extension_id}\"\nname = \"Marketplace Extension\"\nversion = \"{version}\"\nschema_version = 1\n"
+        );
+        let mut bytes = Vec::<u8>::new();
+        let mut archive = async_tar::Builder::new(&mut bytes);
+        let mut header = async_tar::Header::new_gnu();
+        header.set_size(manifest.len() as u64);
+        header.set_mode(0o644);
+        archive
+            .append_data(&mut header, "extension.toml", manifest.as_bytes())
+            .await?;
+        archive.into_inner().await?;
+        let mut gzipped_bytes = Vec::new();
+        GzipEncoder::new(BufReader::new(bytes.as_slice()))
+            .read_to_end(&mut gzipped_bytes)
+            .await?;
+        Ok(Response::new(gzipped_bytes.into()))
+    })
+}
+
+async fn git_extension_store_with_http(
+    cx: &mut TestAppContext,
+    http_client: Arc<HttpClientWithUrl>,
+) -> (TempTree, PathBuf, Entity<ExtensionStore>, gpui::Task<()>) {
     init_test(cx);
     cx.executor().allow_parking();
     let fs = RealFs::new(None, cx.executor());
     let tree = TempTree::new(json!({ "installed": {}, "work": {}, "build": {} }));
     let extensions_dir = tree.path().to_path_buf();
-    let http_client = FakeHttpClient::with_200_response();
     let store = cx.new(|cx| {
         ExtensionStore::new(
             extensions_dir.clone(),
@@ -5384,4 +5422,86 @@ async fn test_git_extensions_to_install_follow_settings(cx: &mut TestAppContext)
             .collect::<Vec<_>>()
     });
     assert!(to_install.contains(&Arc::from("git-extension")));
+}
+
+fn marketplace_settings(extension_id: &str) -> crate::ExtensionSettings {
+    crate::ExtensionSettings {
+        auto_install_extensions: HashMap::from_iter([(
+            Arc::from(extension_id),
+            settings::AutoInstallExtensionContent::Marketplace(true),
+        )]),
+        ..Default::default()
+    }
+}
+
+#[gpui::test]
+async fn test_marketplace_setting_replaces_git_install(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) =
+        git_extension_store_with_http(cx, marketplace_serving("git-extension", "2.0.0")).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+
+    let settings = marketplace_settings("git-extension");
+    let to_install = store.read_with(cx, |store, _| {
+        store.marketplace_extensions_to_install(&settings)
+    });
+    assert_eq!(to_install, [Arc::from("git-extension")]);
+    store
+        .update(cx, |store, cx| {
+            store.install_marketplace_extensions(to_install, cx)
+        })
+        .await;
+
+    let entry = store.read_with(cx, |store, _| {
+        store.extension_index.extensions["git-extension"].clone()
+    });
+    assert!(!entry.dev);
+    assert_eq!(entry.source, None);
+    assert_eq!(entry.manifest.version.as_ref(), "2.0.0");
+    assert!(!extensions_dir.join("sources/git-extension").exists());
+    assert!(!extensions_dir.join("sources/git-extension.toml").exists());
+    assert!(
+        store
+            .read_with(cx, |store, _| store
+                .marketplace_extensions_to_install(&settings))
+            .is_empty()
+    );
+}
+
+#[gpui::test]
+async fn test_failed_marketplace_switch_keeps_git_install(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) =
+        git_extension_store_with_http(cx, marketplace_serving("other-extension", "2.0.0")).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+    let installed = installed_source(&store, "git-extension", cx);
+
+    let settings = marketplace_settings("git-extension");
+    let to_install = store.read_with(cx, |store, _| {
+        store.marketplace_extensions_to_install(&settings)
+    });
+    store
+        .update(cx, |store, cx| {
+            store.install_marketplace_extensions(to_install, cx)
+        })
+        .await;
+
+    assert!(installed.is_some());
+    assert_eq!(installed_source(&store, "git-extension", cx), installed);
+    assert!(extensions_dir.join("sources/git-extension.toml").exists());
+    assert!(
+        extensions_dir
+            .join("installed/git-extension/extension.toml")
+            .exists()
+    );
 }

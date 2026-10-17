@@ -984,30 +984,83 @@ impl ExtensionStore {
         let extension_settings = ExtensionSettings::get_global(cx);
 
         let git_extensions_to_install = self.git_extensions_to_install(extension_settings);
-        let extensions_to_install = extension_settings
+        let extensions_to_install = self.marketplace_extensions_to_install(extension_settings);
+
+        self.install_marketplace_extensions(extensions_to_install, cx)
+            .detach();
+        self.install_git_extensions(git_extensions_to_install, cx)
+            .detach();
+    }
+
+    pub fn marketplace_extensions_to_install(
+        &self,
+        extension_settings: &ExtensionSettings,
+    ) -> Vec<Arc<str>> {
+        extension_settings
             .marketplace_extensions()
             .filter(|extension_id| extension_settings.should_auto_install(extension_id))
             .filter(|extension_id| {
-                let is_already_installed = self
+                let installed_from_marketplace = self
                     .extension_index
                     .extensions
-                    .contains_key(extension_id.as_ref());
-                !is_already_installed && !SUPPRESSED_EXTENSIONS.contains(extension_id.as_ref())
+                    .get(extension_id.as_ref())
+                    .is_some_and(|entry| entry.source.is_none());
+                !installed_from_marketplace
+                    && !SUPPRESSED_EXTENSIONS.contains(extension_id.as_ref())
             })
             .cloned()
+            .collect()
+    }
+
+    pub fn install_marketplace_extensions(
+        &mut self,
+        extension_ids: Vec<Arc<str>>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let installs = extension_ids
+            .into_iter()
+            .map(|extension_id| {
+                let install = self.install_latest_extension_task(extension_id.clone(), cx);
+                (extension_id, install)
+            })
             .collect::<Vec<_>>();
+        let fs = self.fs.clone();
+        let sources_dir = self.sources_dir.clone();
+        let git_source_lock = self.git_source_lock.clone();
 
         cx.spawn(async move |this, cx| {
-            for extension_id in extensions_to_install {
-                this.update(cx, |this, cx| {
-                    this.install_latest_extension(extension_id.clone(), cx);
-                })
-                .ok();
-            }
+            join_all(installs.into_iter().map(|(extension_id, install)| {
+                let this = this.clone();
+                let fs = fs.clone();
+                let sources_dir = sources_dir.clone();
+                let git_source_lock = git_source_lock.clone();
+                let cx = cx.clone();
+                async move {
+                    if let Err(error) = install.await {
+                        log::error!("failed to install extension {extension_id}: {error:#}");
+                        return;
+                    }
+                    let _source_guard = git_source_lock.lock().await;
+                    let installed_from_marketplace = this
+                        .read_with(&cx, |this, _| {
+                            this.extension_index
+                                .extensions
+                                .get(extension_id.as_ref())
+                                .is_some_and(|entry| !entry.dev)
+                        })
+                        .unwrap_or(false);
+                    if installed_from_marketplace {
+                        remove_git_source(&fs, &sources_dir, &extension_id)
+                            .await
+                            .with_context(|| {
+                                format!("removing the git source of extension {extension_id}")
+                            })
+                            .log_err();
+                    }
+                }
+            }))
+            .await;
         })
-        .detach();
-        self.install_git_extensions(git_extensions_to_install, cx)
-            .detach();
     }
 
     pub fn install_git_extensions(
@@ -1409,28 +1462,34 @@ impl ExtensionStore {
     }
 
     pub fn install_latest_extension(&mut self, extension_id: Arc<str>, cx: &mut Context<Self>) {
+        self.install_latest_extension_task(extension_id, cx)
+            .detach_and_log_err(cx);
+    }
+
+    fn install_latest_extension_task(
+        &mut self,
+        extension_id: Arc<str>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("installing extension {extension_id} latest version");
 
         let schema_versions = schema_version_range();
         let wasm_api_versions = wasm_api_version_range(ReleaseChannel::global(cx));
 
-        let Some(url) = self
-            .http_client
-            .build_zed_api_url(
-                &format!("/extensions/{extension_id}/download"),
-                &[
-                    ("min_schema_version", &schema_versions.start().to_string()),
-                    ("max_schema_version", &schema_versions.end().to_string()),
-                    (
-                        "min_wasm_api_version",
-                        &wasm_api_versions.start().to_string(),
-                    ),
-                    ("max_wasm_api_version", &wasm_api_versions.end().to_string()),
-                ],
-            )
-            .log_err()
-        else {
-            return;
+        let url = match self.http_client.build_zed_api_url(
+            &format!("/extensions/{extension_id}/download"),
+            &[
+                ("min_schema_version", &schema_versions.start().to_string()),
+                ("max_schema_version", &schema_versions.end().to_string()),
+                (
+                    "min_wasm_api_version",
+                    &wasm_api_versions.start().to_string(),
+                ),
+                ("max_wasm_api_version", &wasm_api_versions.end().to_string()),
+            ],
+        ) {
+            Ok(url) => url,
+            Err(error) => return Task::ready(Err(error)),
         };
 
         self.install_or_upgrade_extension_at_endpoint(
@@ -1439,7 +1498,6 @@ impl ExtensionStore {
             ExtensionOperation::Install,
             cx,
         )
-        .detach_and_log_err(cx);
     }
 
     pub fn upgrade_extension(
