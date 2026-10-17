@@ -653,8 +653,7 @@ async fn build_git_source(
     }
     .commit(
         &fs,
-        directory,
-        record,
+        GitSourceReplacement::Checkout { directory, record },
         fs.create_symlink(&installed_dir.join(extension_id), extension_path.clone()),
     )
     .await?;
@@ -669,12 +668,17 @@ struct GitSourceTransaction<'a> {
     extension_id: &'a str,
 }
 
+enum GitSourceReplacement<'a> {
+    Checkout { directory: &'a Path, record: String },
+    Local,
+    ExistingGitSource,
+}
+
 impl GitSourceTransaction<'_> {
     async fn commit(
         &self,
         fs: &Arc<dyn Fs>,
-        directory: &Path,
-        record: String,
+        replacement: GitSourceReplacement<'_>,
         install_link: impl Future<Output = Result<()>>,
     ) -> Result<()> {
         let staging_dir = self.staging_dir;
@@ -713,7 +717,9 @@ impl GitSourceTransaction<'_> {
                 toml::to_string(&state)?,
             )
             .await?;
-            if state.checkout_existed {
+            if state.checkout_existed
+                && !matches!(replacement, GitSourceReplacement::ExistingGitSource)
+            {
                 fs.rename(
                     &live,
                     &backup.join(GIT_SOURCE_BACKUP_CHECKOUT),
@@ -721,15 +727,17 @@ impl GitSourceTransaction<'_> {
                 )
                 .await?;
             }
-            fs.rename(
-                directory,
-                &live,
-                RenameOptions {
-                    create_parents: true,
-                    ..RenameOptions::default()
-                },
-            )
-            .await?;
+            if let GitSourceReplacement::Checkout { directory, .. } = &replacement {
+                fs.rename(
+                    directory,
+                    &live,
+                    RenameOptions {
+                        create_parents: true,
+                        ..RenameOptions::default()
+                    },
+                )
+                .await?;
+            }
             if state.installed_existed {
                 fs.rename(
                     &installed,
@@ -739,7 +747,22 @@ impl GitSourceTransaction<'_> {
                 .await?;
             }
             install_link.await?;
-            fs.atomic_write(record_path, record).await?;
+            match replacement {
+                GitSourceReplacement::Checkout { record, .. } => {
+                    fs.atomic_write(record_path, record).await?;
+                }
+                GitSourceReplacement::Local => {
+                    fs.remove_file(
+                        &record_path,
+                        RemoveOptions {
+                            recursive: false,
+                            ignore_if_not_exists: true,
+                        },
+                    )
+                    .await?;
+                }
+                GitSourceReplacement::ExistingGitSource => {}
+            }
             // Repairs can keep the same source record; only this marker commits the link too.
             fs.atomic_write(backup.join(GIT_SOURCE_BACKUP_COMMITTED), String::new())
                 .await
@@ -2359,15 +2382,48 @@ impl ExtensionStore {
     ) -> Task<Result<()>> {
         let extensions_dir = self.extensions_dir();
         let sources_dir = self.sources_dir.clone();
+        let staging_dir = self.staging_dir.clone();
+        let index_path = self.index_path.clone();
+        let git_source_lock = self.git_source_lock.clone();
         let fs = self.fs.clone();
         let builder = self.builder.clone();
 
         cx.spawn(async move |this, cx| {
+            let _source_guard = git_source_lock.lock().await;
+            fs.create_dir(&staging_dir).await?;
+            recover_git_source(
+                &fs,
+                &staging_dir,
+                &sources_dir,
+                &index_path,
+                &extensions_dir,
+            )
+            .await?;
             let mut extension_manifest =
                 ExtensionManifest::load(fs.clone(), &extension_source_path).await?;
             let extension_id = extension_manifest.id.clone();
-
-            Self::uninstall_unless_dev(&this, &extension_id, cx).await;
+            anyhow::ensure!(
+                is_single_path_component(&extension_id),
+                "extension id must be a single path component"
+            );
+            let resolved_source = fs.canonicalize(&extension_source_path).await?;
+            let output_path = extensions_dir.join(extension_id.as_ref());
+            if let Some(metadata) = fs.metadata(&output_path).await?
+                && !metadata.is_symlink
+            {
+                anyhow::ensure!(
+                    !resolved_source.starts_with(fs.canonicalize(&output_path).await?),
+                    "cannot replace an installed directory with a link into itself"
+                );
+            }
+            let checkout = git_source_dir(&sources_dir, &extension_id);
+            let replacement = if fs.metadata(&checkout).await?.is_some()
+                && resolved_source.starts_with(fs.canonicalize(&checkout).await?)
+            {
+                GitSourceReplacement::ExistingGitSource
+            } else {
+                GitSourceReplacement::Local
+            };
 
             if !this.update(cx, |this, cx| {
                 match this.outstanding_operations.entry(extension_id.clone()) {
@@ -2407,76 +2463,32 @@ impl ExtensionStore {
                 util::log_err(error);
             })?;
 
-            if is_single_path_component(&extension_id)
-                && !extension_source_path.starts_with(git_source_dir(&sources_dir, &extension_id))
-            {
-                remove_git_source(&fs, &sources_dir, &extension_id).await?;
+            let staged = tempfile::tempdir_in(&staging_dir)?;
+            let staged_link = staged.path().join(extension_id.as_ref());
+            fs.create_symlink(&staged_link, resolved_source).await?;
+            let result = GitSourceTransaction {
+                staging_dir: &staging_dir,
+                sources_dir: &sources_dir,
+                index_path: &index_path,
+                installed_dir: &extensions_dir,
+                extension_id: &extension_id,
             }
-
-            Self::link_dev_extension(
-                &this,
+            .commit(
                 &fs,
-                &extensions_dir,
-                &extension_id,
-                extension_source_path,
-                cx,
+                replacement,
+                fs.rename(&staged_link, &output_path, RenameOptions::default()),
             )
-            .await?;
+            .await;
+            if let Err(error) = result {
+                this.update(cx, |this, cx| this.reload(None, cx))?.await;
+                return Err(error);
+            }
+            Self::finish_dev_extension_install(&this, &extension_id, cx).await?;
             this.update(cx, |this, cx| {
                 this.clear_git_extension_failure(&extension_id, cx);
             })?;
             Ok(())
         })
-    }
-
-    async fn uninstall_unless_dev(
-        this: &WeakEntity<Self>,
-        extension_id: &Arc<str>,
-        cx: &mut AsyncApp,
-    ) {
-        if let Some(uninstall_task) = this
-            .update(cx, |this, cx| {
-                this.extension_index
-                    .extensions
-                    .get(extension_id.as_ref())
-                    .is_some_and(|index_entry| !index_entry.dev)
-                    .then(|| this.uninstall_extension(extension_id.clone(), cx))
-            })
-            .ok()
-            .flatten()
-        {
-            uninstall_task.await.log_err();
-        }
-    }
-
-    async fn link_dev_extension(
-        this: &WeakEntity<Self>,
-        fs: &Arc<dyn Fs>,
-        extensions_dir: &Path,
-        extension_id: &Arc<str>,
-        extension_source_path: PathBuf,
-        cx: &mut AsyncApp,
-    ) -> Result<()> {
-        let output_path = &extensions_dir.join(extension_id.as_ref());
-        if let Some(metadata) = fs.metadata(output_path).await? {
-            if metadata.is_symlink {
-                fs.remove_file(
-                    output_path,
-                    RemoveOptions {
-                        recursive: false,
-                        ignore_if_not_exists: true,
-                    },
-                )
-                .await?;
-            } else {
-                bail!("extension {extension_id} is still installed");
-            }
-        }
-
-        fs.create_symlink(output_path, extension_source_path)
-            .await?;
-
-        Self::finish_dev_extension_install(this, extension_id, cx).await
     }
 
     async fn finish_dev_extension_install(

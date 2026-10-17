@@ -5272,19 +5272,26 @@ async fn test_failed_git_relink_restores_checkout_record_and_link(cx: &mut TestA
         installed_dir: &extensions_dir.join("installed"),
         extension_id: "git-extension",
     }
-    .commit(&fs, staged.path(), old_record.clone(), async {
-        assert!(
-            std::fs::symlink_metadata(backup.join("installed"))
-                .expect("previous installed link should be backed up")
-                .file_type()
-                .is_symlink()
-        );
-        assert!(std::fs::symlink_metadata(&installed).is_err());
-        // Simulate another filesystem actor occupying the removed link's name.
-        fs.atomic_write(installed.clone(), "occupied".into())
-            .await?;
-        fs.create_symlink(&installed, live.clone()).await
-    })
+    .commit(
+        &fs,
+        crate::GitSourceReplacement::Checkout {
+            directory: staged.path(),
+            record: old_record.clone(),
+        },
+        async {
+            assert!(
+                std::fs::symlink_metadata(backup.join("installed"))
+                    .expect("previous installed link should be backed up")
+                    .file_type()
+                    .is_symlink()
+            );
+            assert!(std::fs::symlink_metadata(&installed).is_err());
+            // Simulate another filesystem actor occupying the removed link's name.
+            fs.atomic_write(installed.clone(), "occupied".into())
+                .await?;
+            fs.create_symlink(&installed, live.clone()).await
+        },
+    )
     .await
     .expect_err("relinking onto an occupied name must fail");
     assert_eq!(
@@ -5338,15 +5345,22 @@ async fn test_git_source_commit_defers_failed_cleanup(cx: &mut TestAppContext) {
         installed_dir: &installed_dir,
         extension_id: "git-extension",
     }
-    .commit(&fs, staged.path(), record.clone(), async {
-        fs.create_symlink(
-            &installed_dir.join("git-extension"),
-            sources_dir.join("git-extension"),
-        )
-        .await?;
-        // Make cache invalidation fail only during post-commit cleanup.
-        fs.create_dir(&index_path).await
-    })
+    .commit(
+        &fs,
+        crate::GitSourceReplacement::Checkout {
+            directory: staged.path(),
+            record: record.clone(),
+        },
+        async {
+            fs.create_symlink(
+                &installed_dir.join("git-extension"),
+                sources_dir.join("git-extension"),
+            )
+            .await?;
+            // Make cache invalidation fail only during post-commit cleanup.
+            fs.create_dir(&index_path).await
+        },
+    )
     .await
     .expect("committed install must succeed despite deferred cleanup");
     let backup = staging_dir.join("git-source.previous");
@@ -5370,6 +5384,171 @@ async fn test_git_source_commit_defers_failed_cleanup(cx: &mut TestAppContext) {
         installed_version(&store, "git-extension", cx).as_deref(),
         Some("0.2.0")
     );
+}
+
+#[gpui::test]
+async fn test_failed_local_dev_replacement_restores_git_install(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial git install");
+    let local = local_dev_extension("git-extension");
+    let fs = store.read_with(cx, |store, _| store.fs.clone());
+    let staging_dir = extensions_dir.join("staging");
+    let sources_dir = extensions_dir.join("sources");
+    let installed_dir = extensions_dir.join("installed");
+    let installed = installed_dir.join("git-extension");
+    let old_target = std::fs::read_link(&installed).expect("existing git link");
+    let record_path = sources_dir.join("git-extension.toml");
+    let old_record = std::fs::read(&record_path).expect("existing git source record");
+    let old_manifest =
+        std::fs::read(installed.join("extension.toml")).expect("existing git manifest");
+    let staged = tempfile::tempdir_in(&staging_dir).expect("staged local link directory");
+    let staged_link = staged.path().join("git-extension");
+    fs.create_symlink(&staged_link, tree_root(&local))
+        .await
+        .expect("local link is staged before live changes");
+    let backup = staging_dir.join("git-source.previous");
+    crate::GitSourceTransaction {
+        staging_dir: &staging_dir,
+        sources_dir: &sources_dir,
+        installed_dir: &installed_dir,
+        index_path: &extensions_dir.join("index.json"),
+        extension_id: "git-extension",
+    }
+    .commit(&fs, crate::GitSourceReplacement::Local, async {
+        assert!(backup.join("checkout").is_dir());
+        assert!(
+            std::fs::symlink_metadata(backup.join("installed"))
+                .expect("old link backed up")
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!sources_dir.join("git-extension").exists());
+        fs.atomic_write(installed.clone(), "occupied".into())
+            .await?;
+        fs.rename(&staged_link, &installed, fs::RenameOptions::default())
+            .await
+    })
+    .await
+    .expect_err("failed local-link publication must restore the git install");
+    assert_eq!(
+        std::fs::read_link(&installed).expect("restored git link"),
+        old_target
+    );
+    assert_eq!(
+        std::fs::read(installed.join("extension.toml")).expect("restored git checkout"),
+        old_manifest
+    );
+    assert_eq!(
+        std::fs::read(&record_path).expect("restored source record"),
+        old_record
+    );
+    assert_eq!(
+        std::fs::canonicalize(&staged_link).expect("staged local link survives"),
+        std::fs::canonicalize(local.path()).expect("local source survives")
+    );
+    assert!(!backup.exists());
+    store.update(cx, |store, cx| store.reload(None, cx)).await;
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert!(installed_source(&store, "git-extension", cx).is_some());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LocalRelinkInterruption {
+    LinkCreated,
+    RecordRemoved,
+    Committed,
+}
+
+#[gpui::test]
+async fn test_restart_recovers_local_dev_replacement(cx: &mut TestAppContext) {
+    use LocalRelinkInterruption::*;
+    for interruption in [LinkCreated, RecordRemoved, Committed] {
+        let (_tree, extensions_dir, store, debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("initial git install");
+        let local = local_dev_extension("git-extension");
+        let fs = store.read_with(cx, |store, _| store.fs.clone());
+        let live = extensions_dir.join("sources/git-extension");
+        let installed = extensions_dir.join("installed/git-extension");
+        let record_path = extensions_dir.join("sources/git-extension.toml");
+        let old_record = std::fs::read_to_string(&record_path).expect("existing git source record");
+        let old_target = std::fs::read_link(&installed).expect("existing git link");
+        drop((store, debounce));
+        let backup = extensions_dir.join("staging/git-source.previous");
+        std::fs::create_dir_all(&backup).expect("transaction journal");
+        std::fs::write(backup.join("extension_id"), "git-extension").expect("journal extension id");
+        std::fs::write(
+            backup.join("state.toml"),
+            toml::to_string(&crate::GitSourceBackupState {
+                checkout_existed: true,
+                installed_existed: true,
+                record: Some(old_record.clone()),
+            })
+            .expect("journal serialization"),
+        )
+        .expect("journal state");
+        std::fs::rename(&live, backup.join("checkout")).expect("back up checkout");
+        std::fs::rename(&installed, backup.join("installed")).expect("back up git link");
+        fs.create_symlink(&installed, tree_root(&local))
+            .await
+            .expect("publish local link");
+        if interruption != LinkCreated {
+            std::fs::remove_file(&record_path).expect("remove git source record");
+        }
+        if interruption == Committed {
+            std::fs::write(backup.join("committed"), "").expect("commit local replacement");
+        }
+        let (restarted, _debounce) =
+            extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
+        if interruption == Committed {
+            assert!(!record_path.exists());
+            assert!(!live.exists());
+            assert_eq!(
+                std::fs::canonicalize(&installed).expect("local installed link"),
+                std::fs::canonicalize(local.path()).expect("local source")
+            );
+            assert_eq!(installed_source(&restarted, "git-extension", cx), None);
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(&record_path).expect("restored source record"),
+                old_record
+            );
+            assert_eq!(
+                std::fs::read_link(&installed).expect("restored git link"),
+                old_target
+            );
+            assert!(live.is_dir());
+            assert!(installed_source(&restarted, "git-extension", cx).is_some());
+        }
+        assert_eq!(
+            installed_version(&restarted, "git-extension", cx).as_deref(),
+            Some(if interruption == Committed {
+                "9.0.0"
+            } else {
+                "0.1.0"
+            }),
+            "{interruption:?}"
+        );
+        assert!(
+            local.path().join("extension.toml").is_file(),
+            "recovery must not remove external local sources"
+        );
+        assert!(!backup.exists(), "{interruption:?}");
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -7155,6 +7334,96 @@ async fn test_local_dev_extension_replaces_git_source(cx: &mut TestAppContext) {
         std::fs::canonicalize(extensions_dir.join("installed/git-extension")).unwrap(),
         std::fs::canonicalize(local.path()).unwrap()
     );
+}
+
+#[gpui::test]
+async fn test_local_dev_staging_failure_keeps_git_install(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial git install");
+    let local = local_dev_extension("git-extension");
+    let installed = extensions_dir.join("installed/git-extension");
+    let record_path = extensions_dir.join("sources/git-extension.toml");
+    let old_target = std::fs::read_link(&installed).expect("existing installed link");
+    let old_record = std::fs::read(&record_path).expect("existing source record");
+    let old_manifest = std::fs::read(installed.join("extension.toml")).expect("existing manifest");
+    let staging_dir = extensions_dir.join("staging");
+    std::fs::remove_dir(&staging_dir).expect("staging is empty after initial install");
+    std::fs::write(&staging_dir, "occupied").expect("block staging directory creation");
+    store
+        .update(cx, |store, cx| {
+            store.install_dev_extension(tree_root(&local), cx)
+        })
+        .await
+        .expect_err("local link staging must fail before replacing the installed extension");
+    assert_eq!(
+        std::fs::read_link(&installed).expect("old link remains"),
+        old_target
+    );
+    assert_eq!(
+        std::fs::read(&record_path).expect("old record remains"),
+        old_record
+    );
+    assert_eq!(
+        std::fs::read(installed.join("extension.toml")).expect("old checkout remains"),
+        old_manifest
+    );
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert!(installed_source(&store, "git-extension", cx).is_some());
+    assert!(local.path().join("extension.toml").is_file());
+    std::fs::remove_file(&staging_dir).expect("remove staging obstruction");
+    std::fs::create_dir(&staging_dir).expect("restore staging directory");
+}
+
+#[gpui::test]
+async fn test_local_dev_alias_preserves_managed_git_checkout(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial git install");
+    let original_source = installed_source(&store, "git-extension", cx);
+    let record_path = extensions_dir.join("sources/git-extension.toml");
+    let old_record = std::fs::read(&record_path).expect("existing source record");
+    let alias_tree = TempTree::new(json!({}));
+    let alias = tree_root(&alias_tree).join("source");
+    let checkout = extensions_dir.join("sources/git-extension");
+    let fs = store.read_with(cx, |store, _| store.fs.clone());
+    fs.create_symlink(&alias, checkout.clone())
+        .await
+        .expect("external alias to managed source");
+    store
+        .update(cx, |store, cx| {
+            store.install_dev_extension(alias.clone(), cx)
+        })
+        .await
+        .expect("relinking a managed source through an alias preserves its checkout");
+    assert!(checkout.join("extension.toml").is_file());
+    assert_eq!(
+        std::fs::read(&record_path).expect("source record remains"),
+        old_record
+    );
+    assert_eq!(
+        installed_source(&store, "git-extension", cx),
+        original_source
+    );
+    assert_eq!(
+        std::fs::canonicalize(extensions_dir.join("installed/git-extension"))
+            .expect("installed link"),
+        std::fs::canonicalize(&checkout).expect("managed checkout")
+    );
+    assert!(!extensions_dir.join("staging/git-source.previous").exists());
 }
 
 #[gpui::test]
