@@ -316,6 +316,11 @@ pub struct GitExtensionFailure {
     pub message: String,
 }
 
+enum GitUpdate {
+    RecordMissing,
+    Checked { url: String, result: Result<bool> },
+}
+
 impl InstalledGitSource {
     fn matches(&self, source: &GitExtensionSource) -> bool {
         self.url == source.url && self.reference == source.reference && self.path == source.path
@@ -1312,14 +1317,14 @@ impl ExtensionStore {
 
     pub fn check_for_git_updates(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let extension_settings = ExtensionSettings::get_global(cx);
-        let extension_ids = self
+        let extensions = self
             .extension_index
             .extensions
             .iter()
-            .filter(|(extension_id, entry)| {
-                entry.source.is_some() && extension_settings.should_auto_update(extension_id)
+            .filter(|(extension_id, _)| extension_settings.should_auto_update(extension_id))
+            .filter_map(|(extension_id, entry)| {
+                Some((extension_id.clone(), entry.source.as_ref()?.url.clone()))
             })
-            .map(|(extension_id, _)| extension_id.clone())
             .collect::<Vec<_>>();
         let fs = self.fs.clone();
         let builder = self.builder.clone();
@@ -1329,7 +1334,7 @@ impl ExtensionStore {
         let git_source_lock = self.git_source_lock.clone();
 
         cx.spawn(async move |this, cx| {
-            for extension_id in extension_ids {
+            for (extension_id, indexed_url) in extensions {
                 let _source_guard = git_source_lock.lock().await;
                 let _operation = match Self::begin_operation(
                     &this,
@@ -1352,8 +1357,11 @@ impl ExtensionStore {
                         let index_path = index_path.clone();
                         let extension_id = extension_id.clone();
                         async move {
-                            let installed =
-                                load_git_source_record(&fs, &sources_dir, &extension_id).await?;
+                            let Some(installed) =
+                                load_git_source_record(&fs, &sources_dir, &extension_id).await
+                            else {
+                                return GitUpdate::RecordMissing;
+                            };
                             let source = installed.source();
                             let result = async {
                                 let Some(remote_commit) =
@@ -1377,12 +1385,32 @@ impl ExtensionStore {
                                 Ok(true)
                             }
                             .await;
-                            Some((source.url, result))
+                            GitUpdate::Checked {
+                                url: source.url,
+                                result,
+                            }
                         }
                     })
                     .await;
-                let Some((url, result)) = update else {
-                    continue;
+                let (url, result) = match update {
+                    GitUpdate::Checked { url, result } => (url, result),
+                    GitUpdate::RecordMissing => {
+                        let error = anyhow!(
+                            "the source record of extension {extension_id} is missing or unreadable"
+                        );
+                        this.update(cx, |this, cx| {
+                            this.record_git_extension_result(
+                                &extension_id,
+                                &indexed_url,
+                                &Err(error),
+                                cx,
+                            )
+                        })?;
+                        this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
+                            .await;
+                        this.update(cx, |this, cx| this.auto_install_extensions(cx))?;
+                        continue;
+                    }
                 };
                 let updated = matches!(result, Ok(true));
                 this.update(cx, |this, cx| {

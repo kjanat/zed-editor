@@ -5905,6 +5905,62 @@ async fn test_git_errors_redact_url_credentials(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_git_update_reports_a_lost_source_record(cx: &mut TestAppContext) {
+    for malformed in [false, true] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .unwrap();
+        let record_path = extensions_dir.join("sources/git-extension.toml");
+        if malformed {
+            std::fs::write(&record_path, "commit = ").unwrap();
+        } else {
+            std::fs::remove_file(&record_path).unwrap();
+        }
+
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .unwrap();
+
+        let failures = git_failures(&store, cx);
+        assert_eq!(failures.len(), 1, "malformed: {malformed}");
+        assert_eq!(failures[0].url, remote.url);
+        assert!(
+            failures[0].message.contains("missing or unreadable"),
+            "{}",
+            failures[0].message
+        );
+        assert_eq!(installed_source(&store, "git-extension", cx), None);
+        let extension_settings = crate::ExtensionSettings {
+            auto_install_extensions: [(
+                "git-extension".into(),
+                settings::AutoInstallExtensionContent::Git {
+                    git: remote.url.clone(),
+                    reference: None,
+                    path: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let to_install = store.read_with(cx, |store, _| {
+            store
+                .git_extensions_to_install(&extension_settings)
+                .into_iter()
+                .map(|(extension_id, _)| extension_id)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(to_install, [Arc::<str>::from("git-extension")]);
+    }
+}
+
+#[gpui::test]
 async fn test_git_update_failures_are_reported_until_resolved(cx: &mut TestAppContext) {
     let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
     let remote = GitExtensionRemote::new("git-extension", None);
