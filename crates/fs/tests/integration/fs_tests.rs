@@ -1695,6 +1695,8 @@ async fn test_realfs_symlink_loop_metadata(executor: BackgroundExecutor) {
 
 #[gpui::test]
 async fn test_realfs_metadata_of_link_to_removed_directory(executor: BackgroundExecutor) {
+    // Windows file IDs await Smol I/O outside the deterministic scheduler.
+    executor.allow_parking();
     let tempdir = TempDir::new().unwrap();
     let fs = RealFs::new(None, executor);
     let target = tempdir.path().join("target");
