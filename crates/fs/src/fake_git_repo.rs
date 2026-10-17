@@ -87,6 +87,8 @@ pub struct FakeGitRepositoryState {
     pub stash_entries: GitStash,
     pub commit_template: Option<GitCommitTemplate>,
     pub blob_read_gate: Option<FakeBlobReadGate>,
+    pub load_revisions_calls: Vec<Vec<String>>,
+    pub simulated_load_revisions_error_path: Option<String>,
 }
 
 impl FakeGitRepositoryState {
@@ -119,6 +121,8 @@ impl FakeGitRepositoryState {
             commit_history: Vec::new(),
             stash_entries: Default::default(),
             commit_template: None,
+            load_revisions_calls: Vec::new(),
+            simulated_load_revisions_error_path: None,
         }
     }
 }
@@ -390,6 +394,14 @@ impl GitRepository for FakeGitRepository {
         revisions: Vec<String>,
     ) -> BoxFuture<'_, Result<Vec<Option<Vec<u8>>>>> {
         let fut = self.with_state_async(false, move |state| {
+            state.load_revisions_calls.push(revisions.clone());
+            if let Some(error_path) = &state.simulated_load_revisions_error_path
+                && revisions
+                    .iter()
+                    .any(|rev| rev.split_once(':').map(|(_, path)| path) == Some(error_path))
+            {
+                anyhow::bail!("simulated load_revisions failure for {error_path}");
+            }
             Ok(revisions
                 .into_iter()
                 .map(|rev| {

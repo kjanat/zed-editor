@@ -1729,6 +1729,77 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[gpui::test(iterations = 10)]
+    async fn test_many_hunk_file_keeps_every_hunk_in_order(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        const HUNK_COUNT: usize = 50;
+        const LINES_PER_HUNK: usize = 10;
+
+        let base_lines = (0..HUNK_COUNT * LINES_PER_HUNK)
+            .map(|row| format!("line {row:03}"))
+            .collect::<Vec<_>>();
+        let current_lines = base_lines
+            .iter()
+            .enumerate()
+            .map(|(row, line)| {
+                if row % LINES_PER_HUNK == 0 {
+                    format!("new-{:02}", row / LINES_PER_HUNK)
+                } else {
+                    line.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "a.txt": current_lines.join("\n") + "\n",
+                "b.txt": "new-b\n",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[
+                ("a.txt", base_lines.join("\n") + "\n"),
+                ("b.txt", "old-b\n".to_owned()),
+            ],
+        );
+
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        cx.run_until_parked();
+
+        cx.focus(&workspace);
+        cx.update(|window, cx| {
+            window.dispatch_action(project_diff::Diff.boxed_clone(), cx);
+        });
+        cx.run_until_parked();
+
+        let item = workspace.read_with(cx, |workspace, cx| {
+            workspace.active_item_as::<ProjectDiff>(cx).unwrap()
+        });
+        let editor = item.read_with(cx, |item, cx| item.editor(cx).read(cx).rhs_editor().clone());
+        let text = editor.update(cx, |editor, cx| {
+            editor.buffer().read(cx).snapshot(cx).text()
+        });
+
+        let actual = text
+            .lines()
+            .filter(|line| line.starts_with("new-"))
+            .collect::<Vec<_>>();
+        let mut expected = (0..HUNK_COUNT)
+            .map(|hunk| format!("new-{hunk:02}"))
+            .collect::<Vec<_>>();
+        expected.push("new-b".to_owned());
+        assert_eq!(actual, expected);
+    }
+
     #[gpui::test]
     async fn test_merge_base_loading_is_incremental(cx: &mut TestAppContext) {
         init_test(cx);

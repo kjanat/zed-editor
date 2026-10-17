@@ -2323,6 +2323,7 @@ While other options may be changed at a runtime and should be placed under
     "button": true,
     "request_timeout": 120,
     "max_buffer_line_length": 20000,
+    "env": {},
     "notifications": {
       // Timeout in milliseconds for automatically dismissing language server notifications.
       // Set to 0 to disable auto-dismiss.
@@ -2343,6 +2344,8 @@ While other options may be changed at a runtime and should be placed under
   Zed disables all language server features for that entire buffer. If any line
   exceeds this value, Zed does not open the buffer with language servers or send
   them buffer-specific requests. Default: `20000`
+- `env`: Environment variables passed to every language server process.
+  `lsp.<server>.binary.env` overrides these key by key. Default: `{}`
 - `notifications`: Notification-related settings.
   - `dismiss_timeout_ms`: Timeout in milliseconds for automatically dismissing
     language server notifications. Set to 0 to disable auto-dismiss.

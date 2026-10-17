@@ -11043,13 +11043,16 @@ impl Editor {
     fn handle_focus_out(
         &mut self,
         event: FocusOutEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.blurred != self.focus_handle {
             self.last_focused_descendant = Some(event.blurred);
         }
         self.selection_drag_state = SelectionDragState::None;
+        if self.has_pending_selection() {
+            self.end_selection(window, cx);
+        }
         self.refresh_inlay_hints(InlayHintRefreshReason::ModifiersChanged(false), cx);
     }
 

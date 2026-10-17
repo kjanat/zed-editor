@@ -1909,6 +1909,10 @@ impl Workspace {
                     this.dismiss_notification(&NotificationId::named(notification_id.clone()), cx)
                 }
 
+                project::Event::LanguageServerRemoved(server_id) => {
+                    this.dismiss_language_server_prompts(*server_id, cx);
+                }
+
                 project::Event::LanguageServerPrompt(request) => {
                     struct LanguageServerPrompt;
 
@@ -9644,8 +9648,20 @@ impl Workspace {
                     .remote_connection_options(cx)
                     .map(RemoteHostLocation::from);
                 let worktree_store = project.worktree_store().downgrade();
+                let home_dir_task = if project.is_local() {
+                    Task::ready(std::env::home_dir())
+                } else {
+                    let resolve_task = project.resolve_abs_path("~", cx);
+                    cx.spawn(async |_, _| {
+                        let resolved_path = resolve_task
+                            .await
+                            .and_then(|path| path.into_abs_path())
+                            .map(PathBuf::from);
+                        resolved_path
+                    })
+                };
                 self.toggle_modal(window, cx, move |window, cx| {
-                    SecurityModal::new(worktree_store, remote_host, window, cx)
+                    SecurityModal::new(worktree_store, remote_host, home_dir_task, window, cx)
                 })
                 .detach();
             }
