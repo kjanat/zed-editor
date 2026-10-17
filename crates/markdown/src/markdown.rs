@@ -3209,7 +3209,9 @@ impl Element for MarkdownElement {
                                 range,
                                 markdown_end,
                             );
-                            if self.style.table_layout.is_some() {
+                            if self.style.table_layout.is_some()
+                                && !table_plan.header_only_tables.contains(&index)
+                            {
                                 builder.append_child(
                                     render_table_arrangement_toggle(
                                         range.start,
@@ -4241,6 +4243,7 @@ impl PlannedStep {
 struct TablePlan {
     steps: Vec<PlannedStep>,
     list_tables: HashMap<usize, usize>,
+    header_only_tables: HashSet<usize>,
     auto_tables: Vec<AutoTable>,
 }
 
@@ -4252,12 +4255,14 @@ impl TablePlan {
     ) -> Self {
         let mut steps = Vec::new();
         let mut list_tables = HashMap::default();
+        let mut header_only_tables = HashSet::default();
         let mut auto_tables = Vec::new();
         let Some(layout) = layout else {
             steps.push(PlannedStep::events(0..events.len()));
             return Self {
                 steps,
                 list_tables,
+                header_only_tables,
                 auto_tables,
             };
         };
@@ -4273,6 +4278,11 @@ impl TablePlan {
                 index += 1;
                 continue;
             };
+            if table.rows.is_empty() {
+                header_only_tables.insert(table.start);
+                index = table.end + 1;
+                continue;
+            }
             let column_chars = table.column_chars(events);
             if markdown.table_arrangement(range.start, layout) == TableArrangement::List {
                 steps.push(PlannedStep::events(next_unplanned..table.start));
@@ -4301,6 +4311,7 @@ impl TablePlan {
         Self {
             steps,
             list_tables,
+            header_only_tables,
             auto_tables,
         }
     }
@@ -9037,6 +9048,24 @@ mod tests {
                 .all(|bounds| !first_entry.intersects(bounds)),
             "the selection should not highlight the first entry"
         );
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_renders_header_only_tables_as_grids(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | Name | Notes |
+            | --- | --- |
+        "};
+        let (_, rendered_text, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
+
+        assert!(!is_list_layout(cx));
+        assert_eq!(rendered_line_texts(&rendered_text), ["Name", "Notes"]);
+        let table = cx
+            .debug_bounds("markdown_table")
+            .expect("the table should render");
+        cx.simulate_mouse_move(table.center(), None, Modifiers::default());
+        assert!(cx.debug_bounds("markdown_table_toggle_0").is_none());
     }
 
     #[gpui::test]
