@@ -750,6 +750,13 @@ impl ExtensionStore {
             .collect()
     }
 
+    fn clear_git_extension_failure(&mut self, extension_id: &str, cx: &mut Context<Self>) {
+        self.undelivered_git_extension_failures.remove(extension_id);
+        if self.git_extension_failures.remove(extension_id).is_some() {
+            cx.notify();
+        }
+    }
+
     fn record_git_extension_result(
         &mut self,
         extension_id: &Arc<str>,
@@ -759,10 +766,7 @@ impl ExtensionStore {
     ) {
         match result {
             Ok(()) => {
-                self.undelivered_git_extension_failures.remove(extension_id);
-                if self.git_extension_failures.remove(extension_id).is_some() {
-                    cx.notify();
-                }
+                self.clear_git_extension_failure(extension_id, cx);
             }
             Err(error) => {
                 let url = redact_command(url);
@@ -1251,7 +1255,7 @@ impl ExtensionStore {
                 let fs = fs.clone();
                 let sources_dir = sources_dir.clone();
                 let git_source_lock = git_source_lock.clone();
-                let cx = cx.clone();
+                let mut cx = cx.clone();
                 async move {
                     if let Err(error) = install.await {
                         log::error!("failed to install extension {extension_id}: {error:#}");
@@ -1266,13 +1270,19 @@ impl ExtensionStore {
                                 .is_some_and(|entry| !entry.dev)
                         })
                         .unwrap_or(false);
-                    if installed_from_marketplace {
-                        remove_git_source(&fs, &sources_dir, &extension_id)
+                    if installed_from_marketplace
+                        && remove_git_source(&fs, &sources_dir, &extension_id)
                             .await
                             .with_context(|| {
                                 format!("removing the git source of extension {extension_id}")
                             })
-                            .log_err();
+                            .log_err()
+                            .is_some()
+                    {
+                        this.update(&mut cx, |this, cx| {
+                            this.clear_git_extension_failure(&extension_id, cx);
+                        })
+                        .log_err();
                     }
                 }
             }))
@@ -1337,9 +1347,7 @@ impl ExtensionStore {
             .extensions
             .iter()
             .filter(|(extension_id, _)| extension_settings.should_auto_update(extension_id))
-            .filter_map(|(extension_id, entry)| {
-                Some((extension_id.clone(), entry.source.as_ref()?.url.clone()))
-            })
+            .filter_map(|(extension_id, entry)| entry.source.as_ref().map(|_| extension_id.clone()))
             .collect::<Vec<_>>();
         let fs = self.fs.clone();
         let builder = self.builder.clone();
@@ -1350,8 +1358,18 @@ impl ExtensionStore {
         let git_source_lock = self.git_source_lock.clone();
 
         cx.spawn(async move |this, cx| {
-            for (extension_id, indexed_url) in extensions {
+            for extension_id in extensions {
                 let _source_guard = git_source_lock.lock().await;
+                let Some(indexed_url) = this.read_with(cx, |this, _| {
+                    this.extension_index
+                        .extensions
+                        .get(&extension_id)
+                        .and_then(|entry| entry.source.as_ref())
+                        .map(|source| source.url.clone())
+                })?
+                else {
+                    continue;
+                };
                 let _operation = match Self::begin_operation(
                     &this,
                     &extension_id,
@@ -1857,6 +1875,10 @@ impl ExtensionStore {
                 remove_git_source(&fs, &sources_dir, &extension_id).await?;
             }
 
+            extension_store.update(cx, |extension_store, cx| {
+                extension_store.clear_git_extension_failure(&extension_id, cx);
+            })?;
+
             extension_store
                 .update(cx, |extension_store, cx| extension_store.reload(None, cx))?
                 .await;
@@ -1970,7 +1992,11 @@ impl ExtensionStore {
                 extension_source_path,
                 cx,
             )
-            .await
+            .await?;
+            this.update(cx, |this, cx| {
+                this.clear_git_extension_failure(&extension_id, cx);
+            })?;
+            Ok(())
         })
     }
 

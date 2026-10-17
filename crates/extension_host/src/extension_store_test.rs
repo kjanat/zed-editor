@@ -5760,6 +5760,13 @@ async fn test_marketplace_setting_replaces_git_install(cx: &mut TestAppContext) 
         .await
         .unwrap();
 
+    remote.publish("other-extension", "0.2.0");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("update check should report the failed update");
+    assert_eq!(git_failures(&store, cx).len(), 1);
+
     let settings = marketplace_settings("git-extension");
     let to_install = store.read_with(cx, |store, _| {
         store.marketplace_extensions_to_install(&settings)
@@ -5777,6 +5784,10 @@ async fn test_marketplace_setting_replaces_git_install(cx: &mut TestAppContext) 
     assert!(!entry.dev);
     assert_eq!(entry.source, None);
     assert_eq!(entry.manifest.version.as_ref(), "2.0.0");
+    assert!(git_failures(&store, cx).is_empty());
+    store.read_with(cx, |store, _| {
+        assert!(store.undelivered_git_extension_failures.is_empty());
+    });
     assert!(!extensions_dir.join("sources/git-extension").exists());
     assert!(!extensions_dir.join("sources/git-extension.toml").exists());
     assert!(
@@ -5953,6 +5964,84 @@ async fn test_git_update_that_cannot_be_indexed_keeps_installed_extension(cx: &m
 }
 
 #[gpui::test]
+async fn test_git_update_skips_an_extension_uninstalled_after_snapshot(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("install should succeed");
+
+    let source_lock = store.read_with(cx, |store, _| store.git_source_lock.clone());
+    let source_guard = source_lock.lock().await;
+    let update = store.update(cx, |store, cx| store.check_for_git_updates(cx));
+    cx.run_until_parked();
+    store
+        .update(cx, |store, cx| {
+            store.uninstall_extension("git-extension".into(), cx)
+        })
+        .await
+        .expect("uninstall should succeed");
+    assert!(installed_version(&store, "git-extension", cx).is_none());
+    drop(source_guard);
+    update.await.expect("update check should succeed");
+
+    assert!(git_failures(&store, cx).is_empty());
+    assert!(
+        store
+            .update(cx, |store, _| store.take_git_extension_failures())
+            .is_empty()
+    );
+}
+
+#[gpui::test]
+async fn test_uninstall_clears_git_extension_failures(cx: &mut TestAppContext) {
+    for delivered in [false, true] {
+        let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("install should succeed");
+        remote.publish("other-extension", "0.2.0");
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("update check should report the failed update");
+        assert_eq!(git_failures(&store, cx).len(), 1);
+        if delivered {
+            assert_eq!(
+                store
+                    .update(cx, |store, _| store.take_git_extension_failures())
+                    .len(),
+                1
+            );
+        }
+
+        store
+            .update(cx, |store, cx| {
+                store.uninstall_extension("git-extension".into(), cx)
+            })
+            .await
+            .expect("uninstall should succeed");
+
+        assert!(git_failures(&store, cx).is_empty());
+        store.read_with(cx, |store, _| {
+            assert!(store.undelivered_git_extension_failures.is_empty());
+        });
+        assert!(
+            store
+                .update(cx, |store, _| store.take_git_extension_failures())
+                .is_empty()
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_git_update_reports_a_lost_source_record(cx: &mut TestAppContext) {
     for malformed in [false, true] {
         let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
@@ -6069,6 +6158,13 @@ async fn test_local_dev_extension_replaces_git_source(cx: &mut TestAppContext) {
         .await
         .unwrap();
 
+    remote.publish("other-extension", "0.2.0");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("update check should report the failed update");
+    assert_eq!(git_failures(&store, cx).len(), 1);
+
     let local = local_dev_extension("git-extension");
     store
         .update(cx, |store, cx| {
@@ -6079,6 +6175,10 @@ async fn test_local_dev_extension_replaces_git_source(cx: &mut TestAppContext) {
     assert!(!extensions_dir.join("sources/git-extension").exists());
     assert!(!extensions_dir.join("sources/git-extension.toml").exists());
     assert_eq!(installed_source(&store, "git-extension", cx), None);
+    assert!(git_failures(&store, cx).is_empty());
+    store.read_with(cx, |store, _| {
+        assert!(store.undelivered_git_extension_failures.is_empty());
+    });
 
     remote.publish("git-extension", "0.2.0");
     store
