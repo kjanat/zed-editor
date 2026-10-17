@@ -54,6 +54,7 @@ use std::{
 use task::{SpawnInTerminal, ZedDebugConfig};
 use theme::ThemeRegistry;
 use util::{
+    path,
     paths::SanitizedPath,
     rel_path::{RelPath, rel_path_buf},
     test::TempTree,
