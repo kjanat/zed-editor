@@ -361,9 +361,11 @@ Environment variables for every language server go in `global_lsp_settings`.
 A key in a server's `binary.env` overrides the same key there:
 
 ```json [settings]
-"global_lsp_settings": {
-  "env": {
-    "MISE_AUTO_INSTALL": "false"
+{
+  "global_lsp_settings": {
+    "env": {
+      "MISE_AUTO_INSTALL": "false"
+    }
   }
 }
 ```
