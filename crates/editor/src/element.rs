@@ -7580,6 +7580,7 @@ impl LineFragment {
 }
 
 const SHAPE_WINDOW_MIN_LINE_LEN: u32 = 8192;
+const MAX_AUTOSCROLL_RELAYOUTS: usize = 4;
 
 fn row_has_right_to_left_text(snapshot: &EditorSnapshot, row: DisplayRow) -> bool {
     for chunk in snapshot.text_chunks(row) {
@@ -9815,19 +9816,22 @@ impl Element for EditorElement {
                         }
                     });
 
-                    if !em_layout_width.is_zero() {
-                        scroll_position.x = window
-                            .pixel_snap_f64(scroll_position.x * f64::from(em_layout_width))
-                            / f64::from(em_layout_width);
-                    }
-
-                    let scroll_pixel_position = point(
-                        scroll_position.x * f64::from(em_layout_width),
-                        scroll_position.y * f64::from(line_height),
-                    );
-                    let final_scroll_x = Pixels::from(scroll_pixel_position.x);
-                    let final_visible_text_x = visible_text_x(final_scroll_x);
-                    if !Self::shape_windows_cover(&line_layouts, &final_visible_text_x) {
+                    let mut relayouts = 0;
+                    let scroll_pixel_position = loop {
+                        if !em_layout_width.is_zero() {
+                            scroll_position.x = window
+                                .pixel_snap_f64(scroll_position.x * f64::from(em_layout_width))
+                                / f64::from(em_layout_width);
+                        }
+                        let scroll_pixel_position = point(
+                            scroll_position.x * f64::from(em_layout_width),
+                            scroll_position.y * f64::from(line_height),
+                        );
+                        let final_scroll_x = Pixels::from(scroll_pixel_position.x);
+                        let final_visible_text_x = visible_text_x(final_scroll_x);
+                        if Self::shape_windows_cover(&line_layouts, &final_visible_text_x) {
+                            break scroll_pixel_position;
+                        }
                         line_layouts = Self::layout_lines_in_shape_windows(
                             start_row..end_row,
                             &snapshot,
@@ -9841,7 +9845,26 @@ impl Element for EditorElement {
                             window,
                             cx,
                         );
-                    }
+                        relayouts += 1;
+                        if !needs_horizontal_autoscroll.0 || relayouts == MAX_AUTOSCROLL_RELAYOUTS {
+                            break scroll_pixel_position;
+                        }
+                        let Some(new_scroll_position) = self.editor.update(cx, |editor, cx| {
+                            editor.autoscroll_horizontally(
+                                start_row,
+                                editor_width,
+                                scroll_width,
+                                em_advance,
+                                &line_layouts,
+                                autoscroll_request,
+                                window,
+                                cx,
+                            )
+                        }) else {
+                            break scroll_pixel_position;
+                        };
+                        scroll_position.x = new_scroll_position.x;
+                    };
                     let sticky_headers = if !is_minimap
                         && is_singleton
                         && EditorSettings::get_global(cx).sticky_scroll.enabled
@@ -14299,6 +14322,50 @@ mod tests {
                 layout.fragments
             );
         }
+    }
+
+    #[test]
+    fn test_autoscroll_to_a_far_cursor_past_narrow_glyphs() {
+        let mut cx = TestAppContext::build_with_text_system(
+            gpui::TestDispatcher::new(0),
+            None,
+            Arc::new(NarrowGlyphTextSystem(gpui::NoopTextSystem)),
+        );
+        init_test(&mut cx, |_| {});
+        let text = format!("{}{}", "i".repeat(100_000), "m".repeat(100_000));
+        let cursor_column = 150_000;
+        let window = cx.add_window(|_, _| gpui::EmptyView);
+        let cx = &mut VisualTestContext::from_window(*window, &mut cx);
+        let editor = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let buffer = MultiBuffer::build_simple(&text, cx);
+                let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+                editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+                editor
+            })
+        });
+        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+        cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.change_selections(SelectionEffects::default(), window, cx, |s| {
+                    s.select_ranges([Point::new(0, cursor_column)..Point::new(0, cursor_column)]);
+                });
+            });
+        });
+        let (_, state) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        let position_map = &state.position_map;
+        let layout = &position_map.line_layouts[0];
+        let scroll_pixels = position_map.em_layout_width * position_map.scroll_position.x as f32;
+        let cursor_x = layout.x_for_index(cursor_column as usize) - scroll_pixels;
+        assert!(
+            cursor_x >= px(0.) && cursor_x <= position_map.text_hitbox.size.width,
+            "cursor at {cursor_x:?} should be visible"
+        );
     }
 
     #[gpui::test]
