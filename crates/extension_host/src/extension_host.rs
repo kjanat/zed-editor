@@ -367,11 +367,14 @@ fn git_source_extension_path(
     extension_id: &str,
     path: Option<&str>,
 ) -> PathBuf {
-    let directory = git_source_dir(sources_dir, extension_id);
-    match path {
-        Some(path) => directory.join(path),
-        None => directory,
+    git_source_subdirectory(git_source_dir(sources_dir, extension_id), path)
+}
+
+fn git_source_subdirectory(mut directory: PathBuf, path: Option<&str>) -> PathBuf {
+    if let Some(path) = path {
+        directory.extend(Path::new(path).components());
     }
+    directory
 }
 
 const GIT_SOURCE_BACKUP_ID: &str = "extension_id";
@@ -493,10 +496,7 @@ async fn build_git_source(
     .await?;
     let commit = run_git(directory, &["rev-parse", "HEAD"]).await?;
 
-    let staged_extension = match &source.path {
-        Some(path) => directory.join(path),
-        None => directory.to_path_buf(),
-    };
+    let staged_extension = git_source_subdirectory(directory.to_path_buf(), source.path.as_deref());
     let mut manifest = ExtensionManifest::load(fs.clone(), &staged_extension).await?;
     anyhow::ensure!(
         manifest.id.as_ref() == extension_id,
