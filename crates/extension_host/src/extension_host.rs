@@ -54,6 +54,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::{
     borrow::Cow,
     cmp::Ordering,
+    mem,
     path::{self, Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -172,6 +173,8 @@ pub struct ExtensionStore {
     pub staging_dir: PathBuf,
     pub sources_dir: PathBuf,
     git_source_lock: Arc<futures::lock::Mutex<()>>,
+    git_extension_failures: BTreeMap<Arc<str>, GitExtensionFailure>,
+    undelivered_git_extension_failures: BTreeSet<Arc<str>>,
     pub outstanding_operations: BTreeMap<Arc<str>, ExtensionOperation>,
     pub index_path: PathBuf,
     pub modified_extensions: HashSet<Arc<str>>,
@@ -305,6 +308,13 @@ pub struct InstalledGitSource {
     pub commit: String,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GitExtensionFailure {
+    pub extension_id: Arc<str>,
+    pub url: String,
+    pub message: String,
+}
+
 impl InstalledGitSource {
     fn matches(&self, source: &GitExtensionSource) -> bool {
         self.url == source.url && self.reference == source.reference && self.path == source.path
@@ -319,13 +329,17 @@ impl InstalledGitSource {
     }
 }
 
-fn validate_git_install(extension_id: &str, source: &GitExtensionSource) -> Result<()> {
+fn is_single_path_component(extension_id: &str) -> bool {
     let mut components = Path::new(extension_id).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(path::Component::Normal(name)), None) if name == std::ffi::OsStr::new(extension_id)
+    )
+}
+
+fn validate_git_install(extension_id: &str, source: &GitExtensionSource) -> Result<()> {
     anyhow::ensure!(
-        matches!(
-            (components.next(), components.next()),
-            (Some(path::Component::Normal(name)), None) if name == std::ffi::OsStr::new(extension_id)
-        ),
+        is_single_path_component(extension_id),
         "extension id {extension_id:?} must be a single path component"
     );
     if let Some(path) = &source.path {
@@ -462,13 +476,29 @@ async fn remote_commit(directory: &Path, source: &GitExtensionSource) -> Result<
     let output = run_git(directory, &["ls-remote", &source.url, reference, &peeled]).await?;
     let refs = output
         .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .collect::<Vec<_>>();
-    Ok(refs
-        .iter()
-        .find(|(_, name)| name.ends_with("^{}"))
-        .or_else(|| refs.first())
-        .map(|(commit, _)| commit.to_string()))
+        .filter_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            Some((name, commit))
+        })
+        .collect::<HashMap<_, _>>();
+    Ok(resolve_advertised_ref(&refs, reference).map(str::to_string))
+}
+
+fn resolve_advertised_ref<'a>(refs: &HashMap<&str, &'a str>, reference: &str) -> Option<&'a str> {
+    [
+        reference.to_string(),
+        format!("refs/{reference}"),
+        format!("refs/tags/{reference}"),
+        format!("refs/heads/{reference}"),
+        format!("refs/remotes/{reference}"),
+        format!("refs/remotes/{reference}/HEAD"),
+    ]
+    .iter()
+    .find_map(|name| {
+        refs.get(format!("{name}^{{}}").as_str())
+            .or_else(|| refs.get(name.as_str()))
+            .copied()
+    })
 }
 
 async fn remove_git_source(fs: &Arc<dyn Fs>, sources_dir: &Path, extension_id: &str) -> Result<()> {
@@ -480,6 +510,19 @@ async fn remove_git_source(fs: &Arc<dyn Fs>, sources_dir: &Path, extension_id: &
         .await?;
     fs.remove_file(&git_source_record_path(sources_dir, extension_id), options)
         .await
+}
+
+async fn git_source_for_dev_extension(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    sources_dir: &Path,
+    extension_id: &str,
+) -> Option<InstalledGitSource> {
+    let record = load_git_source_record(fs, sources_dir, extension_id).await?;
+    let linked = fs.canonicalize(extension_dir).await.log_err()?;
+    let checkout = git_source_extension_path(sources_dir, extension_id, record.path.as_deref());
+    let checkout = fs.canonicalize(&checkout).await.ok()?;
+    (linked == checkout).then_some(record)
 }
 
 async fn load_git_source_record(
@@ -579,6 +622,48 @@ impl ExtensionStore {
         self.language_collisions.take_warnings()
     }
 
+    pub fn active_git_extension_failures(&self) -> &BTreeMap<Arc<str>, GitExtensionFailure> {
+        &self.git_extension_failures
+    }
+
+    pub fn take_git_extension_failures(&mut self) -> Vec<GitExtensionFailure> {
+        mem::take(&mut self.undelivered_git_extension_failures)
+            .into_iter()
+            .filter_map(|extension_id| self.git_extension_failures.get(&extension_id).cloned())
+            .collect()
+    }
+
+    fn record_git_extension_result(
+        &mut self,
+        extension_id: &Arc<str>,
+        url: &str,
+        result: &Result<()>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(()) => {
+                self.undelivered_git_extension_failures.remove(extension_id);
+                if self.git_extension_failures.remove(extension_id).is_some() {
+                    cx.notify();
+                }
+            }
+            Err(error) => {
+                log::error!("failed to install extension {extension_id} from {url}: {error:#}");
+                self.git_extension_failures.insert(
+                    extension_id.clone(),
+                    GitExtensionFailure {
+                        extension_id: extension_id.clone(),
+                        url: url.to_string(),
+                        message: format!("{error:#}"),
+                    },
+                );
+                self.undelivered_git_extension_failures
+                    .insert(extension_id.clone());
+                cx.notify();
+            }
+        }
+    }
+
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
         cx.try_global::<GlobalExtensionStore>()
             .map(|store| store.0.clone())
@@ -616,6 +701,8 @@ impl ExtensionStore {
             staging_dir,
             sources_dir,
             git_source_lock: Arc::default(),
+            git_extension_failures: BTreeMap::default(),
+            undelivered_git_extension_failures: BTreeSet::default(),
             index_path,
             builder: Arc::new(ExtensionBuilder::new(builder_client, build_dir)),
             outstanding_operations: Default::default(),
@@ -1070,13 +1157,20 @@ impl ExtensionStore {
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
             for (extension_id, source) in extensions {
+                let url = source.url.clone();
                 let Ok(install) = this.update(cx, |this, cx| {
                     this.install_git_extension(extension_id.clone(), source, cx)
                 }) else {
                     break;
                 };
-                if let Err(error) = install.await {
-                    log::error!("failed to install extension {extension_id} from git: {error:#}");
+                let result = install.await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.record_git_extension_result(&extension_id, &url, &result, cx)
+                    })
+                    .is_err()
+                {
+                    break;
                 }
             }
         })
@@ -1146,43 +1240,44 @@ impl ExtensionStore {
                         let sources_dir = sources_dir.clone();
                         let extension_id = extension_id.clone();
                         async move {
-                            let Some(installed) =
-                                load_git_source_record(&fs, &sources_dir, &extension_id).await
-                            else {
-                                return anyhow::Ok(false);
-                            };
+                            let installed =
+                                load_git_source_record(&fs, &sources_dir, &extension_id).await?;
                             let source = installed.source();
-                            let Some(remote_commit) = remote_commit(&sources_dir, &source).await?
-                            else {
-                                return Ok(false);
-                            };
-                            if remote_commit == installed.commit {
-                                return Ok(false);
+                            let result = async {
+                                let Some(remote_commit) =
+                                    remote_commit(&sources_dir, &source).await?
+                                else {
+                                    return anyhow::Ok(false);
+                                };
+                                if remote_commit == installed.commit {
+                                    return Ok(false);
+                                }
+                                build_git_source(
+                                    fs,
+                                    &builder,
+                                    &staging_dir,
+                                    &sources_dir,
+                                    &extension_id,
+                                    &source,
+                                )
+                                .await?;
+                                Ok(true)
                             }
-                            build_git_source(
-                                fs,
-                                &builder,
-                                &staging_dir,
-                                &sources_dir,
-                                &extension_id,
-                                &source,
-                            )
-                            .await?;
-                            Ok(true)
+                            .await;
+                            Some((source.url, result))
                         }
                     })
                     .await;
-                match update {
-                    Ok(true) => {
-                        this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
-                            .await;
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        log::error!(
-                            "failed to update extension {extension_id} from git: {error:#}"
-                        );
-                    }
+                let Some((url, result)) = update else {
+                    continue;
+                };
+                let updated = matches!(result, Ok(true));
+                this.update(cx, |this, cx| {
+                    this.record_git_extension_result(&extension_id, &url, &result.map(|_| ()), cx)
+                })?;
+                if updated {
+                    this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
+                        .await;
                 }
             }
             Ok(())
@@ -1625,6 +1720,7 @@ impl ExtensionStore {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let extensions_dir = self.extensions_dir();
+        let sources_dir = self.sources_dir.clone();
         let fs = self.fs.clone();
         let builder = self.builder.clone();
 
@@ -1672,6 +1768,12 @@ impl ExtensionStore {
             .inspect_err(|error| {
                 util::log_err(error);
             })?;
+
+            if is_single_path_component(&extension_id)
+                && !extension_source_path.starts_with(git_source_dir(&sources_dir, &extension_id))
+            {
+                remove_git_source(&fs, &sources_dir, &extension_id).await?;
+            }
 
             Self::link_dev_extension(
                 &this,
@@ -2452,7 +2554,7 @@ impl ExtensionStore {
         }
 
         let source = if is_dev {
-            load_git_source_record(&fs, sources_dir, &extension_id).await
+            git_source_for_dev_extension(&fs, &extension_dir, sources_dir, &extension_id).await
         } else {
             None
         };
