@@ -2033,13 +2033,28 @@ impl MarkdownElement {
             .flatten()
             .map(|link| link.destination_url.clone());
         let fallback_opens_image_url = enclosing_link_url.is_none();
+        let label_bounds = builder.push_element_label();
+        let wrapper_id = builder.element_id(("markdown-image-link", range.start));
+        let image_id = builder.element_id(("markdown-image", range.start));
 
         let image_element = {
             let image_start = range.start;
             let wrapper = div()
-                .id(("markdown-image-link", range.start))
+                .id(wrapper_id)
                 .debug_selector(move || format!("markdown_image_{image_start}"))
-                .min_w_0();
+                .min_w_0()
+                .when_some(label_bounds, |wrapper, label_bounds| {
+                    wrapper.relative().child(
+                        canvas(
+                            move |image_bounds, _window, _cx| label_bounds.set(Some(image_bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .size_full()
+                        .absolute()
+                        .top_0()
+                        .left_0(),
+                    )
+                });
             let wrapper = if !self.style.prevent_mouse_interaction
                 && let Some(url) = enclosing_link_url
             {
@@ -2080,7 +2095,7 @@ impl MarkdownElement {
             };
             wrapper.child(
                 img(source)
-                    .id(("markdown-image", range.start))
+                    .id(image_id)
                     .min_w_0()
                     .max_w_full()
                     .rounded_md()
@@ -4441,8 +4456,8 @@ struct MarkdownElementBuilder {
     rendered_footnote_refs: Vec<RenderedFootnoteRef>,
     current_source_index: usize,
     detached_text: bool,
-    pending_labels: Vec<Rc<RenderedLine>>,
-    rendered_labels: Vec<(Rc<RenderedLine>, usize)>,
+    pending_labels: Vec<RenderedLabel>,
+    rendered_labels: Vec<(RenderedLabel, usize)>,
     html_comment: bool,
     rendered_footnote_separator: bool,
     base_text_style: TextStyle,
@@ -4827,6 +4842,24 @@ impl MarkdownElementBuilder {
         self.push_highlighted_text(text, source_range, None);
     }
 
+    fn element_id(&self, id: impl Into<ElementId>) -> ElementId {
+        let id = id.into();
+        if self.detached_text {
+            ElementId::NamedChild(Arc::new(id), self.table.row_index.to_string().into())
+        } else {
+            id
+        }
+    }
+
+    fn push_element_label(&mut self) -> Option<Rc<Cell<Option<Bounds<Pixels>>>>> {
+        self.detached_text.then(|| {
+            let bounds = Rc::new(Cell::new(None));
+            self.pending_labels
+                .push(RenderedLabel::Element(bounds.clone()));
+            bounds
+        })
+    }
+
     fn anchor_pending_labels(&mut self, value_start: usize) {
         self.rendered_labels.extend(
             self.pending_labels
@@ -4925,13 +4958,13 @@ impl MarkdownElementBuilder {
             ToggleState::Unselected
         };
         let checkbox = Checkbox::new(
-            ElementId::Name(
+            self.element_id(ElementId::Name(
                 format!(
                     "table_checkbox_{}_{}",
                     marker_source.start, marker_source.end
                 )
                 .into(),
-            ),
+            )),
             toggle_state,
         )
         .fill();
@@ -5022,7 +5055,8 @@ impl MarkdownElementBuilder {
             code_chips: line.code_chips.into_iter().collect(),
         });
         if self.detached_text {
-            self.pending_labels.push(rendered_line.clone());
+            self.pending_labels
+                .push(RenderedLabel::Text(rendered_line.clone()));
         } else {
             self.rendered_lines.push(rendered_line.clone());
         }
@@ -5514,10 +5548,33 @@ pub struct RenderedMarkdown {
 #[derive(Clone)]
 struct RenderedText {
     lines: Rc<[Rc<RenderedLine>]>,
-    labels: Rc<[(Rc<RenderedLine>, usize)]>,
+    labels: Rc<[(RenderedLabel, usize)]>,
     links: Rc<[RenderedLink]>,
     image_links: Rc<[RenderedImageLink]>,
     footnote_refs: Rc<[RenderedFootnoteRef]>,
+}
+
+enum RenderedLabel {
+    Text(Rc<RenderedLine>),
+    Element(Rc<Cell<Option<Bounds<Pixels>>>>),
+}
+
+impl RenderedLabel {
+    fn contains(&self, position: Point<Pixels>) -> bool {
+        match self {
+            Self::Text(line) => line.layout.bounds().contains(&position),
+            Self::Element(bounds) => bounds
+                .get()
+                .is_some_and(|bounds| bounds.contains(&position)),
+        }
+    }
+
+    fn clickable_source_index(&self, position: Point<Pixels>) -> Option<usize> {
+        match self {
+            Self::Text(line) => line.source_index_for_position(position).ok(),
+            Self::Element(_) => None,
+        }
+    }
 }
 
 struct WrappedLineSegment {
@@ -5645,9 +5702,9 @@ impl RenderedText {
         match self
             .labels
             .iter()
-            .find(|(label, _)| label.layout.bounds().contains(&position))
+            .find(|(label, _)| label.contains(position))
         {
-            Some((label, _)) => label.source_index_for_position(position).ok(),
+            Some((label, _)) => label.clickable_source_index(position),
             None => self.source_index_for_position(position).ok(),
         }
     }
@@ -5656,7 +5713,7 @@ impl RenderedText {
         if let Some((_, value_start)) = self
             .labels
             .iter()
-            .find(|(label, _)| label.layout.bounds().contains(&position))
+            .find(|(label, _)| label.contains(position))
         {
             return Ok(*value_start);
         }
@@ -9051,6 +9108,135 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_table_list_layout_drag_from_an_image_label_stays_in_its_entry(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | ![](icon.png) | Notes |
+            | --- | --- |
+            | first | alpha |
+            | second | beta |
+        "};
+        let (markdown, rendered_text, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
+        assert!(is_list_layout(cx));
+
+        let label = cx
+            .debug_bounds("markdown_table_label_1_0")
+            .expect("the second entry should label its first column");
+        let image_point = point(label.left() + px(2.), label.center().y);
+        let row_start = source.find("| second").expect("second row");
+        let beta_start = source.find("beta").expect("beta cell");
+        let beta_end = beta_start + "beta".len();
+        let beta_right = {
+            let rendered_text = rendered_text.borrow();
+            let rendered_text = rendered_text.as_ref().expect("markdown should be rendered");
+            let label_index = rendered_text
+                .source_index_for_position(image_point)
+                .expect("an image label should map to its value cell");
+            assert!(
+                (row_start..beta_start).contains(&label_index),
+                "{label_index} should fall inside the second row"
+            );
+            let beta_bounds = rendered_text
+                .bounds_for_source_range(beta_start..beta_end)
+                .into_iter()
+                .next()
+                .expect("beta should have bounds");
+            point(beta_bounds.right() - px(1.), beta_bounds.center().y)
+        };
+
+        cx.simulate_mouse_down(image_point, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(beta_right, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(beta_right, MouseButton::Left, Modifiers::default());
+
+        let selection = markdown.read_with(cx, |markdown, _| markdown.selection.clone());
+        assert!(
+            selection.start >= row_start && selection.end <= beta_end,
+            "{:?} should stay inside the second entry",
+            selection.start..selection.end
+        );
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_linked_image_label_opens_once(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | [![](icon.png)](https://example.com/docs) | Notes |
+            | --- | --- |
+            | first | alpha |
+            | second | beta |
+        "};
+        let (view, cx) = open_link_interaction_test_window_with_table_layout(
+            source,
+            Some(MarkdownTableLayout::List),
+            cx,
+        );
+        let opened_urls = view.read_with(cx, |view, _| view.opened_urls.clone());
+        let label = cx
+            .debug_bounds("markdown_table_label_1_0")
+            .expect("the second entry should label its first column");
+        let image_point = point(label.left() + px(2.), label.center().y);
+
+        cx.simulate_click(image_point, Modifiers::default());
+        assert_eq!(
+            opened_urls.borrow().as_slice(),
+            [SharedString::from("https://example.com/docs")]
+        );
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_header_checkbox_toggles_from_every_entry(cx: &mut TestAppContext) {
+        struct CheckboxTestView {
+            markdown: Entity<Markdown>,
+            toggled: Rc<RefCell<Vec<(Range<usize>, bool)>>>,
+        }
+
+        impl Render for CheckboxTestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let toggled = self.toggled.clone();
+                div().size_full().child(
+                    MarkdownElement::new(
+                        self.markdown.clone(),
+                        MarkdownStyle {
+                            table_layout: Some(MarkdownTableLayout::List),
+                            ..MarkdownStyle::default()
+                        },
+                    )
+                    .on_checkbox_toggle(move |range, checked, _, _| {
+                        toggled.borrow_mut().push((range, checked))
+                    }),
+                )
+            }
+        }
+
+        let source = "| [x] | Notes |\n| --- | --- |\n| first | alpha |\n| second | beta |\n";
+        ensure_theme_initialized(cx);
+        let toggled = Rc::new(RefCell::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let toggled = toggled.clone();
+            move |_, cx| CheckboxTestView {
+                markdown: cx.new(|cx| Markdown::new(source.into(), None, None, cx)),
+                toggled,
+            }
+        });
+        cx.run_until_parked();
+
+        let marker_start = source.find("[x]").expect("header checkbox");
+        let marker = marker_start..marker_start + "[x]".len();
+        for row in 0..2 {
+            let label = cx
+                .debug_bounds(format!("markdown_table_label_{row}_0").leak())
+                .expect("each entry should label its first column");
+            cx.simulate_click(
+                point(label.left() + px(4.), label.center().y),
+                Modifiers::default(),
+            );
+        }
+        assert_eq!(
+            toggled.borrow().as_slice(),
+            [(marker.clone(), false), (marker, false)]
+        );
+    }
+
+    #[gpui::test]
     fn test_table_list_layout_renders_header_only_tables_as_grids(cx: &mut TestAppContext) {
         let source = indoc::indoc! {"
             | Name | Notes |
@@ -9705,6 +9891,7 @@ mod tests {
                         ..MarkdownStyle::default()
                     },
                 )
+                .image_resolver(|_, _| Some(loaded_image_source()))
                 .on_url_hover(move |url, _, _| hovered_urls.borrow_mut().push(url))
                 .on_url_click(move |url, _, _| opened_urls.borrow_mut().push(url)),
                 rendered_text: self.rendered_text.clone(),
@@ -9756,7 +9943,8 @@ mod tests {
     impl Render for MarkdownTestView {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             let mut markdown_element =
-                MarkdownElement::new(self.markdown.clone(), self.style.clone());
+                MarkdownElement::new(self.markdown.clone(), self.style.clone())
+                    .image_resolver(|_, _| Some(loaded_image_source()));
             if let Some(code_span_link) = self.code_span_link.clone() {
                 markdown_element =
                     markdown_element.on_code_span_link(move |text, cx| code_span_link(text, cx));
