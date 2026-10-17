@@ -35,8 +35,10 @@ def fib(n):
 ### Preview Settings
 
 All `markdown_preview` settings can be configured in user settings or overridden
-in a project's `.zed/settings.json`. For example, use the full pane width for a
-project with wide tables:
+in a project's `.zed/settings.json`. Settings ({#kb zed::OpenSettings}) lists
+them under Editor > Miscellaneous. For example, to use the full pane width for
+a project with wide tables, turn off Limit Markdown Preview Width there, or add
+to your settings file:
 
 ```json [settings]
 {
@@ -58,6 +60,9 @@ width. `"auto"`, the default, shows a grid while it fits the preview
 and switches a wide table with long cells to entries. Hovering a table shows a
 button that switches that table between the two layouts. A table with only a
 header row always renders as a grid.
+
+Configure it in Settings ({#kb zed::OpenSettings}) under
+Editor > Miscellaneous > Markdown Table Layout, or add to your settings file:
 
 ```json [settings]
 {
