@@ -3,8 +3,11 @@ use anyhow::{Context as _, Result};
 use async_tungstenite::tungstenite::Message;
 use dioxus_devtools_types::DevserverMsg;
 use futures::StreamExt;
-use std::net::SocketAddr;
+use std::{future::Future, net::SocketAddr, time::Duration};
 use subsecond::JumpTable;
+
+const FIRST_RECONNECT_DELAY: Duration = Duration::from_millis(500);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
 struct HotReload {
     _task: Task<()>,
@@ -34,11 +37,15 @@ pub(crate) fn init(cx: &mut App) {
     let endpoint =
         format!("{endpoint}?aslr_reference={reference}&build_id={build_id}&pid={process_id}");
     let (sender, receiver) = async_channel::bounded(16);
-    let connection = cx.background_spawn(async move {
-        if let Err(error) = receive_patches(address, endpoint, build_id, process_id, sender).await {
-            log::error!("GPUI hot reload disconnected: {error:#}. Restart dx serve to reconnect.");
-        }
-    });
+    let executor = cx.background_executor().clone();
+    let connection = cx.background_spawn(stay_connected(
+        address,
+        endpoint,
+        build_id,
+        process_id,
+        sender,
+        move |delay| executor.timer(delay),
+    ));
     let task = cx.spawn(async move |cx| {
         let _connection = connection;
         while let Ok(table) = receiver.recv().await {
@@ -58,21 +65,65 @@ pub(crate) fn init(cx: &mut App) {
     cx.set_global(HotReload { _task: task });
 }
 
-async fn receive_patches(
+enum Session {
+    Closed,
+    ReceiverDropped,
+}
+
+async fn stay_connected<Sleep, Delay>(
     address: SocketAddr,
     endpoint: String,
     build_id: u64,
     process_id: u32,
     sender: async_channel::Sender<JumpTable>,
-) -> Result<()> {
+    sleep: Sleep,
+) where
+    Sleep: Fn(Duration) -> Delay,
+    Delay: Future<Output = ()>,
+{
+    let mut delay = FIRST_RECONNECT_DELAY;
+    loop {
+        match connect(address, &endpoint).await {
+            Ok(websocket) => {
+                log::info!("GPUI hot reload connected");
+                delay = FIRST_RECONNECT_DELAY;
+                match receive_patches(websocket, build_id, process_id, &sender).await {
+                    Ok(Session::ReceiverDropped) => return,
+                    Ok(Session::Closed) => log::info!("GPUI hot reload disconnected, reconnecting"),
+                    Err(error) => {
+                        log::warn!("GPUI hot reload disconnected: {error:#}. Reconnecting.")
+                    }
+                }
+            }
+            Err(error) => log::debug!("GPUI hot reload could not connect: {error:#}"),
+        }
+        if sender.is_closed() {
+            return;
+        }
+        sleep(delay).await;
+        delay = (delay * 2).min(MAX_RECONNECT_DELAY);
+    }
+}
+
+async fn connect(
+    address: SocketAddr,
+    endpoint: &str,
+) -> Result<async_tungstenite::WebSocketStream<smol::net::TcpStream>> {
     let stream = smol::net::TcpStream::connect(address)
         .await
         .context("connecting to the dx development server")?;
-    let (mut websocket, _) = async_tungstenite::client_async(endpoint, stream)
+    let (websocket, _) = async_tungstenite::client_async(endpoint, stream)
         .await
         .context("opening the dx development websocket")?;
-    log::info!("GPUI hot reload connected");
+    Ok(websocket)
+}
 
+async fn receive_patches(
+    mut websocket: async_tungstenite::WebSocketStream<smol::net::TcpStream>,
+    build_id: u64,
+    process_id: u32,
+    sender: &async_channel::Sender<JumpTable>,
+) -> Result<Session> {
     while let Some(message) = websocket.next().await {
         match message.context("reading the dx development websocket")? {
             Message::Text(text) => {
@@ -80,7 +131,7 @@ async fn receive_patches(
                     .context("decoding a dx development message")?;
                 if let Some(table) = patch_for_process(message, build_id, process_id) {
                     if sender.send(table).await.is_err() {
-                        return Ok(());
+                        return Ok(Session::ReceiverDropped);
                     }
                 }
             }
@@ -88,8 +139,7 @@ async fn receive_patches(
             _ => {}
         }
     }
-    log::info!("GPUI hot reload disconnected");
-    Ok(())
+    Ok(Session::Closed)
 }
 
 fn patch_for_process(message: DevserverMsg, build_id: u64, process_id: u32) -> Option<JumpTable> {
@@ -157,15 +207,94 @@ mod tests {
                 websocket.close(None).await?;
                 anyhow::Ok(())
             };
-            futures::try_join!(
-                server,
-                receive_patches(address, format!("ws://{address}/_dioxus"), 1, 2, sender)
-            )?;
+            let client = async {
+                let websocket = connect(address, &format!("ws://{address}/_dioxus")).await?;
+                receive_patches(websocket, 1, 2, &sender).await
+            };
+            let ((), session) = futures::try_join!(server, client)?;
+            assert!(matches!(session, Session::Closed));
+            drop(sender);
             assert_eq!(
                 receiver.recv().await?.lib,
                 std::path::Path::new("unused-test-patch")
             );
             assert!(receiver.recv().await.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn reconnects_after_the_server_disconnects() -> Result<()> {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (sender, receiver) = async_channel::bounded(16);
+            let patch = Message::Text(serde_json::to_string(&message(Some(1), Some(2)))?.into());
+            let server = async move {
+                for last_message in [
+                    Message::Text("not a dx message".into()),
+                    Message::Close(None),
+                ] {
+                    let (stream, _) = listener.accept().await?;
+                    let mut websocket = async_tungstenite::accept_async(stream).await?;
+                    websocket.send(patch.clone()).await?;
+                    websocket.send(last_message).await?;
+                }
+                anyhow::Ok(())
+            };
+            let client = stay_connected(
+                address,
+                format!("ws://{address}/_dioxus"),
+                1,
+                2,
+                sender,
+                |_| async {
+                    smol::Timer::after(Duration::from_millis(1)).await;
+                },
+            );
+            let consumer = async move {
+                receiver.recv().await?;
+                receiver.recv().await?;
+                anyhow::Ok(())
+            };
+            let (server, (), consumer) = futures::join!(server, client, consumer);
+            server?;
+            consumer
+        })
+    }
+
+    #[test]
+    fn stops_reconnecting_when_the_receiver_is_dropped() -> Result<()> {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (sender, receiver) = async_channel::bounded(16);
+            drop(receiver);
+            let server = async {
+                let (stream, _) = listener.accept().await?;
+                let mut websocket = async_tungstenite::accept_async(stream).await?;
+                websocket
+                    .send(Message::Text(
+                        serde_json::to_string(&message(Some(1), Some(2)))?.into(),
+                    ))
+                    .await?;
+                anyhow::Ok(websocket)
+            };
+            let reconnects = Cell::new(0);
+            let client = stay_connected(
+                address,
+                format!("ws://{address}/_dioxus"),
+                1,
+                2,
+                sender,
+                |_| {
+                    reconnects.set(reconnects.get() + 1);
+                    async {}
+                },
+            );
+            let (server, ()) = futures::join!(server, client);
+            server?;
+            assert_eq!(reconnects.get(), 0);
             Ok(())
         })
     }
