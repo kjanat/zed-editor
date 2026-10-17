@@ -475,6 +475,7 @@ async fn build_git_source(
     staging_dir: &Path,
     sources_dir: &Path,
     index_path: &Path,
+    proxy: Arc<ExtensionHostProxy>,
     extension_id: &str,
     source: &GitExtensionSource,
 ) -> Result<PathBuf> {
@@ -517,6 +518,15 @@ async fn build_git_source(
             fs.clone(),
         )
         .await?;
+    ExtensionStore::add_extension_to_index(
+        fs.clone(),
+        staged_extension,
+        sources_dir,
+        &mut ExtensionIndex::default(),
+        proxy,
+    )
+    .await
+    .context("indexing the fetched extension")?;
 
     let record = toml::to_string(&InstalledGitSource {
         url: source.url.clone(),
@@ -1331,6 +1341,7 @@ impl ExtensionStore {
         let staging_dir = self.staging_dir.clone();
         let sources_dir = self.sources_dir.clone();
         let index_path = self.index_path.clone();
+        let proxy = self.proxy.clone();
         let git_source_lock = self.git_source_lock.clone();
 
         cx.spawn(async move |this, cx| {
@@ -1355,6 +1366,7 @@ impl ExtensionStore {
                         let staging_dir = staging_dir.clone();
                         let sources_dir = sources_dir.clone();
                         let index_path = index_path.clone();
+                        let proxy = proxy.clone();
                         let extension_id = extension_id.clone();
                         async move {
                             let Some(installed) =
@@ -1378,6 +1390,7 @@ impl ExtensionStore {
                                     &staging_dir,
                                     &sources_dir,
                                     &index_path,
+                                    proxy,
                                     &extension_id,
                                     &source,
                                 )
@@ -1439,6 +1452,7 @@ impl ExtensionStore {
         let staging_dir = self.staging_dir.clone();
         let sources_dir = self.sources_dir.clone();
         let index_path = self.index_path.clone();
+        let proxy = self.proxy.clone();
         let extensions_dir = self.extensions_dir();
         let git_source_lock = self.git_source_lock.clone();
 
@@ -1457,6 +1471,7 @@ impl ExtensionStore {
                             &staging_dir,
                             &sources_dir,
                             &index_path,
+                            proxy,
                             &extension_id,
                             &source,
                         )

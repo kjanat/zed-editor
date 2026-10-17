@@ -5194,12 +5194,13 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
     assert!(index_path.exists());
 
     let commit = remote.publish("git-extension", "0.2.0");
-    let (fs, builder, staging_dir, sources_dir) = store.read_with(cx, |store, _| {
+    let (fs, builder, staging_dir, sources_dir, proxy) = store.read_with(cx, |store, _| {
         (
             store.fs.clone(),
             store.builder.clone(),
             store.staging_dir.clone(),
             store.sources_dir.clone(),
+            store.proxy.clone(),
         )
     });
     crate::build_git_source(
@@ -5208,6 +5209,7 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
         &staging_dir,
         &sources_dir,
         &index_path,
+        proxy,
         "git-extension",
         &source,
     )
@@ -5901,6 +5903,52 @@ async fn test_git_errors_redact_url_credentials(cx: &mut TestAppContext) {
         failures[0].url.contains("[REDACTED]"),
         "{}",
         failures[0].url
+    );
+}
+
+#[gpui::test]
+async fn test_git_update_that_cannot_be_indexed_keeps_installed_extension(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .unwrap();
+    let installed_commit =
+        installed_source(&store, "git-extension", cx).map(|source| source.commit);
+
+    let language = remote.seed.join("languages").join("broken");
+    std::fs::create_dir_all(&language).unwrap();
+    std::fs::write(language.join("config.toml"), "name = ").unwrap();
+    remote.publish("git-extension", "0.2.0");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .unwrap();
+
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures[0]
+            .message
+            .contains("indexing the fetched extension"),
+        "{}",
+        failures[0].message
+    );
+    let manifest =
+        std::fs::read_to_string(extensions_dir.join("installed/git-extension/extension.toml"))
+            .unwrap();
+    assert!(manifest.contains("version = \"0.1.0\""), "{manifest}");
+    assert!(
+        !extensions_dir
+            .join("sources/git-extension/languages")
+            .exists()
+    );
+    assert_eq!(
+        installed_source(&store, "git-extension", cx).map(|source| source.commit),
+        installed_commit
     );
 }
 
