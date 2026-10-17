@@ -52,9 +52,9 @@ from user settings, or from a parent directory's project settings. Changes
 apply to open previews; untitled previews use user settings.
 
 `table_layout` sets how tables render. `"table"` keeps the grid. `"list"`
-renders each row as an entry, with the table headers as field labels. Short
-fields share a compact row at the top of the entry, and long fields span the
-entry's width. `"auto"`, the default, shows a grid while it fits the preview
+renders each row as an entry, with the table headers as field labels.
+Adjacent short fields share a compact row, and long fields span the entry's
+width. `"auto"`, the default, shows a grid while it fits the preview
 and switches a wide table with long cells to entries. Hovering a table shows a
 button that switches that table between the two layouts.
 
