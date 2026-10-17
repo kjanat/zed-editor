@@ -3185,6 +3185,7 @@ impl EditorElement {
         if !snapshot.mode.is_full()
             || em_advance <= Pixels::ZERO
             || snapshot.line_len(row) <= SHAPE_WINDOW_MIN_LINE_LEN
+            || row_has_right_to_left_text(snapshot, row)
         {
             return None;
         }
@@ -7579,6 +7580,33 @@ impl LineFragment {
 }
 
 const SHAPE_WINDOW_MIN_LINE_LEN: u32 = 8192;
+
+fn row_has_right_to_left_text(snapshot: &EditorSnapshot, row: DisplayRow) -> bool {
+    for chunk in snapshot.text_chunks(row) {
+        let (row_text, row_ends) = match chunk.find('\n') {
+            Some(newline) => (&chunk[..newline], true),
+            None => (chunk, false),
+        };
+        if !row_text.is_ascii()
+            && row_text.chars().any(|character| {
+                matches!(
+                    unicode_bidi::bidi_class(character),
+                    unicode_bidi::BidiClass::R
+                        | unicode_bidi::BidiClass::AL
+                        | unicode_bidi::BidiClass::RLE
+                        | unicode_bidi::BidiClass::RLO
+                        | unicode_bidi::BidiClass::RLI
+                )
+            })
+        {
+            return true;
+        }
+        if row_ends {
+            return false;
+        }
+    }
+    false
+}
 
 #[derive(Debug, PartialEq)]
 enum ShapedCoverage {
@@ -14270,6 +14298,20 @@ mod tests {
                 "{:?}",
                 layout.fragments
             );
+        }
+    }
+
+    #[gpui::test]
+    fn test_long_right_to_left_rows_are_shaped_whole(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        for text in [
+            format!("{}שלום{}", "a".repeat(10_000), "b".repeat(10_000)),
+            format!("{}\u{202E}{}", "a".repeat(10_000), "b".repeat(10_000)),
+        ] {
+            let state = draw_unwrapped_editor(&text, Some(5_000.), cx);
+            let layout = &state.position_map.line_layouts[0];
+            assert_eq!(layout.shape_window, None);
+            assert_eq!(shaped_text_len(layout), text.len());
         }
     }
 

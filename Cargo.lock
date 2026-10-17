@@ -5636,6 +5636,7 @@ dependencies = [
  "tree-sitter-yaml",
  "ui",
  "ui_input",
+ "unicode-bidi",
  "unicode-script",
  "unicode-segmentation",
  "unicode-width 0.2.2",

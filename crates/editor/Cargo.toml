@@ -72,6 +72,7 @@ tree-sitter-rust                = { workspace = true, optional = true }
 tree-sitter-typescript          = { workspace = true, optional = true }
 ui.workspace                    = true
 ui_input.workspace              = true
+unicode-bidi.workspace          = true
 unicode-script.workspace        = true
 unicode-segmentation.workspace  = true
 unindent                        = { workspace = true, optional = true }
