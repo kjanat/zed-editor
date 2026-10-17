@@ -7438,10 +7438,43 @@ enum LineFragment {
         size: Size<Pixels>,
         len: usize,
     },
-    Unshaped {
-        len: usize,
-        width: Pixels,
-    },
+    Unshaped(UnshapedText),
+}
+
+struct UnshapedText {
+    len: usize,
+    chars: usize,
+    width: Pixels,
+    multibyte_text: Option<Arc<str>>,
+}
+
+impl UnshapedText {
+    fn x_for_index(&self, index: usize) -> Pixels {
+        if self.chars == 0 {
+            return Pixels::ZERO;
+        }
+        let index = index.min(self.len);
+        let column = match &self.multibyte_text {
+            Some(text) => text[..text.floor_char_boundary(index)].chars().count(),
+            None => index,
+        };
+        self.width * (column as f32 / self.chars as f32)
+    }
+
+    fn index_for_x(&self, x: Pixels) -> usize {
+        if self.chars == 0 {
+            return 0;
+        }
+        let fraction = (x / self.width).clamp(0., 1.);
+        let column = ((self.chars as f32 * fraction) as usize).min(self.chars - 1);
+        match &self.multibyte_text {
+            Some(text) => text
+                .char_indices()
+                .nth(column)
+                .map_or(self.len, |(byte, _)| byte),
+            None => column,
+        }
+    }
 }
 
 impl fmt::Debug for LineFragment {
@@ -7453,10 +7486,11 @@ impl fmt::Debug for LineFragment {
                 .field("size", size)
                 .field("len", len)
                 .finish(),
-            LineFragment::Unshaped { len, width } => f
+            LineFragment::Unshaped(unshaped) => f
                 .debug_struct("Unshaped")
-                .field("len", len)
-                .field("width", width)
+                .field("len", &unshaped.len)
+                .field("chars", &unshaped.chars)
+                .field("width", &unshaped.width)
                 .finish(),
         }
     }
@@ -7466,7 +7500,8 @@ impl LineFragment {
     fn len(&self) -> usize {
         match self {
             LineFragment::Text(line) => line.len,
-            LineFragment::Element { len, .. } | LineFragment::Unshaped { len, .. } => *len,
+            LineFragment::Element { len, .. } => *len,
+            LineFragment::Unshaped(unshaped) => unshaped.len,
         }
     }
 
@@ -7474,7 +7509,7 @@ impl LineFragment {
         match self {
             LineFragment::Text(line) => line.width,
             LineFragment::Element { size, .. } => size.width,
-            LineFragment::Unshaped { width, .. } => *width,
+            LineFragment::Unshaped(unshaped) => unshaped.width,
         }
     }
 }
@@ -7483,7 +7518,7 @@ const SHAPE_WINDOW_MIN_LINE_LEN: u32 = 8192;
 
 enum RowSegment<'a> {
     Shaped(&'a str),
-    Skipped { len: usize, chars: usize },
+    Skipped { text: &'a str, chars: usize },
 }
 
 fn row_segments<'a>(
@@ -7502,7 +7537,7 @@ fn row_segments<'a>(
     let (before_len, before_chars) = byte_len_before(text, column, shape_window.start);
     if before_len > 0 {
         segments.push(RowSegment::Skipped {
-            len: before_len,
+            text: &text[..before_len],
             chars: before_chars,
         });
     }
@@ -7514,7 +7549,7 @@ fn row_segments<'a>(
     let after = &rest[shaped_len..];
     if !after.is_empty() {
         segments.push(RowSegment::Skipped {
-            len: after.len(),
+            text: after,
             chars: after.chars().count(),
         });
     }
@@ -7572,17 +7607,22 @@ impl LineWithInvisibles {
         width: &mut Pixels,
         len: &mut usize,
         unshaped: &mut Option<(usize, usize)>,
+        unshaped_text: &mut String,
         em_advance: Pixels,
     ) {
         if let Some((unshaped_len, unshaped_chars)) = unshaped.take() {
             let unshaped_width = em_advance * unshaped_chars as f32;
             *width += unshaped_width;
             *len += unshaped_len;
-            fragments.push(LineFragment::Unshaped {
+            fragments.push(LineFragment::Unshaped(UnshapedText {
                 len: unshaped_len,
+                chars: unshaped_chars,
                 width: unshaped_width,
-            });
+                multibyte_text: (unshaped_len != unshaped_chars)
+                    .then(|| Arc::from(unshaped_text.as_str())),
+            }));
         }
+        unshaped_text.clear();
     }
 
     fn from_chunks<'a>(
@@ -7603,6 +7643,7 @@ impl LineWithInvisibles {
         let mut fragments: SmallVec<[LineFragment; 1]> = SmallVec::new();
         let mut row_column = 0;
         let mut unshaped: Option<(usize, usize)> = None;
+        let mut unshaped_text = String::new();
         let mut line = String::new();
         // Byte offset into the logical line used to position invisible markers.
         // Unlike `line`, this is not cleared when we flush `shape_line` for
@@ -7645,6 +7686,7 @@ impl LineWithInvisibles {
                     &mut width,
                     &mut len,
                     &mut unshaped,
+                    &mut unshaped_text,
                     em_advance,
                 );
                 if shape_windows.get(row).is_some_and(Option::is_some) {
@@ -7733,6 +7775,7 @@ impl LineWithInvisibles {
                             &mut width,
                             &mut len,
                             &mut unshaped,
+                            &mut unshaped_text,
                             em_advance,
                         );
                         row_column = 0;
@@ -7784,9 +7827,10 @@ impl LineWithInvisibles {
                     for segment in segments {
                         let line_chunk = match segment {
                             RowSegment::Skipped {
-                                len: skipped_len,
+                                text: skipped_text,
                                 chars,
                             } => {
+                                let skipped_len = skipped_text.len();
                                 Self::push_shaped_text(
                                     &mut line,
                                     &mut styles,
@@ -7801,6 +7845,7 @@ impl LineWithInvisibles {
                                 let pending = unshaped.get_or_insert((0, 0));
                                 pending.0 += skipped_len;
                                 pending.1 += chars;
+                                unshaped_text.push_str(skipped_text);
                                 line_byte_offset += skipped_len;
                                 row_column += chars;
                                 continue;
@@ -7812,6 +7857,7 @@ impl LineWithInvisibles {
                             &mut width,
                             &mut len,
                             &mut unshaped,
+                            &mut unshaped_text,
                             em_advance,
                         );
                         if shape_window.is_some() {
@@ -8038,8 +8084,8 @@ impl LineWithInvisibles {
 
                     fragment_origin.x += size.width;
                 }
-                LineFragment::Unshaped { width, .. } => {
-                    fragment_origin.x += *width;
+                LineFragment::Unshaped(unshaped) => {
+                    fragment_origin.x += unshaped.width;
                 }
             }
         }
@@ -8207,7 +8253,7 @@ impl LineWithInvisibles {
                     (line.len(), line.width, Some(line))
                 }
                 LineFragment::Element { size, len, .. } => (*len, size.width, None),
-                LineFragment::Unshaped { len, width } => (*len, *width, None),
+                LineFragment::Unshaped(unshaped) => (unshaped.len, unshaped.width, None),
             };
             let fragment_end = fragment_start + fragment_len;
             if has_points {
@@ -8243,8 +8289,8 @@ impl LineWithInvisibles {
                             glyphs.next();
                         }
                         glyphs.peek().map_or(line.width, |glyph| glyph.position.x)
-                    } else if let LineFragment::Unshaped { len, width } = fragment {
-                        *width * (index as f32 / *len as f32)
+                    } else if let LineFragment::Unshaped(unshaped) = fragment {
+                        unshaped.x_for_index(index)
                     } else {
                         Pixels::ZERO
                     };
@@ -8317,8 +8363,8 @@ impl LineWithInvisibles {
                 LineFragment::Element { size, .. } => {
                     fragment_origin.x += size.width;
                 }
-                LineFragment::Unshaped { width, .. } => {
-                    fragment_origin.x += *width;
+                LineFragment::Unshaped(unshaped) => {
+                    fragment_origin.x += unshaped.width;
                 }
             }
         }
@@ -8479,7 +8525,7 @@ impl LineWithInvisibles {
         match fragment {
             LineFragment::Text(line) => line.x_for_index(index),
             LineFragment::Element { .. } => Pixels::ZERO,
-            LineFragment::Unshaped { len, width } => *width * (index as f32 / *len as f32),
+            LineFragment::Unshaped(unshaped) => unshaped.x_for_index(index),
         }
     }
 
@@ -8487,10 +8533,7 @@ impl LineWithInvisibles {
         match fragment {
             LineFragment::Text(line) => line.index_for_x(x),
             LineFragment::Element { .. } => Some(0),
-            LineFragment::Unshaped { len, width } => {
-                let fraction = (x / *width).clamp(0., 1.);
-                Some(((*len as f32 * fraction) as usize).min(len.saturating_sub(1)))
-            }
+            LineFragment::Unshaped(unshaped) => Some(unshaped.index_for_x(x)),
         }
     }
 
@@ -13740,7 +13783,9 @@ mod tests {
                 .into_iter()
                 .map(|segment| match segment {
                     RowSegment::Shaped(text) => format!("shaped {text}"),
-                    RowSegment::Skipped { len, chars } => format!("skipped {len}/{chars}"),
+                    RowSegment::Skipped { text, chars } => {
+                        format!("skipped {}/{chars}", text.len())
+                    }
                 })
                 .collect::<Vec<_>>()
         };
@@ -13919,6 +13964,84 @@ mod tests {
         assert!(
             shape_window.contains(&(cursor_column as usize)),
             "{shape_window:?}"
+        );
+    }
+
+    #[test]
+    fn test_unshaped_text_maps_bytes_to_char_columns() {
+        let text = format!("{}{}", "a".repeat(4), "中".repeat(4));
+        let unshaped = UnshapedText {
+            len: text.len(),
+            chars: 8,
+            width: px(80.),
+            multibyte_text: Some(Arc::from(text.as_str())),
+        };
+        assert_eq!(unshaped.x_for_index(4), px(40.));
+        assert_eq!(unshaped.x_for_index(4 + 3 * 2), px(60.));
+        assert_eq!(unshaped.x_for_index(4 + 3 * 2 + 1), px(60.));
+        assert_eq!(unshaped.x_for_index(text.len()), px(80.));
+        assert_eq!(unshaped.index_for_x(px(35.)), 3);
+        assert_eq!(unshaped.index_for_x(px(65.)), 4 + 3 * 2);
+        assert_eq!(unshaped.index_for_x(px(500.)), 4 + 3 * 3);
+
+        let ascii = UnshapedText {
+            len: 8,
+            chars: 8,
+            width: px(80.),
+            multibyte_text: None,
+        };
+        assert_eq!(ascii.x_for_index(6), px(60.));
+        assert_eq!(ascii.index_for_x(px(65.)), 6);
+    }
+
+    #[gpui::test]
+    fn test_autoscroll_to_a_far_cursor_after_an_ascii_prefix(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let ascii_len = 100_000;
+        let text = format!("{}{}", "a".repeat(ascii_len), "中".repeat(50_000));
+        let cursor_char_column = ascii_len + 40_000;
+        let cursor_byte = ascii_len + 3 * 40_000;
+        let window = cx.add_window(|_, _| gpui::EmptyView);
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        let editor = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let buffer = MultiBuffer::build_simple(&text, cx);
+                let mut editor = Editor::new(EditorMode::full(), buffer, None, window, cx);
+                editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
+                editor
+            })
+        });
+        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
+        cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.change_selections(SelectionEffects::default(), window, cx, |s| {
+                    s.select_ranges([
+                        Point::new(0, cursor_byte as u32)..Point::new(0, cursor_byte as u32)
+                    ]);
+                });
+            });
+        });
+        let (_, state) = cx.draw(Default::default(), size(px(500.), px(300.)), |_, _| {
+            EditorElement::new(&editor, style.clone())
+        });
+        let position_map = &state.position_map;
+        let layout = &position_map.line_layouts[0];
+        let shape_window = layout
+            .shape_window
+            .clone()
+            .expect("the long row should be shaped in a window");
+        assert!(
+            shape_window.contains(&cursor_char_column),
+            "{shape_window:?} should hold column {cursor_char_column}"
+        );
+        let scroll_pixels = position_map.em_layout_width * position_map.scroll_position.x as f32;
+        let cursor_x = layout.x_for_index(cursor_byte) - scroll_pixels;
+        assert!(
+            cursor_x >= px(0.) && cursor_x <= position_map.text_hitbox.size.width,
+            "cursor at {cursor_x:?} should be visible"
         );
     }
 
