@@ -27,7 +27,7 @@ use project::{
     },
 };
 use settings::{GitPanelGroupBy, GitPanelSortBy, Settings, SettingsStore};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, mem, sync::Arc};
 use theme::ActiveTheme;
 use ui::{CommonAnimationExt as _, KeyBinding, prelude::*};
 use util::{ResultExt as _, rel_path::RelPath};
@@ -148,6 +148,7 @@ pub struct DiffMultibuffer {
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     pending_scroll: Option<PathKey>,
+    pending_folds: Vec<BufferId>,
     review_comment_count: usize,
     empty_label: SharedString,
     _task: Task<Result<()>>,
@@ -260,6 +261,7 @@ impl DiffMultibuffer {
             multibuffer,
             buffer_subscriptions: Default::default(),
             pending_scroll: None,
+            pending_folds: Vec::new(),
             review_comment_count: 0,
             empty_label: empty_label.into(),
             _task: task,
@@ -355,22 +357,40 @@ impl DiffMultibuffer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(position) = self.multibuffer.read(cx).location_for_path(&path_key, cx) {
-            self.editor.update(cx, |editor, cx| {
-                editor.rhs_editor().update(cx, |editor, cx| {
-                    editor.change_selections(
-                        SelectionEffects::scroll(Autoscroll::focused()),
-                        window,
-                        cx,
-                        |s| {
-                            s.select_ranges([position..position]);
-                        },
-                    )
-                })
-            });
-        } else {
-            self.pending_scroll = Some(path_key);
+        if self.scroll_to_path(&path_key, window, cx) {
+            return;
         }
+        self.pending_scroll = Some(path_key);
+        if !self._task.is_ready() {
+            self._task = window.spawn(cx, {
+                let this = cx.weak_entity();
+                async |cx| Self::refresh(this, cx).await
+            });
+        }
+    }
+
+    fn scroll_to_path(
+        &mut self,
+        path_key: &PathKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(position) = self.multibuffer.read(cx).location_for_path(path_key, cx) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.rhs_editor().update(cx, |editor, cx| {
+                editor.change_selections(
+                    SelectionEffects::scroll(Autoscroll::focused()),
+                    window,
+                    cx,
+                    |s| {
+                        s.select_ranges([position..position]);
+                    },
+                )
+            })
+        });
+        true
     }
 
     pub(crate) fn autoscroll(&self, cx: &mut Context<Self>) {
@@ -599,7 +619,12 @@ impl DiffMultibuffer {
         );
 
         let buffer_id = excerpts.buffer_snapshot.text.remote_id();
-        let mut needs_fold = false;
+        let should_fold = file_status.is_deleted()
+            || (file_status.is_untracked()
+                && GitPanelSettings::get_global(cx).collapse_untracked_diff);
+        if !should_fold {
+            self.pending_folds.retain(|pending| *pending != buffer_id);
+        }
 
         let (was_empty, is_excerpt_newly_added) = self.editor.update(cx, |editor, cx| {
             let was_empty = editor.rhs_editor().read(cx).buffer().read(cx).is_empty();
@@ -619,9 +644,9 @@ impl DiffMultibuffer {
             (was_empty, is_newly_added)
         });
 
-        self.editor.update(cx, |editor, cx| {
-            editor.rhs_editor().update(cx, |editor, cx| {
-                if was_empty {
+        if was_empty {
+            self.editor.update(cx, |editor, cx| {
+                editor.rhs_editor().update(cx, |editor, cx| {
                     editor.change_selections(
                         SelectionEffects::no_scroll(),
                         window,
@@ -632,16 +657,9 @@ impl DiffMultibuffer {
                             ])
                         },
                     );
-                }
-                if is_excerpt_newly_added
-                    && (file_status.is_deleted()
-                        || (file_status.is_untracked()
-                            && GitPanelSettings::get_global(cx).collapse_untracked_diff))
-                {
-                    needs_fold = true;
-                }
-            })
-        });
+                })
+            });
+        }
 
         if self.multibuffer.read(cx).is_empty()
             && self
@@ -657,10 +675,10 @@ impl DiffMultibuffer {
             });
         }
         if self.pending_scroll.as_ref() == Some(&path_key) {
-            self.move_to_path(path_key, window, cx);
+            self.scroll_to_path(&path_key, window, cx);
         }
 
-        needs_fold.then_some(buffer_id)
+        (is_excerpt_newly_added && should_fold).then_some(buffer_id)
     }
 
     fn buffer_ranges_changed(
@@ -696,7 +714,7 @@ impl DiffMultibuffer {
 
     #[instrument(skip(this, cx))]
     pub(crate) async fn refresh(this: WeakEntity<Self>, cx: &mut AsyncWindowContext) -> Result<()> {
-        let entries = this.update(cx, |this, cx| {
+        let (mut entries, requested_path) = this.update(cx, |this, cx| {
             let (repo, buffers_to_load) = this.branch_diff.update(cx, |branch_diff, cx| {
                 let load_buffers = branch_diff.load_buffers(cx);
                 (branch_diff.repo().cloned(), load_buffers)
@@ -739,6 +757,7 @@ impl DiffMultibuffer {
                     if let Some(repo_path) = repo_path_by_display_id.get(&buffer_id) {
                         this.buffer_subscriptions.remove(repo_path);
                     }
+                    this.pending_folds.retain(|pending| *pending != buffer_id);
                     editor.rhs_editor().update(cx, |editor, cx| {
                         conflict_view::buffers_removed(editor, &[buffer_id], cx);
                     });
@@ -751,13 +770,14 @@ impl DiffMultibuffer {
             this.buffer_subscriptions
                 .retain(|repo_path, _| live_repo_paths.contains(repo_path));
 
-            entries
+            (entries, this.pending_scroll.clone())
         })?;
 
-        let mut buffers_to_fold = Vec::new();
-
-        // Ordered, so excerpts don't shift under the reader as later files arrive.
-        let mut loads = stream::iter(entries.into_iter().map(|(path_key, entry)| {
+        // Ordered, so excerpts don't shift under the reader as later files arrive. The requested
+        // file goes first, and its selection then anchors the viewport.
+        let requested_entry = requested_path.and_then(|path_key| entries.remove_entry(&path_key));
+        let entries = requested_entry.into_iter().chain(entries);
+        let mut loads = stream::iter(entries.map(|(path_key, entry)| {
             let diff_buffer_list::DiffBuffer {
                 repo_path,
                 file_status,
@@ -801,7 +821,7 @@ impl DiffMultibuffer {
                             window,
                             cx,
                         ) {
-                            buffers_to_fold.push(buffer_id);
+                            this.pending_folds.push(buffer_id);
                         }
                     })
                     .ok();
@@ -809,6 +829,7 @@ impl DiffMultibuffer {
             }
         }
         this.update(cx, |this, cx| {
+            let buffers_to_fold = mem::take(&mut this.pending_folds);
             if !buffers_to_fold.is_empty() {
                 this.editor.update(cx, |editor, cx| {
                     editor

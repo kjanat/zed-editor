@@ -69,6 +69,17 @@ impl Addon for BranchDiffAddon {
 }
 
 impl BranchDiff {
+    #[cfg(test)]
+    pub(crate) fn move_to_path(
+        &mut self,
+        path_key: multi_buffer::PathKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.diff
+            .update(cx, |diff, cx| diff.move_to_path(path_key, window, cx));
+    }
+
     pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         workspace.register_action_renderer(|div, _, _, cx| {
             div.on_action(cx.entity_listener(
