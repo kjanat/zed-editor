@@ -1382,13 +1382,13 @@ pub struct MarkdownPreviewSettingsContent {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum MarkdownTableLayout {
+    /// A grid when it fits the preview, otherwise one entry per row.
+    #[default]
+    Auto,
     /// A grid of rows and columns.
     Table,
     /// One entry per row, with the headers as field labels.
     List,
-    /// A grid when it fits the preview, otherwise one entry per row.
-    #[default]
-    Auto,
 }
 
 /// The settings for the image viewer.
@@ -1717,5 +1717,18 @@ impl std::str::FromStr for DelayMs {
             .parse::<u64>()
             .map(DelayMs)
             .with_context(|| format!("failed to parse delay duration: {s}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_dropdown_shows_the_default_markdown_table_layout() {
+        assert_eq!(
+            <MarkdownTableLayout as strum::VariantArray>::VARIANTS.first(),
+            Some(&MarkdownTableLayout::default())
+        );
     }
 }
