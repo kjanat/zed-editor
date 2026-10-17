@@ -21915,6 +21915,100 @@ async fn test_save_during_format_waits_and_rebases_edits(cx: &mut TestAppContext
 }
 
 #[gpui::test]
+async fn test_format_edits_stay_undoable_after_undo_during_format(cx: &mut TestAppContext) {
+    init_test(cx, |settings| {
+        settings.defaults.formatter = Some(FormatterList::Single(Formatter::LanguageServer(
+            settings::LanguageServerFormatterSpecifier::Current,
+        )));
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_file(path!("/file.rs"), "one\n".into()).await;
+
+    let project = Project::test(fs.clone(), [path!("/").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            capabilities: lsp::ServerCapabilities {
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/file.rs"), cx)
+        })
+        .await
+        .unwrap();
+
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        build_editor_with_project(project.clone(), multi_buffer, window, cx)
+    });
+
+    let fake_server = fake_servers.next().await.unwrap();
+    let formatting_lock = Arc::new(futures::lock::Mutex::new(()));
+    fake_server.set_request_handler::<lsp::request::Formatting, _, _>({
+        let lock = formatting_lock.clone();
+        move |_params, _| {
+            let lock = lock.clone();
+            async move {
+                lock.lock().await;
+                Ok(Some(vec![lsp::TextEdit::new(
+                    lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 0)),
+                    "formatted\n".to_string(),
+                )]))
+            }
+        }
+    });
+
+    let formatting_guard = formatting_lock.lock().await;
+    let save = editor
+        .update_in(cx, |editor, window, cx| {
+            editor.save(
+                SaveOptions {
+                    overwrite: false,
+                    format: true,
+                    force_format: false,
+                    autosave: false,
+                },
+                project.clone(),
+                window,
+                cx,
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    buffer.update(cx, |buffer, cx| {
+        assert!(
+            buffer.undo(cx).is_some(),
+            "the pending format should have pushed its placeholder transaction"
+        );
+    });
+
+    drop(formatting_guard);
+    save.await;
+    assert_eq!(
+        editor.update(cx, |editor, cx| editor.text(cx)),
+        "formatted\none\n"
+    );
+
+    buffer.update(cx, |buffer, cx| {
+        assert!(
+            buffer.undo(cx).is_some(),
+            "the format edit should have an undo entry"
+        );
+        assert_eq!(buffer.text(), "one\n");
+    });
+}
+
+#[gpui::test]
 async fn test_markdown_save_respects_disabled_trailing_whitespace_removal(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
         settings.defaults.ensure_final_newline_on_save = Some(false);

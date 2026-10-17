@@ -124,7 +124,7 @@ use snippet::Snippet;
 use std::{
     any::TypeId,
     borrow::Cow,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::{Ordering, Reverse},
     collections::{VecDeque, hash_map},
     convert::TryInto,
@@ -1696,7 +1696,7 @@ impl LocalLspStore {
                 buffer.abs_path.as_ref().unwrap_or(&PathBuf::from("unknown")).display()
             );
             // Create an empty transaction to hold all of the formatting edits.
-            let formatting_transaction_id = buffer.handle.update(cx, |buffer, cx| {
+            let formatting_transaction_id = Cell::new(buffer.handle.update(cx, |buffer, cx| {
                 // ensure no transactions created while formatting are
                 // grouped with the previous transaction in the history
                 // based on the transaction group interval
@@ -1708,12 +1708,12 @@ impl LocalLspStore {
                 let transaction_id = buffer.push_empty_transaction(cx.background_executor().now());
                 buffer.finalize_last_transaction();
                 anyhow::Ok(transaction_id)
-            })?;
+            })?);
 
             let result = Self::format_buffer_locally(
                 lsp_store.clone(),
                 buffer,
-                formatting_transaction_id,
+                &formatting_transaction_id,
                 trigger,
                 logger,
                 cx,
@@ -1721,15 +1721,16 @@ impl LocalLspStore {
             .await;
 
             buffer.handle.update(cx, |buffer, cx| {
-                let Some(formatting_transaction) =
-                    buffer.get_transaction(formatting_transaction_id).cloned()
+                let Some(formatting_transaction) = buffer
+                    .get_transaction(formatting_transaction_id.get())
+                    .cloned()
                 else {
                     zlog::warn!(logger => "no formatting transaction");
                     return;
                 };
                 if formatting_transaction.edit_ids.is_empty() {
                     zlog::debug!(logger => "no changes made while formatting");
-                    buffer.forget_transaction(formatting_transaction_id);
+                    buffer.forget_transaction(formatting_transaction.id);
                     return;
                 }
                 if !push_to_history {
@@ -1759,7 +1760,7 @@ impl LocalLspStore {
     async fn format_buffer_locally(
         lsp_store: WeakEntity<LspStore>,
         buffer: &FormattableBuffer,
-        formatting_transaction_id: clock::Lamport,
+        formatting_transaction_id: &Cell<clock::Lamport>,
         trigger: FormatTrigger,
         logger: zlog::Logger,
         cx: &mut AsyncApp,
@@ -2032,7 +2033,7 @@ impl LocalLspStore {
         formatter: &Formatter,
         lsp_store: &WeakEntity<LspStore>,
         buffer: &FormattableBuffer,
-        formatting_transaction_id: clock::Lamport,
+        formatting_transaction_id: &Cell<clock::Lamport>,
         settings: &LanguageSettings,
         request_timeout: Duration,
         trigger: FormatTrigger,
@@ -2635,7 +2636,8 @@ impl LocalLspStore {
                             if buffer.get_transaction(transaction.id).is_none() {
                                 buffer.push_transaction(transaction, Instant::now());
                             }
-                            buffer.merge_transactions(
+                            merge_into_formatting_transaction(
+                                buffer,
                                 transaction_id_project_transaction,
                                 formatting_transaction_id,
                             );
@@ -18717,7 +18719,7 @@ pub fn ensure_uniform_list_compatible_label(label: &mut CodeLabel) {
 /// Apply edits to the buffer that will become part of the formatting transaction.
 fn extend_formatting_transaction(
     buffer: &FormattableBuffer,
-    formatting_transaction_id: text::TransactionId,
+    formatting_transaction_id: &Cell<text::TransactionId>,
     cx: &mut AsyncApp,
     operation: impl FnOnce(&mut Buffer, &mut Context<Buffer>),
 ) {
@@ -18726,9 +18728,24 @@ fn extend_formatting_transaction(
         buffer.start_transaction();
         operation(buffer, cx);
         if let Some(transaction_id) = buffer.end_transaction(cx) {
-            buffer.merge_transactions(transaction_id, formatting_transaction_id);
+            merge_into_formatting_transaction(buffer, transaction_id, formatting_transaction_id);
         }
     })
+}
+
+fn merge_into_formatting_transaction(
+    buffer: &mut Buffer,
+    transaction_id: text::TransactionId,
+    formatting_transaction_id: &Cell<text::TransactionId>,
+) {
+    if buffer
+        .get_transaction(formatting_transaction_id.get())
+        .is_some()
+    {
+        buffer.merge_transactions(transaction_id, formatting_transaction_id.get());
+    } else {
+        formatting_transaction_id.set(transaction_id);
+    }
 }
 
 #[cfg(test)]
