@@ -744,6 +744,27 @@ impl WasmHost {
         })
     }
 
+    pub(crate) fn validate_compiled_extension(
+        &self,
+        extension_id: &str,
+        wasm_bytes: &[u8],
+    ) -> Result<()> {
+        // Update checks must not run extension initialization again.
+        self.compile_extension(extension_id, wasm_bytes).map(drop)
+    }
+
+    fn compile_extension(
+        &self,
+        extension_id: &str,
+        wasm_bytes: &[u8],
+    ) -> Result<(Version, Component)> {
+        let zed_api_version = parse_wasm_extension_version(extension_id, wasm_bytes)?;
+        let component = Component::from_binary(&self.engine, wasm_bytes)
+            .map_err(anyhow::Error::from)
+            .context("failed to compile wasm component")?;
+        Ok((zed_api_version, component))
+    }
+
     pub(crate) async fn validate_extension(
         self: &Arc<Self>,
         wasm_bytes: Vec<u8>,
@@ -784,16 +805,9 @@ impl WasmHost {
         // These are cpu-bound operations that don't require a tokio runtime.
         let compile_task = {
             let manifest_id = manifest.id.clone();
-            let engine = this.engine.clone();
+            let host = this.clone();
 
-            executor.spawn(async move {
-                let zed_api_version = parse_wasm_extension_version(&manifest_id, &wasm_bytes)?;
-                let component = Component::from_binary(&engine, &wasm_bytes)
-                    .map_err(anyhow::Error::from)
-                    .context("failed to compile wasm component")?;
-
-                anyhow::Ok((zed_api_version, component))
-            })
+            executor.spawn(async move { host.compile_extension(&manifest_id, &wasm_bytes) })
         };
 
         let load_extension = |zed_api_version: Version, component: Component| async move {

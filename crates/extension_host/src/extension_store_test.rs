@@ -6505,6 +6505,229 @@ async fn test_git_install_rejects_missing_declared_snippets(cx: &mut TestAppCont
 }
 
 fn git_extension_wasm_with_trapping_init() -> anyhow::Result<Vec<u8>> {
+    git_extension_wasm(true)
+}
+
+#[gpui::test]
+async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
+    cx: &mut TestAppContext,
+) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    let (fs, wasm_host) =
+        store.read_with(cx, |store, _| (store.fs.clone(), store.wasm_host.clone()));
+    let mut manifest = ExtensionManifest::load(fs.clone(), &remote.seed)
+        .await
+        .expect("extension manifest");
+    crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+        .await
+        .expect("metadata-only extensions need no wasm");
+    let wasm_path = remote.seed.join("extension.wasm");
+    let cargo_path = remote.seed.join("Cargo.toml");
+    for declared_in_manifest in [true, false] {
+        if declared_in_manifest {
+            manifest.lib.kind = Some(crate::ExtensionLibraryKind::Rust);
+        } else {
+            std::fs::write(
+                &cargo_path,
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("Rust source marker");
+        }
+        let error =
+            crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+                .await
+                .expect_err("a declared or source-inferred library must exist");
+        assert!(format!("{error:#}").contains("extension.wasm"));
+        std::fs::write(&wasm_path, b"corrupt wasm").expect("damaged compiled extension");
+        let error =
+            crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+                .await
+                .expect_err("a present compiled library must be valid wasm");
+        assert!(format!("{error:#}").contains("extension.wasm"));
+        std::fs::write(
+            &wasm_path,
+            git_extension_wasm_with_trapping_init().expect("trapping component"),
+        )
+        .expect("structurally valid component");
+        crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+            .await
+            .expect("health checks compile the library without executing its trapping init");
+        std::fs::remove_file(&wasm_path).expect("remove compiled fixture");
+        manifest.lib.kind = None;
+        if !declared_in_manifest {
+            std::fs::remove_file(&cargo_path).expect("remove Rust source marker");
+        }
+    }
+}
+
+#[gpui::test]
+async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    let (fs, wasm_host) =
+        store.read_with(cx, |store, _| (store.fs.clone(), store.wasm_host.clone()));
+    let mut manifest = ExtensionManifest::load(fs.clone(), &remote.seed)
+        .await
+        .expect("extension manifest");
+    manifest
+        .grammars
+        .insert("html".into(), GrammarManifestEntry::default());
+    assert!(manifest.languages.is_empty());
+    let grammar_path = remote.seed.join("grammars/html.wasm");
+    let error = crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+        .await
+        .expect_err("declared grammars are required even without language references");
+    assert!(format!("{error:#}").contains("html.wasm"));
+    std::fs::create_dir_all(remote.seed.join("grammars")).expect("grammar directory");
+    for bytes in [b"corrupt grammar".as_slice(), b"\0asm\x01\0\0\0".as_slice()] {
+        std::fs::write(&grammar_path, bytes).expect("damaged grammar fixture");
+        let error =
+            crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+                .await
+                .expect_err("grammar binary must load as the declared parser");
+        assert!(format!("{error:#}").contains("html.wasm"));
+    }
+    std::fs::write(
+        &grammar_path,
+        include_bytes!("../../language/test_data/grammars/html.wasm"),
+    )
+    .expect("valid precompiled grammar");
+    crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+        .await
+        .expect("valid unused grammar passes without invoking clang");
+    manifest
+        .grammars
+        .insert("unused".into(), GrammarManifestEntry::default());
+    let error = crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
+        .await
+        .expect_err("every declared grammar is checked");
+    assert!(format!("{error:#}").contains("unused.wasm"));
+}
+
+#[gpui::test]
+async fn test_git_update_repairs_prebuilt_wasm_at_unchanged_commit_after_reindex(
+    cx: &mut TestAppContext,
+) {
+    let valid_wasm = git_extension_wasm(false).expect("component with successful init");
+    for subdirectory in [None, Some("editors/ext")] {
+        for removed in [true, false] {
+            let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+            let remote = GitExtensionRemote::new("git-extension", subdirectory);
+            let remote_extension = match subdirectory {
+                Some(path) => remote.seed.join(path),
+                None => remote.seed.clone(),
+            };
+            std::fs::write(remote_extension.join("extension.wasm"), &valid_wasm)
+                .expect("tracked prebuilt component");
+            remote.publish("git-extension", "0.1.1");
+            store
+                .update(cx, |store, cx| {
+                    store.install_git_extension("git-extension".into(), remote.source(), cx)
+                })
+                .await
+                .expect("prebuilt component installs without Rust compilation");
+            let original_source = installed_source(&store, "git-extension", cx);
+            let record_path = extensions_dir.join("sources/git-extension.toml");
+            let original_record = std::fs::read(&record_path).expect("installed source record");
+            let installed_wasm = extensions_dir.join("installed/git-extension/extension.wasm");
+            if removed {
+                std::fs::remove_file(&installed_wasm).expect("remove compiled component");
+            } else {
+                std::fs::write(&installed_wasm, b"corrupt wasm")
+                    .expect("damage compiled component");
+            }
+            store.update(cx, |store, cx| store.reload(None, cx)).await;
+            if removed {
+                store.read_with(cx, |store, _| {
+                    assert!(
+                        store
+                            .extension_index
+                            .extensions
+                            .get("git-extension")
+                            .expect("reindexed extension")
+                            .manifest
+                            .lib
+                            .kind
+                            .is_none(),
+                        "reindexing a missing optional prebuilt library loses its inferred kind"
+                    );
+                });
+            }
+            let marker = extensions_dir.join("sources/git-extension/untracked-repair-marker");
+            std::fs::write(&marker, "previous checkout").expect("repair marker");
+            store
+                .update(cx, |store, cx| store.check_for_git_updates(cx))
+                .await
+                .expect("unchanged source repairs damaged artifacts");
+            assert!(git_failures(&store, cx).is_empty());
+            assert_eq!(
+                std::fs::read(&installed_wasm).expect("repaired compiled component"),
+                valid_wasm
+            );
+            assert_eq!(
+                installed_source(&store, "git-extension", cx),
+                original_source
+            );
+            assert_eq!(
+                std::fs::read(&record_path).expect("source record"),
+                original_record
+            );
+            assert!(!marker.exists(), "repair must replace the damaged checkout");
+        }
+    }
+}
+
+#[gpui::test]
+async fn test_git_update_reports_unrepairable_wasm_at_unchanged_commit(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    std::fs::write(
+        remote.seed.join("extension.wasm"),
+        git_extension_wasm(false).expect("valid component"),
+    )
+    .expect("tracked prebuilt component");
+    remote.publish("git-extension", "0.1.1");
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("prebuilt component installs");
+    let original_source = installed_source(&store, "git-extension", cx);
+    let record_path = extensions_dir.join("sources/git-extension.toml");
+    let original_record = std::fs::read(&record_path).expect("source record");
+    let installed_wasm = extensions_dir.join("installed/git-extension/extension.wasm");
+    std::fs::remove_file(&installed_wasm).expect("remove compiled component");
+    store.update(cx, |store, cx| store.reload(None, cx)).await;
+    std::fs::rename(&remote.bare, remote.bare.with_extension("unavailable"))
+        .expect("make fixture remote unavailable");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("failed repair is reported");
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    let failure = failures.first().expect("repair failure notification");
+    assert!(failure.message.contains("extension.wasm"), "{failure:?}");
+    assert!(
+        failure
+            .message
+            .contains("repairing invalid git extension artifacts"),
+        "{failure:?}"
+    );
+    assert_eq!(
+        installed_source(&store, "git-extension", cx),
+        original_source
+    );
+    assert_eq!(
+        std::fs::read(&record_path).expect("unchanged source record"),
+        original_record
+    );
+    assert!(!installed_wasm.exists());
+}
+
+fn git_extension_wasm(init_traps: bool) -> anyhow::Result<Vec<u8>> {
     use wasm_encoder::{Encode, Section};
 
     let mut resolve = wit_parser::Resolve::default();
@@ -6517,6 +6740,57 @@ fn git_extension_wasm_with_trapping_init() -> anyhow::Result<Vec<u8>> {
         world,
         wit_parser::ManglingAndAbi::Legacy(wit_parser::LiftLowerAbi::Sync),
     );
+    if !init_traps {
+        let mut function_index = 0;
+        let mut init_function = None;
+        let mut init_opcode = None;
+        for payload in wasmparser::Parser::new(0).parse_all(&module) {
+            match payload? {
+                wasmparser::Payload::ImportSection(imports) => {
+                    for import in imports.into_imports() {
+                        if matches!(
+                            import?.ty,
+                            wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
+                        ) {
+                            function_index += 1;
+                        }
+                    }
+                }
+                wasmparser::Payload::ExportSection(exports) => {
+                    for export in exports {
+                        let export = export?;
+                        if export.kind == wasmparser::ExternalKind::Func
+                            && export.name == "init-extension"
+                        {
+                            init_function = Some(export.index);
+                        }
+                    }
+                }
+                wasmparser::Payload::CodeSectionEntry(body) => {
+                    if Some(function_index) == init_function {
+                        let mut operators = body.get_operators_reader()?;
+                        init_opcode = Some(operators.original_position());
+                        anyhow::ensure!(
+                            matches!(operators.read()?, wasmparser::Operator::Unreachable),
+                            "dummy init should trap"
+                        );
+                        anyhow::ensure!(
+                            matches!(operators.read()?, wasmparser::Operator::End),
+                            "dummy init should contain only the trap"
+                        );
+                        break;
+                    }
+                    function_index += 1;
+                }
+                _ => {}
+            }
+        }
+        let init_opcode = init_opcode.context("dummy module should export init-extension")?;
+        // Init returns nothing, so a same-sized nop makes it succeed without changing section sizes.
+        *module
+            .get_mut(init_opcode)
+            .context("init opcode should be inside module")? = 0x01;
+    }
     wit_component::embed_component_metadata(
         &mut module,
         &resolve,

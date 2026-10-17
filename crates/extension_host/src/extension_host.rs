@@ -762,6 +762,48 @@ impl GitSourceTransaction<'_> {
     }
 }
 
+async fn validate_git_compiled_artifacts(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+    wasm_host: &WasmHost,
+) -> Result<()> {
+    let wasm_path = extension_dir.join("extension.wasm");
+    let requires_wasm = manifest.lib.kind.is_some()
+        || fs.metadata(&extension_dir.join("Cargo.toml")).await?.is_some()
+        || fs.metadata(&wasm_path).await?.is_some()
+        // Reindexing a missing prebuilt library loses its inferred lib.kind.
+        || !run_git(extension_dir, &["ls-tree", "--name-only", "HEAD", "--", "extension.wasm"])
+            .await?
+            .is_empty();
+    if requires_wasm {
+        let bytes = fs
+            .load_bytes(&wasm_path)
+            .await
+            .context("reading extension.wasm")?;
+        wasm_host
+            .validate_compiled_extension(&manifest.id, &bytes)
+            .context("validating extension.wasm")?;
+    }
+    for grammar_name in manifest.grammars.keys() {
+        let grammar_path = extension_dir
+            .join("grammars")
+            .join(format!("{grammar_name}.wasm"));
+        let bytes = fs
+            .load_bytes(&grammar_path)
+            .await
+            .with_context(|| format!("reading grammar {grammar_name}.wasm"))?;
+        language::with_parser(|parser| {
+            let mut store = parser.take_wasm_store().context("missing wasm store")?;
+            let grammar = store.load_language(grammar_name, &bytes);
+            parser.set_wasm_store(store)?;
+            grammar.map(drop).map_err(anyhow::Error::from)
+        })
+        .with_context(|| format!("validating grammar {grammar_name}.wasm"))?;
+    }
+    Ok(())
+}
+
 async fn validate_git_language_resources(
     fs: &Arc<dyn Fs>,
     extension_dir: &Path,
@@ -1720,20 +1762,34 @@ impl ExtensionStore {
                             };
                             let source = installed.source();
                             let result = async {
-                                let checkout_intact = ExtensionStore::add_extension_to_index(
-                                    fs.clone(),
-                                    git_source_extension_path(
+                                let checkout_intact = async {
+                                    let extension_path = git_source_extension_path(
                                         &sources_dir,
                                         &extension_id,
                                         source.path.as_deref(),
-                                    ),
-                                    &sources_dir,
-                                    &mut ExtensionIndex::default(),
-                                    proxy.clone(),
-                                )
-                                .await
-                                .is_ok();
-                                if checkout_intact {
+                                    );
+                                    let mut index = ExtensionIndex::default();
+                                    ExtensionStore::add_extension_to_index(
+                                        fs.clone(),
+                                        extension_path.clone(),
+                                        &sources_dir,
+                                        &mut index,
+                                        proxy.clone(),
+                                    )
+                                    .await?;
+                                    let entry = index.extensions.get(&extension_id).context(
+                                        "the checkout no longer declares the installed extension",
+                                    )?;
+                                    validate_git_compiled_artifacts(
+                                        &fs,
+                                        &extension_path,
+                                        &entry.manifest,
+                                        &wasm_host,
+                                    )
+                                    .await
+                                }
+                                .await;
+                                if checkout_intact.is_ok() {
                                     match remote_commit(&sources_dir, &source).await? {
                                         Some(remote_commit)
                                             if remote_commit == installed.commit =>
@@ -1763,7 +1819,15 @@ impl ExtensionStore {
                                     &extension_id,
                                     &source,
                                 )
-                                .await?;
+                                .await
+                                .with_context(|| {
+                                    match checkout_intact {
+                                        Ok(()) => "updating git extension".to_string(),
+                                        Err(error) => format!(
+                                            "repairing invalid git extension artifacts: {error:#}"
+                                        ),
+                                    }
+                                })?;
                                 Ok(true)
                             }
                             .await;
