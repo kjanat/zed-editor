@@ -23,7 +23,8 @@ use std::sync::OnceLock;
 use util::rel_path::RelPath;
 
 use crate::{
-    LanguageServerId, ProjectPath, project_settings::LspSettings,
+    LanguageServerId, ProjectPath,
+    project_settings::{LspSettings, ProjectSettings},
     toolchain_store::LocalToolchainStore,
 };
 
@@ -259,6 +260,9 @@ impl LanguageServerTree {
 
         let desired_language_servers =
             settings.customized_language_servers(&available_language_servers);
+        let global_env = &ProjectSettings::get(Some(settings_location), cx)
+            .global_lsp_settings
+            .env;
         let adapters_with_settings = desired_language_servers
             .into_iter()
             .filter_map(|desired_adapter| {
@@ -276,13 +280,19 @@ impl LanguageServerTree {
                 } else {
                     None
                 }?;
-                let adapter_settings = crate::lsp_store::language_server_settings_for(
+                let mut adapter_settings = crate::lsp_store::language_server_settings_for(
                     settings_location,
                     &adapter.name,
                     cx,
                 )
                 .cloned()
                 .unwrap_or_default();
+                if !global_env.is_empty() {
+                    let binary = adapter_settings.binary.get_or_insert_default();
+                    let mut env = global_env.clone();
+                    env.extend(binary.env.take().unwrap_or_default());
+                    binary.env = Some(env);
+                }
                 Some((adapter.name(), (adapter_settings, adapter)))
             })
             .collect::<IndexMap<_, _>>();

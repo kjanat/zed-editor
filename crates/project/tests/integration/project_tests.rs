@@ -3012,6 +3012,188 @@ async fn test_language_server_tilde_path(cx: &mut gpui::TestAppContext) {
     );
 }
 
+fn set_global_lsp_env(env: &[(&str, &str)], cx: &mut gpui::TestAppContext) {
+    let env = env
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+    cx.update_global::<SettingsStore, _>(|store, cx| {
+        store.update_user_settings(cx, |settings| {
+            settings.global_lsp_settings = Some(GlobalLspSettingsContent {
+                env: Some(env),
+                ..Default::default()
+            });
+        });
+    });
+}
+
+fn binary_env_value(binary: &lsp::LanguageServerBinary, key: &str) -> Option<String> {
+    binary.env.as_ref().and_then(|env| env.get(key).cloned())
+}
+
+#[gpui::test]
+async fn test_global_lsp_env_applies_to_every_server(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    set_global_lsp_env(&[("GLOBAL_ONLY", "global"), ("SHARED", "global")], cx);
+
+    let settings_json_contents = json!({
+        "languages": {
+            "Rust": {
+                "language_servers": ["server_a", "server_b"]
+            }
+        },
+        "lsp": {
+            "server_a": {
+                "binary": {
+                    "path": path!("server_a.exe").to_string(),
+                    "env": { "SHARED": "server", "SERVER_ONLY": "server" },
+                }
+            },
+            "server_b": {
+                "binary": {
+                    "path": path!("server_b.exe").to_string(),
+                }
+            }
+        },
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            ".zed": {
+                "settings.json": settings_json_contents.to_string(),
+            },
+            "src": {
+                "main.rs": "",
+            }
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut server_a = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "server_a",
+            ..Default::default()
+        },
+    );
+    let mut server_b = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "server_b",
+            ..Default::default()
+        },
+    );
+    cx.run_until_parked();
+
+    let _buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+
+    let binary_a = server_a.next().await.unwrap().binary;
+    assert_eq!(
+        binary_env_value(&binary_a, "GLOBAL_ONLY").as_deref(),
+        Some("global")
+    );
+    assert_eq!(
+        binary_env_value(&binary_a, "SHARED").as_deref(),
+        Some("server")
+    );
+    assert_eq!(
+        binary_env_value(&binary_a, "SERVER_ONLY").as_deref(),
+        Some("server")
+    );
+
+    let binary_b = server_b.next().await.unwrap().binary;
+    assert_eq!(
+        binary_env_value(&binary_b, "GLOBAL_ONLY").as_deref(),
+        Some("global")
+    );
+    assert_eq!(
+        binary_env_value(&binary_b, "SHARED").as_deref(),
+        Some("global")
+    );
+    assert_eq!(binary_env_value(&binary_b, "SERVER_ONLY"), None);
+
+    set_global_lsp_env(&[("GLOBAL_ONLY", "changed")], cx);
+    cx.run_until_parked();
+
+    let restarted_b = server_b.next().await.unwrap().binary;
+    assert_eq!(
+        binary_env_value(&restarted_b, "GLOBAL_ONLY").as_deref(),
+        Some("changed")
+    );
+    assert_eq!(binary_env_value(&restarted_b, "SHARED"), None);
+}
+
+#[gpui::test]
+async fn test_lsp_binary_env_without_global_env(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let settings_json_contents = json!({
+        "languages": {
+            "Rust": {
+                "language_servers": ["server"]
+            }
+        },
+        "lsp": {
+            "server": {
+                "binary": {
+                    "path": path!("server.exe").to_string(),
+                    "env": { "SERVER_ONLY": "server" },
+                }
+            }
+        },
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            ".zed": {
+                "settings.json": settings_json_contents.to_string(),
+            },
+            "src": {
+                "main.rs": "",
+            }
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut server = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "server",
+            ..Default::default()
+        },
+    );
+    cx.run_until_parked();
+
+    let _buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+
+    let binary = server.next().await.unwrap().binary;
+    assert_eq!(
+        binary_env_value(&binary, "SERVER_ONLY").as_deref(),
+        Some("server")
+    );
+    assert_eq!(binary_env_value(&binary, "GLOBAL_ONLY"), None);
+}
+
 #[gpui::test]
 async fn test_rescan_fs_change_is_reported_to_language_servers_as_changed(
     cx: &mut gpui::TestAppContext,
