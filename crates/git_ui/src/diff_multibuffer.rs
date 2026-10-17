@@ -50,7 +50,38 @@ struct DiffExcerptInputs {
 
 struct DiffExcerpts {
     buffer_snapshot: BufferSnapshot,
+    diff_snapshot: BufferDiffSnapshot,
+    conflicts: Option<ConflictSetSnapshot>,
+    context_line_count: u32,
     ranges: Vec<ExcerptRange<Point>>,
+}
+
+impl DiffExcerpts {
+    fn refreshed(self, current: DiffExcerptInputs) -> Self {
+        if self.is_current(&current) {
+            self
+        } else {
+            current.build()
+        }
+    }
+
+    fn is_current(&self, inputs: &DiffExcerptInputs) -> bool {
+        let diff = &self.diff_snapshot;
+        let current_diff = &inputs.diff_snapshot;
+        self.buffer_snapshot.version() == inputs.buffer_snapshot.version()
+            && diff.buffer_version() == current_diff.buffer_version()
+            && diff.base_text_exists() == current_diff.base_text_exists()
+            && diff.base_text().remote_id() == current_diff.base_text().remote_id()
+            && diff.base_text().version() == current_diff.base_text().version()
+            && self.context_line_count == inputs.context_line_count
+            && match (&self.conflicts, &inputs.conflicts) {
+                (Some(conflicts), Some(current)) => {
+                    Arc::ptr_eq(&conflicts.conflicts, &current.conflicts)
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 impl DiffExcerptInputs {
@@ -72,6 +103,7 @@ impl DiffExcerptInputs {
         let snapshot = &self.buffer_snapshot;
         let conflict_ranges = self
             .conflicts
+            .as_ref()
             .map(|conflicts| {
                 conflicts
                     .conflicts
@@ -92,6 +124,9 @@ impl DiffExcerptInputs {
         let ranges = multi_buffer::build_excerpt_ranges(ranges, self.context_line_count, snapshot);
         DiffExcerpts {
             buffer_snapshot: self.buffer_snapshot,
+            diff_snapshot: self.diff_snapshot,
+            conflicts: self.conflicts,
+            context_line_count: self.context_line_count,
             ranges,
         }
     }
@@ -748,6 +783,12 @@ impl DiffMultibuffer {
                 let excerpts = cx.background_spawn(async move { inputs.build() }).await;
                 cx.update(|window, cx| {
                     this.update(cx, |this, cx| {
+                        let excerpts = excerpts.refreshed(DiffExcerptInputs::read(
+                            &loaded_buffer.display_buffer,
+                            &loaded_buffer.diff,
+                            loaded_buffer.conflict_set.as_ref(),
+                            cx,
+                        ));
                         if let Some(buffer_id) = this.register_buffer(
                             repo_path,
                             path_key,
@@ -1104,4 +1145,97 @@ fn tree_sort_path(repo_path: &RelPath) -> Arc<RelPath> {
     RelPath::from_unix_str(&synthetic)
         .map(|path| path.into_arc())
         .unwrap_or_else(|_| repo_path.into_arc())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn read_inputs(
+        buffer: &Entity<Buffer>,
+        diff: &Entity<BufferDiff>,
+        conflicts: Option<ConflictSetSnapshot>,
+        cx: &mut TestAppContext,
+    ) -> DiffExcerptInputs {
+        cx.update(|cx| {
+            let mut inputs = DiffExcerptInputs::read(buffer, diff, None, cx);
+            inputs.conflicts = conflicts;
+            inputs
+        })
+    }
+
+    #[gpui::test]
+    async fn test_diff_excerpts_go_stale_when_their_inputs_change(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| Buffer::local("one\ntwo\nthree\n", cx));
+        let snapshot = buffer.read_with(cx, |buffer, _| buffer.text_snapshot());
+        let diff = cx.new(|cx| BufferDiff::new(&snapshot, None, None, cx));
+        diff.update(cx, |diff, cx| {
+            diff.set_base_text(Some("one\nTWO\nthree\n".into()), snapshot.clone(), cx)
+        })
+        .await;
+        cx.run_until_parked();
+
+        let excerpts = read_inputs(&buffer, &diff, None, cx).build();
+        assert_eq!(excerpts.ranges.len(), 1);
+        assert!(excerpts.is_current(&read_inputs(&buffer, &diff, None, cx)));
+
+        let unchanged = excerpts.refreshed(read_inputs(&buffer, &diff, None, cx));
+        assert_eq!(
+            unchanged
+                .ranges
+                .iter()
+                .map(|range| range.primary.start.row)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "zero\n")], None, cx));
+        assert!(
+            !unchanged.is_current(&read_inputs(&buffer, &diff, None, cx)),
+            "a buffer edit should make the excerpts stale"
+        );
+        let rebuilt = unchanged.refreshed(read_inputs(&buffer, &diff, None, cx));
+        assert!(rebuilt.is_current(&read_inputs(&buffer, &diff, None, cx)));
+        assert_eq!(
+            rebuilt
+                .ranges
+                .iter()
+                .map(|range| range.primary.start.row)
+                .collect::<Vec<_>>(),
+            [2],
+            "rebuilt excerpts should follow the edited buffer"
+        );
+
+        let excerpts = read_inputs(&buffer, &diff, None, cx).build();
+        let snapshot = buffer.read_with(cx, |buffer, _| buffer.text_snapshot());
+        diff.update(cx, |diff, cx| {
+            diff.set_base_text(Some("zero\none\ntwo\nthree\n".into()), snapshot, cx)
+        })
+        .await;
+        cx.run_until_parked();
+        let current = read_inputs(&buffer, &diff, None, cx);
+        assert!(
+            !excerpts.is_current(&current),
+            "a new diff base should make the excerpts stale"
+        );
+        assert!(current.build().ranges.is_empty());
+
+        let buffer_id = buffer.read_with(cx, |buffer, _| buffer.remote_id());
+        let conflicts = ConflictSetSnapshot {
+            buffer_id,
+            conflicts: Arc::from([]),
+        };
+        let excerpts = read_inputs(&buffer, &diff, Some(conflicts.clone()), cx).build();
+        assert!(excerpts.is_current(&read_inputs(&buffer, &diff, Some(conflicts), cx)));
+        let replaced = ConflictSetSnapshot {
+            buffer_id,
+            conflicts: Arc::from([]),
+        };
+        assert!(
+            !excerpts.is_current(&read_inputs(&buffer, &diff, Some(replaced), cx)),
+            "a new conflict set should make the excerpts stale"
+        );
+        assert!(!excerpts.is_current(&read_inputs(&buffer, &diff, None, cx)));
+    }
 }
