@@ -744,6 +744,32 @@ impl WasmHost {
         })
     }
 
+    pub(crate) async fn validate_extension(
+        self: &Arc<Self>,
+        wasm_bytes: Vec<u8>,
+        manifest: Arc<ExtensionManifest>,
+    ) -> Result<()> {
+        let (sender, receiver) = oneshot::channel();
+        let host = self.clone();
+        self.main_thread_message_tx
+            .unbounded_send(Box::new(move |cx| {
+                async move {
+                    // Initialization can enqueue host calls, so this serial queue must stay free.
+                    let load = host.load_extension(wasm_bytes, &manifest, cx);
+                    if let Err(load) = sender.send(load) {
+                        drop(load);
+                    }
+                }
+                .boxed_local()
+            }))
+            .map_err(|_| anyhow!("the wasm host stopped before extension validation"))?;
+        receiver
+            .await
+            .context("the wasm host stopped before starting extension validation")?
+            .await
+            .map(drop)
+    }
+
     pub fn load_extension(
         self: &Arc<Self>,
         wasm_bytes: Vec<u8>,

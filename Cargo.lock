@@ -6225,6 +6225,7 @@ dependencies = [
  "serde_json",
  "serde_json_lenient",
  "settings",
+ "snippet_provider",
  "task",
  "telemetry",
  "tempfile",
@@ -6239,6 +6240,8 @@ dependencies = [
  "wasmparser 0.254.0",
  "wasmtime",
  "wasmtime-wasi",
+ "wit-component 0.254.0",
+ "wit-parser 0.254.0",
  "zlog",
  "ztracing",
 ]
@@ -20520,6 +20523,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "wast"
+version = "254.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7ed4dfc8f6b9fc38b231065e2cdfbf7359af5ab945990abf09658dcc63c3e32"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width 0.2.2",
+ "wasm-encoder 0.254.0",
+]
+
+[[package]]
+name = "wat"
+version = "1.254.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7127f7f9b8f127c879991cecd35f494e4628bae1b0874c681414d8d8831e952c"
+dependencies = [
+ "wast",
+]
+
+[[package]]
 name = "watch"
 version = "0.1.0"
 dependencies = [
@@ -21999,6 +22024,7 @@ dependencies = [
  "wasm-encoder 0.254.0",
  "wasm-metadata 0.254.0",
  "wasmparser 0.254.0",
+ "wat",
  "wit-parser 0.254.0",
 ]
 

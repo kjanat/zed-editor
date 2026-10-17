@@ -45,6 +45,7 @@ serde.workspace              = true
 serde_json.workspace         = true
 serde_json_lenient.workspace = true
 settings.workspace           = true
+snippet_provider.workspace   = true
 task.workspace               = true
 telemetry.workspace          = true
 tempfile.workspace           = true
@@ -73,6 +74,8 @@ reqwest_client.workspace     = true
 theme                        = { workspace = true, features = ["test-support"] }
 theme_extension.workspace    = true
 wasm-encoder.workspace       = true
+wit-component                = { version = "0.254", features = ["dummy-module"] }
+wit-parser                   = "0.254"
 zlog.workspace               = true
 
 [features]

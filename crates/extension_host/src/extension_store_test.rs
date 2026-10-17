@@ -4815,6 +4815,10 @@ impl GitExtensionRemote {
     }
 
     fn publish(&self, extension_id: &str, version: &str) -> String {
+        self.publish_with_manifest(extension_id, version, "")
+    }
+
+    fn publish_with_manifest(&self, extension_id: &str, version: &str, extra: &str) -> String {
         let directory = match self.subdirectory {
             Some(subdirectory) => self.seed.join(subdirectory),
             None => self.seed.clone(),
@@ -4823,7 +4827,7 @@ impl GitExtensionRemote {
         std::fs::write(
             directory.join("extension.toml"),
             format!(
-                "id = \"{extension_id}\"\nname = \"Git Extension\"\nversion = \"{version}\"\nschema_version = 1\n"
+                "id = \"{extension_id}\"\nname = \"Git Extension\"\nversion = \"{version}\"\nschema_version = 1\n{extra}"
             ),
         )
         .unwrap();
@@ -5195,13 +5199,13 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
     assert!(index_path.exists());
 
     let commit = remote.publish("git-extension", "0.2.0");
-    let (fs, builder, staging_dir, sources_dir, proxy) = store.read_with(cx, |store, _| {
+    let (fs, builder, staging_dir, sources_dir, wasm_host) = store.read_with(cx, |store, _| {
         (
             store.fs.clone(),
             store.builder.clone(),
             store.staging_dir.clone(),
             store.sources_dir.clone(),
-            store.proxy.clone(),
+            store.wasm_host.clone(),
         )
     });
     crate::build_git_source(
@@ -5210,7 +5214,7 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
         &staging_dir,
         &sources_dir,
         &index_path,
-        proxy,
+        wasm_host,
         "git-extension",
         &source,
     )
@@ -6062,6 +6066,199 @@ async fn test_git_update_rejects_invalid_theme_resources(cx: &mut TestAppContext
         assert_eq!(
             std::fs::read_to_string(installed_resource).expect("original installed resource"),
             valid_resource
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_git_update_rejects_invalid_snippets(cx: &mut TestAppContext) {
+    for replacement in [
+        Some("{"),
+        Some(r#"{"Bad": {"body": 123}}"#),
+        Some(r#"{"Bad": {"body": "${1"}}"#),
+        None,
+    ] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        let resources = remote.seed.join("snippets");
+        std::fs::create_dir(&resources).expect("snippet directory");
+        let valid_snippets = r#"{
+            // Match the loader's JSONC support.
+            "Hello": {"prefix": "hello", "body": ["Hello ${1:World}", "$0"],},
+        }"#;
+        for name in ["rust.json", "global.json"] {
+            std::fs::write(resources.join(name), valid_snippets).expect("valid snippets");
+        }
+        let declaration = "snippets = [\"snippets/rust.json\", \"snippets/global.json\"]\n";
+        remote.publish_with_manifest("git-extension", "0.1.1", declaration);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("valid snippets install without a snippet proxy");
+        let original_source = installed_source(&store, "git-extension", cx);
+        let record_path = extensions_dir.join("sources/git-extension.toml");
+        let original_record = std::fs::read(&record_path).expect("source record");
+
+        let broken_path = resources.join("global.json");
+        match replacement {
+            Some(contents) => std::fs::write(&broken_path, contents).expect("broken snippets"),
+            None => std::fs::remove_file(&broken_path).expect("remove declared snippets"),
+        }
+        remote.publish_with_manifest("git-extension", "0.2.0", declaration);
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("update reports snippet failure");
+
+        let failures = git_failures(&store, cx);
+        let failure = failures.first().expect("git failure notification");
+        assert_eq!(failures.len(), 1);
+        assert!(failure.message.contains("global.json"), "{failure:?}");
+        assert_eq!(
+            installed_source(&store, "git-extension", cx),
+            original_source
+        );
+        assert_eq!(
+            std::fs::read(&record_path).expect("source record"),
+            original_record
+        );
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("0.1.1")
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                extensions_dir.join("installed/git-extension/snippets/global.json")
+            )
+            .expect("original snippets"),
+            valid_snippets
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_git_install_rejects_missing_declared_snippets(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    remote.publish_with_manifest("git-extension", "0.2.0", "snippets = \"missing.json\"\n");
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extensions(vec![("git-extension".into(), remote.source())], cx)
+        })
+        .await;
+
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures
+            .first()
+            .expect("git failure")
+            .message
+            .contains("missing.json")
+    );
+    assert!(installed_version(&store, "git-extension", cx).is_none());
+    assert!(!extensions_dir.join("sources/git-extension").exists());
+    assert!(!extensions_dir.join("sources/git-extension.toml").exists());
+}
+
+fn git_extension_wasm_with_trapping_init() -> anyhow::Result<Vec<u8>> {
+    use wasm_encoder::{Encode, Section};
+
+    let mut resolve = wit_parser::Resolve::default();
+    let (package, _) = resolve.push_dir(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../extension_api/wit/since_v0.0.1"),
+    )?;
+    let world = resolve.select_world(&[package], Some("extension"))?;
+    let mut module = wit_component::dummy_module(
+        &resolve,
+        world,
+        wit_parser::ManglingAndAbi::Legacy(wit_parser::LiftLowerAbi::Sync),
+    );
+    wit_component::embed_component_metadata(
+        &mut module,
+        &resolve,
+        world,
+        wit_component::StringEncoding::UTF8,
+    )?;
+    let mut bytes = wit_component::ComponentEncoder::default()
+        .module(&module)?
+        .validate(true)
+        .encode()?;
+    let version = wasm_encoder::CustomSection {
+        name: "zed:api-version".into(),
+        data: std::borrow::Cow::Borrowed(&[0, 0, 0, 0, 0, 1]),
+    };
+    bytes.push(version.id());
+    version.encode(&mut bytes);
+    Ok(bytes)
+}
+
+#[gpui::test]
+async fn test_git_update_rejects_wasm_load_failures(cx: &mut TestAppContext) {
+    use wasm_encoder::{Component, CustomSection};
+
+    let mut missing_exports = Component::new();
+    missing_exports.section(&CustomSection {
+        name: "zed:api-version".into(),
+        data: std::borrow::Cow::Borrowed(&[0, 0, 0, 0, 0, 1]),
+    });
+    for (wasm, expected_error) in [
+        (Component::new().finish(), "no zed:api-version section"),
+        (
+            missing_exports.finish(),
+            "failed to instantiate wasm extension",
+        ),
+        (
+            git_extension_wasm_with_trapping_init().expect("component with trapping init"),
+            "failed to initialize wasm extension",
+        ),
+    ] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("original extension installs");
+        let original_source = installed_source(&store, "git-extension", cx);
+        let record_path = extensions_dir.join("sources/git-extension.toml");
+        let original_record = std::fs::read(&record_path).expect("source record");
+        std::fs::write(remote.seed.join("extension.wasm"), wasm).expect("replacement component");
+        remote.publish("git-extension", "0.2.0");
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("update reports wasm failure");
+
+        let failures = git_failures(&store, cx);
+        assert_eq!(failures.len(), 1);
+        assert!(
+            failures
+                .first()
+                .expect("git failure")
+                .message
+                .contains(expected_error),
+            "{failures:?}"
+        );
+        assert_eq!(
+            installed_source(&store, "git-extension", cx),
+            original_source
+        );
+        assert_eq!(
+            std::fs::read(&record_path).expect("source record"),
+            original_record
+        );
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("0.1.0")
+        );
+        assert!(
+            !extensions_dir
+                .join("installed/git-extension/extension.wasm")
+                .exists()
         );
     }
 }

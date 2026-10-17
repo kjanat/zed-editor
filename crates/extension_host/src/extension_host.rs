@@ -475,7 +475,7 @@ async fn build_git_source(
     staging_dir: &Path,
     sources_dir: &Path,
     index_path: &Path,
-    proxy: Arc<ExtensionHostProxy>,
+    wasm_host: Arc<WasmHost>,
     extension_id: &str,
     source: &GitExtensionSource,
 ) -> Result<PathBuf> {
@@ -519,15 +519,33 @@ async fn build_git_source(
         )
         .await?;
     validate_git_theme_resources(&fs, &staged_extension, &manifest).await?;
+    validate_git_snippet_resources(&fs, &staged_extension, &manifest).await?;
+    let wasm_path = staged_extension.join("extension.wasm");
+    let mut staged_index = ExtensionIndex::default();
     ExtensionStore::add_extension_to_index(
         fs.clone(),
         staged_extension,
         sources_dir,
-        &mut ExtensionIndex::default(),
-        proxy,
+        &mut staged_index,
+        wasm_host.proxy.clone(),
     )
     .await
     .context("indexing the fetched extension")?;
+
+    let entry = staged_index
+        .extensions
+        .get(extension_id)
+        .context("the fetched extension is missing from the staged index")?;
+    if entry.manifest.lib.kind.is_some() {
+        let wasm_bytes = fs
+            .load_bytes(&wasm_path)
+            .await
+            .context("reading the fetched wasm extension")?;
+        wasm_host
+            .validate_extension(wasm_bytes, entry.manifest.clone())
+            .await
+            .context("validating the fetched wasm extension")?;
+    }
 
     let record = toml::to_string(&InstalledGitSource {
         url: source.url.clone(),
@@ -607,6 +625,31 @@ async fn validate_git_theme_resources(
             .with_context(|| format!("reading icon theme {icon_theme_path}"))?;
         theme::deserialize_icon_theme(&contents)
             .with_context(|| format!("validating icon theme {icon_theme_path}"))?;
+    }
+    Ok(())
+}
+
+async fn validate_git_snippet_resources(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+) -> Result<()> {
+    for snippet_path in manifest
+        .snippets
+        .iter()
+        .flat_map(|snippets| snippets.paths())
+    {
+        let path = extension_dir.join(snippet_path);
+        let contents = fs
+            .load(&path)
+            .await
+            .with_context(|| format!("reading snippets {}", snippet_path.display()))?;
+        let snippets =
+            serde_json_lenient::from_str::<snippet_provider::format::VsSnippetsFile>(&contents)
+                .with_context(|| format!("parsing snippets {}", snippet_path.display()))?;
+        for snippet in snippet_provider::file_to_snippets(snippets, &path) {
+            snippet?;
+        }
     }
     Ok(())
 }
@@ -1383,6 +1426,7 @@ impl ExtensionStore {
         let sources_dir = self.sources_dir.clone();
         let index_path = self.index_path.clone();
         let proxy = self.proxy.clone();
+        let wasm_host = self.wasm_host.clone();
         let git_source_lock = self.git_source_lock.clone();
 
         cx.spawn(async move |this, cx| {
@@ -1418,6 +1462,7 @@ impl ExtensionStore {
                         let sources_dir = sources_dir.clone();
                         let index_path = index_path.clone();
                         let proxy = proxy.clone();
+                        let wasm_host = wasm_host.clone();
                         let extension_id = extension_id.clone();
                         async move {
                             let Some(installed) =
@@ -1465,7 +1510,7 @@ impl ExtensionStore {
                                     &staging_dir,
                                     &sources_dir,
                                     &index_path,
-                                    proxy,
+                                    wasm_host,
                                     &extension_id,
                                     &source,
                                 )
@@ -1527,7 +1572,7 @@ impl ExtensionStore {
         let staging_dir = self.staging_dir.clone();
         let sources_dir = self.sources_dir.clone();
         let index_path = self.index_path.clone();
-        let proxy = self.proxy.clone();
+        let wasm_host = self.wasm_host.clone();
         let extensions_dir = self.extensions_dir();
         let git_source_lock = self.git_source_lock.clone();
 
@@ -1546,7 +1591,7 @@ impl ExtensionStore {
                             &staging_dir,
                             &sources_dir,
                             &index_path,
-                            proxy,
+                            wasm_host,
                             &extension_id,
                             &source,
                         )
