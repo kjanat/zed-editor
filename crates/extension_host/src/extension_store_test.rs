@@ -54,6 +54,7 @@ use std::{
 use task::{SpawnInTerminal, ZedDebugConfig};
 use theme::ThemeRegistry;
 use util::{
+    paths::SanitizedPath,
     rel_path::{RelPath, rel_path_buf},
     test::TempTree,
 };
@@ -4786,10 +4787,14 @@ struct GitExtensionRemote {
     subdirectory: Option<&'static str>,
 }
 
+fn tree_root(tree: &TempTree) -> PathBuf {
+    SanitizedPath::new(tree.path()).as_path().to_path_buf()
+}
+
 impl GitExtensionRemote {
     fn new(extension_id: &str, subdirectory: Option<&'static str>) -> Self {
         let tree = TempTree::new(json!({ "remote.git": {}, "seed": {} }));
-        let root = tree.path().to_path_buf();
+        let root = tree_root(&tree);
         let bare = root.join("remote.git");
         let seed = root.join("seed");
         git_in(
@@ -4907,7 +4912,7 @@ async fn git_extension_store_with_http(
     init_test(cx);
     cx.executor().allow_parking();
     let tree = TempTree::new(json!({ "installed": {}, "work": {}, "build": {} }));
-    let extensions_dir = tree.path().to_path_buf();
+    let extensions_dir = tree_root(&tree);
     let (store, debounce) = extension_store_in(&extensions_dir, http_client, cx).await;
     (tree, extensions_dir, store, debounce)
 }
@@ -5727,7 +5732,7 @@ async fn test_local_dev_extension_replaces_git_source(cx: &mut TestAppContext) {
     let local = local_dev_extension("git-extension");
     store
         .update(cx, |store, cx| {
-            store.install_dev_extension(local.path().to_path_buf(), cx)
+            store.install_dev_extension(tree_root(&local), cx)
         })
         .await
         .unwrap();
@@ -5756,7 +5761,7 @@ async fn test_index_ignores_a_git_record_for_another_checkout(cx: &mut TestAppCo
     let local = local_dev_extension("local-extension");
     store
         .update(cx, |store, cx| {
-            store.install_dev_extension(local.path().to_path_buf(), cx)
+            store.install_dev_extension(tree_root(&local), cx)
         })
         .await
         .unwrap();
