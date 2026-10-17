@@ -1014,7 +1014,7 @@ mod tests {
     use editor::test::editor_test_context::{EditorTestContext, assert_state_with_diff};
     use gpui::{TestAppContext, VisualTestContext};
     use multi_buffer::PathKey;
-    use project::{FakeFs, git_store::MAX_CONCURRENT_OBJECT_READS};
+    use project::{FakeFs, Fs as _, git_store::MAX_CONCURRENT_OBJECT_READS};
     use serde_json::json;
     use settings::{DiffViewStyle, GitPanelGroupBy, GitPanelSortBy, SettingsStore};
     use std::path::Path;
@@ -1973,6 +1973,122 @@ mod tests {
         assert!(
             editor.update(cx, |editor, cx| editor.is_buffer_folded(deleted_buffer, cx)),
             "the deleted file should be folded after the restarted refresh"
+        );
+    }
+
+    enum UntrackedFoldInterruption {
+        DisableCollapse,
+        RemoveFile,
+    }
+
+    async fn untracked_file_folded_after_interrupted_refresh(
+        cx: &mut TestAppContext,
+        interruption: UntrackedFoldInterruption,
+    ) -> bool {
+        init_test(cx);
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    let git_panel = settings.git_panel.get_or_insert_default();
+                    git_panel.group_by = Some(GitPanelGroupBy::None);
+                    git_panel.collapse_untracked_diff = Some(true);
+                });
+            });
+        });
+
+        let project_root = Path::new(path!("/project"));
+        let dot_git = project_root.join(".git");
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            project_root,
+            json!({
+                ".git": {},
+                "a.txt": "untracked\n",
+                "b.txt": "new-b\n",
+            }),
+        )
+        .await;
+        fs.set_head_for_repo(&dot_git, &[("b.txt", "old-b\n".into())], "deadbeef");
+        fs.set_index_for_repo(&dot_git, &[("b.txt", "old-b\n".into())]);
+        let oids = fs.set_merge_base_content_for_repo(&dot_git, &[("b.txt", "old-b\n".into())]);
+        let gate = fs.install_blob_read_gate_for_repo(&dot_git);
+
+        let project = Project::test(fs.clone(), [project_root], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let branch_diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        assert!(gate.is_waiting(oids[0]));
+
+        let editor =
+            branch_diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let untracked_buffer = editor
+            .update(cx, |editor, cx| {
+                editor
+                    .buffer()
+                    .read(cx)
+                    .snapshot(cx)
+                    .buffers_with_paths()
+                    .find(|(_, path_key)| path_key.path.as_unix_str() == "a.txt")
+                    .map(|(buffer, _)| buffer.remote_id())
+            })
+            .expect("the untracked file should have registered");
+
+        match interruption {
+            UntrackedFoldInterruption::DisableCollapse => cx.update(|_, cx| {
+                cx.update_global::<SettingsStore, _>(|store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings
+                            .git_panel
+                            .get_or_insert_default()
+                            .collapse_untracked_diff = Some(false);
+                    });
+                });
+            }),
+            UntrackedFoldInterruption::RemoveFile => fs
+                .remove_file(&project_root.join("a.txt"), Default::default())
+                .await
+                .unwrap(),
+        }
+        cx.run_until_parked();
+        gate.open();
+        cx.run_until_parked();
+
+        editor.update(cx, |editor, cx| {
+            editor.is_buffer_folded(untracked_buffer, cx)
+        })
+    }
+
+    #[gpui::test]
+    async fn test_disabling_collapse_during_refresh_drops_pending_fold(cx: &mut TestAppContext) {
+        assert!(
+            !untracked_file_folded_after_interrupted_refresh(
+                cx,
+                UntrackedFoldInterruption::DisableCollapse
+            )
+            .await
+        );
+    }
+
+    #[gpui::test]
+    async fn test_removed_file_drops_pending_fold(cx: &mut TestAppContext) {
+        assert!(
+            !untracked_file_folded_after_interrupted_refresh(
+                cx,
+                UntrackedFoldInterruption::RemoveFile
+            )
+            .await
         );
     }
 

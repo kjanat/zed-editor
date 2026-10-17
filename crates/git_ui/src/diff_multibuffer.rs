@@ -550,7 +550,12 @@ impl DiffMultibuffer {
         };
 
         let buffer_id = snapshot.text.remote_id();
-        let mut needs_fold = false;
+        let should_fold = file_status.is_deleted()
+            || (file_status.is_untracked()
+                && GitPanelSettings::get_global(cx).collapse_untracked_diff);
+        if !should_fold {
+            self.pending_folds.retain(|pending| *pending != buffer_id);
+        }
 
         let (was_empty, is_excerpt_newly_added) = self.editor.update(cx, |editor, cx| {
             let was_empty = editor.rhs_editor().read(cx).buffer().read(cx).is_empty();
@@ -570,9 +575,9 @@ impl DiffMultibuffer {
             (was_empty, is_newly_added)
         });
 
-        self.editor.update(cx, |editor, cx| {
-            editor.rhs_editor().update(cx, |editor, cx| {
-                if was_empty {
+        if was_empty {
+            self.editor.update(cx, |editor, cx| {
+                editor.rhs_editor().update(cx, |editor, cx| {
                     editor.change_selections(
                         SelectionEffects::no_scroll(),
                         window,
@@ -583,16 +588,9 @@ impl DiffMultibuffer {
                             ])
                         },
                     );
-                }
-                if is_excerpt_newly_added
-                    && (file_status.is_deleted()
-                        || (file_status.is_untracked()
-                            && GitPanelSettings::get_global(cx).collapse_untracked_diff))
-                {
-                    needs_fold = true;
-                }
-            })
-        });
+                })
+            });
+        }
 
         if self.multibuffer.read(cx).is_empty()
             && self
@@ -611,7 +609,7 @@ impl DiffMultibuffer {
             self.scroll_to_path(&path_key, window, cx);
         }
 
-        needs_fold.then_some(buffer_id)
+        (is_excerpt_newly_added && should_fold).then_some(buffer_id)
     }
 
     fn buffer_ranges_changed(
@@ -687,6 +685,7 @@ impl DiffMultibuffer {
                     if let Some(repo_path) = repo_path_by_display_id.get(&buffer_id) {
                         this.buffer_subscriptions.remove(repo_path);
                     }
+                    this.pending_folds.retain(|pending| *pending != buffer_id);
                     editor.rhs_editor().update(cx, |editor, cx| {
                         conflict_view::buffers_removed(editor, &[buffer_id], cx);
                     });
