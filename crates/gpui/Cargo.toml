@@ -219,6 +219,13 @@ scap = { workspace = true, optional = true }
 objc2-core-foundation.workspace = true
 objc2-core-video                = { workspace = true, features = ["CVPixelBuffer"] }
 
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "ios"))'.dependencies]
+async-tungstenite     = { workspace = true, optional = true }
+dioxus-cli-config     = { version = "=0.7.10", optional = true }
+dioxus-devtools-types = { version = "=0.7.10", optional = true }
+smol                  = { workspace = true, optional = true }
+subsecond             = { version = "=0.7.10", optional = true }
+
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 async-channel = { workspace = true, features = ["std"] }
 
@@ -256,6 +263,13 @@ default          = ["font-kit", "wayland", "windows-manifest", "x11"]
 bench            = ["bench-support"]
 bench-support    = ["dep:bench_metrics", "dep:criterion", "profiler"]
 font-kit         = []
+hot-reload       = [
+  "dep:async-tungstenite",
+  "dep:dioxus-cli-config",
+  "dep:dioxus-devtools-types",
+  "dep:smol",
+  "dep:subsecond",
+]
 inspector        = ["gpui_macros/inspector"]
 # Tracks every entity handle so tests can assert nothing leaked. Also enabled
 # by setting `GPUI_LEAK_DETECTION` when building; see `build.rs`.
