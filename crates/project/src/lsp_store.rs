@@ -2199,7 +2199,7 @@ impl LocalLspStore {
                     language_server.name()
                 );
 
-                let edits = if let Some(ranges) = buffer.ranges.as_ref() {
+                let resolved = if let Some(ranges) = buffer.ranges.as_ref() {
                     zlog::trace!(logger => "formatting ranges");
                     let range_edits = Self::format_ranges_via_lsp(
                         &lsp_store,
@@ -2215,7 +2215,7 @@ impl LocalLspStore {
                     .context("Failed to format ranges via language server")?;
 
                     match range_edits {
-                        Some(edits) => edits,
+                        Some(resolved) => Some(resolved),
                         None => {
                             if trigger == FormatTrigger::Save
                                 && settings.format_on_save == FormatOnSave::ModificationsIfAvailable
@@ -2241,7 +2241,7 @@ impl LocalLspStore {
                                     "Skipping range format - language server {:?} does not support range formatting",
                                     language_server.name()
                                 );
-                                Vec::new()
+                                None
                             }
                         }
                     }
@@ -2260,15 +2260,16 @@ impl LocalLspStore {
                     .context("failed to format via language server")?
                 };
 
-                if edits.is_empty() {
+                let Some(resolved) = resolved.filter(|resolved| !resolved.edits.is_empty()) else {
                     zlog::trace!(logger => "No changes");
                     return Ok(());
-                }
+                };
                 extend_formatting_transaction(
                     buffer,
                     formatting_transaction_id,
                     cx,
                     |buffer, cx| {
+                        let edits = resolved.unchanged_since_resolved(buffer);
                         buffer.edit(edits, None, cx);
                     },
                 );
@@ -2289,6 +2290,12 @@ impl LocalLspStore {
                 let mut actions_and_servers = Vec::new();
 
                 for (index, (_, language_server)) in adapters_and_servers.iter().enumerate() {
+                    let request_snapshot = Self::snapshot_sent_to_server(
+                        &lsp_store,
+                        &buffer.handle,
+                        language_server.server_id(),
+                        cx,
+                    )?;
                     let actions_result = Self::get_server_code_actions_from_action_kinds(
                         &lsp_store,
                         language_server.server_id(),
@@ -2316,7 +2323,7 @@ impl LocalLspStore {
                         continue;
                     };
                     for action in actions {
-                        actions_and_servers.push((action, index));
+                        actions_and_servers.push((action, index, request_snapshot.clone()));
                     }
                 }
 
@@ -2325,7 +2332,7 @@ impl LocalLspStore {
                     return Ok(());
                 }
 
-                'actions: for (mut action, server_index) in actions_and_servers {
+                'actions: for (mut action, server_index, request_snapshot) in actions_and_servers {
                     let server = &adapters_and_servers[server_index].1;
 
                     let describe_code_action = |action: &CodeAction| {
@@ -2356,6 +2363,16 @@ impl LocalLspStore {
                             cx,
                         )
                     })?;
+                    let edit_snapshot = if action.lsp_action.edit().is_some() {
+                        request_snapshot
+                    } else {
+                        Self::snapshot_sent_to_server(
+                            &lsp_store,
+                            &buffer.handle,
+                            server.server_id(),
+                            cx,
+                        )?
+                    };
                     if let Err(err) = Self::try_resolve_code_action(
                         server,
                         &mut action,
@@ -2481,17 +2498,29 @@ impl LocalLspStore {
                                     }
                                 }
                             }
-                            let edits_result = lsp_store
-                                .update(cx, |lsp_store, cx| {
-                                    lsp_store.as_local_mut().unwrap().edits_from_lsp(
-                                        &buffer.handle,
-                                        lsp_edits,
-                                        server.server_id(),
-                                        op.text_document.version,
-                                        cx,
-                                    )
-                                })?
-                                .await;
+                            let edits_result = match op.text_document.version {
+                                Some(version) => {
+                                    lsp_store
+                                        .update(cx, |lsp_store, cx| {
+                                            lsp_store.as_local_mut().unwrap().resolve_lsp_edits(
+                                                &buffer.handle,
+                                                lsp_edits,
+                                                server.server_id(),
+                                                Some(version),
+                                                cx,
+                                            )
+                                        })?
+                                        .await
+                                }
+                                None => {
+                                    let snapshot = edit_snapshot.clone();
+                                    Ok(cx
+                                        .background_spawn(async move {
+                                            ResolvedLspEdits::resolve(snapshot, lsp_edits)
+                                        })
+                                        .await)
+                                }
+                            };
                             let Ok(resolved_edits) = edits_result else {
                                 zlog::warn!(
                                     logger =>
@@ -2501,10 +2530,10 @@ impl LocalLspStore {
                                 );
                                 continue 'actions;
                             };
-                            edits.extend(resolved_edits);
+                            edits.push(resolved_edits);
                         }
 
-                        if edits.is_empty() {
+                        if edits.iter().all(|resolved| resolved.edits.is_empty()) {
                             zlog::warn!(logger => "No edits resolved from LSP");
                             continue;
                         }
@@ -2514,6 +2543,10 @@ impl LocalLspStore {
                             formatting_transaction_id,
                             cx,
                             |buffer, cx| {
+                                let edits = edits
+                                    .into_iter()
+                                    .flat_map(|resolved| resolved.unchanged_since_resolved(buffer))
+                                    .collect::<Vec<_>>();
                                 zlog::trace!("Applying {} edits", edits.len());
                                 buffer.edit(edits, None, cx);
                             },
@@ -2647,7 +2680,7 @@ impl LocalLspStore {
         language_server: &Arc<LanguageServer>,
         settings: &LanguageSettings,
         cx: &mut AsyncApp,
-    ) -> Result<Option<Vec<(Range<Anchor>, Arc<str>)>>> {
+    ) -> Result<Option<ResolvedLspEdits>> {
         let range_formatting_supported = this.read_with(cx, |this, cx| {
             this.as_local().is_some_and(|local| {
                 buffer_supports_lsp_range_formatting(
@@ -2787,21 +2820,40 @@ impl LocalLspStore {
             edits
         };
 
-        if let Some(lsp_edits) = lsp_edits {
-            this.update(cx, |this, cx| {
-                this.as_local_mut().unwrap().edits_from_lsp(
-                    buffer_handle,
-                    lsp_edits,
-                    language_server.server_id(),
-                    server_version,
-                    cx,
-                )
-            })?
-            .await
-            .map(Some)
-        } else {
-            Ok(Some(Vec::with_capacity(0)))
-        }
+        let Some(lsp_edits) = lsp_edits else {
+            let snapshot = buffer_handle.read_with(cx, |buffer, _| buffer.text_snapshot());
+            return Ok(Some(ResolvedLspEdits {
+                snapshot,
+                edits: Vec::new(),
+            }));
+        };
+        this.update(cx, |this, cx| {
+            this.as_local_mut().unwrap().resolve_lsp_edits(
+                buffer_handle,
+                lsp_edits,
+                language_server.server_id(),
+                server_version,
+                cx,
+            )
+        })?
+        .await
+        .map(Some)
+    }
+
+    fn snapshot_sent_to_server(
+        this: &WeakEntity<LspStore>,
+        buffer: &Entity<Buffer>,
+        server_id: LanguageServerId,
+        cx: &mut AsyncApp,
+    ) -> Result<TextBufferSnapshot> {
+        this.read_with(cx, |this, cx| {
+            let buffer = buffer.read(cx);
+            this.as_local()
+                .and_then(|local| {
+                    local.latest_snapshot_sent_to_server(buffer.remote_id(), server_id)
+                })
+                .map_or_else(|| buffer.text_snapshot(), |sent| sent.snapshot.clone())
+        })
     }
 
     async fn format_via_lsp(
@@ -2812,18 +2864,18 @@ impl LocalLspStore {
         language_server: &Arc<LanguageServer>,
         settings: &LanguageSettings,
         cx: &mut AsyncApp,
-    ) -> Result<Vec<(Range<Anchor>, Arc<str>)>> {
+    ) -> Result<Option<ResolvedLspEdits>> {
         let logger = zlog::scoped!("lsp_format");
         zlog::debug!(logger => "Formatting via LSP");
 
         let uri = file_path_to_lsp_url(abs_path)?;
         let text_document = lsp::TextDocumentIdentifier::new(uri);
 
-        let (formatting_supported, range_formatting_supported, snapshot) =
-            this.read_with(cx, |this, cx| {
-                let buffer = buffer.read(cx);
-                match this.as_local() {
-                    Some(local) => (
+        let (formatting_supported, range_formatting_supported) =
+            this.read_with(cx, |this, cx| match this.as_local() {
+                Some(local) => {
+                    let buffer = buffer.read(cx);
+                    (
                         buffer_supports_lsp_formatting(local, buffer, adapter, language_server),
                         buffer_supports_lsp_range_formatting(
                             local,
@@ -2831,16 +2883,12 @@ impl LocalLspStore {
                             adapter,
                             language_server,
                         ),
-                        local
-                            .latest_snapshot_sent_to_server(
-                                buffer.remote_id(),
-                                language_server.server_id(),
-                            )
-                            .map_or_else(|| buffer.text_snapshot(), |sent| sent.snapshot.clone()),
-                    ),
-                    None => (false, false, buffer.text_snapshot()),
+                    )
                 }
+                None => (false, false),
             })?;
+        let snapshot =
+            Self::snapshot_sent_to_server(this, buffer, language_server.server_id(), cx)?;
 
         let request_timeout = cx.update(|app| {
             ProjectSettings::get_global(app)
@@ -2863,7 +2911,7 @@ impl LocalLspStore {
                 .into_response()?;
 
             let Some(edits) = response else {
-                return Ok(vec![]);
+                return Ok(None);
             };
 
             let buffer_end = point_to_lsp(snapshot.max_point_utf16());
@@ -2874,7 +2922,7 @@ impl LocalLspStore {
 
             if should_apply_diff_based_edits {
                 let Some(text_edit) = edits.into_iter().next() else {
-                    return Ok(vec![]);
+                    return Ok(None);
                 };
                 let diff = cx
                     .update(|cx| Buffer::diff_from(&snapshot, text_edit.new_text, cx))
@@ -2916,10 +2964,11 @@ impl LocalLspStore {
         };
 
         match lsp_edits {
-            Some(lsp_edits) => Ok(cx
-                .background_spawn(async move { edits_in_snapshot(&snapshot, lsp_edits) })
-                .await),
-            None => Ok(Vec::with_capacity(0)),
+            Some(lsp_edits) => Ok(Some(
+                cx.background_spawn(async move { ResolvedLspEdits::resolve(snapshot, lsp_edits) })
+                    .await,
+            )),
+            None => Ok(None),
         }
     }
 
@@ -3917,6 +3966,18 @@ impl LocalLspStore {
     ) -> Task<Result<Vec<(Range<Anchor>, Arc<str>)>>> {
         let snapshot = self.buffer_snapshot_for_lsp_version(buffer, server_id, version, cx);
         cx.background_spawn(async move { Ok(edits_in_snapshot(&snapshot?, lsp_edits)) })
+    }
+
+    fn resolve_lsp_edits(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        lsp_edits: impl 'static + Send + IntoIterator<Item = lsp::TextEdit>,
+        server_id: LanguageServerId,
+        version: Option<i32>,
+        cx: &mut Context<LspStore>,
+    ) -> Task<Result<ResolvedLspEdits>> {
+        let snapshot = self.buffer_snapshot_for_lsp_version(buffer, server_id, version, cx);
+        cx.background_spawn(async move { Ok(ResolvedLspEdits::resolve(snapshot?, lsp_edits)) })
     }
 
     pub(crate) async fn deserialize_workspace_edit(
@@ -16804,6 +16865,40 @@ fn lsp_ranges_conflict(a: &lsp::Range, b: &lsp::Range) -> bool {
 
 fn lsp_ranges_overlap(a: &lsp::Range, b: &lsp::Range) -> bool {
     a.start < b.end && b.start < a.end
+}
+
+pub struct ResolvedLspEdits {
+    snapshot: TextBufferSnapshot,
+    edits: Vec<(Range<Anchor>, Arc<str>)>,
+}
+
+impl ResolvedLspEdits {
+    fn resolve(
+        snapshot: TextBufferSnapshot,
+        lsp_edits: impl IntoIterator<Item = lsp::TextEdit>,
+    ) -> Self {
+        let edits = edits_in_snapshot(&snapshot, lsp_edits);
+        Self { snapshot, edits }
+    }
+
+    fn unchanged_since_resolved(self, buffer: &Buffer) -> Vec<(Range<Anchor>, Arc<str>)> {
+        let changed = buffer
+            .edits_since::<usize>(self.snapshot.version())
+            .map(|edit| edit.old)
+            .collect::<Vec<_>>();
+        if changed.is_empty() {
+            return self.edits;
+        }
+        self.edits
+            .into_iter()
+            .filter(|(range, _)| {
+                let range = range.to_offset(&self.snapshot);
+                !changed
+                    .iter()
+                    .any(|changed| changed.start < range.end && range.start < changed.end)
+            })
+            .collect()
+    }
 }
 
 fn edits_in_snapshot(

@@ -22013,14 +22013,32 @@ async fn format_via_lsp_while_typing(
     capabilities: lsp::ServerCapabilities,
     edits: Vec<lsp::TextEdit>,
 ) -> String {
-    init_test(cx, |settings| {
-        settings.defaults.formatter = Some(FormatterList::Single(Formatter::LanguageServer(
-            settings::LanguageServerFormatterSpecifier::Current,
-        )));
+    format_while_typing(
+        cx,
+        Formatter::LanguageServer(settings::LanguageServerFormatterSpecifier::Current),
+        capabilities,
+        "a\nb\n",
+        2,
+        edits,
+    )
+    .await
+}
+
+async fn format_while_typing(
+    cx: &mut TestAppContext,
+    formatter: Formatter,
+    capabilities: lsp::ServerCapabilities,
+    text: &'static str,
+    typed_at: usize,
+    edits: Vec<lsp::TextEdit>,
+) -> String {
+    init_test(cx, |_| {});
+    update_test_language_settings(cx, &|settings| {
+        settings.defaults.formatter = Some(FormatterList::Single(formatter.clone()));
     });
 
     let fs = FakeFs::new(cx.executor());
-    fs.insert_file(path!("/file.rs"), "a\nb\n".into()).await;
+    fs.insert_file(path!("/file.rs"), text.into()).await;
 
     let project = Project::test(fs.clone(), [path!("/").as_ref()], cx).await;
     let language_registry = project.read_with(cx, |project, _| project.languages().clone());
@@ -22062,12 +22080,36 @@ async fn format_via_lsp_while_typing(
     });
     fake_server.set_request_handler::<lsp::request::RangeFormatting, _, _>({
         let lock = formatting_lock.clone();
+        let edits = edits.clone();
         move |_params, _| {
             let lock = lock.clone();
             let edits = edits.clone();
             async move {
                 lock.lock().await;
                 Ok(Some(edits))
+            }
+        }
+    });
+    fake_server.set_request_handler::<lsp::request::CodeActionRequest, _, _>({
+        let lock = formatting_lock.clone();
+        move |params, _| {
+            let lock = lock.clone();
+            let edits = edits.clone();
+            async move {
+                lock.lock().await;
+                let uri = lsp::Uri::from_file_path(path!("/file.rs")).unwrap();
+                Ok(Some(vec![lsp::CodeActionOrCommand::CodeAction(
+                    lsp::CodeAction {
+                        kind: params
+                            .context
+                            .only
+                            .and_then(|kinds| kinds.into_iter().next()),
+                        edit: Some(lsp::WorkspaceEdit::new(
+                            [(uri, edits)].into_iter().collect(),
+                        )),
+                        ..Default::default()
+                    },
+                )]))
             }
         }
     });
@@ -22083,7 +22125,9 @@ async fn format_via_lsp_while_typing(
         )
     });
     cx.run_until_parked();
-    buffer.update(cx, |buffer, cx| buffer.edit([(2..2, "x")], None, cx));
+    buffer.update(cx, |buffer, cx| {
+        buffer.edit([(typed_at..typed_at, "x")], None, cx)
+    });
 
     drop(formatting_guard);
     format.await.unwrap();
@@ -22151,6 +22195,53 @@ async fn test_lsp_range_format_edits_resolve_in_the_requested_text(cx: &mut Test
     )
     .await;
     assert_eq!(text, "a;\nxb;\n");
+}
+
+fn replacement_around_typed_text() -> Vec<lsp::TextEdit> {
+    vec![
+        lsp::TextEdit::new(
+            lsp::Range::new(lsp::Position::new(0, 1), lsp::Position::new(0, 1)),
+            ";".to_string(),
+        ),
+        lsp::TextEdit::new(
+            lsp::Range::new(lsp::Position::new(1, 0), lsp::Position::new(1, 2)),
+            "BC".to_string(),
+        ),
+    ]
+}
+
+#[gpui::test]
+async fn test_lsp_format_drops_replacements_around_typed_text(cx: &mut TestAppContext) {
+    let text = format_while_typing(
+        cx,
+        Formatter::LanguageServer(settings::LanguageServerFormatterSpecifier::Current),
+        lsp::ServerCapabilities {
+            document_formatting_provider: Some(lsp::OneOf::Left(true)),
+            ..Default::default()
+        },
+        "a\nbc\n",
+        3,
+        replacement_around_typed_text(),
+    )
+    .await;
+    assert_eq!(text, "a;\nbxc\n");
+}
+
+#[gpui::test]
+async fn test_code_action_format_drops_replacements_around_typed_text(cx: &mut TestAppContext) {
+    let text = format_while_typing(
+        cx,
+        Formatter::CodeAction("source.fixAll".into()),
+        lsp::ServerCapabilities {
+            code_action_provider: Some(lsp::CodeActionProviderCapability::Simple(true)),
+            ..Default::default()
+        },
+        "a\nbc\n",
+        3,
+        replacement_around_typed_text(),
+    )
+    .await;
+    assert_eq!(text, "a;\nbxc\n");
 }
 
 #[cfg(not(windows))]
