@@ -1259,15 +1259,18 @@ impl MarkdownPreviewView {
         }
 
         let theme = preview_theme.as_ref().unwrap_or_else(|| cx.theme());
-        let markdown_style = MarkdownStyle::themed_with_settings(
-            MarkdownFont::Preview,
-            theme.colors(),
-            theme.syntax(),
-            self.settings::<ThemeSettings>(cx),
-            Some(self.font_size(cx)),
-            window,
-            cx,
-        );
+        let markdown_style = MarkdownStyle {
+            table_layout: Some(self.settings::<MarkdownPreviewSettings>(cx).table_layout),
+            ..MarkdownStyle::themed_with_settings(
+                MarkdownFont::Preview,
+                theme.colors(),
+                theme.syntax(),
+                self.settings::<ThemeSettings>(cx),
+                Some(self.font_size(cx)),
+                window,
+                cx,
+            )
+        };
 
         let mut markdown_element = MarkdownElement::new(self.markdown.clone(), markdown_style)
             .input_focus_handle(self.focus_handle.clone())
@@ -2756,6 +2759,37 @@ mod tests {
             first.read_with(cx, |preview, cx| preview.max_width(cx)),
             Some(px(800.))
         );
+    }
+
+    #[gpui::test]
+    async fn preview_tables_follow_the_table_layout_setting(cx: &mut TestAppContext) {
+        let (project, _, multi_workspace) = markdown_workspace(
+            cx,
+            json!({
+                ".zed": {"settings.json": r#"{"markdown_preview":{"table_layout":"list"}}"#},
+                "readme.md": "| Name | Notes |\n| --- | --- |\n| first | alpha |\n"
+            }),
+            false,
+        )
+        .await;
+        open_project_file(cx, &project, &multi_workspace, "readme.md", None, true).await;
+        let _preview = open_preview_for_active_editor(cx, &multi_workspace);
+        cx.run_until_parked();
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        let cx = &mut VisualTestContext::from_window(multi_workspace.into(), cx);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("markdown_table_list").is_some());
+        assert!(cx.debug_bounds("markdown_table").is_none());
+
+        fs.write(
+            Path::new(path!("/project/.zed/settings.json")),
+            br#"{"markdown_preview":{"table_layout":"table"}}"#,
+        )
+        .await
+        .unwrap();
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("markdown_table").is_some());
+        assert!(cx.debug_bounds("markdown_table_list").is_none());
     }
 
     #[gpui::test]

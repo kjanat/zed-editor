@@ -10727,6 +10727,7 @@ dependencies = [
  "theme",
  "theme_settings",
  "ui",
+ "unicode-width 0.2.2",
  "util",
 ]
 
