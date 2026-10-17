@@ -4789,7 +4789,7 @@ struct GitExtensionRemote {
 impl GitExtensionRemote {
     fn new(extension_id: &str, subdirectory: Option<&'static str>) -> Self {
         let tree = TempTree::new(json!({ "remote.git": {}, "seed": {} }));
-        let root = tree.path().canonicalize().unwrap();
+        let root = tree.path().to_path_buf();
         let bare = root.join("remote.git");
         let seed = root.join("seed");
         git_in(
@@ -4846,7 +4846,7 @@ async fn git_extension_store(
     cx.executor().allow_parking();
     let fs = RealFs::new(None, cx.executor());
     let tree = TempTree::new(json!({ "installed": {}, "work": {}, "build": {} }));
-    let extensions_dir = tree.path().canonicalize().unwrap();
+    let extensions_dir = tree.path().to_path_buf();
     let http_client = FakeHttpClient::with_200_response();
     let store = cx.new(|cx| {
         ExtensionStore::new(
@@ -4972,8 +4972,8 @@ async fn test_install_git_extension_from_subdirectory(cx: &mut TestAppContext) {
         .unwrap();
 
     assert_eq!(
-        std::fs::read_link(extensions_dir.join("installed/git-extension")).unwrap(),
-        extensions_dir.join("sources/git-extension/editors/ext")
+        std::fs::canonicalize(extensions_dir.join("installed/git-extension")).unwrap(),
+        std::fs::canonicalize(extensions_dir.join("sources/git-extension/editors/ext")).unwrap()
     );
     assert_eq!(
         installed_source(&store, "git-extension", cx)
