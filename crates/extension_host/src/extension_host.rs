@@ -64,6 +64,7 @@ use url::Url;
 use util::{
     PathExt, ResultExt,
     paths::{PathStyle, RemotePathBuf},
+    redact::{redact_arguments, redact_command},
 };
 use wasm_host::{
     WasmExtension, WasmHost,
@@ -453,12 +454,12 @@ async fn run_git(directory: &Path, args: &[&str]) -> Result<String> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
-        .with_context(|| format!("running git {}", args.join(" ")))?;
+        .with_context(|| format!("running git {}", redact_arguments(args).join(" ")))?;
     anyhow::ensure!(
         output.status.success(),
         "git {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr).trim()
+        redact_arguments(args).join(" "),
+        redact_command(String::from_utf8_lossy(&output.stderr).trim())
     );
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
@@ -500,8 +501,7 @@ async fn build_git_source(
     let mut manifest = ExtensionManifest::load(fs.clone(), &staged_extension).await?;
     anyhow::ensure!(
         manifest.id.as_ref() == extension_id,
-        "{} declares extension id {}, expected {extension_id}",
-        source.url,
+        "the repository declares extension id {}, expected {extension_id}",
         manifest.id
     );
     builder
@@ -746,13 +746,15 @@ impl ExtensionStore {
                 }
             }
             Err(error) => {
-                log::error!("failed to install extension {extension_id} from {url}: {error:#}");
+                let url = redact_command(url);
+                let message = redact_command(&format!("{error:#}"));
+                log::error!("failed to install extension {extension_id} from {url}: {message}");
                 self.git_extension_failures.insert(
                     extension_id.clone(),
                     GitExtensionFailure {
                         extension_id: extension_id.clone(),
-                        url: url.to_string(),
-                        message: format!("{error:#}"),
+                        url,
+                        message,
                     },
                 );
                 self.undelivered_git_extension_failures

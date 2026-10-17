@@ -5871,6 +5871,40 @@ async fn test_git_install_failures_are_reported_until_resolved(cx: &mut TestAppC
 }
 
 #[gpui::test]
+async fn test_git_errors_redact_url_credentials(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let url = "https://kjanat:ghp_hunter2hunter2hunter2@127.0.0.1:9/zed-ldap.git";
+
+    let directory = extensions_dir.join("work");
+    git_in(&directory, &["init"]);
+    git_in(&directory, &["remote", "add", "origin", url]);
+    let error = crate::run_git(&directory, &["remote", "add", "origin", url])
+        .await
+        .expect_err("a second origin should fail");
+    let error = format!("{error:#}");
+    assert!(!error.contains("hunter2"), "{error}");
+    assert!(error.contains("[REDACTED]"), "{error}");
+
+    let mut source = GitExtensionRemote::new("git-extension", None).source();
+    source.url = url.to_string();
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extensions(vec![("git-extension".into(), source)], cx)
+        })
+        .await;
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    for text in [&failures[0].url, &failures[0].message] {
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+    assert!(
+        failures[0].url.contains("[REDACTED]"),
+        "{}",
+        failures[0].url
+    );
+}
+
+#[gpui::test]
 async fn test_git_update_failures_are_reported_until_resolved(cx: &mut TestAppContext) {
     let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
     let remote = GitExtensionRemote::new("git-extension", None);
