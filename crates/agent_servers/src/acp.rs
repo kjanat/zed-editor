@@ -38,6 +38,7 @@ use util::ResultExt as _;
 use util::path_list::PathList;
 
 const EXIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const PLUGIN_NOTICE_QUEUE_CAPACITY: usize = 16;
 
 fn mcp_configurations_for_project(
     project: &Entity<Project>,
@@ -96,6 +97,48 @@ async fn exited_load_error_after_drain(
         status,
         stderr: debug_log.trailing_stderr().map(SharedString::from),
     }
+}
+
+fn plugin_load_failure_notice(line: &str) -> Option<acp_v2::Notice> {
+    let (plugin, details) = line
+        .strip_prefix("Plugin ")?
+        .split_once(" failed to load (")?;
+    let (kind, details) = details.split_once(')')?;
+    Some(
+        acp_v2::Notice::new(
+            acp_v2::NoticeSeverity::Warning,
+            format!("Plugin {plugin} failed to load"),
+        )
+        .description(format!("{kind}{details}")),
+    )
+}
+
+fn forward_plugin_load_failures(
+    debug_log: &AcpDebugLog,
+    sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>>,
+    cx: &mut App,
+) -> Task<()> {
+    let notices = debug_log.watch_stderr(PLUGIN_NOTICE_QUEUE_CAPACITY, plugin_load_failure_notice);
+    cx.spawn(async move |cx| {
+        while let Ok(notice) = notices.recv().await {
+            let threads = sessions
+                .borrow()
+                .values()
+                .filter_map(|session| session.thread.upgrade())
+                .collect::<Vec<_>>();
+            for thread in threads {
+                thread.update(cx, |thread, cx| {
+                    if !thread
+                        .notices()
+                        .iter()
+                        .any(|(_, existing)| existing == &notice)
+                    {
+                        thread.push_notice(notice.clone(), cx);
+                    }
+                });
+            }
+        }
+    })
 }
 
 #[derive(Debug, Error)]

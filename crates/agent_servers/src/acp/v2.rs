@@ -1,8 +1,8 @@
 use super::{
     AcpDebugLog, AcpDebugMessage, AcpSession, ClientContext, ConfigOptions,
     ContextServerConfiguration, ForegroundWork, UnsupportedVersion, drain_foreground_queue,
-    enqueue_notification, first_class_terminal_auth_task, map_acp_error,
-    mcp_configurations_for_project, runtime, transport, with_v2_client_ingress,
+    enqueue_notification, first_class_terminal_auth_task, forward_plugin_load_failures,
+    map_acp_error, mcp_configurations_for_project, runtime, transport, with_v2_client_ingress,
     work_dirs_from_session_info,
 };
 use acp_thread::{
@@ -130,6 +130,7 @@ pub struct AcpV2Connection {
     _runtime: runtime::ClientRuntime,
     _stderr_task: Shared<Task<()>>,
     _wait_task: Option<Task<()>>,
+    _plugin_failure_task: Task<()>,
     _child: Option<transport::OwnedChild>,
 }
 
@@ -270,6 +271,8 @@ impl AcpV2Connection {
         if initialize_response.protocol_version != ProtocolVersion::V2 {
             return Err(UnsupportedVersion.into());
         }
+        let plugin_failure_task =
+            cx.update(|cx| forward_plugin_load_failures(&debug_log, sessions.clone(), cx));
         Ok(Self {
             id,
             connection,
@@ -284,6 +287,7 @@ impl AcpV2Connection {
             _runtime: runtime,
             _stderr_task: stderr_task,
             _wait_task: None,
+            _plugin_failure_task: plugin_failure_task,
             _child: None,
         })
     }
@@ -1746,6 +1750,32 @@ mod tests {
                     .meta(meta("initial-command")),
             ])
             .meta(meta("delivery-not-session"))
+    }
+
+    #[gpui::test]
+    async fn v2_plugin_load_failures_on_stderr_become_thread_notices(cx: &mut TestAppContext) {
+        let harness = SessionHarness::new(session_capabilities(), vec![], vec![], cx).await;
+        let thread = harness.thread(cx).await;
+
+        harness.client.debug_log.record_line(
+            super::super::AcpDebugMessageDirection::Stderr,
+            "Plugin formatter failed to load (generic-error): manifest missing",
+        );
+        cx.run_until_parked();
+
+        thread.read_with(cx, |thread, _| {
+            assert_eq!(
+                thread.notices(),
+                &[(
+                    0,
+                    acp::Notice::new(
+                        acp::NoticeSeverity::Warning,
+                        "Plugin formatter failed to load",
+                    )
+                    .description("generic-error: manifest missing"),
+                )]
+            );
+        });
     }
 
     #[gpui::test]
