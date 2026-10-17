@@ -5918,6 +5918,154 @@ async fn test_git_errors_redact_url_credentials(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_git_theme_validation_checks_declared_resources(executor: BackgroundExecutor) {
+    let valid_theme = r#"{
+        // Theme resources support comments and trailing commas.
+        "name": "Test family", "author": "Test author",
+        "themes": [{"name": "Test theme", "appearance": "dark", "style": {},}],
+    }"#;
+    for resource_kind in ["themes", "icon_themes"] {
+        let fs = FakeFs::new(executor.clone());
+        let root = Path::new(path!("/extension"));
+        fs.insert_tree(
+            root,
+            json!({
+                "extension.toml": format!(
+                    "id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\nschema_version = 1\n{resource_kind} = [\"custom/resource.json\"]\n"
+                ),
+                "custom": {"resource.json": valid_theme},
+            }),
+        )
+        .await;
+        let filesystem: Arc<dyn Fs> = fs.clone();
+        let manifest = ExtensionManifest::load(filesystem.clone(), root)
+            .await
+            .expect("valid manifest");
+        crate::validate_git_theme_resources(&filesystem, root, &manifest)
+            .await
+            .expect("valid JSONC resource");
+
+        let resource = root.join("custom/resource.json");
+        for invalid in ["{", "{}"] {
+            fs.insert_file(&resource, invalid.as_bytes().to_vec()).await;
+            let error = crate::validate_git_theme_resources(&filesystem, root, &manifest)
+                .await
+                .expect_err("invalid syntax or schema must fail validation");
+            assert!(format!("{error:#}").contains("custom/resource.json"));
+        }
+        fs.remove_file(&resource, RemoveOptions::default())
+            .await
+            .expect("remove declared resource");
+        let error = crate::validate_git_theme_resources(&filesystem, root, &manifest)
+            .await
+            .expect_err("missing declared resource must fail validation");
+        assert!(format!("{error:#}").contains("custom/resource.json"));
+    }
+}
+
+#[gpui::test]
+async fn test_git_install_rejects_invalid_theme_resources_without_ui_proxy(
+    cx: &mut TestAppContext,
+) {
+    for resource_directory in ["themes", "icon_themes"] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        let resources = remote.seed.join(resource_directory);
+        std::fs::create_dir(&resources).expect("resource directory");
+        std::fs::write(resources.join("broken.json"), "{").expect("malformed resource");
+        remote.publish("git-extension", "0.2.0");
+
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extensions(vec![("git-extension".into(), remote.source())], cx)
+            })
+            .await;
+
+        let failures = git_failures(&store, cx);
+        assert_eq!(failures.len(), 1);
+        let failure = failures.first().expect("install failure");
+        assert!(
+            failure
+                .message
+                .contains(&format!("{resource_directory}/broken.json"))
+        );
+        assert!(installed_version(&store, "git-extension", cx).is_none());
+        assert!(std::fs::symlink_metadata(extensions_dir.join("installed/git-extension")).is_err());
+        assert!(!extensions_dir.join("sources/git-extension").exists());
+        assert!(!extensions_dir.join("sources/git-extension.toml").exists());
+    }
+}
+
+#[gpui::test]
+async fn test_git_update_rejects_invalid_theme_resources(cx: &mut TestAppContext) {
+    for resource_directory in ["themes", "icon_themes"] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let proxy = store.read_with(cx, |store, _| store.proxy.clone());
+        theme_extension::init(
+            proxy,
+            Arc::new(ThemeRegistry::new(Box::new(()))),
+            cx.executor(),
+        );
+        let remote = GitExtensionRemote::new("git-extension", None);
+        let resources = remote.seed.join(resource_directory);
+        std::fs::create_dir(&resources).expect("resource directory");
+        let valid_resource = json!({
+            "name": "Test family", "author": "Test author",
+            "themes": [{"name": "Test theme", "appearance": "dark", "style": {}}],
+        })
+        .to_string();
+        std::fs::write(resources.join("theme.json"), &valid_resource).expect("valid resource");
+        remote.publish("git-extension", "0.1.1");
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("valid extension installs");
+        let original_source =
+            installed_source(&store, "git-extension", cx).expect("installed git source");
+        let record_path = extensions_dir.join("sources/git-extension.toml");
+        let original_record = std::fs::read(&record_path).expect("installed source record");
+
+        std::fs::write(resources.join("theme.json"), "{").expect("malformed replacement");
+        remote.publish("git-extension", "0.2.0");
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("update check reports resource failure");
+
+        let failures = git_failures(&store, cx);
+        assert_eq!(failures.len(), 1);
+        let failure = failures.first().expect("update failure");
+        assert!(
+            failure
+                .message
+                .contains(&format!("{resource_directory}/theme.json"))
+        );
+        assert_eq!(
+            installed_source(&store, "git-extension", cx),
+            Some(original_source)
+        );
+        assert_eq!(
+            std::fs::read(&record_path).expect("source record"),
+            original_record
+        );
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("0.1.1")
+        );
+        let installed_resource = extensions_dir
+            .join("installed/git-extension")
+            .join(resource_directory)
+            .join("theme.json");
+        assert_eq!(
+            std::fs::read_to_string(installed_resource).expect("original installed resource"),
+            valid_resource
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_git_update_that_cannot_be_indexed_keeps_installed_extension(cx: &mut TestAppContext) {
     let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
     let remote = GitExtensionRemote::new("git-extension", None);

@@ -518,6 +518,7 @@ async fn build_git_source(
             fs.clone(),
         )
         .await?;
+    validate_git_theme_resources(&fs, &staged_extension, &manifest).await?;
     ExtensionStore::add_extension_to_index(
         fs.clone(),
         staged_extension,
@@ -581,6 +582,33 @@ async fn build_git_source(
         extension_id,
         source.path.as_deref(),
     ))
+}
+
+async fn validate_git_theme_resources(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+) -> Result<()> {
+    // Indexing tolerates broken resources and absent UI proxies; a replacement must not.
+    for theme_path in &manifest.themes {
+        let path = extension_dir.join(theme_path.as_std_path());
+        let contents = fs
+            .load_bytes(&path)
+            .await
+            .with_context(|| format!("reading theme {theme_path}"))?;
+        theme_settings::deserialize_user_theme(&contents)
+            .with_context(|| format!("validating theme {theme_path}"))?;
+    }
+    for icon_theme_path in &manifest.icon_themes {
+        let path = extension_dir.join(icon_theme_path.as_std_path());
+        let contents = fs
+            .load_bytes(&path)
+            .await
+            .with_context(|| format!("reading icon theme {icon_theme_path}"))?;
+        theme::deserialize_icon_theme(&contents)
+            .with_context(|| format!("validating icon theme {icon_theme_path}"))?;
+    }
+    Ok(())
 }
 
 async fn remote_commit(directory: &Path, source: &GitExtensionSource) -> Result<Option<String>> {
