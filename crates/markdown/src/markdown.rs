@@ -3301,6 +3301,7 @@ impl Element for MarkdownElement {
                                     range,
                                     markdown_end,
                                 );
+                                builder.detached_text = true;
                                 builder.push_text_style(TextStyleRefinement {
                                     font_weight: Some(FontWeight::SEMIBOLD),
                                     color: Some(cx.theme().colors().text_muted),
@@ -3316,6 +3317,7 @@ impl Element for MarkdownElement {
                                     );
                                 }
                             } else {
+                                builder.anchor_pending_labels(range.start);
                                 let in_field = builder.table.in_field;
                                 builder.push_div(
                                     div()
@@ -3516,6 +3518,7 @@ impl Element for MarkdownElement {
                         let is_list_label = builder.table.is_list_label(index);
                         builder.replace_pending_checkbox(self.on_checkbox_toggle.clone());
                         builder.pop_div();
+                        builder.detached_text = false;
                         builder.pop_text_style();
                         builder.table.end_cell(is_list_label);
                     }
@@ -4422,6 +4425,9 @@ struct MarkdownElementBuilder {
     rendered_image_links: Vec<RenderedImageLink>,
     rendered_footnote_refs: Vec<RenderedFootnoteRef>,
     current_source_index: usize,
+    detached_text: bool,
+    pending_labels: Vec<Rc<RenderedLine>>,
+    rendered_labels: Vec<(Rc<RenderedLine>, usize)>,
     html_comment: bool,
     rendered_footnote_separator: bool,
     base_text_style: TextStyle,
@@ -4538,6 +4544,9 @@ impl MarkdownElementBuilder {
             rendered_image_links: Vec::new(),
             rendered_footnote_refs: Vec::new(),
             current_source_index: 0,
+            detached_text: false,
+            pending_labels: Vec::new(),
+            rendered_labels: Vec::new(),
             html_comment: false,
             rendered_footnote_separator: false,
             base_text_style,
@@ -4800,6 +4809,14 @@ impl MarkdownElementBuilder {
         self.push_highlighted_text(text, source_range, None);
     }
 
+    fn anchor_pending_labels(&mut self, value_start: usize) {
+        self.rendered_labels.extend(
+            self.pending_labels
+                .drain(..)
+                .map(|label| (label, value_start)),
+        );
+    }
+
     fn push_highlighted_text(
         &mut self,
         text: &str,
@@ -4811,7 +4828,9 @@ impl MarkdownElementBuilder {
             source_index: source_range.start,
         });
         self.pending_line.text.push_str(text);
-        self.current_source_index = source_range.end;
+        if !self.detached_text {
+            self.current_source_index = source_range.end;
+        }
 
         // Compute the base text style once
         let text_style = self.text_style();
@@ -4860,7 +4879,9 @@ impl MarkdownElementBuilder {
                 .text
                 .truncate(self.pending_line.text.len() - 1);
             self.pending_line.runs.last_mut().unwrap().len -= 1;
-            self.current_source_index -= 1;
+            if !self.detached_text {
+                self.current_source_index -= 1;
+            }
         }
     }
 
@@ -4926,6 +4947,9 @@ impl MarkdownElementBuilder {
         text_style.color = Hsla::transparent_black();
         let text = "\u{200B}";
         let styled_text = StyledText::new(text).with_runs(vec![text_style.to_run(text.len())]);
+        if self.detached_text {
+            return div().into_any_element();
+        }
         self.rendered_lines.push(Rc::new(RenderedLine {
             layout: styled_text.layout().clone(),
             visible_bounds: Cell::new(None),
@@ -4958,6 +4982,7 @@ impl MarkdownElementBuilder {
         let highlights = line
             .source_mappings
             .first()
+            .filter(|_| !self.detached_text)
             .map(|first_mapping| {
                 self.highlights
                     .highlights_for_line(first_mapping.source_index..self.current_source_index)
@@ -4978,7 +5003,11 @@ impl MarkdownElementBuilder {
             highlights,
             code_chips: line.code_chips.into_iter().collect(),
         });
-        self.rendered_lines.push(rendered_line.clone());
+        if self.detached_text {
+            self.pending_labels.push(rendered_line.clone());
+        } else {
+            self.rendered_lines.push(rendered_line.clone());
+        }
         self.append_child(
             RenderedLineElement {
                 text,
@@ -4995,6 +5024,7 @@ impl MarkdownElementBuilder {
             element: self.div_stack.pop().unwrap().div.into_any_element(),
             text: RenderedText {
                 lines: self.rendered_lines.into(),
+                labels: self.rendered_labels.into(),
                 links: self.rendered_links.into(),
                 image_links: self.rendered_image_links.into(),
                 footnote_refs: self.rendered_footnote_refs.into(),
@@ -5460,6 +5490,7 @@ pub struct RenderedMarkdown {
 #[derive(Clone)]
 struct RenderedText {
     lines: Rc<[Rc<RenderedLine>]>,
+    labels: Rc<[(Rc<RenderedLine>, usize)]>,
     links: Rc<[RenderedLink]>,
     image_links: Rc<[RenderedImageLink]>,
     footnote_refs: Rc<[RenderedFootnoteRef]>,
@@ -5584,6 +5615,13 @@ impl RenderedText {
     }
 
     fn source_index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
+        if let Some((_, value_start)) = self
+            .labels
+            .iter()
+            .find(|(label, _)| label.layout.bounds().contains(&position))
+        {
+            return Ok(*value_start);
+        }
         let mut lines = self.lines.iter().peekable();
         let mut fallback_line: Option<&Rc<RenderedLine>> = None;
         let mut gap_source_index: Option<usize> = None;
@@ -8702,18 +8740,10 @@ mod tests {
         assert_eq!(
             rendered_line_texts(&rendered_text),
             [
-                "Done",
-                "Name",
                 "bold",
-                "Name",
                 "code",
-                "Column 4",
                 "docs long_unbroken_identifier_value",
-                "Done",
-                "Name",
                 "second",
-                "Name",
-                "Column 4",
                 "plain",
             ]
         );
@@ -8729,6 +8759,7 @@ mod tests {
                 let value = cx
                     .debug_bounds(format!("markdown_table_cell_{row}_{column}").leak())
                     .expect("each cell should have a value");
+                assert!(label.size.height > px(0.) && label.size.width > px(0.));
                 assert!(label.bottom() <= value.top());
                 assert!(entry.contains(&label.origin) && entry.contains(&value.origin));
             }
@@ -8834,12 +8865,73 @@ mod tests {
         assert!((beta_start..beta_start + "beta".len()).contains(&source_index));
 
         let header_start = source.find("Notes").expect("header");
-        assert_eq!(
+        assert!(
             rendered_text
                 .bounds_for_source_range(header_start..header_start + "Notes".len())
-                .len(),
-            2,
-            "every entry should label its value"
+                .is_empty(),
+            "repeated labels should stay out of the selectable text"
+        );
+    }
+
+    #[gpui::test]
+    fn test_table_list_layout_drag_from_a_label_stays_in_its_entry(cx: &mut TestAppContext) {
+        let source = indoc::indoc! {"
+            | Name | Notes |
+            | --- | --- |
+            | first | alpha |
+            | second | beta |
+        "};
+        let (markdown, rendered_text, cx) =
+            open_table_layout_view(source, Some(MarkdownTableLayout::List), px(800.), cx);
+        assert!(is_list_layout(cx));
+
+        let label = cx
+            .debug_bounds("markdown_table_label_1_1")
+            .expect("the second entry should label its notes");
+        let beta_start = source.find("beta").expect("beta cell");
+        let beta_end = beta_start + "beta".len();
+        let beta_bounds = rendered_text
+            .borrow()
+            .as_ref()
+            .expect("markdown should be rendered")
+            .bounds_for_source_range(beta_start..beta_end)
+            .into_iter()
+            .next()
+            .expect("beta should have bounds");
+        let beta_right = point(beta_bounds.right() - px(1.), beta_bounds.center().y);
+
+        cx.simulate_mouse_down(label.center(), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(beta_right, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(beta_right, MouseButton::Left, Modifiers::default());
+
+        let row_start = source.find("| second").expect("second row");
+        let selection = markdown.read_with(cx, |markdown, _| markdown.selection.clone());
+        assert!(
+            selection.start >= row_start && selection.end <= beta_end,
+            "{:?} should stay inside the second entry",
+            selection.start..selection.end
+        );
+        let selected = rendered_text
+            .borrow()
+            .as_ref()
+            .expect("markdown should be rendered")
+            .text_for_range(selection.start..selection.end);
+        assert!(selected.contains("bet"), "{selected:?}");
+        assert!(!selected.contains("alpha"), "{selected:?}");
+        assert!(!selected.contains("second"), "{selected:?}");
+        let highlighted = rendered_text
+            .borrow()
+            .as_ref()
+            .expect("markdown should be rendered")
+            .bounds_for_source_range(selection.start..selection.end);
+        let first_entry = cx
+            .debug_bounds("markdown_table_entry_0")
+            .expect("the first row should render as an entry");
+        assert!(
+            highlighted
+                .iter()
+                .all(|bounds| !first_entry.intersects(bounds)),
+            "the selection should not highlight the first entry"
         );
     }
 
