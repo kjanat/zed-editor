@@ -7191,6 +7191,18 @@ cat >/dev/null
                 })
                 .await
                 .expect("create scripted session");
+            connection.sessions.borrow_mut().insert(
+                acp_v2::SessionId::new("released-thread"),
+                AcpSession {
+                    thread: gpui::WeakEntity::new_invalid(),
+                    connection: std::rc::Weak::new(),
+                    suppress_abort_err: false,
+                    session_modes: None,
+                    config_options: None,
+                    default_config_task: None,
+                    _release_subscription: gpui::Subscription::new(|| {}),
+                },
+            );
             let (notice_sender, notice_receiver) = async_channel::unbounded();
             let _subscription = cx.update(|cx| {
                 cx.subscribe(&thread, move |_, event, _| {

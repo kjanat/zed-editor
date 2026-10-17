@@ -37,6 +37,7 @@ use thiserror::Error;
 use util::ResultExt as _;
 
 const EXIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const PLUGIN_NOTICE_QUEUE_CAPACITY: usize = 16;
 
 fn mcp_configurations_for_project(
     project: &Entity<Project>,
@@ -100,32 +101,24 @@ fn forward_plugin_load_failures(
     sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>>,
     cx: &mut App,
 ) -> Task<()> {
-    let (_backlog, messages) = debug_log.subscribe();
+    let notices = debug_log.watch_stderr(PLUGIN_NOTICE_QUEUE_CAPACITY, plugin_load_failure_notice);
     cx.spawn(async move |cx| {
-        while let Ok(message) = messages.recv().await {
-            let AcpDebugMessageContent::Stderr { line } = &message.message else {
-                continue;
-            };
-            let Some(notice) = plugin_load_failure_notice(line) else {
-                continue;
-            };
+        while let Ok(notice) = notices.recv().await {
             let threads = sessions
                 .borrow()
                 .values()
-                .map(|session| session.thread.clone())
+                .filter_map(|session| session.thread.upgrade())
                 .collect::<Vec<_>>();
             for thread in threads {
-                thread
-                    .update(cx, |thread, cx| {
-                        if !thread
-                            .notices()
-                            .iter()
-                            .any(|(_, existing)| existing == &notice)
-                        {
-                            thread.push_notice(notice.clone(), cx);
-                        }
-                    })
-                    .ok();
+                thread.update(cx, |thread, cx| {
+                    if !thread
+                        .notices()
+                        .iter()
+                        .any(|(_, existing)| existing == &notice)
+                    {
+                        thread.push_notice(notice.clone(), cx);
+                    }
+                });
             }
         }
     })
