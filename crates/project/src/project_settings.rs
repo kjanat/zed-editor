@@ -137,6 +137,9 @@ pub struct GlobalLspSettings {
     ///
     /// Default: `20000`
     pub max_buffer_line_length: u32,
+    /// Environment variables passed to every language server process.
+    /// `lsp.<server>.binary.env` overrides these key by key.
+    pub env: BTreeMap<String, String>,
     pub notifications: LspNotificationSettings,
 
     /// Rules for highlighting semantic tokens.
@@ -149,6 +152,7 @@ impl Default for GlobalLspSettings {
             button: true,
             request_timeout: DEFAULT_LSP_REQUEST_TIMEOUT_SECS,
             max_buffer_line_length: 20_000,
+            env: BTreeMap::new(),
             notifications: LspNotificationSettings::default(),
             semantic_token_rules: SemanticTokenRules::default(),
         }
@@ -753,6 +757,13 @@ impl Settings for ProjectSettings {
                     .unwrap()
                     .max_buffer_line_length
                     .unwrap(),
+                env: content
+                    .global_lsp_settings
+                    .as_ref()
+                    .unwrap()
+                    .env
+                    .clone()
+                    .unwrap_or_default(),
                 notifications: LspNotificationSettings {
                     dismiss_timeout_ms: content
                         .global_lsp_settings

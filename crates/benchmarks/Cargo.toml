@@ -29,6 +29,10 @@ name    = "edit_file_tool"
 harness = false
 name    = "markdown_renderer"
 
+[[bench]]
+harness = false
+name    = "diff_excerpts"
+
 [dependencies]
 rand.workspace = true
 
@@ -37,6 +41,7 @@ action_log.workspace     = true
 agent                    = { workspace = true, features = ["test-support"] }
 agent_settings.workspace = true
 assets.workspace         = true
+buffer_diff              = { workspace = true, features = ["test-support"] }
 criterion.workspace      = true
 editor                   = { workspace = true, features = ["test-support"] }
 futures.workspace        = true

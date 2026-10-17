@@ -114,15 +114,21 @@ impl MultiBuffer {
         let buffer_snapshot = buffer.read(cx).snapshot();
         let ranges: Vec<_> = ranges.into_iter().collect();
         let excerpt_ranges = build_excerpt_ranges(ranges, context_line_count, &buffer_snapshot);
-        let merged = self.merge_new_with_existing_excerpt_ranges(
-            &path,
-            &buffer_snapshot,
-            excerpt_ranges,
-            cx,
-        );
+        self.update_excerpt_ranges_for_path(path, buffer, &buffer_snapshot, excerpt_ranges, cx)
+    }
 
+    pub fn update_excerpt_ranges_for_path(
+        &mut self,
+        path: PathKey,
+        buffer: Entity<Buffer>,
+        buffer_snapshot: &BufferSnapshot,
+        excerpt_ranges: Vec<ExcerptRange<Point>>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let merged =
+            self.merge_new_with_existing_excerpt_ranges(&path, buffer_snapshot, excerpt_ranges, cx);
         let (inserted, _path_key_index) =
-            self.set_merged_excerpt_ranges_for_path(path, buffer, &buffer_snapshot, merged, cx);
+            self.set_merged_excerpt_ranges_for_path(path, buffer, buffer_snapshot, merged, cx);
         inserted
     }
 
