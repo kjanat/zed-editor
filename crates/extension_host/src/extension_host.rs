@@ -386,6 +386,16 @@ fn git_source_subdirectory(mut directory: PathBuf, path: Option<&str>) -> PathBu
 const GIT_SOURCE_BACKUP_ID: &str = "extension_id";
 const GIT_SOURCE_BACKUP_CHECKOUT: &str = "checkout";
 const GIT_SOURCE_BACKUP_RECORD: &str = "record.toml";
+const GIT_SOURCE_BACKUP_INSTALLED: &str = "installed";
+const GIT_SOURCE_BACKUP_STATE: &str = "state.toml";
+const GIT_SOURCE_BACKUP_COMMITTED: &str = "committed";
+
+#[derive(Serialize, Deserialize)]
+struct GitSourceBackupState {
+    checkout_existed: bool,
+    installed_existed: bool,
+    record: Option<String>,
+}
 
 fn git_source_backup_dir(staging_dir: &Path) -> PathBuf {
     staging_dir.join("git-source.previous")
@@ -396,11 +406,14 @@ async fn recover_git_source(
     staging_dir: &Path,
     sources_dir: &Path,
     index_path: &Path,
+    installed_dir: &Path,
 ) -> Result<()> {
     let backup = git_source_backup_dir(staging_dir);
-    let Ok(extension_id) = fs.load(&backup.join(GIT_SOURCE_BACKUP_ID)).await else {
+    let identifier = backup.join(GIT_SOURCE_BACKUP_ID);
+    if fs.metadata(&identifier).await?.is_none() {
         return Ok(());
-    };
+    }
+    let extension_id = fs.load(&identifier).await?;
     anyhow::ensure!(
         is_single_path_component(&extension_id),
         "git source backup names extension {extension_id:?}"
@@ -413,34 +426,77 @@ async fn recover_git_source(
         },
     )
     .await?;
-    let live = git_source_dir(sources_dir, &extension_id);
-    let previous = backup.join(GIT_SOURCE_BACKUP_CHECKOUT);
-    let intended = fs.load(&backup.join(GIT_SOURCE_BACKUP_RECORD)).await.ok();
-    let committed = match &intended {
-        Some(intended) => {
-            fs.is_dir(&live).await
-                && fs
-                    .load(&git_source_record_path(sources_dir, &extension_id))
-                    .await
-                    .is_ok_and(|record| &record == intended)
-        }
-        None => false,
-    };
-    if !committed {
-        let has_previous = fs.is_dir(&previous).await;
-        if has_previous || intended.is_some() {
-            fs.remove_dir(
-                &live,
-                RemoveOptions {
-                    recursive: true,
-                    ignore_if_not_exists: true,
-                },
+    if fs
+        .metadata(&backup.join(GIT_SOURCE_BACKUP_STATE))
+        .await?
+        .is_some()
+    {
+        let state: GitSourceBackupState =
+            toml::from_str(&fs.load(&backup.join(GIT_SOURCE_BACKUP_STATE)).await?)?;
+        if fs
+            .metadata(&backup.join(GIT_SOURCE_BACKUP_COMMITTED))
+            .await?
+            .is_none()
+        {
+            restore_git_source_entry(
+                fs,
+                &git_source_dir(sources_dir, &extension_id),
+                &backup.join(GIT_SOURCE_BACKUP_CHECKOUT),
+                state.checkout_existed,
             )
             .await?;
+            restore_git_source_entry(
+                fs,
+                &installed_dir.join(&extension_id),
+                &backup.join(GIT_SOURCE_BACKUP_INSTALLED),
+                state.installed_existed,
+            )
+            .await?;
+            let record_path = git_source_record_path(sources_dir, &extension_id);
+            match state.record {
+                Some(record) => fs.atomic_write(record_path, record).await?,
+                None => {
+                    fs.remove_file(
+                        &record_path,
+                        RemoveOptions {
+                            recursive: false,
+                            ignore_if_not_exists: true,
+                        },
+                    )
+                    .await?
+                }
+            }
         }
-        if has_previous {
-            fs.rename(&previous, &live, RenameOptions::default())
+    } else {
+        let live = git_source_dir(sources_dir, &extension_id);
+        let previous = backup.join(GIT_SOURCE_BACKUP_CHECKOUT);
+        let intended = fs.load(&backup.join(GIT_SOURCE_BACKUP_RECORD)).await.ok();
+        let committed = match &intended {
+            Some(intended) => {
+                fs.is_dir(&live).await
+                    && fs
+                        .load(&git_source_record_path(sources_dir, &extension_id))
+                        .await
+                        .is_ok_and(|record| &record == intended)
+            }
+            None => false,
+        };
+        if !committed {
+            let has_previous = fs.is_dir(&previous).await;
+            if has_previous || intended.is_some() {
+                fs.remove_dir(
+                    &live,
+                    RemoveOptions {
+                        recursive: true,
+                        ignore_if_not_exists: true,
+                    },
+                )
                 .await?;
+            }
+            if has_previous {
+                fs.rename(&previous, &live, RenameOptions::default())
+                    .await?;
+            }
         }
     }
     let discarded = tempfile::tempdir_in(staging_dir)?;
@@ -450,6 +506,32 @@ async fn recover_git_source(
         RenameOptions::default(),
     )
     .await
+}
+
+async fn restore_git_source_entry(
+    fs: &Arc<dyn Fs>,
+    live: &Path,
+    previous: &Path,
+    existed: bool,
+) -> Result<()> {
+    let has_previous = fs.metadata(previous).await?.is_some();
+    if has_previous || !existed {
+        if let Some(metadata) = fs.metadata(live).await? {
+            let options = RemoveOptions {
+                recursive: !metadata.is_symlink,
+                ignore_if_not_exists: true,
+            };
+            if metadata.is_dir && !metadata.is_symlink {
+                fs.remove_dir(live, options).await?;
+            } else {
+                fs.remove_file(live, options).await?;
+            }
+        }
+        if has_previous {
+            fs.rename(previous, live, RenameOptions::default()).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn run_git(directory: &Path, args: &[&str]) -> Result<String> {
@@ -475,12 +557,13 @@ async fn build_git_source(
     staging_dir: &Path,
     sources_dir: &Path,
     index_path: &Path,
+    installed_dir: &Path,
     wasm_host: Arc<WasmHost>,
     extension_id: &str,
     source: &GitExtensionSource,
 ) -> Result<PathBuf> {
     fs.create_dir(staging_dir).await?;
-    recover_git_source(&fs, staging_dir, sources_dir, index_path).await?;
+    recover_git_source(&fs, staging_dir, sources_dir, index_path, installed_dir).await?;
     let backup = git_source_backup_dir(staging_dir);
     fs.remove_dir(
         &backup,
@@ -524,7 +607,7 @@ async fn build_git_source(
     let mut staged_index = ExtensionIndex::default();
     ExtensionStore::add_extension_to_index(
         fs.clone(),
-        staged_extension,
+        staged_extension.clone(),
         sources_dir,
         &mut staged_index,
         wasm_host.proxy.clone(),
@@ -536,6 +619,8 @@ async fn build_git_source(
         .extensions
         .get(extension_id)
         .context("the fetched extension is missing from the staged index")?;
+    validate_git_language_queries(&fs, &staged_extension, &entry.manifest, &wasm_host.proxy)
+        .await?;
     if entry.manifest.lib.kind.is_some() {
         let wasm_bytes = fs
             .load_bytes(&wasm_path)
@@ -553,53 +638,176 @@ async fn build_git_source(
         path: source.path.clone(),
         commit,
     })?;
-    fs.remove_file(
+    let extension_path =
+        git_source_extension_path(sources_dir, extension_id, source.path.as_deref());
+    GitSourceTransaction {
+        staging_dir,
+        sources_dir,
         index_path,
-        RemoveOptions {
-            recursive: false,
-            ignore_if_not_exists: true,
-        },
+        installed_dir,
+        extension_id,
+    }
+    .commit(
+        &fs,
+        directory,
+        record,
+        fs.create_symlink(&installed_dir.join(extension_id), extension_path.clone()),
     )
     .await?;
+    Ok(extension_path)
+}
 
-    let live = git_source_dir(sources_dir, extension_id);
-    let committed = async {
-        fs.create_dir(&backup).await?;
-        fs.atomic_write(backup.join(GIT_SOURCE_BACKUP_ID), extension_id.to_string())
-            .await?;
-        if fs.is_dir(&live).await {
-            fs.rename(
-                &live,
-                &backup.join(GIT_SOURCE_BACKUP_CHECKOUT),
-                RenameOptions::default(),
-            )
-            .await?;
-        }
-        fs.atomic_write(backup.join(GIT_SOURCE_BACKUP_RECORD), record.clone())
-            .await?;
-        fs.rename(
-            directory,
-            &live,
-            RenameOptions {
-                overwrite: true,
-                ignore_if_exists: true,
-                create_parents: true,
+struct GitSourceTransaction<'a> {
+    staging_dir: &'a Path,
+    sources_dir: &'a Path,
+    index_path: &'a Path,
+    installed_dir: &'a Path,
+    extension_id: &'a str,
+}
+
+impl GitSourceTransaction<'_> {
+    async fn commit(
+        &self,
+        fs: &Arc<dyn Fs>,
+        directory: &Path,
+        record: String,
+        install_link: impl Future<Output = Result<()>>,
+    ) -> Result<()> {
+        let staging_dir = self.staging_dir;
+        let sources_dir = self.sources_dir;
+        let index_path = self.index_path;
+        let installed_dir = self.installed_dir;
+        let extension_id = self.extension_id;
+        let backup = git_source_backup_dir(staging_dir);
+        fs.remove_file(
+            index_path,
+            RemoveOptions {
+                recursive: false,
+                ignore_if_not_exists: true,
             },
         )
         .await?;
-        fs.atomic_write(git_source_record_path(sources_dir, extension_id), record)
-            .await
+
+        let live = git_source_dir(sources_dir, extension_id);
+        let installed = installed_dir.join(extension_id);
+        let record_path = git_source_record_path(sources_dir, extension_id);
+        let state = GitSourceBackupState {
+            checkout_existed: fs.metadata(&live).await?.is_some(),
+            installed_existed: fs.metadata(&installed).await?.is_some(),
+            record: if fs.metadata(&record_path).await?.is_some() {
+                Some(fs.load(&record_path).await?)
+            } else {
+                None
+            },
+        };
+        let committed = async {
+            fs.create_dir(&backup).await?;
+            fs.atomic_write(backup.join(GIT_SOURCE_BACKUP_ID), extension_id.to_string())
+                .await?;
+            fs.atomic_write(
+                backup.join(GIT_SOURCE_BACKUP_STATE),
+                toml::to_string(&state)?,
+            )
+            .await?;
+            if state.checkout_existed {
+                fs.rename(
+                    &live,
+                    &backup.join(GIT_SOURCE_BACKUP_CHECKOUT),
+                    RenameOptions::default(),
+                )
+                .await?;
+            }
+            fs.rename(
+                directory,
+                &live,
+                RenameOptions {
+                    create_parents: true,
+                    ..RenameOptions::default()
+                },
+            )
+            .await?;
+            if state.installed_existed {
+                fs.rename(
+                    &installed,
+                    &backup.join(GIT_SOURCE_BACKUP_INSTALLED),
+                    RenameOptions::default(),
+                )
+                .await?;
+            }
+            install_link.await?;
+            fs.atomic_write(record_path, record).await?;
+            // Repairs can keep the same source record; only this marker commits the link too.
+            fs.atomic_write(backup.join(GIT_SOURCE_BACKUP_COMMITTED), String::new())
+                .await
+        }
+        .await;
+        match committed {
+            Ok(()) => {
+                // The install is committed; retry cleanup on the next install or startup.
+                recover_git_source(fs, staging_dir, sources_dir, index_path, installed_dir)
+                    .await
+                    .context("cleaning up a committed git extension install")
+                    .log_err();
+            }
+            Err(error) => {
+                recover_git_source(fs, staging_dir, sources_dir, index_path, installed_dir)
+                    .await
+                    .with_context(|| {
+                        format!("recovering failed git extension install: {error:#}")
+                    })?;
+                return Err(error);
+            }
+        }
+        Ok(())
     }
-    .await;
-    recover_git_source(&fs, staging_dir, sources_dir, index_path)
-        .await
-        .log_err();
-    committed?;
-    Ok(git_source_extension_path(
-        sources_dir,
-        extension_id,
-        source.path.as_deref(),
-    ))
+}
+
+async fn validate_git_language_queries(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+    proxy: &ExtensionHostProxy,
+) -> Result<()> {
+    for language_path in &manifest.languages {
+        let language_dir = extension_dir.join(language_path);
+        let result = async {
+            let config = fs
+                .load(&language_dir.join(LanguageConfig::FILE_NAME))
+                .await?;
+            let config = LanguageConfig::from_toml(&config)?;
+            let Some(grammar_name) = config.grammar.clone() else {
+                return Ok(());
+            };
+            let query_files = discover_query_files(fs.clone(), &language_dir).await?;
+            let mut files = Vec::new();
+            for query_file in query_files.query_files() {
+                let contents = fs.load(&language_dir.join(query_file.file_name())).await?;
+                files.push(QueryFileContents::new(query_file, Cow::Owned(contents)));
+            }
+            let queries = LanguageQueries::from_files(files);
+            if manifest.grammars.contains_key(&grammar_name) {
+                let grammar_path = extension_dir
+                    .join("grammars")
+                    .join(format!("{grammar_name}.wasm"));
+                let bytes = fs.load_bytes(&grammar_path).await?;
+                let grammar = language::with_parser(|parser| {
+                    let mut store = parser.take_wasm_store().context("missing wasm store")?;
+                    let grammar = store.load_language(&grammar_name, &bytes);
+                    parser.set_wasm_store(store)?;
+                    grammar.map_err(anyhow::Error::from)
+                })?;
+                language::Language::new(config, Some(grammar)).with_queries(queries)?;
+            } else {
+                proxy
+                    .validate_language_queries(manifest.id.clone(), config, queries)
+                    .await?;
+            }
+            anyhow::Ok(())
+        }
+        .await;
+        result.with_context(|| format!("validating language queries in {language_path}"))?;
+    }
+    Ok(())
 }
 
 async fn validate_git_theme_resources(
@@ -927,6 +1135,7 @@ impl ExtensionStore {
                 &this.staging_dir,
                 &this.sources_dir,
                 &this.index_path,
+                &this.installed_dir,
             ))
             .context("recovering an interrupted git extension install")
             .log_err();
@@ -1424,6 +1633,7 @@ impl ExtensionStore {
         let builder = self.builder.clone();
         let staging_dir = self.staging_dir.clone();
         let sources_dir = self.sources_dir.clone();
+        let installed_dir = self.installed_dir.clone();
         let index_path = self.index_path.clone();
         let proxy = self.proxy.clone();
         let wasm_host = self.wasm_host.clone();
@@ -1460,6 +1670,7 @@ impl ExtensionStore {
                         let builder = builder.clone();
                         let staging_dir = staging_dir.clone();
                         let sources_dir = sources_dir.clone();
+                        let installed_dir = installed_dir.clone();
                         let index_path = index_path.clone();
                         let proxy = proxy.clone();
                         let wasm_host = wasm_host.clone();
@@ -1510,6 +1721,7 @@ impl ExtensionStore {
                                     &staging_dir,
                                     &sources_dir,
                                     &index_path,
+                                    &installed_dir,
                                     wasm_host,
                                     &extension_id,
                                     &source,
@@ -1578,12 +1790,13 @@ impl ExtensionStore {
 
         cx.spawn(async move |this, cx| {
             let _source_guard = git_source_lock.lock().await;
-            let extension_path = {
-                let _operation =
-                    Self::begin_operation(&this, &extension_id, ExtensionOperation::Install, cx)?;
-                cx.background_spawn({
+            let _operation =
+                Self::begin_operation(&this, &extension_id, ExtensionOperation::Install, cx)?;
+            let result = cx
+                .background_spawn({
                     let fs = fs.clone();
                     let extension_id = extension_id.clone();
+                    let extensions_dir = extensions_dir.clone();
                     async move {
                         build_git_source(
                             fs,
@@ -1591,6 +1804,7 @@ impl ExtensionStore {
                             &staging_dir,
                             &sources_dir,
                             &index_path,
+                            &extensions_dir,
                             wasm_host,
                             &extension_id,
                             &source,
@@ -1598,21 +1812,12 @@ impl ExtensionStore {
                         .await
                     }
                 })
-                .await?
-            };
-
-            Self::uninstall_unless_dev(&this, &extension_id, cx).await;
-            let _operation =
-                Self::begin_operation(&this, &extension_id, ExtensionOperation::Install, cx)?;
-            Self::link_dev_extension(
-                &this,
-                &fs,
-                &extensions_dir,
-                &extension_id,
-                extension_path,
-                cx,
-            )
-            .await
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |this, cx| this.reload(None, cx))?.await;
+                return Err(error);
+            }
+            Self::finish_dev_extension_install(&this, &extension_id, cx).await
         })
     }
 
@@ -2120,6 +2325,14 @@ impl ExtensionStore {
         fs.create_symlink(output_path, extension_source_path)
             .await?;
 
+        Self::finish_dev_extension_install(this, extension_id, cx).await
+    }
+
+    async fn finish_dev_extension_install(
+        this: &WeakEntity<Self>,
+        extension_id: &Arc<str>,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
         this.update(cx, |this, cx| this.reload(None, cx))?.await;
         this.update(cx, |this, cx| {
             cx.emit(Event::ExtensionInstalled(extension_id.clone()));
