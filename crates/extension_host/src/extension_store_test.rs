@@ -9200,7 +9200,9 @@ fn git_extension_wasm_with_trapping_init() -> anyhow::Result<Vec<u8>> {
 }
 
 #[gpui::test]
-async fn test_wasm_validation_keeps_live_work_directory_isolated(cx: &mut TestAppContext) {
+async fn test_wasm_preflight_allows_initializer_host_calls_without_running_them(
+    cx: &mut TestAppContext,
+) {
     let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
     let fixture = local_dev_extension("wasm-extension");
     let (fs, wasm_host) =
@@ -9210,7 +9212,8 @@ async fn test_wasm_validation_keeps_live_work_directory_isolated(cx: &mut TestAp
             .await
             .expect("WASM fixture manifest"),
     );
-    let wasm = git_extension_wasm(false).expect("component with successful initialization");
+    let wasm = git_extension_wasm_with_initializer(WasmFixtureInitializer::NodeBinaryPath)
+        .expect("component whose initializer calls node-binary-path");
     let live_work = extensions_dir.join("work/wasm-extension");
 
     wasm_host
@@ -9219,7 +9222,7 @@ async fn test_wasm_validation_keeps_live_work_directory_isolated(cx: &mut TestAp
         .expect("validate before first install");
     assert!(
         !live_work.exists(),
-        "staged initialization must not create the published work directory"
+        "preflight must not create the published work directory"
     );
 
     std::fs::create_dir_all(&live_work).expect("existing extension work directory");
@@ -9237,7 +9240,7 @@ async fn test_wasm_validation_keeps_live_work_directory_isolated(cx: &mut TestAp
     let published = wasm_host
         .load_extension(wasm, &manifest, &cx.to_async())
         .await
-        .expect("ordinary load uses published environment");
+        .expect("initializer can handle the unavailable Node runtime without a host trap");
     assert_eq!(
         std::fs::canonicalize(published.work_dir.as_ref()).expect("published work directory"),
         std::fs::canonicalize(&live_work).expect("live work directory")
@@ -9246,6 +9249,42 @@ async fn test_wasm_validation_keeps_live_work_directory_isolated(cx: &mut TestAp
         std::fs::read_to_string(&sentinel).expect("published extension retains existing state"),
         "current extension state"
     );
+}
+
+#[gpui::test]
+async fn test_wasm_preflight_does_not_execute_constructor_or_core_start(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let fixture = local_dev_extension("wasm-extension");
+    let (fs, wasm_host) =
+        store.read_with(cx, |store, _| (store.fs.clone(), store.wasm_host.clone()));
+    let manifest = Arc::new(
+        ExtensionManifest::load(fs, &tree_root(&fixture))
+            .await
+            .expect("WASM fixture manifest"),
+    );
+    for (initializer, expected_error) in [
+        (
+            WasmFixtureInitializer::Trap,
+            "failed to initialize wasm extension",
+        ),
+        (
+            WasmFixtureInitializer::CoreStartTrap,
+            "failed to instantiate wasm extension",
+        ),
+    ] {
+        let wasm = git_extension_wasm_with_initializer(initializer).expect("trapping component");
+        wasm_host
+            .validate_extension(wasm.clone(), manifest.clone())
+            .await
+            .expect("preflight validates types without running guest code");
+        let error = wasm_host
+            .load_extension(wasm, &manifest, &cx.to_async())
+            .await
+            .err()
+            .expect("published load executes the guest trap");
+        assert!(format!("{error:#}").contains(expected_error), "{error:#}");
+    }
+    assert!(extensions_dir.join("work/wasm-extension").exists());
 }
 
 #[gpui::test]
@@ -9535,6 +9574,23 @@ async fn test_git_update_reports_unrepairable_wasm_at_unchanged_commit(cx: &mut 
 }
 
 fn git_extension_wasm(init_traps: bool) -> anyhow::Result<Vec<u8>> {
+    git_extension_wasm_with_initializer(if init_traps {
+        WasmFixtureInitializer::Trap
+    } else {
+        WasmFixtureInitializer::Success
+    })
+}
+
+enum WasmFixtureInitializer {
+    Success,
+    Trap,
+    CoreStartTrap,
+    NodeBinaryPath,
+}
+
+fn git_extension_wasm_with_initializer(
+    initializer: WasmFixtureInitializer,
+) -> anyhow::Result<Vec<u8>> {
     use wasm_encoder::{Encode, Section};
 
     let mut resolve = wit_parser::Resolve::default();
@@ -9547,7 +9603,7 @@ fn git_extension_wasm(init_traps: bool) -> anyhow::Result<Vec<u8>> {
         world,
         wit_parser::ManglingAndAbi::Legacy(wit_parser::LiftLowerAbi::Sync),
     );
-    if !init_traps {
+    if matches!(initializer, WasmFixtureInitializer::Success) {
         let mut function_index = 0;
         let mut init_function = None;
         let mut init_opcode = None;
@@ -9598,6 +9654,110 @@ fn git_extension_wasm(init_traps: bool) -> anyhow::Result<Vec<u8>> {
             .get_mut(init_opcode)
             .context("init opcode should be inside module")? = 0x01;
     }
+    if matches!(
+        initializer,
+        WasmFixtureInitializer::NodeBinaryPath | WasmFixtureInitializer::CoreStartTrap
+    ) {
+        use wasm_encoder::{
+            BlockType, CodeSection, Function, Instruction, MemArg, Module, RawSection, StartSection,
+        };
+
+        let mut function_index = 0;
+        let mut init_function = None;
+        let mut realloc_function = None;
+        let mut node_function = None;
+        let mut code = CodeSection::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&module) {
+            match payload? {
+                wasmparser::Payload::ImportSection(imports) => {
+                    for import in imports.into_imports() {
+                        let import = import?;
+                        if matches!(
+                            import.ty,
+                            wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
+                        ) {
+                            if import.name == "node-binary-path" {
+                                node_function = Some(function_index);
+                            }
+                            function_index += 1;
+                        }
+                    }
+                }
+                wasmparser::Payload::ExportSection(exports) => {
+                    for export in exports {
+                        let export = export?;
+                        if export.kind == wasmparser::ExternalKind::Func {
+                            match export.name {
+                                "init-extension" => init_function = Some(export.index),
+                                "cabi_realloc" => realloc_function = Some(export.index),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                wasmparser::Payload::CodeSectionEntry(body) => {
+                    if matches!(initializer, WasmFixtureInitializer::NodeBinaryPath)
+                        && Some(function_index) == init_function
+                    {
+                        let mut function = Function::new([]);
+                        // The dummy module has zero pages. Reserve one for the result and string.
+                        function.instruction(&Instruction::I32Const(1));
+                        function.instruction(&Instruction::MemoryGrow(0));
+                        function.instruction(&Instruction::Drop);
+                        function.instruction(&Instruction::I32Const(0));
+                        function.instruction(&Instruction::Call(
+                            node_function.context("dummy module imports node-binary-path")?,
+                        ));
+                        // An unavailable Node runtime returns a guest-visible Err, not a trap.
+                        function.instruction(&Instruction::I32Const(0));
+                        function.instruction(&Instruction::I32Load8U(MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        }));
+                        function.instruction(&Instruction::I32Const(1));
+                        function.instruction(&Instruction::I32Ne);
+                        function.instruction(&Instruction::If(BlockType::Empty));
+                        function.instruction(&Instruction::Unreachable);
+                        function.instruction(&Instruction::End);
+                        function.instruction(&Instruction::End);
+                        code.function(&function);
+                    } else if matches!(initializer, WasmFixtureInitializer::NodeBinaryPath)
+                        && Some(function_index) == realloc_function
+                    {
+                        let mut function = Function::new([]);
+                        // The single result string must not overlap its return area at address zero.
+                        function.instruction(&Instruction::I32Const(1024));
+                        function.instruction(&Instruction::End);
+                        code.function(&function);
+                    } else {
+                        code.raw(body.as_bytes());
+                    }
+                    function_index += 1;
+                }
+                _ => {}
+            }
+        }
+        let mut rewritten = Module::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&module) {
+            let payload = payload?;
+            if matches!(payload, wasmparser::Payload::CodeSectionStart { .. }) {
+                if matches!(initializer, WasmFixtureInitializer::CoreStartTrap) {
+                    rewritten.section(&StartSection {
+                        function_index: init_function
+                            .context("dummy module exports init-extension")?,
+                    });
+                }
+                rewritten.section(&code);
+            } else if let Some((id, range)) = payload.as_section() {
+                rewritten.section(&RawSection {
+                    id,
+                    data: module.get(range).context("dummy module section bounds")?,
+                });
+            }
+        }
+        module = rewritten.finish();
+    }
     wit_component::embed_component_metadata(
         &mut module,
         &resolve,
@@ -9618,7 +9778,7 @@ fn git_extension_wasm(init_traps: bool) -> anyhow::Result<Vec<u8>> {
 }
 
 #[gpui::test]
-async fn test_git_update_rejects_wasm_load_failures(cx: &mut TestAppContext) {
+async fn test_git_update_rejects_wasm_preflight_failures(cx: &mut TestAppContext) {
     use wasm_encoder::{Component, CustomSection};
 
     let mut missing_exports = Component::new();
@@ -9630,11 +9790,7 @@ async fn test_git_update_rejects_wasm_load_failures(cx: &mut TestAppContext) {
         (Component::new().finish(), "no zed:api-version section"),
         (
             missing_exports.finish(),
-            "failed to instantiate wasm extension",
-        ),
-        (
-            git_extension_wasm_with_trapping_init().expect("component with trapping init"),
-            "failed to initialize wasm extension",
+            "failed to validate wasm extension",
         ),
     ] {
         let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;

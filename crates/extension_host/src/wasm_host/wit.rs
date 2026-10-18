@@ -105,7 +105,79 @@ pub enum Extension {
     V0_0_1(since_v0_0_1::Extension),
 }
 
+enum ExtensionPre {
+    V0_8_0(since_v0_8_0::ExtensionPre<WasmState>),
+    V0_6_0(since_v0_6_0::ExtensionPre<WasmState>),
+    V0_5_0(since_v0_5_0::ExtensionPre<WasmState>),
+    V0_4_0(since_v0_4_0::ExtensionPre<WasmState>),
+    V0_3_0(since_v0_3_0::ExtensionPre<WasmState>),
+    V0_2_0(since_v0_2_0::ExtensionPre<WasmState>),
+    V0_1_0(since_v0_1_0::ExtensionPre<WasmState>),
+    V0_0_6(since_v0_0_6::ExtensionPre<WasmState>),
+    V0_0_4(since_v0_0_4::ExtensionPre<WasmState>),
+    V0_0_1(since_v0_0_1::ExtensionPre<WasmState>),
+}
+
+impl ExtensionPre {
+    fn new(
+        executor: &BackgroundExecutor,
+        release_channel: ReleaseChannel,
+        version: Version,
+        component: &Component,
+    ) -> Result<Self> {
+        if version >= since_v0_9_0::MIN_VERSION {
+            authorize_access_to_unreleased_wasm_api_version(release_channel)?;
+            let instance = since_v0_9_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_8_0(since_v0_8_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_8_0::MIN_VERSION {
+            authorize_access_to_unreleased_wasm_api_version(release_channel)?;
+            let instance = since_v0_8_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_8_0(since_v0_8_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_6_0::MIN_VERSION {
+            let instance = since_v0_6_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_6_0(since_v0_6_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_5_0::MIN_VERSION {
+            let instance = since_v0_5_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_5_0(since_v0_5_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_4_0::MIN_VERSION {
+            let instance = since_v0_4_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_4_0(since_v0_4_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_3_0::MIN_VERSION {
+            let instance = since_v0_3_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_3_0(since_v0_3_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_2_0::MIN_VERSION {
+            let instance = since_v0_2_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_2_0(since_v0_2_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_1_0::MIN_VERSION {
+            let instance = since_v0_1_0::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_1_0(since_v0_1_0::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_0_6::MIN_VERSION {
+            let instance = since_v0_0_6::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_0_6(since_v0_0_6::ExtensionPre::new(instance)?))
+        } else if version >= since_v0_0_4::MIN_VERSION {
+            let instance = since_v0_0_4::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_0_4(since_v0_0_4::ExtensionPre::new(instance)?))
+        } else {
+            let instance = since_v0_0_1::linker(executor).instantiate_pre(component)?;
+            Ok(Self::V0_0_1(since_v0_0_1::ExtensionPre::new(instance)?))
+        }
+    }
+}
+
 impl Extension {
+    pub fn validate(
+        executor: &BackgroundExecutor,
+        release_channel: ReleaseChannel,
+        version: Version,
+        component: &Component,
+    ) -> Result<()> {
+        // Creating typed pre-instantiation bindings checks imports and exports without
+        // running component start functions or extension constructors.
+        ExtensionPre::new(executor, release_channel, version, component)
+            .context("failed to validate wasm extension interfaces")?;
+        Ok(())
+    }
+
     pub async fn instantiate_async(
         executor: &BackgroundExecutor,
         store: &mut Store<WasmState>,
@@ -113,121 +185,43 @@ impl Extension {
         version: Version,
         component: &Component,
     ) -> Result<Self> {
-        // Note: The release channel can be used to stage a new version of the extension API.
-        let _ = release_channel;
-
-        if version >= since_v0_9_0::MIN_VERSION {
-            authorize_access_to_unreleased_wasm_api_version(release_channel)?;
-
-            let extension = latest::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_9_0::linker(executor),
-            )
-            .await
+        let extension = ExtensionPre::new(executor, release_channel, version, component)
+            .context("failed to validate wasm extension interfaces")?;
+        let extension = match extension {
+            ExtensionPre::V0_8_0(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_8_0)
+            }
+            ExtensionPre::V0_6_0(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_6_0)
+            }
+            ExtensionPre::V0_5_0(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_5_0)
+            }
+            ExtensionPre::V0_4_0(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_4_0)
+            }
+            ExtensionPre::V0_3_0(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_3_0)
+            }
+            ExtensionPre::V0_2_0(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_2_0)
+            }
+            ExtensionPre::V0_1_0(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_1_0)
+            }
+            ExtensionPre::V0_0_6(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_0_6)
+            }
+            ExtensionPre::V0_0_4(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_0_4)
+            }
+            ExtensionPre::V0_0_1(extension) => {
+                extension.instantiate_async(store).await.map(Self::V0_0_1)
+            }
+        };
+        extension
             .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_8_0(extension))
-        } else if version >= latest::MIN_VERSION {
-            authorize_access_to_unreleased_wasm_api_version(release_channel)?;
-
-            let extension =
-                latest::Extension::instantiate_async(store, component, latest::linker(executor))
-                    .await
-                    .map_err(anyhow::Error::from)
-                    .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_8_0(extension))
-        } else if version >= since_v0_6_0::MIN_VERSION {
-            let extension = since_v0_6_0::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_6_0::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_6_0(extension))
-        } else if version >= since_v0_5_0::MIN_VERSION {
-            let extension = since_v0_5_0::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_5_0::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_5_0(extension))
-        } else if version >= since_v0_4_0::MIN_VERSION {
-            let extension = since_v0_4_0::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_4_0::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_4_0(extension))
-        } else if version >= since_v0_3_0::MIN_VERSION {
-            let extension = since_v0_3_0::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_3_0::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_3_0(extension))
-        } else if version >= since_v0_2_0::MIN_VERSION {
-            let extension = since_v0_2_0::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_2_0::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_2_0(extension))
-        } else if version >= since_v0_1_0::MIN_VERSION {
-            let extension = since_v0_1_0::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_1_0::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_1_0(extension))
-        } else if version >= since_v0_0_6::MIN_VERSION {
-            let extension = since_v0_0_6::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_0_6::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_0_6(extension))
-        } else if version >= since_v0_0_4::MIN_VERSION {
-            let extension = since_v0_0_4::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_0_4::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_0_4(extension))
-        } else {
-            let extension = since_v0_0_1::Extension::instantiate_async(
-                store,
-                component,
-                since_v0_0_1::linker(executor),
-            )
-            .await
-            .map_err(anyhow::Error::from)
-            .context("failed to instantiate wasm extension")?;
-            Ok(Self::V0_0_1(extension))
-        }
+            .context("failed to instantiate wasm extension")
     }
 
     pub async fn call_init_extension(&self, store: &mut Store<WasmState>) -> wasmtime::Result<()> {
@@ -1324,174 +1318,55 @@ impl<T> ToWasmtimeResult<T> for Result<T> {
 mod validation_tests {
     use super::*;
     use gpui::TestAppContext;
+    use wasm_encoder::{ComponentBuilder, ComponentTypeRef};
 
     #[gpui::test]
-    async fn validation_blocks_effectful_host_imports(cx: &mut TestAppContext) {
-        let mut state =
-            crate::wasm_host::tests::validation_state(cx, PathBuf::from("/active-work")).await;
-        macro_rules! blocked {
-            ($call:expr) => {
-                let error = $call.await.err().expect("host effect must be rejected");
-                assert!(
-                    error
-                        .to_string()
-                        .contains("isolated extension initialization validation"),
-                    "operation reached host implementation: {error}"
-                );
-            };
+    fn validation_rejects_missing_exports(cx: &mut TestAppContext) {
+        let executor = cx.executor();
+        let component = Component::from_binary(
+            &wasm_engine(&executor),
+            &ComponentBuilder::default().finish(),
+        )
+        .expect("valid empty component");
+        for version in [
+            Version::new(0, 0, 1),
+            Version::new(0, 0, 4),
+            Version::new(0, 0, 6),
+            Version::new(0, 1, 0),
+            Version::new(0, 2, 0),
+            Version::new(0, 3, 0),
+            Version::new(0, 4, 0),
+            Version::new(0, 5, 0),
+            Version::new(0, 6, 0),
+            Version::new(0, 8, 0),
+            Version::new(0, 9, 0),
+        ] {
+            Extension::validate(&executor, ReleaseChannel::Dev, version, &component)
+                .expect_err("extension exports are required");
         }
+    }
 
-        macro_rules! http_request {
-            ($api:ident) => {
-                $api::http_client::HttpRequest {
-                    method: $api::http_client::HttpMethod::Post,
-                    url: "https://example.invalid/migrate".into(),
-                    headers: Vec::new(),
-                    body: Some(b"migration".to_vec()),
-                    redirect_policy: $api::http_client::RedirectPolicy::NoFollow,
-                }
-            };
-        }
-
-        blocked!(latest::http_client::Host::fetch(
-            &mut state,
-            http_request!(latest)
-        ));
-        blocked!(latest::http_client::Host::fetch_stream(
-            &mut state,
-            http_request!(latest)
-        ));
-        blocked!(since_v0_1_0::http_client::Host::fetch(
-            &mut state,
-            http_request!(since_v0_1_0)
-        ));
-        blocked!(since_v0_1_0::http_client::Host::fetch_stream(
-            &mut state,
-            http_request!(since_v0_1_0)
-        ));
-        blocked!(latest::http_client::HostHttpResponseStream::next_chunk(
-            &mut state,
-            Resource::new_borrow(0)
-        ));
-        blocked!(
-            since_v0_1_0::http_client::HostHttpResponseStream::next_chunk(
-                &mut state,
-                Resource::new_borrow(0)
-            )
+    #[gpui::test]
+    fn validation_rejects_unknown_imports(cx: &mut TestAppContext) {
+        let executor = cx.executor();
+        let mut component = ComponentBuilder::default();
+        let (function_type, mut function) = component.type_function(None);
+        function
+            .params::<_, wasm_encoder::ComponentValType>([])
+            .result(None);
+        component.import("unknown-host-call", ComponentTypeRef::Func(function_type));
+        let component = Component::from_binary(&wasm_engine(&executor), &component.finish())
+            .expect("valid component with unknown import");
+        let error = Extension::validate(
+            &executor,
+            ReleaseChannel::Dev,
+            Version::new(0, 8, 0),
+            &component,
+        )
+        .expect_err("unknown host imports are rejected");
+        assert!(
+            format!("{error:#}").contains("unknown-host-call"),
+            "{error:#}"
         );
-        blocked!(latest::HostKeyValueStore::insert(
-            &mut state,
-            Resource::new_borrow(0),
-            "key".into(),
-            "value".into()
-        ));
-        blocked!(since_v0_1_0::HostKeyValueStore::insert(
-            &mut state,
-            Resource::new_borrow(0),
-            "key".into(),
-            "value".into()
-        ));
-        blocked!(latest::nodejs::Host::node_binary_path(&mut state));
-        blocked!(latest::nodejs::Host::npm_package_latest_version(
-            &mut state,
-            "package".into()
-        ));
-        blocked!(latest::nodejs::Host::npm_package_installed_version(
-            &mut state,
-            "package".into()
-        ));
-        blocked!(latest::nodejs::Host::npm_install_package(
-            &mut state,
-            "package".into(),
-            "1.0.0".into()
-        ));
-        blocked!(since_v0_0_1::ExtensionImports::node_binary_path(&mut state));
-        blocked!(latest::github::Host::latest_github_release(
-            &mut state,
-            "owner/repo".into(),
-            latest::github::GithubReleaseOptions {
-                require_assets: false,
-                pre_release: false
-            }
-        ));
-        blocked!(latest::github::Host::github_release_by_tag_name(
-            &mut state,
-            "owner/repo".into(),
-            "v1".into()
-        ));
-        blocked!(
-            since_v0_6_0::zed::extension::github::Host::github_release_by_tag_name(
-                &mut state,
-                "owner/repo".into(),
-                "v1".into()
-            )
-        );
-        blocked!(latest::process::Host::run_command(
-            &mut state,
-            latest::process::Command {
-                command: "must-not-start".into(),
-                args: Vec::new(),
-                env: Vec::new()
-            }
-        ));
-        blocked!(latest::dap::Host::resolve_tcp_template(
-            &mut state,
-            latest::dap::TcpArgumentsTemplate {
-                port: None,
-                host: None,
-                timeout: None
-            }
-        ));
-
-        blocked!(
-            latest::ExtensionImports::set_language_server_installation_status(
-                &mut state,
-                "server".into(),
-                latest::LanguageServerInstallationStatus::CheckingForUpdate
-            )
-        );
-        blocked!(
-            since_v0_1_0::ExtensionImports::set_language_server_installation_status(
-                &mut state,
-                "server".into(),
-                since_v0_1_0::LanguageServerInstallationStatus::CheckingForUpdate
-            )
-        );
-        blocked!(
-            since_v0_0_1::ExtensionImports::set_language_server_installation_status(
-                &mut state,
-                "server".into(),
-                since_v0_0_1::LanguageServerInstallationStatus::CheckingForUpdate
-            )
-        );
-        blocked!(latest::ExtensionImports::download_file(
-            &mut state,
-            "https://example.invalid/file".into(),
-            "file".into(),
-            latest::DownloadedFileType::Uncompressed
-        ));
-        blocked!(since_v0_1_0::ExtensionImports::download_file(
-            &mut state,
-            "https://example.invalid/file".into(),
-            "file".into(),
-            since_v0_1_0::DownloadedFileType::Uncompressed
-        ));
-        blocked!(since_v0_0_1::ExtensionImports::download_file(
-            &mut state,
-            "https://example.invalid/file".into(),
-            "file".into(),
-            since_v0_0_1::DownloadedFileType::Uncompressed
-        ));
-        blocked!(latest::ExtensionImports::make_file_executable(
-            &mut state,
-            "file".into()
-        ));
-        blocked!(since_v0_1_0::ExtensionImports::make_file_executable(
-            &mut state,
-            "file".into()
-        ));
-        latest::platform::Host::current_platform(&mut state)
-            .await
-            .expect("read-only platform import remains available");
     }
 }

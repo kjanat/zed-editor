@@ -254,7 +254,6 @@ impl HostKeyValueStore for WasmState {
         key: String,
         value: String,
     ) -> wasmtime::Result<Result<(), String>> {
-        self.environment.require_published("insert")?;
         let kv_store = self.table.get(&kv_store)?;
         kv_store.insert(key, value).await.to_wasmtime_result()
     }
@@ -313,7 +312,6 @@ impl http_client::Host for WasmState {
         &mut self,
         request: http_client::HttpRequest,
     ) -> wasmtime::Result<Result<http_client::HttpResponse, String>> {
-        self.environment.require_published("fetch")?;
         maybe!(async {
             let url = &request.url;
             let request = convert_request(&request)?;
@@ -332,7 +330,6 @@ impl http_client::Host for WasmState {
         &mut self,
         request: http_client::HttpRequest,
     ) -> wasmtime::Result<Result<Resource<ExtensionHttpResponseStream>, String>> {
-        self.environment.require_published("fetch_stream")?;
         let request = convert_request(&request).into_wasmtime_result()?;
         let response = self.host.http_client.send(request);
         maybe!(async {
@@ -351,7 +348,6 @@ impl http_client::HostHttpResponseStream for WasmState {
         &mut self,
         resource: Resource<ExtensionHttpResponseStream>,
     ) -> wasmtime::Result<Result<Option<Vec<u8>>, String>> {
-        self.environment.require_published("next_chunk")?;
         let stream = self.table.get(&resource)?.clone();
         maybe!(async move {
             let mut response = stream.lock().await;
@@ -505,8 +501,6 @@ impl ExtensionImports for WasmState {
         server_name: String,
         status: LanguageServerInstallationStatus,
     ) -> wasmtime::Result<()> {
-        self.environment
-            .require_published("set_language_server_installation_status")?;
         let status = match status {
             LanguageServerInstallationStatus::CheckingForUpdate => BinaryStatus::CheckingForUpdate,
             LanguageServerInstallationStatus::Downloading => BinaryStatus::Downloading,
@@ -529,7 +523,6 @@ impl ExtensionImports for WasmState {
         path: String,
         file_type: DownloadedFileType,
     ) -> wasmtime::Result<Result<(), String>> {
-        self.environment.require_published("download_file")?;
         maybe!(async {
             let path = PathBuf::from(path);
             let extension_work_dir = self.host.work_dir.join(self.manifest.id.as_ref());
@@ -597,7 +590,6 @@ impl ExtensionImports for WasmState {
     }
 
     async fn make_file_executable(&mut self, path: String) -> wasmtime::Result<Result<(), String>> {
-        self.environment.require_published("make_file_executable")?;
         let path = self
             .host
             .writeable_path_from_extension(&self.manifest.id, Path::new(&path))

@@ -63,6 +63,7 @@ async fn await_extension_initialization<T>(
 
 pub struct WasmHost {
     engine: Engine,
+    executor: BackgroundExecutor,
     release_channel: ReleaseChannel,
     http_client: Arc<dyn HttpClient>,
     node_runtime: NodeRuntime,
@@ -589,30 +590,6 @@ pub struct WasmState {
     pub host: Arc<WasmHost>,
     pub(crate) capability_granter: CapabilityGranter,
     pub(crate) language_server_status_source: Option<gpui::EntityId>,
-    // Keep the sandbox until the resource table and WASI context have closed their file handles.
-    environment: ExtensionEnvironment,
-}
-
-#[derive(Clone, Copy)]
-enum ExtensionEnvironmentKind {
-    Published,
-    Validation,
-}
-
-enum ExtensionEnvironment {
-    Published,
-    Validation(tempfile::TempDir),
-}
-
-impl ExtensionEnvironment {
-    fn require_published(&self, operation: &str) -> wasmtime::Result<()> {
-        match self {
-            Self::Published => Ok(()),
-            Self::Validation(_) => Err(wasmtime::Error::msg(format!(
-                "{operation} is unavailable during isolated extension initialization validation"
-            ))),
-        }
-    }
 }
 
 /// A host value in the store's resource table that guest calls borrow.
@@ -771,6 +748,7 @@ impl WasmHost {
 
         Arc::new(Self {
             engine: wasm_engine(cx.background_executor()),
+            executor: cx.background_executor().clone(),
             fs,
             work_dir,
             http_client,
@@ -809,51 +787,21 @@ impl WasmHost {
         wasm_bytes: Vec<u8>,
         manifest: Arc<ExtensionManifest>,
     ) -> Result<()> {
-        let (sender, receiver) = oneshot::channel();
         let host = self.clone();
-        self.main_thread_message_tx
-            .unbounded_send(Box::new(move |cx| {
-                async move {
-                    // Initialization can enqueue host calls, so this serial queue must stay free.
-                    let load = host.load_extension_in_environment(
-                        wasm_bytes,
-                        &manifest,
-                        ExtensionEnvironmentKind::Validation,
-                        cx,
-                    );
-                    if let Err(load) = sender.send(load) {
-                        drop(load);
-                    }
-                }
-                .boxed_local()
-            }))
-            .map_err(|_| anyhow!("the wasm host stopped before extension validation"))?;
-        receiver
+        self.executor
+            .spawn(async move {
+                let (version, component) = host.compile_extension(&manifest.id, &wasm_bytes)?;
+                // Preflight must not execute module start functions or Extension::new():
+                // both may use host imports or mutate the active extension's work directory.
+                Extension::validate(&host.executor, host.release_channel, version, &component)
+            })
             .await
-            .context("the wasm host stopped before starting extension validation")?
-            .await
-            .map(drop)
     }
 
     pub fn load_extension(
         self: &Arc<Self>,
         wasm_bytes: Vec<u8>,
         manifest: &Arc<ExtensionManifest>,
-        cx: &AsyncApp,
-    ) -> Task<Result<WasmExtension>> {
-        self.load_extension_in_environment(
-            wasm_bytes,
-            manifest,
-            ExtensionEnvironmentKind::Published,
-            cx,
-        )
-    }
-
-    fn load_extension_in_environment(
-        self: &Arc<Self>,
-        wasm_bytes: Vec<u8>,
-        manifest: &Arc<ExtensionManifest>,
-        environment: ExtensionEnvironmentKind,
         cx: &AsyncApp,
     ) -> Task<Result<WasmExtension>> {
         let this = self.clone();
@@ -886,7 +834,6 @@ impl WasmHost {
                             &manifest,
                             zed_api_version,
                             &component,
-                            environment,
                         )
                         .await
                     }
@@ -913,8 +860,7 @@ impl WasmHost {
             // wasmtime_wasi internally uses tokio for I/O operations.
             let initialization =
                 gpui_tokio::Tokio::spawn(cx, load_extension(zed_api_version, component));
-            // Staged validation holds the publication gate. Dropping the Tokio
-            // task aborts stalled initialization instead of retaining that gate.
+            // Dropping the Tokio task aborts stalled initialization.
             let (extension_task, manifest, work_dir, tx, zed_api_version) =
                 await_extension_initialization(cx.background_executor(), async move {
                     initialization.await?
@@ -941,15 +887,8 @@ impl WasmHost {
         manifest: &Arc<ExtensionManifest>,
         zed_api_version: Version,
         component: &Component,
-        environment: ExtensionEnvironmentKind,
     ) -> Result<(Extension, Store<WasmState>)> {
-        let environment = match environment {
-            ExtensionEnvironmentKind::Published => ExtensionEnvironment::Published,
-            ExtensionEnvironmentKind::Validation => {
-                ExtensionEnvironment::Validation(tempfile::tempdir()?)
-            }
-        };
-        let wasi_ctx = self.build_wasi_ctx(manifest, &environment).await?;
+        let wasi_ctx = self.build_wasi_ctx(manifest).await?;
         let mut store = Store::new(
             &self.engine,
             WasmState {
@@ -962,7 +901,6 @@ impl WasmHost {
                     manifest.clone(),
                 ),
                 language_server_status_source: None,
-                environment,
             },
         );
         // Store will yield after 1 tick, and get a new deadline of 1 tick after each yield.
@@ -985,22 +923,12 @@ impl WasmHost {
         Ok((extension, store))
     }
 
-    async fn build_wasi_ctx(
-        &self,
-        manifest: &Arc<ExtensionManifest>,
-        environment: &ExtensionEnvironment,
-    ) -> Result<WasiCtx> {
-        let extension_work_dir = match environment {
-            ExtensionEnvironment::Published => {
-                let path = self.work_dir.join(manifest.id.as_ref());
-                self.fs
-                    .create_dir(&path)
-                    .await
-                    .context("failed to create extension work dir")?;
-                path
-            }
-            ExtensionEnvironment::Validation(directory) => directory.path().to_path_buf(),
-        };
+    async fn build_wasi_ctx(&self, manifest: &Arc<ExtensionManifest>) -> Result<WasiCtx> {
+        let extension_work_dir = self.work_dir.join(manifest.id.as_ref());
+        self.fs
+            .create_dir(&extension_work_dir)
+            .await
+            .context("failed to create extension work dir")?;
 
         let permissions = wasmtime_wasi::FsPerms::ReadWrite;
         let path = SanitizedPath::new(&extension_work_dir).to_string();
@@ -1008,13 +936,7 @@ impl WasmHost {
         let path = path.replace('\\', "/");
 
         let mut ctx = WasiCtxBuilder::new();
-        if matches!(environment, ExtensionEnvironment::Published) {
-            ctx.inherit_stdio();
-        } else {
-            ctx.allow_ip_name_lookup(false)
-                .allow_tcp(false)
-                .allow_udp(false);
-        }
+        ctx.inherit_stdio();
         ctx.env("PWD", &path).env("RUST_BACKTRACE", "full");
 
         ctx.preopened_dir(&path, ".", permissions)?;
@@ -1235,10 +1157,7 @@ impl WasmState {
     }
 
     fn work_dir(&self) -> PathBuf {
-        match &self.environment {
-            ExtensionEnvironment::Published => self.host.work_dir.join(self.manifest.id.as_ref()),
-            ExtensionEnvironment::Validation(directory) => directory.path().to_path_buf(),
-        }
+        self.host.work_dir.join(self.manifest.id.as_ref())
     }
 
     fn extension_error(&self, message: String) -> anyhow::Error {
@@ -1602,128 +1521,6 @@ mod tests {
             extension::init(cx);
             gpui_tokio::init(cx);
         });
-    }
-
-    pub(in crate::wasm_host) async fn validation_state(
-        cx: &mut TestAppContext,
-        work_dir: PathBuf,
-    ) -> WasmState {
-        init_test(cx);
-        let manifest: Arc<ExtensionManifest> = Arc::new(
-            serde_json::from_value(json!({
-                "id": "test-extension",
-                "name": "Test Extension",
-                "version": "1.0.0",
-                "schema_version": 1
-            }))
-            .expect("test manifest"),
-        );
-        let host = cx.update(|cx| {
-            WasmHost::new(
-                FakeFs::new(cx.background_executor().clone()),
-                FakeHttpClient::create(|_| async {
-                    panic!("validation must not dispatch HTTP requests")
-                }),
-                NodeRuntime::unavailable(),
-                Arc::new(ExtensionHostProxy::default()),
-                work_dir,
-                cx,
-            )
-        });
-        let environment = ExtensionEnvironment::Validation(tempfile::tempdir().expect("sandbox"));
-        let ctx = host
-            .build_wasi_ctx(&manifest, &environment)
-            .await
-            .expect("isolated WASI context");
-        WasmState {
-            ctx,
-            manifest: manifest.clone(),
-            table: ResourceTable::new(),
-            host,
-            capability_granter: CapabilityGranter::new(Vec::new(), manifest),
-            language_server_status_source: None,
-            environment,
-        }
-    }
-
-    #[gpui::test]
-    async fn test_validation_wasi_writes_stay_in_temporary_work_dir(cx: &mut TestAppContext) {
-        use wasmtime_wasi::{
-            filesystem::WasiFilesystemView,
-            p2::bindings::filesystem::{preopens, types},
-        };
-
-        let active = tempfile::tempdir().expect("active extension work directory");
-        let active_extension = active.path().join("test-extension");
-        std::fs::create_dir(&active_extension).expect("active extension directory");
-        let sentinel = active_extension.join("migration");
-        std::fs::write(&sentinel, "active state").expect("active state fixture");
-        let mut state = validation_state(cx, active.path().to_path_buf()).await;
-        cx.executor().allow_parking();
-        let sandbox = state.work_dir();
-        let outside = sentinel.to_string_lossy().into_owned();
-        cx.update(|cx| {
-            gpui_tokio::Tokio::spawn(cx, async move {
-                let mut filesystem = state.filesystem();
-                let directories =
-                    preopens::Host::get_directories(&mut filesystem).expect("validation preopens");
-                assert_eq!(directories.len(), 2);
-                for (directory, _) in directories {
-                    assert!(
-                        types::HostDescriptor::open_at(
-                            &mut filesystem,
-                            Resource::new_borrow(directory.rep()),
-                            types::PathFlags::empty(),
-                            outside.clone(),
-                            types::OpenFlags::TRUNCATE,
-                            types::DescriptorFlags::WRITE,
-                        )
-                        .await
-                        .is_err(),
-                        "validation must not open the active work directory"
-                    );
-                    let file = types::HostDescriptor::open_at(
-                        &mut filesystem,
-                        Resource::new_borrow(directory.rep()),
-                        types::PathFlags::empty(),
-                        "migration".into(),
-                        types::OpenFlags::CREATE | types::OpenFlags::TRUNCATE,
-                        types::DescriptorFlags::WRITE,
-                    )
-                    .await
-                    .expect("sandbox file");
-                    types::HostDescriptor::write(
-                        &mut filesystem,
-                        Resource::new_borrow(file.rep()),
-                        b"validation migration".to_vec(),
-                        0,
-                    )
-                    .await
-                    .expect("sandbox write");
-                    types::HostDescriptor::drop(&mut filesystem, file).expect("close file");
-                    types::HostDescriptor::drop(&mut filesystem, directory)
-                        .expect("close directory");
-                }
-                state
-            })
-        })
-        .await
-        .map(|state| {
-            assert_eq!(
-                std::fs::read(sandbox.join("migration")).expect("sandbox contents"),
-                b"validation migration"
-            );
-            assert_eq!(
-                std::fs::read(&sentinel).expect("active state"),
-                b"active state"
-            );
-            drop(state);
-        })
-        .expect("WASI task");
-        assert!(
-            !sandbox.exists(),
-            "validation work directory must be removed"
-        );
     }
 
     #[gpui::test]
