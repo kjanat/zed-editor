@@ -210,8 +210,7 @@ impl ContainedChild {
     }
 
     #[cfg(not(windows))]
-    async fn wait_for_exit(&mut self) -> std::io::Result<()> {
-        self.process.stdin.take();
+    fn observe_exit(&mut self) -> std::io::Result<bool> {
         let process_id = self.process.id();
         #[cfg(target_os = "freebsd")]
         let process_id = i64::from(process_id);
@@ -240,13 +239,21 @@ impl ContainedChild {
             // SAFETY: waitid succeeded; zeroed si_pid represents a pending exit.
             let information = unsafe { information.assume_init() };
             // SAFETY: waitid populated the child-status fields of siginfo.
-            if unsafe { information.si_pid() } != 0 {
-                return Ok(());
-            }
+            return Ok(unsafe { information.si_pid() } != 0);
+        }
+    }
+
+    #[cfg(not(windows))]
+    async fn wait_for_exit(&mut self) -> std::io::Result<()> {
+        self.process.stdin.take();
+        // Darwin siginfo contains pointers. Keep that synchronous observation
+        // outside this future so it remains Send across the timer await.
+        while !self.observe_exit()? {
             self.executor
                 .timer(std::time::Duration::from_millis(10))
                 .await;
         }
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -647,6 +654,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_exit_observation_reserves_leader_until_group_signal() {
+        fn require_send(_future: &impl Send) {}
+
         with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "exit 23"]);
@@ -658,7 +667,9 @@ mod tests {
                 Stdio::null(),
             )
             .expect("spawn group leader");
-            child.wait_for_exit().await.expect("observe leader exit");
+            let observation = child.wait_for_exit();
+            require_send(&observation);
+            observation.await.expect("observe leader exit");
             let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
             let process_id = child.id();
             #[cfg(target_os = "freebsd")]
