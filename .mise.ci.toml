@@ -12,7 +12,7 @@ cargo-about    = { prefix = "0.9" }
 cargo-binstall = { version = "latest" }
 tombi          = { prefix = "1.8" }
 dprint         = { version = "latest", depends = ["tombi"] }
-shellcheck     = { version = "latest", rename_exe = "shellcheck" }
+rshellcheck    = { version = "latest", rename_exe = "shellcheck" }
 
 [tools.nextest]
 version        = "0.9.146"
@@ -25,7 +25,7 @@ cargo-bundle = "cargo:https://github.com/zed-industries/cargo-bundle"
 dprint       = "github:kjanat/dprint"
 llvm         = "github:llvm/llvm-project[version_prefix=llvmorg-,matching=LLVM-]"
 nextest      = "github:nextest-rs/nextest"
-shellcheck   = "github:kjanat/shellcheck-rs"
+rshellcheck  = "github:kjanat/shellcheck-rs"
 tombi        = "github:tombi-toml/tombi"
 wasi-sdk     = "github:WebAssembly/wasi-sdk"
 
