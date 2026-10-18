@@ -8249,6 +8249,192 @@ fn git_failures(
     })
 }
 
+fn stall_extension_build(
+    store: &Entity<ExtensionStore>,
+    extension_id: &'static str,
+    cx: &mut TestAppContext,
+) -> (
+    futures::channel::oneshot::Receiver<PathBuf>,
+    futures::channel::oneshot::Receiver<()>,
+) {
+    let (started, started_receiver) = futures::channel::oneshot::channel();
+    let (cancelled, cancelled_receiver) = futures::channel::oneshot::channel();
+    let started = Arc::new(Mutex::new(Some(started)));
+    let cancelled = Arc::new(Mutex::new(Some(cancelled)));
+    store.read_with(cx, |store, _| {
+        store.builder.set_precompile_hook(move |directory| {
+            let directory = directory.to_path_buf();
+            let started = started.clone();
+            let cancelled = cancelled.clone();
+            async move {
+                let manifest: toml::Value =
+                    toml::from_str(&std::fs::read_to_string(directory.join("extension.toml"))?)?;
+                if manifest.get("id").and_then(toml::Value::as_str) == Some(extension_id) {
+                    let _cancelled = util::defer(move || {
+                        cancelled
+                            .lock()
+                            .take()
+                            .expect("one build cancellation")
+                            .send(())
+                            .expect("build cancellation observer");
+                    });
+                    started
+                        .lock()
+                        .take()
+                        .expect("one stalled build")
+                        .send(directory)
+                        .expect("build observer");
+                    futures::future::pending::<()>().await;
+                }
+                Ok(())
+            }
+            .boxed()
+        });
+    });
+    (started_receiver, cancelled_receiver)
+}
+
+#[gpui::test]
+async fn test_git_build_timeout_preserves_install_and_releases_batch(cx: &mut TestAppContext) {
+    let (client, _) = marketplace_serving_grammar_batch(vec![MarketplaceGrammarFixture {
+        id: "later",
+        ..Default::default()
+    }]);
+    let (_tree, extensions_dir, store, _debounce) =
+        git_extension_store_with_http(cx, client.clone()).await;
+    let remote = GitExtensionRemote::new("blocked", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("blocked".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial Git install");
+    let independent = local_dev_extension("independent");
+    store
+        .update(cx, |store, cx| {
+            store.install_dev_extension(tree_root(&independent), cx)
+        })
+        .await
+        .expect("independent local install");
+    let source = installed_source(&store, "blocked", cx);
+    let manifest_path = extensions_dir.join("installed/blocked/extension.toml");
+    let original_manifest = std::fs::read(&manifest_path).expect("original manifest");
+    remote.publish("blocked", "0.2.0");
+    let (build_started, build_cancelled) = stall_extension_build(&store, "blocked", cx);
+    let (client, release, request_started) = stall_marketplace_request(client, "later");
+    let (prepared, preparation_done) = futures::channel::oneshot::channel();
+    store.update(cx, |store, _| {
+        store.http_client = client;
+        store.auto_install_prepared_observer = Some(("later".into(), prepared));
+    });
+    let batch = store.update(cx, |store, cx| {
+        store.install_auto_extensions(
+            vec!["later".into()],
+            vec![("blocked".into(), remote.source())],
+            cx,
+        )
+    });
+    let staging = build_started.await.expect("build owns source lock");
+    request_started.await.expect("later download waits");
+    let mut uninstall = Box::pin(store.update(cx, |store, cx| {
+        store.uninstall_extension("independent".into(), cx)
+    }));
+    cx.run_until_parked();
+    assert!(uninstall.as_mut().now_or_never().is_none());
+    release.send(()).expect("release later preparation");
+    preparation_done
+        .await
+        .expect("later preparation completed before clock advance");
+    cx.executor().advance_clock(crate::EXTENSION_BUILD_TIMEOUT);
+    batch.await;
+    uninstall
+        .await
+        .expect("uninstall proceeds after build deadline");
+    build_cancelled.await.expect("deadline cancels compilation");
+    assert!(!staging.exists());
+    assert_eq!(installed_source(&store, "blocked", cx), source);
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("preserved manifest"),
+        original_manifest
+    );
+    assert_eq!(
+        installed_version(&store, "later", cx).as_deref(),
+        Some("2.0.0")
+    );
+    assert!(installed_version(&store, "independent", cx).is_none());
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures[0].message.contains("compilation timed out"),
+        "{}",
+        failures[0].message
+    );
+    assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+    store.read_with(cx, |store, _| {
+        store
+            .builder
+            .set_precompile_hook(|_| async { Ok(()) }.boxed());
+    });
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extensions(vec![("blocked".into(), remote.source())], cx)
+        })
+        .await;
+    assert_eq!(
+        installed_version(&store, "blocked", cx).as_deref(),
+        Some("0.2.0")
+    );
+    assert!(git_failures(&store, cx).is_empty());
+}
+
+#[gpui::test]
+async fn test_cancelled_git_build_keeps_staging_until_teardown(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("blocked", None);
+    let (started, cancelled) = stall_extension_build(&store, "blocked", cx);
+    let install = store.update(cx, |store, cx| {
+        store.install_git_extensions(vec![("blocked".into(), remote.source())], cx)
+    });
+    let staging = started.await.expect("compilation started");
+    drop(install);
+    cx.condition(&store, |store, _| store.outstanding_operations().is_empty())
+        .await;
+    assert!(staging.is_dir(), "detached build retains its checkout");
+    cx.executor().advance_clock(crate::EXTENSION_BUILD_TIMEOUT);
+    cancelled
+        .await
+        .expect("cancelled owner still reaches build deadline");
+    cx.run_until_parked();
+    assert!(!staging.exists());
+    assert!(installed_version(&store, "blocked", cx).is_none());
+}
+
+#[gpui::test]
+async fn test_local_build_timeout_preserves_git_install(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("blocked", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("blocked".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial Git install");
+    let source = installed_source(&store, "blocked", cx);
+    let local = local_dev_extension("blocked");
+    let (started, cancelled) = stall_extension_build(&store, "blocked", cx);
+    let install = store.update(cx, |store, cx| {
+        store.install_dev_extension(tree_root(&local), cx)
+    });
+    started.await.expect("local compilation started");
+    cx.executor().advance_clock(crate::EXTENSION_BUILD_TIMEOUT);
+    let error = install.await.expect_err("local build deadline");
+    cancelled.await.expect("local compilation cancelled");
+    assert!(format!("{error:#}").contains("compilation timed out"));
+    assert_eq!(installed_source(&store, "blocked", cx), source);
+    assert!(tree_root(&local).join("extension.toml").exists());
+    assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+}
+
 struct GitCommandStall {
     command: &'static str,
     reached: Mutex<Option<futures::channel::oneshot::Sender<()>>>,

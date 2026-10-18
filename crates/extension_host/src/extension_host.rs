@@ -91,6 +91,7 @@ use extension_transaction::{
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 const EXTENSION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const EXTENSION_BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(crate) const REMOTE_SYNC_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub(crate) const MAX_REMOTE_SYNC_RETRY_DELAY: Duration = Duration::from_secs(60);
 pub(crate) const MAX_REMOTE_SYNC_ATTEMPTS: usize = 10;
@@ -437,7 +438,7 @@ async fn run_git(executor: &BackgroundExecutor, directory: &Path, args: &[&str])
 async fn build_git_source(
     executor: &BackgroundExecutor,
     fs: Arc<dyn Fs>,
-    builder: &ExtensionBuilder,
+    builder: &Arc<ExtensionBuilder>,
     staging_dir: &Path,
     sources_dir: &Path,
     publisher: &ExtensionPublisher,
@@ -457,6 +458,7 @@ async fn build_git_source(
     )
     .await?;
     publish_prepared_git_source(
+        executor,
         fs,
         builder,
         sources_dir,
@@ -538,29 +540,58 @@ async fn prepare_git_source(
 }
 
 async fn publish_prepared_git_source(
+    executor: &BackgroundExecutor,
     fs: Arc<dyn Fs>,
-    builder: &ExtensionBuilder,
+    builder: &Arc<ExtensionBuilder>,
     sources_dir: &Path,
     publisher: &ExtensionPublisher,
     wasm_host: Arc<WasmHost>,
     extension_id: &str,
     prepared: PreparedGitSource,
 ) -> Result<PathBuf> {
+    let (sender, receiver) = oneshot::channel();
+    let builder = builder.clone();
+    // A cancelled installer must not remove its checkout while compiler children
+    // still use it. The worker owns staging until the builder has reaped them.
+    executor
+        .spawn({
+            let executor = executor.clone();
+            let fs = fs.clone();
+            async move {
+                let mut prepared = prepared;
+                let directory = git_source_subdirectory(
+                    prepared.checkout.path().to_path_buf(),
+                    prepared.source.path.as_deref(),
+                );
+                let result = builder
+                    .compile_extension_with_timeout(
+                        &directory,
+                        &mut prepared.manifest,
+                        CompileExtensionOptions::dev(),
+                        fs,
+                        executor,
+                        EXTENSION_BUILD_TIMEOUT,
+                    )
+                    .await
+                    .context("building Git extension")
+                    .map(|()| prepared);
+                if let Err(result) = sender.send(result) {
+                    result
+                        .context("finishing a cancelled Git extension build")
+                        .log_err();
+                }
+            }
+        })
+        .detach();
     let PreparedGitSource {
         checkout,
-        mut manifest,
+        manifest,
         source,
-    } = prepared;
+    } = receiver
+        .await
+        .context("Git extension build worker stopped")??;
     let staged_extension =
         git_source_subdirectory(checkout.path().to_path_buf(), source.path.as_deref());
-    builder
-        .compile_extension(
-            &staged_extension,
-            &mut manifest,
-            CompileExtensionOptions::dev(),
-            fs.clone(),
-        )
-        .await?;
     {
         let _filesystem_guard = publisher.lock_for_read().await?;
         validate_prepared_extension(&fs, &staged_extension, sources_dir, manifest, &wasm_host)
@@ -1630,10 +1661,33 @@ impl ExtensionStore {
                             .boxed()
                     };
                     let executor = cx.background_executor().clone();
+                    #[cfg(test)]
+                    let observer = if this
+                        .auto_install_prepared_observer
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == &extension_id)
+                    {
+                        this.auto_install_prepared_observer
+                            .take()
+                            .map(|(_, observer)| observer)
+                    } else {
+                        None
+                    };
                     anyhow::Ok(cx.background_spawn(async move {
-                        with_extension_timeout(&executor, EXTENSION_PREPARATION_TIMEOUT, prepare)
-                            .await
-                            .context("preparing extension candidate")
+                        let result = with_extension_timeout(
+                            &executor,
+                            EXTENSION_PREPARATION_TIMEOUT,
+                            prepare,
+                        )
+                        .await
+                        .context("preparing extension candidate");
+                        #[cfg(test)]
+                        if result.is_ok()
+                            && let Some(observer) = observer
+                        {
+                            observer.send(()).expect("candidate preparation observer");
+                        }
+                        result
                     }))
                 });
                 match download {
@@ -1676,19 +1730,6 @@ impl ExtensionStore {
                     {
                         match result {
                             Ok(prepared) => {
-                                #[cfg(test)]
-                                this.update(cx, |this, _| {
-                                    if this
-                                        .auto_install_prepared_observer
-                                        .as_ref()
-                                        .is_some_and(|(id, _)| id == &extension_id)
-                                        && let Some((_, observer)) =
-                                            this.auto_install_prepared_observer.take()
-                                    {
-                                        observer.send(()).expect("candidate preparation observer");
-                                    }
-                                })
-                                .log_err();
                                 pending.push((extension_id, operation, git_url, prepared));
                             }
                             Err(error) => {
@@ -2210,9 +2251,11 @@ impl ExtensionStore {
         let result = cx
             .background_spawn({
                 let extension_id = extension_id.clone();
+                let executor = cx.background_executor().clone();
                 async move {
                     publisher.recover().await?;
                     publish_prepared_git_source(
+                        &executor,
                         fs,
                         &builder,
                         &sources_dir,
@@ -2830,24 +2873,32 @@ impl ExtensionStore {
                 let fs = fs.clone();
                 let publisher = publisher.clone();
                 let sources_dir = sources_dir.clone();
+                let executor = cx.background_executor().clone();
                 async move {
-                    let _filesystem_guard = publisher.lock_for_read().await?;
-                    builder
-                        .compile_extension(
-                            &extension_source_path,
-                            &mut extension_manifest,
-                            CompileExtensionOptions::dev(),
-                            fs.clone(),
-                        )
-                        .await?;
-                    validate_prepared_extension(
-                        &fs,
-                        &extension_source_path,
-                        &sources_dir,
-                        extension_manifest,
-                        &wasm_host,
-                    )
-                    .await
+                    let filesystem_guard = publisher.lock_for_read().await?;
+                    publisher
+                        .complete_mutation(async move {
+                            let _filesystem_guard = filesystem_guard;
+                            builder
+                                .compile_extension_with_timeout(
+                                    &extension_source_path,
+                                    &mut extension_manifest,
+                                    CompileExtensionOptions::dev(),
+                                    fs.clone(),
+                                    executor,
+                                    EXTENSION_BUILD_TIMEOUT,
+                                )
+                                .await?;
+                            validate_prepared_extension(
+                                &fs,
+                                &extension_source_path,
+                                &sources_dir,
+                                extension_manifest,
+                                &wasm_host,
+                            )
+                            .await
+                        })
+                        .await
                 }
             })
             .await

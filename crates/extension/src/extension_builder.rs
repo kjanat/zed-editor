@@ -6,8 +6,10 @@ use anyhow::{Context as _, Result};
 use futures::{
     FutureExt, StreamExt,
     channel::oneshot::{self, Sender},
-    io,
+    io::{self, AsyncReadExt as _},
+    lock::Mutex,
 };
+use gpui::BackgroundExecutor;
 use heck::ToSnakeCase;
 use http_client::{self, AsyncBody, HttpClient};
 use language::LanguageConfig;
@@ -19,9 +21,11 @@ use std::{
     num::NonZeroUsize,
     ops::Not,
     path::{Path, PathBuf},
+    process::Stdio,
     sync::Arc,
+    time::Duration,
 };
-use util::{ResultExt, command::Stdio};
+use util::ResultExt;
 use wasm_encoder::{ComponentSectionId, Encode as _, RawSection, Section as _};
 use wasmparser::Parser;
 
@@ -47,6 +51,122 @@ const WASI_SDK_PLATFORM: Option<&str> = cfg_select! {
 pub struct ExtensionBuilder {
     cache_dir: PathBuf,
     pub http: Arc<dyn HttpClient>,
+    build_lock: Mutex<()>,
+    #[cfg(any(test, feature = "test-support"))]
+    precompile_hook: parking_lot::Mutex<Option<PrecompileHook>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type PrecompileHook =
+    Arc<dyn Fn(&Path) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+
+#[derive(Default)]
+struct BuildSession {
+    // A failed sibling or timeout drops command futures before teardown. Keep
+    // their processes and pipes here so cancellation cannot lose the exit barrier.
+    children: parking_lot::Mutex<Vec<Arc<BuildProcess>>>,
+}
+
+struct BuildProcess {
+    child: Mutex<util::process::Child>,
+    stdout: Mutex<Box<dyn io::AsyncRead + Send + Unpin>>,
+    stderr: Mutex<Box<dyn io::AsyncRead + Send + Unpin>>,
+}
+
+impl BuildProcess {
+    async fn terminate(&self) -> Result<()> {
+        let (status, stdout, stderr) = futures::join!(
+            async { self.child.lock().await.terminate_and_wait().await },
+            async { io::copy(&mut *self.stdout.lock().await, &mut io::sink()).await },
+            async { io::copy(&mut *self.stderr.lock().await, &mut io::sink()).await },
+        );
+        status?;
+        stdout.context("draining terminated build stdout")?;
+        stderr.context("draining terminated build stderr")?;
+        Ok(())
+    }
+}
+
+impl BuildSession {
+    async fn output(&self, command: std::process::Command) -> Result<std::process::Output> {
+        let mut child = util::process::Child::spawn_contained(
+            command,
+            Stdio::null(),
+            Stdio::piped(),
+            Stdio::piped(),
+        )?;
+        let stdout = child.stdout.take().context("missing command stdout")?;
+        let stderr = child.stderr.take().context("missing command stderr")?;
+        let process = Arc::new(BuildProcess {
+            child: Mutex::new(child),
+            stdout: Mutex::new(Box::new(stdout)),
+            stderr: Mutex::new(Box::new(stderr)),
+        });
+        self.children.lock().push(process.clone());
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        let (status, _, _) = futures::try_join!(
+            async { process.child.lock().await.status().await },
+            async {
+                process
+                    .stdout
+                    .lock()
+                    .await
+                    .read_to_end(&mut stdout_bytes)
+                    .await
+            },
+            async {
+                process
+                    .stderr
+                    .lock()
+                    .await
+                    .read_to_end(&mut stderr_bytes)
+                    .await
+            },
+        )?;
+        process.terminate().await?;
+        self.children
+            .lock()
+            .retain(|entry| !Arc::ptr_eq(entry, &process));
+        Ok(std::process::Output {
+            status,
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
+        })
+    }
+
+    async fn terminate(&self) -> Result<()> {
+        let children = self.children.lock().clone();
+        let mut errors = Vec::new();
+        // Signal every sibling before waiting for one child to exit.
+        for child in &children {
+            if let Err(error) = child.child.lock().await.kill() {
+                errors.push(format!("{error:#}"));
+            }
+        }
+        for child in children {
+            if let Err(error) = child.terminate().await {
+                errors.push(format!("{error:#}"));
+            }
+        }
+        anyhow::ensure!(
+            errors.is_empty(),
+            "terminating build processes: {}",
+            errors.join("; ")
+        );
+        self.children.lock().clear();
+        Ok(())
+    }
+}
+
+impl Drop for BuildSession {
+    fn drop(&mut self) {
+        for child in self.children.get_mut() {
+            if let Some(mut child) = child.child.try_lock() {
+                child.kill().log_err();
+            }
+        }
+    }
 }
 
 pub enum CompilationConcurrency {
@@ -85,7 +205,18 @@ impl ExtensionBuilder {
         Self {
             cache_dir,
             http: http_client,
+            build_lock: Mutex::new(()),
+            #[cfg(any(test, feature = "test-support"))]
+            precompile_hook: parking_lot::Mutex::new(None),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_precompile_hook(
+        &self,
+        hook: impl Fn(&Path) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync + 'static,
+    ) {
+        *self.precompile_hook.lock() = Some(Arc::new(hook));
     }
 
     pub async fn compile_extension(
@@ -95,7 +226,91 @@ impl ExtensionBuilder {
         options: CompileExtensionOptions,
         fs: Arc<dyn Fs>,
     ) -> Result<()> {
+        self.compile_extension_session(extension_dir, extension_manifest, options, fs, None)
+            .await
+    }
+
+    pub async fn compile_extension_with_timeout(
+        &self,
+        extension_dir: &Path,
+        extension_manifest: &mut ExtensionManifest,
+        options: CompileExtensionOptions,
+        fs: Arc<dyn Fs>,
+        executor: BackgroundExecutor,
+        timeout: Duration,
+    ) -> Result<()> {
+        self.compile_extension_session(
+            extension_dir,
+            extension_manifest,
+            options,
+            fs,
+            Some((executor, timeout)),
+        )
+        .await
+    }
+
+    async fn compile_extension_session(
+        &self,
+        extension_dir: &Path,
+        extension_manifest: &mut ExtensionManifest,
+        options: CompileExtensionOptions,
+        fs: Arc<dyn Fs>,
+        deadline: Option<(BackgroundExecutor, Duration)>,
+    ) -> Result<()> {
+        let timeout = async {
+            match deadline {
+                Some((executor, duration)) => executor.timer(duration).await,
+                None => futures::future::pending().await,
+            }
+        }
+        .fuse();
+        futures::pin_mut!(timeout);
+        let build_lock = self.build_lock.lock().fuse();
+        futures::pin_mut!(build_lock);
+        // Keep cache ownership outside the cancelled future until every child
+        // exits; a second build must not reuse partially written SDK files yet.
+        let _build_lock = futures::select_biased! {
+            guard = build_lock => guard,
+            () = timeout => anyhow::bail!("extension compilation timed out waiting for another build"),
+        };
+        let session = BuildSession::default();
+        let result = {
+            let compilation = self
+                .compile_extension_inner(extension_dir, extension_manifest, options, fs, &session)
+                .fuse();
+            futures::pin_mut!(compilation);
+            futures::select_biased! {
+                result = compilation => result,
+                () = timeout => Err(anyhow::anyhow!("extension compilation timed out")),
+            }
+        };
+        let cleanup = session.terminate().await;
+        match (result, cleanup) {
+            (Err(error), Err(cleanup)) => {
+                Err(error.context(format!("build process cleanup failed: {cleanup:#}")))
+            }
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), cleanup) => cleanup,
+        }
+    }
+
+    async fn compile_extension_inner(
+        &self,
+        extension_dir: &Path,
+        extension_manifest: &mut ExtensionManifest,
+        options: CompileExtensionOptions,
+        fs: Arc<dyn Fs>,
+        session: &BuildSession,
+    ) -> Result<()> {
         let start = std::time::Instant::now();
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let hook = self.precompile_hook.lock().clone();
+            if let Some(hook) = hook {
+                hook(extension_dir).await?;
+            }
+        }
 
         populate_defaults(extension_manifest, extension_dir, fs.clone()).await?;
 
@@ -113,7 +328,7 @@ impl ExtensionBuilder {
         let clang_path = extension_manifest.grammars.is_empty().not().then(|| {
             std::iter::repeat_n(
                 async {
-                    self.install_wasi_sdk_if_needed()
+                    self.install_wasi_sdk_if_needed(session)
                         .await
                         .log_err()
                         .map(Arc::new)
@@ -127,9 +342,15 @@ impl ExtensionBuilder {
             (extension_manifest.lib.kind == Some(ExtensionLibraryKind::Rust)).then(|| {
                 async {
                     log::info!("compiling Rust extension {extension_dir:?}");
-                    self.compile_rust_extension(extension_dir, extension_manifest, tx, &options)
-                        .await
-                        .context("compiling Rust extension")?;
+                    self.compile_rust_extension(
+                        extension_dir,
+                        extension_manifest,
+                        tx,
+                        &options,
+                        session,
+                    )
+                    .await
+                    .context("compiling Rust extension")?;
 
                     log::info!("compiled Rust extension {extension_dir:?}");
                     Ok(())
@@ -159,6 +380,7 @@ impl ExtensionBuilder {
                         grammar_name.as_ref(),
                         grammar_metadata,
                         &clang_path,
+                        session,
                     )
                     .await
                     .with_context(|| format!("compiling grammar '{grammar_name}'"))?;
@@ -204,24 +426,24 @@ impl ExtensionBuilder {
         manifest: &ExtensionManifest,
         wasm_extension_api_version_tx: Sender<Version>,
         options: &CompileExtensionOptions,
+        session: &BuildSession,
     ) -> anyhow::Result<()> {
-        self.install_rust_wasm_target_if_needed().await?;
+        self.install_rust_wasm_target_if_needed(session).await?;
 
         let cargo_toml_content = fs::read_to_string(extension_dir.join("Cargo.toml"))?;
         let cargo_toml: CargoToml = toml::from_str(&cargo_toml_content)?;
 
         log::info!("compiling Rust crate for extension {extension_dir:?}");
-        let output = util::command::new_command("cargo")
+        let mut command = util::command::new_std_command("cargo");
+        command
             .args(["build", "--target", RUST_TARGET])
             .args(options.release.then_some("--release"))
             .arg("--target-dir")
             .arg(extension_dir.join("target"))
             // WASI builds do not work with sccache and just stuck, so disable it.
             .env("RUSTC_WRAPPER", "")
-            .current_dir(extension_dir)
-            .output()
-            .await
-            .context("running `cargo`")?;
+            .current_dir(extension_dir);
+        let output = session.output(command).await.context("running `cargo`")?;
         anyhow::ensure!(
             output.status.success(),
             "failed to build extension {}",
@@ -273,6 +495,7 @@ impl ExtensionBuilder {
         grammar_name: &str,
         grammar_metadata: &GrammarManifestEntry,
         clang_path: &Path,
+        session: &BuildSession,
     ) -> Result<()> {
         let mut grammar_repo_dir = extension_dir.to_path_buf();
         grammar_repo_dir.extend(["grammars", grammar_name]);
@@ -285,6 +508,7 @@ impl ExtensionBuilder {
             &grammar_repo_dir,
             &grammar_metadata.repository,
             &grammar_metadata.rev,
+            session,
         )
         .await?;
 
@@ -306,7 +530,8 @@ impl ExtensionBuilder {
             );
         } else {
             log::info!("compiling {grammar_name} parser");
-            let clang_output = util::command::new_command(&clang_path)
+            let mut command = util::command::new_std_command(clang_path);
+            command
                 .args(["-fPIC", "-shared", "-Os"])
                 .arg(format!("-Wl,--export=tree_sitter_{grammar_name}"))
                 .arg("-o")
@@ -314,10 +539,8 @@ impl ExtensionBuilder {
                 .arg("-I")
                 .arg(&src_path)
                 .arg(&parser_path)
-                .args(scanner_path.exists().then_some(scanner_path))
-                .output()
-                .await
-                .context("running clang")?;
+                .args(scanner_path.exists().then_some(scanner_path));
+            let clang_output = session.output(command).await.context("running clang")?;
 
             anyhow::ensure!(
                 clang_output.status.success(),
@@ -329,17 +552,23 @@ impl ExtensionBuilder {
         Ok(())
     }
 
-    async fn checkout_repo(&self, directory: &Path, url: &str, rev: &str) -> Result<()> {
+    async fn checkout_repo(
+        &self,
+        directory: &Path,
+        url: &str,
+        rev: &str,
+        session: &BuildSession,
+    ) -> Result<()> {
         let git_dir = directory.join(".git");
 
         if directory.exists() {
-            let remotes_output = util::command::new_command("git")
+            let mut command = util::command::new_std_command("git");
+            command
                 .arg("--git-dir")
                 .arg(&git_dir)
                 .args(["remote", "get-url", "origin"])
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .output()
-                .await?;
+                .env("GIT_CONFIG_GLOBAL", "/dev/null");
+            let remotes_output = session.output(command).await?;
             let has_remote = remotes_output.status.success()
                 && String::from_utf8_lossy(&remotes_output.stdout).trim() == url;
             anyhow::ensure!(
@@ -349,21 +578,21 @@ impl ExtensionBuilder {
         } else {
             fs::create_dir_all(directory)
                 .with_context(|| format!("creating grammar directory {directory:?}"))?;
-            let init_output = util::command::new_command("git")
-                .arg("init")
-                .current_dir(directory)
-                .output()
-                .await?;
+            let mut command = util::command::new_std_command("git");
+            command.arg("init").current_dir(directory);
+            let init_output = session.output(command).await?;
             anyhow::ensure!(
                 init_output.status.success(),
                 "failed to run `git init` in directory {directory:?}"
             );
 
-            let remote_add_output = util::command::new_command("git")
+            let mut command = util::command::new_std_command("git");
+            command
                 .arg("--git-dir")
                 .arg(&git_dir)
-                .args(["remote", "add", "origin", url])
-                .output()
+                .args(["remote", "add", "origin", url]);
+            let remote_add_output = session
+                .output(command)
                 .await
                 .context("executing `git remote add`")?;
             anyhow::ensure!(
@@ -372,20 +601,24 @@ impl ExtensionBuilder {
             );
         }
 
-        let fetch_output = util::command::new_command("git")
+        let mut command = util::command::new_std_command("git");
+        command
             .arg("--git-dir")
             .arg(&git_dir)
-            .args(["fetch", "--depth", "1", "origin", rev])
-            .output()
+            .args(["fetch", "--depth", "1", "origin", rev]);
+        let fetch_output = session
+            .output(command)
             .await
             .context("executing `git fetch`")?;
 
-        let checkout_output = util::command::new_command("git")
+        let mut command = util::command::new_std_command("git");
+        command
             .arg("--git-dir")
             .arg(&git_dir)
             .args(["checkout", rev])
-            .current_dir(directory)
-            .output()
+            .current_dir(directory);
+        let checkout_output = session
+            .output(command)
             .await
             .context("executing `git checkout`")?;
         if !checkout_output.status.success() {
@@ -402,12 +635,10 @@ impl ExtensionBuilder {
         Ok(())
     }
 
-    async fn install_rust_wasm_target_if_needed(&self) -> Result<()> {
-        let rustc_output = util::command::new_command("rustc")
-            .args(["--print", "target-libdir", "--target", RUST_TARGET])
-            .output()
-            .await
-            .context("running rustc")?;
+    async fn install_rust_wasm_target_if_needed(&self, session: &BuildSession) -> Result<()> {
+        let mut command = util::command::new_std_command("rustc");
+        command.args(["--print", "target-libdir", "--target", RUST_TARGET]);
+        let rustc_output = session.output(command).await.context("running rustc")?;
         anyhow::ensure!(
             rustc_output.status.success(),
             "failed to retrieve the `{RUST_TARGET}` target libdir: {}",
@@ -427,11 +658,10 @@ impl ExtensionBuilder {
              your package manager"
         );
 
-        let output = util::command::new_command("rustup")
-            .args(["target", "add", RUST_TARGET])
-            .stderr(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .output()
+        let mut command = util::command::new_std_command("rustup");
+        command.args(["target", "add", RUST_TARGET]);
+        let output = session
+            .output(command)
             .await
             .context("running `rustup target add`")?;
         anyhow::ensure!(
@@ -443,7 +673,7 @@ impl ExtensionBuilder {
         Ok(())
     }
 
-    async fn install_wasi_sdk_if_needed(&self) -> Result<PathBuf> {
+    async fn install_wasi_sdk_if_needed(&self, session: &BuildSession) -> Result<PathBuf> {
         if let Some(sdk_path) = env::var_os("WASI_SDK_PATH").filter(|path| !path.is_empty()) {
             let sdk_path = PathBuf::from(sdk_path);
             let clang_path = wasi_sdk_clang_path(&sdk_path);
@@ -460,7 +690,7 @@ impl ExtensionBuilder {
         let clang_path = wasi_sdk_clang_path(&wasi_sdk_dir);
 
         match self
-            .update_wasi_sdk_if_needed(&wasi_sdk_dir, &clang_path)
+            .update_wasi_sdk_if_needed(&wasi_sdk_dir, &clang_path, session)
             .await
         {
             Ok(()) => Ok(clang_path),
@@ -483,6 +713,7 @@ impl ExtensionBuilder {
         &self,
         wasi_sdk_dir: &Path,
         clang_path: &Path,
+        session: &BuildSession,
     ) -> Result<()> {
         if installed_wasi_sdk_version(wasi_sdk_dir) == Some(format!("{WASI_SDK_VERSION}.0"))
             && fs::metadata(clang_path).is_ok_and(|metadata| metadata.is_file())
@@ -521,14 +752,13 @@ impl ExtensionBuilder {
         log::info!("un-tarring wasi-sdk to {tar_out_dir:?}");
 
         // Shell out to tar to extract the archive
-        let tar_output = util::command::new_command("tar")
+        let mut command = util::command::new_std_command("tar");
+        command
             .arg("-xzf")
             .arg(&tar_gz_path)
             .arg("-C")
-            .arg(&tar_out_dir)
-            .output()
-            .await
-            .context("running tar")?;
+            .arg(&tar_out_dir);
+        let tar_output = session.output(command).await.context("running tar")?;
 
         anyhow::ensure!(
             tar_output.status.success(),
@@ -816,6 +1046,124 @@ mod tests {
         ExtensionManifest, ExtensionSnippets,
         extension_builder::{file_newer_than_deps, installed_wasi_sdk_version, populate_defaults},
     };
+
+    #[test]
+    fn build_process_fixture() {
+        let Ok(mode) = std::env::var("ZED_BUILD_PROCESS_FIXTURE") else {
+            return;
+        };
+        if mode == "parent" {
+            let mut command = util::command::new_std_command(
+                std::env::current_exe().expect("current test executable"),
+            );
+            command
+                .args([
+                    "--exact",
+                    "extension_builder::tests::build_process_fixture",
+                    "--nocapture",
+                ])
+                .env("ZED_BUILD_PROCESS_FIXTURE", "descendant");
+            let mut descendant = command.spawn().expect("spawn build descendant");
+            descendant.wait().expect("wait for build descendant");
+        } else {
+            let readiness =
+                std::env::var_os("ZED_BUILD_PROCESS_READY").expect("descendant readiness path");
+            std::fs::write(readiness, "ready").expect("write descendant readiness");
+            loop {
+                std::thread::park();
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn test_cancelled_build_session_reaps_siblings_and_descendants(cx: &mut TestAppContext) {
+        use futures::{AsyncReadExt as _, FutureExt as _};
+        cx.background_executor.allow_parking();
+        let directory = tempfile::tempdir().expect("create readiness directory");
+        let readiness = [
+            directory.path().join("first"),
+            directory.path().join("second"),
+        ];
+        let session = super::BuildSession::default();
+        let command = |readiness: &Path| {
+            let mut command = util::command::new_std_command(
+                std::env::current_exe().expect("current test executable"),
+            );
+            command
+                .args([
+                    "--exact",
+                    "extension_builder::tests::build_process_fixture",
+                    "--nocapture",
+                ])
+                .env("ZED_BUILD_PROCESS_FIXTURE", "parent")
+                .env("ZED_BUILD_PROCESS_READY", readiness);
+            command
+        };
+        let [first_readiness, second_readiness] = &readiness;
+        let mut first = session.output(command(first_readiness)).boxed();
+        let mut second = session.output(command(second_readiness)).boxed();
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        let processes = session.children.lock().clone();
+        assert_eq!(processes.len(), 2);
+        drop((first, second));
+
+        cx.background_executor
+            .spawn(async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !readiness.iter().all(|path| path.is_file()) {
+                    anyhow::ensure!(
+                        std::time::Instant::now() < deadline,
+                        "build descendants did not become ready"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .expect("wait for native descendants");
+
+        session
+            .terminate()
+            .await
+            .expect("terminate build process trees");
+        assert!(session.children.lock().is_empty());
+        for process in processes {
+            let mut child = process.child.lock().await;
+            assert!(
+                child
+                    .try_status()
+                    .expect("read child exit status")
+                    .is_some()
+            );
+            #[cfg(windows)]
+            assert_eq!(
+                child.has_running_processes().expect("query job"),
+                Some(false)
+            );
+            let mut remaining = Vec::new();
+            assert_eq!(
+                process
+                    .stdout
+                    .lock()
+                    .await
+                    .read_to_end(&mut remaining)
+                    .await
+                    .expect("read stdout EOF"),
+                0
+            );
+            assert_eq!(
+                process
+                    .stderr
+                    .lock()
+                    .await
+                    .read_to_end(&mut remaining)
+                    .await
+                    .expect("read stderr EOF"),
+                0
+            );
+        }
+    }
 
     #[test]
     fn test_file_newer_than_deps() {

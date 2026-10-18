@@ -29,6 +29,84 @@ impl std::ops::DerefMut for Child {
 }
 
 impl Child {
+    /// Starts a command in a new Unix session or an assigned Windows job before
+    /// its program can run. Unlike `spawn`, containment setup cannot fall back.
+    #[cfg(not(windows))]
+    pub fn spawn_contained(
+        mut command: std::process::Command,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> Result<Self> {
+        use std::os::unix::process::CommandExt as _;
+
+        // SAFETY: setsid and errno access are async-signal-safe after fork.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let description = describe_command(&command);
+        let process = smol::process::Command::from(command)
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(stderr)
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("failed to spawn contained command {description}"))?;
+        Ok(Self { process })
+    }
+
+    /// Starts a command suspended, assigns its job, then resumes its primary
+    /// thread. Setup failure terminates and reaps the child without a fallback.
+    #[cfg(windows)]
+    pub fn spawn_contained(
+        mut command: std::process::Command,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> Result<Self> {
+        use std::os::windows::process::CommandExt as _;
+        use windows::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+
+        let description = describe_command(&command);
+        let job = windows_job::JobObject::new()?;
+        command.creation_flags((CREATE_NO_WINDOW | CREATE_SUSPENDED).0);
+        let mut process = smol::process::Command::from(command)
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(stderr)
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("failed to spawn contained command {description}"))?;
+        if let Err(error) = job
+            .assign_process(process.id())
+            .and_then(|()| windows_job::resume_primary_thread(process.id()))
+        {
+            let job_termination = job.terminate();
+            process
+                .kill()
+                .or_else(|kill_error| process.try_status()?.map(|_| ()).ok_or(kill_error))
+                .with_context(|| {
+                    format!("terminating child after containment setup failed: {error:#}")
+                })?;
+            smol::block_on(process.status())
+                .context("reaping child after containment setup failed")?;
+            job_termination.context("terminating job after containment setup failed")?;
+            while job.has_running_processes()? {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            return Err(error).with_context(|| format!("containing command {description}"));
+        }
+        Ok(Self {
+            process,
+            job: Some(job),
+        })
+    }
+
     #[cfg(not(windows))]
     pub fn spawn(
         mut command: std::process::Command,
@@ -69,13 +147,9 @@ impl Child {
         // the child spawns after this assignment is automatically part of the
         // job.
         //
-        // There is a small race: descendants the child spawns between the
-        // `spawn()` call returning and the assignment below escape the job.
-        // Closing it fully would require creating the process suspended
-        // (`CREATE_SUSPENDED`), assigning it, then resuming it, which the
-        // std/smol process APIs don't support without reimplementing process
-        // creation. The window is normally short, but descendants created in
-        // it are not tracked by the job.
+        // Descendants spawned before this assignment escape the job. This
+        // compatibility path permits job-setup failure; callers requiring
+        // containment before execution must use `spawn_contained` instead.
         let job = windows_job::JobObject::new()
             .and_then(|job| {
                 job.assign_process(process.id())?;
@@ -102,8 +176,12 @@ impl Child {
     #[cfg(not(windows))]
     pub fn kill(&mut self) -> Result<()> {
         let pid = self.process.id();
-        unsafe {
-            libc::killpg(pid as i32, libc::SIGKILL);
+        // SAFETY: the child starts its own session, whose process group is its PID.
+        if unsafe { libc::killpg(pid.try_into()?, libc::SIGKILL) } == -1 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error).context("terminating child process group");
+            }
         }
         Ok(())
     }
@@ -115,6 +193,39 @@ impl Child {
         } else {
             self.process.kill()?;
             Ok(())
+        }
+    }
+
+    /// Terminates the group/job and reaps the direct child. Windows additionally
+    /// waits for all job members to exit. Callers must drain captured pipes too.
+    /// Unix does not wait for group disappearance: orphaned zombies can retain
+    /// their group indefinitely even though they can no longer execute.
+    pub async fn terminate_and_wait(&mut self) -> Result<()> {
+        self.kill()?;
+        self.process
+            .status()
+            .await
+            .context("reaping terminated child")?;
+        #[cfg(windows)]
+        while self.has_running_processes()? == Some(true) {
+            smol::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        Ok(())
+    }
+
+    /// Reports whether the Unix process group still exists, including zombies.
+    /// This is not a teardown barrier; use `terminate_and_wait` and drain pipes.
+    #[cfg(not(windows))]
+    pub fn has_running_processes(&self) -> Result<Option<bool>> {
+        // SAFETY: signal zero queries the child's process group without signaling it.
+        if unsafe { libc::killpg(self.process.id().try_into()?, 0) } == 0 {
+            return Ok(Some(true));
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(Some(false)),
+            Some(libc::EPERM) => Ok(Some(true)),
+            _ => Err(error).context("querying child process group"),
         }
     }
 
@@ -146,6 +257,51 @@ fn describe_command(command: &std::process::Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_contained_kill_closes_descendant_pipes() {
+        use futures_lite::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader};
+
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"]);
+            let mut child =
+                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::null())
+                    .expect("spawn contained process tree");
+            let mut output = BufReader::new(child.stdout.take().expect("captured stdout"));
+            let mut line = String::new();
+            output
+                .read_line(&mut line)
+                .await
+                .expect("descendant readiness");
+            let descendant = line.trim().parse::<u32>().expect("descendant PID");
+            assert_ne!(descendant, child.id());
+            assert_eq!(
+                child.has_running_processes().expect("live group"),
+                Some(true)
+            );
+            child
+                .terminate_and_wait()
+                .await
+                .expect("terminate and reap process group");
+            let closed = futures_lite::future::race(
+                async {
+                    output
+                        .read_to_end(&mut Vec::new())
+                        .await
+                        .expect("drain descendant pipe");
+                    true
+                },
+                async {
+                    smol::Timer::after(std::time::Duration::from_secs(5)).await;
+                    false
+                },
+            )
+            .await;
+            assert!(closed, "a surviving descendant retained the captured pipe");
+        });
+    }
 
     #[test]
     fn test_spawn_error_names_the_command_without_its_environment() {
@@ -183,15 +339,22 @@ mod windows_job {
     use crate::ResultExt as _;
     use anyhow::{Context as _, Result};
     use windows::Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE},
         System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
+                Thread32Next,
+            },
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
                 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
                 QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
             },
-            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+            Threading::{
+                OpenProcess, OpenThread, PROCESS_SET_QUOTA, PROCESS_TERMINATE, ResumeThread,
+                THREAD_SUSPEND_RESUME,
+            },
         },
     };
 
@@ -205,6 +368,61 @@ mod windows_job {
     // SAFETY: Job object handles can be used from any thread.
     unsafe impl Send for JobObject {}
     unsafe impl Sync for JobObject {}
+
+    pub(crate) fn resume_primary_thread(pid: u32) -> Result<()> {
+        // std closes CreateProcess's primary-thread handle. The suspended child
+        // has not executed, so its sole thread can be recovered by its owner PID.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+                .context("enumerating suspended child threads")?;
+            let _close_snapshot = crate::defer(|| {
+                CloseHandle(snapshot).log_err();
+            });
+            let mut entry = THREADENTRY32 {
+                dwSize: size_of::<THREADENTRY32>().try_into()?,
+                ..Default::default()
+            };
+            Thread32First(snapshot, &mut entry).context("reading first thread entry")?;
+            let mut primary_thread = None;
+            loop {
+                if entry.th32OwnerProcessID == pid {
+                    anyhow::ensure!(
+                        primary_thread.is_none(),
+                        "suspended child has multiple threads"
+                    );
+                    primary_thread = Some(entry.th32ThreadID);
+                }
+                match Thread32Next(snapshot, &mut entry) {
+                    Ok(()) => {}
+                    Err(error)
+                        if error.code()
+                            == windows::core::HRESULT::from_win32(ERROR_NO_MORE_FILES.0) =>
+                    {
+                        break;
+                    }
+                    Err(error) => return Err(error).context("reading child thread entries"),
+                }
+            }
+            let thread = OpenThread(
+                THREAD_SUSPEND_RESUME,
+                false,
+                primary_thread.context("suspended child has no primary thread")?,
+            )
+            .context("opening suspended child thread")?;
+            let _close_thread = crate::defer(|| {
+                CloseHandle(thread).log_err();
+            });
+            let previous_count = ResumeThread(thread);
+            if previous_count == u32::MAX {
+                return Err(windows::core::Error::from_win32()).context("resuming contained child");
+            }
+            anyhow::ensure!(
+                previous_count == 1,
+                "unexpected suspended child thread count: {previous_count}"
+            );
+            Ok(())
+        }
+    }
 
     impl JobObject {
         pub(crate) fn new() -> Result<Self> {
@@ -301,6 +519,25 @@ mod windows_tests {
     }
 
     #[test]
+    fn test_contained_termination_waits_for_descendants() {
+        let temp_dir = tempfile::tempdir().expect("process tree directory");
+        let (mut child, descendant) = spawn_process_tree(temp_dir.path(), true);
+        assert_eq!(
+            child.has_running_processes().expect("query contained job"),
+            Some(true)
+        );
+        smol::block_on(child.terminate_and_wait()).expect("terminate and reap contained tree");
+        assert_eq!(
+            child.has_running_processes().expect("query terminated job"),
+            Some(false)
+        );
+        assert!(
+            !process_is_alive(descendant),
+            "descendant survived completed teardown"
+        );
+    }
+
+    #[test]
     fn test_job_tracks_grandchild_after_direct_child_exits() {
         let temp_dir = tempfile::tempdir().unwrap();
         let pid_file = temp_dir.path().join("grandchild_pid");
@@ -310,8 +547,9 @@ mod windows_tests {
              Set-Content -LiteralPath '{}' -Value $p.Id",
             pid_file.display()
         ));
-        let mut child = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null())
-            .expect("failed to spawn powershell");
+        let mut child =
+            Child::spawn_contained(command, Stdio::null(), Stdio::null(), Stdio::null())
+                .expect("failed to spawn powershell");
         let status = smol::block_on(child.status()).expect("failed to await powershell");
         assert!(status.success(), "powershell failed: {status}");
 
@@ -338,7 +576,7 @@ mod windows_tests {
 
     /// Spawns a process tree `powershell -> ping` via `Child::spawn` and
     /// returns the `Child` along with the pid of the grandchild (`ping`).
-    fn spawn_process_tree(temp_dir: &std::path::Path) -> (Child, u32) {
+    fn spawn_process_tree(temp_dir: &std::path::Path, contained: bool) -> (Child, u32) {
         let pid_file = temp_dir.join("grandchild_pid");
         let partial_pid_file = temp_dir.join("grandchild_pid.partial");
         let mut command = std::process::Command::new("powershell.exe");
@@ -350,7 +588,12 @@ mod windows_tests {
             partial_pid_file.display(),
             pid_file.display()
         ));
-        let child = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null())
+        let spawn = if contained {
+            Child::spawn_contained
+        } else {
+            Child::spawn
+        };
+        let child = spawn(command, Stdio::null(), Stdio::null(), Stdio::null())
             .expect("failed to spawn powershell");
 
         // PowerShell startup exceeded 5 seconds on Windows CI runners under nextest's parallel load.
@@ -405,7 +648,7 @@ mod windows_tests {
     #[test]
     fn test_kill_terminates_grandchildren() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let (mut child, grandchild_pid) = spawn_process_tree(temp_dir.path());
+        let (mut child, grandchild_pid) = spawn_process_tree(temp_dir.path(), false);
 
         child.kill().expect("failed to kill child");
 
@@ -418,7 +661,7 @@ mod windows_tests {
     #[test]
     fn test_drop_terminates_grandchildren() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let (child, grandchild_pid) = spawn_process_tree(temp_dir.path());
+        let (child, grandchild_pid) = spawn_process_tree(temp_dir.path(), false);
 
         drop(child);
 

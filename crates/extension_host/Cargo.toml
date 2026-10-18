@@ -64,6 +64,7 @@ ztracing.workspace           = true
 [dev-dependencies]
 criterion.workspace          = true
 ctor.workspace               = true
+extension                    = { workspace = true, features = ["test-support"] }
 fs                           = { workspace = true, features = ["test-support"] }
 gpui                         = { workspace = true, features = ["test-support"] }
 language                     = { workspace = true, features = ["test-support"] }
