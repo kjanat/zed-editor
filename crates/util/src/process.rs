@@ -10,6 +10,8 @@ use std::process::Stdio;
 /// A descendant spawned before job assignment can also escape the job.
 pub struct Child {
     process: smol::process::Child,
+    #[cfg(not(windows))]
+    termination_requested: bool,
     #[cfg(windows)]
     job: Option<windows_job::JobObject>,
 }
@@ -57,7 +59,10 @@ impl Child {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("failed to spawn contained command {description}"))?;
-        Ok(Self { process })
+        Ok(Self {
+            process,
+            termination_requested: false,
+        })
     }
 
     /// Starts a command suspended, assigns its job, then resumes its primary
@@ -122,7 +127,10 @@ impl Child {
             .stderr(stderr)
             .spawn()
             .with_context(|| format!("failed to spawn command {description}"))?;
-        Ok(Self { process })
+        Ok(Self {
+            process,
+            termination_requested: false,
+        })
     }
 
     #[cfg(windows)]
@@ -175,6 +183,12 @@ impl Child {
 
     #[cfg(not(windows))]
     pub fn kill(&mut self) -> Result<()> {
+        // After SIGKILL succeeds, a second signal can encounter only zombies:
+        // macOS reports EPERM for that group. Reaping and pipe draining remain
+        // necessary, but must not signal the group again (or a reused group ID).
+        if self.termination_requested {
+            return Ok(());
+        }
         let pid = self.process.id();
         // SAFETY: the child starts its own session, whose process group is its PID.
         if unsafe { libc::killpg(pid.try_into()?, libc::SIGKILL) } == -1 {
@@ -183,6 +197,7 @@ impl Child {
                 return Err(error).context("terminating child process group");
             }
         }
+        self.termination_requested = true;
         Ok(())
     }
 
@@ -281,10 +296,12 @@ mod tests {
                 child.has_running_processes().expect("live group"),
                 Some(true)
             );
+            child.kill().expect("signal process group");
+            child.status().await.expect("reap signalled child");
             child
                 .terminate_and_wait()
                 .await
-                .expect("terminate and reap process group");
+                .expect("repeat termination after child exit");
             // Native process exit needs a wall-clock deadline. Dropping the sender
             // cancels the blocking wait when pipe draining wins the race.
             let (cancel_deadline, deadline) = std::sync::mpsc::channel::<()>();

@@ -140,6 +140,8 @@ impl ExtensionImports for WasmState {
         server_name: String,
         status: LanguageServerInstallationStatus,
     ) -> wasmtime::Result<()> {
+        self.environment
+            .require_published("set_language_server_installation_status")?;
         let status = match status {
             LanguageServerInstallationStatus::CheckingForUpdate => BinaryStatus::CheckingForUpdate,
             LanguageServerInstallationStatus::Downloading => BinaryStatus::Downloading,

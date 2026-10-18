@@ -1319,3 +1319,179 @@ impl<T> ToWasmtimeResult<T> for Result<T> {
         Ok(self.map_err(|error| format!("{error:?}")))
     }
 }
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    async fn validation_blocks_effectful_host_imports(cx: &mut TestAppContext) {
+        let mut state =
+            crate::wasm_host::tests::validation_state(cx, PathBuf::from("/active-work")).await;
+        macro_rules! blocked {
+            ($call:expr) => {
+                let error = $call.await.err().expect("host effect must be rejected");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("isolated extension initialization validation"),
+                    "operation reached host implementation: {error}"
+                );
+            };
+        }
+
+        macro_rules! http_request {
+            ($api:ident) => {
+                $api::http_client::HttpRequest {
+                    method: $api::http_client::HttpMethod::Post,
+                    url: "https://example.invalid/migrate".into(),
+                    headers: Vec::new(),
+                    body: Some(b"migration".to_vec()),
+                    redirect_policy: $api::http_client::RedirectPolicy::NoFollow,
+                }
+            };
+        }
+
+        blocked!(latest::http_client::Host::fetch(
+            &mut state,
+            http_request!(latest)
+        ));
+        blocked!(latest::http_client::Host::fetch_stream(
+            &mut state,
+            http_request!(latest)
+        ));
+        blocked!(since_v0_1_0::http_client::Host::fetch(
+            &mut state,
+            http_request!(since_v0_1_0)
+        ));
+        blocked!(since_v0_1_0::http_client::Host::fetch_stream(
+            &mut state,
+            http_request!(since_v0_1_0)
+        ));
+        blocked!(latest::http_client::HostHttpResponseStream::next_chunk(
+            &mut state,
+            Resource::new_borrow(0)
+        ));
+        blocked!(
+            since_v0_1_0::http_client::HostHttpResponseStream::next_chunk(
+                &mut state,
+                Resource::new_borrow(0)
+            )
+        );
+        blocked!(latest::HostKeyValueStore::insert(
+            &mut state,
+            Resource::new_borrow(0),
+            "key".into(),
+            "value".into()
+        ));
+        blocked!(since_v0_1_0::HostKeyValueStore::insert(
+            &mut state,
+            Resource::new_borrow(0),
+            "key".into(),
+            "value".into()
+        ));
+        blocked!(latest::nodejs::Host::node_binary_path(&mut state));
+        blocked!(latest::nodejs::Host::npm_package_latest_version(
+            &mut state,
+            "package".into()
+        ));
+        blocked!(latest::nodejs::Host::npm_package_installed_version(
+            &mut state,
+            "package".into()
+        ));
+        blocked!(latest::nodejs::Host::npm_install_package(
+            &mut state,
+            "package".into(),
+            "1.0.0".into()
+        ));
+        blocked!(since_v0_0_1::ExtensionImports::node_binary_path(&mut state));
+        blocked!(latest::github::Host::latest_github_release(
+            &mut state,
+            "owner/repo".into(),
+            latest::github::GithubReleaseOptions {
+                require_assets: false,
+                pre_release: false
+            }
+        ));
+        blocked!(latest::github::Host::github_release_by_tag_name(
+            &mut state,
+            "owner/repo".into(),
+            "v1".into()
+        ));
+        blocked!(
+            since_v0_6_0::zed::extension::github::Host::github_release_by_tag_name(
+                &mut state,
+                "owner/repo".into(),
+                "v1".into()
+            )
+        );
+        blocked!(latest::process::Host::run_command(
+            &mut state,
+            latest::process::Command {
+                command: "must-not-start".into(),
+                args: Vec::new(),
+                env: Vec::new()
+            }
+        ));
+        blocked!(latest::dap::Host::resolve_tcp_template(
+            &mut state,
+            latest::dap::TcpArgumentsTemplate {
+                port: None,
+                host: None,
+                timeout: None
+            }
+        ));
+
+        blocked!(
+            latest::ExtensionImports::set_language_server_installation_status(
+                &mut state,
+                "server".into(),
+                latest::LanguageServerInstallationStatus::CheckingForUpdate
+            )
+        );
+        blocked!(
+            since_v0_1_0::ExtensionImports::set_language_server_installation_status(
+                &mut state,
+                "server".into(),
+                since_v0_1_0::LanguageServerInstallationStatus::CheckingForUpdate
+            )
+        );
+        blocked!(
+            since_v0_0_1::ExtensionImports::set_language_server_installation_status(
+                &mut state,
+                "server".into(),
+                since_v0_0_1::LanguageServerInstallationStatus::CheckingForUpdate
+            )
+        );
+        blocked!(latest::ExtensionImports::download_file(
+            &mut state,
+            "https://example.invalid/file".into(),
+            "file".into(),
+            latest::DownloadedFileType::Uncompressed
+        ));
+        blocked!(since_v0_1_0::ExtensionImports::download_file(
+            &mut state,
+            "https://example.invalid/file".into(),
+            "file".into(),
+            since_v0_1_0::DownloadedFileType::Uncompressed
+        ));
+        blocked!(since_v0_0_1::ExtensionImports::download_file(
+            &mut state,
+            "https://example.invalid/file".into(),
+            "file".into(),
+            since_v0_0_1::DownloadedFileType::Uncompressed
+        ));
+        blocked!(latest::ExtensionImports::make_file_executable(
+            &mut state,
+            "file".into()
+        ));
+        blocked!(since_v0_1_0::ExtensionImports::make_file_executable(
+            &mut state,
+            "file".into()
+        ));
+        latest::platform::Host::current_platform(&mut state)
+            .await
+            .expect("read-only platform import remains available");
+    }
+}

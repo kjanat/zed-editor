@@ -551,6 +551,7 @@ impl HostKeyValueStore for WasmState {
         key: String,
         value: String,
     ) -> wasmtime::Result<Result<(), String>> {
+        self.environment.require_published("insert")?;
         let kv_store = self.table.get(&kv_store)?;
         kv_store.insert(key, value).await.to_wasmtime_result()
     }
@@ -634,6 +635,7 @@ impl http_client::Host for WasmState {
         &mut self,
         request: http_client::HttpRequest,
     ) -> wasmtime::Result<Result<http_client::HttpResponse, String>> {
+        self.environment.require_published("fetch")?;
         maybe!(async {
             let url = &request.url;
             let request = convert_request(&request)?;
@@ -652,6 +654,7 @@ impl http_client::Host for WasmState {
         &mut self,
         request: http_client::HttpRequest,
     ) -> wasmtime::Result<Result<Resource<ExtensionHttpResponseStream>, String>> {
+        self.environment.require_published("fetch_stream")?;
         let request = convert_request(&request).into_wasmtime_result()?;
         let response = self.host.http_client.send(request);
         maybe!(async {
@@ -670,6 +673,7 @@ impl http_client::HostHttpResponseStream for WasmState {
         &mut self,
         resource: Resource<ExtensionHttpResponseStream>,
     ) -> wasmtime::Result<Result<Option<Vec<u8>>, String>> {
+        self.environment.require_published("next_chunk")?;
         let stream = self.table.get(&resource)?.clone();
         maybe!(async move {
             let mut response = stream.lock().await;
@@ -757,6 +761,7 @@ async fn convert_response(
 
 impl nodejs::Host for WasmState {
     async fn node_binary_path(&mut self) -> wasmtime::Result<Result<String, String>> {
+        self.environment.require_published("node_binary_path")?;
         self.host
             .node_runtime
             .binary_path()
@@ -769,6 +774,8 @@ impl nodejs::Host for WasmState {
         &mut self,
         package_name: String,
     ) -> wasmtime::Result<Result<String, String>> {
+        self.environment
+            .require_published("npm_package_latest_version")?;
         self.host
             .node_runtime
             .npm_package_latest_version(&package_name)
@@ -781,6 +788,8 @@ impl nodejs::Host for WasmState {
         &mut self,
         package_name: String,
     ) -> wasmtime::Result<Result<Option<String>, String>> {
+        self.environment
+            .require_published("npm_package_installed_version")?;
         self.host
             .node_runtime
             .npm_package_installed_version(&self.work_dir(), &package_name)
@@ -794,6 +803,7 @@ impl nodejs::Host for WasmState {
         package_name: String,
         version: String,
     ) -> wasmtime::Result<Result<(), String>> {
+        self.environment.require_published("npm_install_package")?;
         self.capability_granter
             .grant_npm_install_package(&package_name)
             .into_wasmtime_result()?;
@@ -834,6 +844,8 @@ impl github::Host for WasmState {
         repo: String,
         options: github::GithubReleaseOptions,
     ) -> wasmtime::Result<Result<github::GithubRelease, String>> {
+        self.environment
+            .require_published("latest_github_release")?;
         maybe!(async {
             let release = ::http_client::github::latest_github_release(
                 &repo,
@@ -853,6 +865,8 @@ impl github::Host for WasmState {
         repo: String,
         tag: String,
     ) -> wasmtime::Result<Result<github::GithubRelease, String>> {
+        self.environment
+            .require_published("github_release_by_tag_name")?;
         maybe!(async {
             let release = ::http_client::github::get_release_by_tag_name(
                 &repo,
@@ -902,6 +916,7 @@ impl process::Host for WasmState {
         &mut self,
         command: process::Command,
     ) -> wasmtime::Result<Result<process::Output, String>> {
+        self.environment.require_published("run_command")?;
         maybe!(async {
             self.capability_granter
                 .grant_exec(&command.command, &command.args)?;
@@ -930,6 +945,7 @@ impl dap::Host for WasmState {
         &mut self,
         template: dap::TcpArgumentsTemplate,
     ) -> wasmtime::Result<Result<dap::TcpArguments, String>> {
+        self.environment.require_published("resolve_tcp_template")?;
         maybe!(async {
             let (host, port, timeout) =
                 ::dap::configure_tcp_connection(task::TcpArgumentsTemplate {
@@ -1057,6 +1073,8 @@ impl ExtensionImports for WasmState {
         server_name: String,
         status: LanguageServerInstallationStatus,
     ) -> wasmtime::Result<()> {
+        self.environment
+            .require_published("set_language_server_installation_status")?;
         let status = match status {
             LanguageServerInstallationStatus::CheckingForUpdate => BinaryStatus::CheckingForUpdate,
             LanguageServerInstallationStatus::Downloading => BinaryStatus::Downloading,
@@ -1079,6 +1097,7 @@ impl ExtensionImports for WasmState {
         path: String,
         file_type: DownloadedFileType,
     ) -> wasmtime::Result<Result<(), String>> {
+        self.environment.require_published("download_file")?;
         maybe!(async {
             let parsed_url = Url::parse(&url)?;
             self.capability_granter.grant_download_file(&parsed_url)?;
@@ -1149,6 +1168,7 @@ impl ExtensionImports for WasmState {
     }
 
     async fn make_file_executable(&mut self, path: String) -> wasmtime::Result<Result<(), String>> {
+        self.environment.require_published("make_file_executable")?;
         let path = self
             .host
             .writeable_path_from_extension(&self.manifest.id, Path::new(&path))

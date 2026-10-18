@@ -1825,6 +1825,7 @@ impl ExtensionStore {
     ) -> Vec<(Arc<str>, GitExtensionSource)> {
         extension_settings
             .git_sources()
+            .filter(|(extension_id, _)| !SUPPRESSED_EXTENSIONS.contains(extension_id.as_ref()))
             .filter(|(extension_id, source)| {
                 self.extension_index
                     .extensions
@@ -1888,7 +1889,7 @@ impl ExtensionStore {
                     }
                 }
             }
-            for extension_id in extensions {
+            for extension_id in extensions.into_iter().filter(|id| !SUPPRESSED_EXTENSIONS.contains(id.as_ref())) {
                 let _source_guard = git_source_lock.lock().await;
                 publisher.recover().await?;
                 let recorded_source = load_git_source_record(&fs, &sources_dir, &extension_id).await;
