@@ -642,12 +642,17 @@ fn describe_command(command: &std::process::Command) -> String {
 mod tests {
     use super::*;
 
-    pub(super) fn with_executor<T>(
-        test: impl AsyncFnOnce(scheduler::BackgroundExecutor) -> T,
+    pub(super) fn with_executor<T: 'static, F: Future<Output = T> + 'static>(
+        test: impl FnOnce(scheduler::BackgroundExecutor) -> F,
     ) -> T {
         scheduler::TestScheduler::once(async |scheduler| {
             scheduler.allow_parking();
-            test(scheduler.background()).await
+            // async-io needs stable task waker identity to avoid continuously
+            // waking the scheduler's root future and starving its timers.
+            scheduler
+                .foreground()
+                .spawn(test(scheduler.background()))
+                .await
         })
     }
 
