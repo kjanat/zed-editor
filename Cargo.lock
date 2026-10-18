@@ -19775,6 +19775,7 @@ dependencies = [
  "regex",
  "rust-embed",
  "schemars 1.2.2",
+ "scheduler",
  "serde",
  "serde_json",
  "serde_json_lenient",

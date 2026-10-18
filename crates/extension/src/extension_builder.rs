@@ -50,6 +50,7 @@ const WASI_SDK_PLATFORM: Option<&str> = cfg_select! {
 
 pub struct ExtensionBuilder {
     cache_dir: PathBuf,
+    executor: BackgroundExecutor,
     pub http: Arc<dyn HttpClient>,
     build_lock: Mutex<()>,
     #[cfg(any(test, feature = "test-support"))]
@@ -60,8 +61,8 @@ pub struct ExtensionBuilder {
 type PrecompileHook =
     Arc<dyn Fn(&Path) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
 
-#[derive(Default)]
 struct BuildSession {
+    executor: BackgroundExecutor,
     // A failed sibling or timeout drops command futures before teardown. Keep
     // their processes and pipes here so cancellation cannot lose the exit barrier.
     children: parking_lot::Mutex<Vec<Arc<BuildProcess>>>,
@@ -89,8 +90,16 @@ impl BuildProcess {
 }
 
 impl BuildSession {
+    fn new(executor: BackgroundExecutor) -> Self {
+        Self {
+            executor,
+            children: Default::default(),
+        }
+    }
+
     async fn output(&self, command: std::process::Command) -> Result<std::process::Output> {
         let mut child = util::process::Child::spawn_contained(
+            self.executor.scheduler_executor(),
             command,
             Stdio::null(),
             Stdio::piped(),
@@ -204,9 +213,14 @@ struct CargoTomlPackage {
 }
 
 impl ExtensionBuilder {
-    pub fn new(http_client: Arc<dyn HttpClient>, cache_dir: PathBuf) -> Self {
+    pub fn new(
+        http_client: Arc<dyn HttpClient>,
+        cache_dir: PathBuf,
+        executor: BackgroundExecutor,
+    ) -> Self {
         Self {
             cache_dir,
+            executor,
             http: http_client,
             build_lock: Mutex::new(()),
             #[cfg(any(test, feature = "test-support"))]
@@ -276,7 +290,7 @@ impl ExtensionBuilder {
             guard = build_lock => guard,
             () = timeout => anyhow::bail!("extension compilation timed out waiting for another build"),
         };
-        let session = BuildSession::default();
+        let session = BuildSession::new(self.executor.clone());
         let result = {
             let compilation = self
                 .compile_extension_inner(extension_dir, extension_manifest, options, fs, &session)
@@ -1118,7 +1132,7 @@ mod tests {
             ])
             .env("ZED_BUILD_PROCESS_FIXTURE", "orphan")
             .env("ZED_BUILD_PROCESS_READY", directory.path().join("ready"));
-        let session = super::BuildSession::default();
+        let session = super::BuildSession::new(cx.background_executor.clone());
         let result = session.output(command).await;
         session.terminate().await.expect("finish build cleanup");
         let output = result.expect("natural exit must complete without deadline");
@@ -1134,7 +1148,7 @@ mod tests {
         cx.background_executor.allow_parking();
         let directory = tempfile::tempdir().expect("readiness directory");
         let readiness = directory.path().join("ready");
-        let session = super::BuildSession::default();
+        let session = super::BuildSession::new(cx.background_executor.clone());
         let mut command =
             util::command::new_std_command(std::env::current_exe().expect("test executable"));
         command
@@ -1205,6 +1219,7 @@ mod tests {
         // Prevent inherited fixture mode when nextest itself was launched by a fixture.
         command.env_remove("ZED_BUILD_PROCESS_FIXTURE");
         let child = util::process::Child::spawn_contained(
+            cx.background_executor.scheduler_executor(),
             command,
             std::process::Stdio::null(),
             std::process::Stdio::null(),
@@ -1233,7 +1248,7 @@ mod tests {
             directory.path().join("first"),
             directory.path().join("second"),
         ];
-        let session = super::BuildSession::default();
+        let session = super::BuildSession::new(cx.background_executor.clone());
         let command = |readiness: &Path| {
             let mut command = util::command::new_std_command(
                 std::env::current_exe().expect("current test executable"),

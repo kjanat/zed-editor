@@ -46,6 +46,7 @@ async_zip.workspace    = true
 dirs.workspace         = true
 futures.workspace      = true
 futures-lite.workspace = true
+scheduler.workspace    = true
 shlex.workspace        = true
 smol.workspace         = true
 walkdir.workspace      = true

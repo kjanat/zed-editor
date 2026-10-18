@@ -456,6 +456,7 @@ async fn run_git(
                 let mut command = util::command::new_std_command("git");
                 command.args(&arguments).current_dir(&directory).env("GIT_TERMINAL_PROMPT", "0");
                 let mut child = util::process::Child::spawn_contained(
+                    executor.scheduler_executor(),
                     command,
                     std::process::Stdio::null(),
                     std::process::Stdio::piped(),
@@ -1377,7 +1378,11 @@ impl ExtensionStore {
             git_extension_failures: BTreeMap::default(),
             undelivered_git_extension_failures: BTreeSet::default(),
             index_path,
-            builder: Arc::new(ExtensionBuilder::new(builder_client, build_dir)),
+            builder: Arc::new(ExtensionBuilder::new(
+                builder_client,
+                build_dir,
+                cx.background_executor().clone(),
+            )),
             outstanding_operations: Default::default(),
             #[cfg(test)]
             auto_install_prepared_observer: None,

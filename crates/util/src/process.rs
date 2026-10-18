@@ -39,6 +39,7 @@ impl ProcessGroupState {
 /// Owns containment and the only access to the child's reaping operations.
 pub struct ContainedChild {
     process: smol::process::Child,
+    executor: scheduler::BackgroundExecutor,
     pub stdout: Option<smol::process::ChildStdout>,
     pub stderr: Option<smol::process::ChildStderr>,
     #[cfg(not(windows))]
@@ -66,12 +67,13 @@ impl Child {
     /// Starts a command in a new Unix session or an assigned Windows job before
     /// its program can run. Unlike `spawn`, containment setup cannot fall back.
     pub fn spawn_contained(
+        executor: scheduler::BackgroundExecutor,
         command: std::process::Command,
         stdin: Stdio,
         stdout: Stdio,
         stderr: Stdio,
     ) -> Result<ContainedChild> {
-        ContainedChild::spawn(command, stdin, stdout, stderr)
+        ContainedChild::spawn(executor, command, stdin, stdout, stderr)
     }
 
     // Status futures can outlive the mutable borrow. Serialize every reaping
@@ -241,7 +243,9 @@ impl ContainedChild {
             if unsafe { information.si_pid() } != 0 {
                 return Ok(());
             }
-            smol::Timer::after(std::time::Duration::from_millis(10)).await;
+            self.executor
+                .timer(std::time::Duration::from_millis(10))
+                .await;
         }
     }
 
@@ -264,6 +268,7 @@ impl ContainedChild {
 
     #[cfg(not(windows))]
     fn spawn(
+        executor: scheduler::BackgroundExecutor,
         mut command: std::process::Command,
         stdin: Stdio,
         stdout: Stdio,
@@ -292,6 +297,7 @@ impl ContainedChild {
             stdout: process.stdout.take(),
             stderr: process.stderr.take(),
             process,
+            executor,
             group: ProcessGroupState::Unreaped,
             status: None,
         })
@@ -301,6 +307,7 @@ impl ContainedChild {
     /// thread. Setup failure terminates and reaps the child without a fallback.
     #[cfg(windows)]
     fn spawn(
+        executor: scheduler::BackgroundExecutor,
         mut command: std::process::Command,
         stdin: Stdio,
         stdout: Stdio,
@@ -342,6 +349,7 @@ impl ContainedChild {
             stdout: process.stdout.take(),
             stderr: process.stderr.take(),
             process,
+            executor,
             job,
             status: None,
         })
@@ -474,7 +482,9 @@ impl ContainedChild {
         }
         #[cfg(windows)]
         while self.has_running_processes()? == Some(true) {
-            smol::Timer::after(std::time::Duration::from_millis(10)).await;
+            self.executor
+                .timer(std::time::Duration::from_millis(10))
+                .await;
         }
         Ok(())
     }
@@ -625,15 +635,29 @@ fn describe_command(command: &std::process::Command) -> String {
 mod tests {
     use super::*;
 
+    pub(super) fn with_executor<T>(
+        test: impl AsyncFnOnce(scheduler::BackgroundExecutor) -> T,
+    ) -> T {
+        scheduler::TestScheduler::once(async |scheduler| {
+            scheduler.allow_parking();
+            test(scheduler.background()).await
+        })
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_exit_observation_reserves_leader_until_group_signal() {
-        smol::block_on(async {
+        with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "exit 23"]);
-            let mut child =
-                Child::spawn_contained(command, Stdio::null(), Stdio::null(), Stdio::null())
-                    .expect("spawn group leader");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::null(),
+                Stdio::null(),
+            )
+            .expect("spawn group leader");
             child.wait_for_exit().await.expect("observe leader exit");
             let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
             let process_id = child.id();
@@ -659,7 +683,7 @@ mod tests {
             // SAFETY: waitid initialized siginfo for an exited child.
             assert_eq!(
                 unsafe { information.si_pid() },
-                child.id().try_into().expect("PID")
+                libc::pid_t::try_from(child.id()).expect("PID")
             );
             child.terminate_and_wait().await.expect("signal then reap");
             assert_eq!(
@@ -680,12 +704,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_signal_failure_preserves_ownership_for_cleanup_retry() {
-        smol::block_on(async {
+        with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "exit 23"]);
-            let mut child =
-                Child::spawn_contained(command, Stdio::null(), Stdio::null(), Stdio::null())
-                    .expect("spawn leader");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::null(),
+                Stdio::null(),
+            )
+            .expect("spawn leader");
             child.wait_for_exit().await.expect("observe exited leader");
             let error = child
                 .group
@@ -711,7 +740,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_ordinary_owned_status_future_prevents_signalling_reaped_group() {
-        smol::block_on(async {
+        with_executor(async |_executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "exit 23"]);
             let mut child = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null())
@@ -732,17 +761,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_natural_exit_closes_descendant_pipes_and_preserves_output() {
-        smol::block_on(async {
+        with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args([
                 "-c",
                 "sleep 60 & printf output; printf diagnostic >&2; exit 23",
             ]);
-            let mut child =
-                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
-                    .expect("spawn pipe-holding descendant");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::piped(),
+                Stdio::piped(),
+            )
+            .expect("spawn pipe-holding descendant");
             let cancellation = async {
-                smol::Timer::after(std::time::Duration::from_secs(5)).await;
+                executor.timer(std::time::Duration::from_secs(5)).await;
                 anyhow::anyhow!("descendant retained pipes after leader exit")
             };
             let output = child
@@ -758,14 +792,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_deadline_reaps_process_and_closes_pipes() {
-        smol::block_on(async {
+        with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "sleep 60 & wait"]);
-            let mut child =
-                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
-                    .expect("spawn process for deadline");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::piped(),
+                Stdio::piped(),
+            )
+            .expect("spawn process for deadline");
             let deadline = async {
-                smol::Timer::after(std::time::Duration::from_millis(20)).await;
+                executor.timer(std::time::Duration::from_millis(20)).await;
                 anyhow::anyhow!("deadline expired")
             };
             let error = child
@@ -853,12 +892,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_completed_output_preserves_status_and_descendant_output() {
-        smol::block_on(async {
+        with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "sh -c 'printf child'; printf parent"]);
-            let mut child =
-                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
-                    .expect("spawn contained process tree");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::piped(),
+                Stdio::piped(),
+            )
+            .expect("spawn contained process tree");
             let output = child
                 .output_until_cancelled(futures::future::pending())
                 .await
@@ -875,12 +919,17 @@ mod tests {
     fn test_cancelled_output_reaps_child_and_closes_descendant_pipes() {
         use futures_lite::io::{AsyncBufReadExt as _, BufReader};
 
-        smol::block_on(async {
+        with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "sleep 60 & printf 'ready\\n'; wait"]);
-            let mut child =
-                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
-                    .expect("spawn contained process tree");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::piped(),
+                Stdio::piped(),
+            )
+            .expect("spawn contained process tree");
             let mut stdout = BufReader::new(child.stdout.take().expect("captured stdout"));
             let mut readiness = String::new();
             stdout
@@ -907,12 +956,17 @@ mod tests {
     fn test_contained_kill_closes_descendant_pipes() {
         use futures_lite::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader};
 
-        smol::block_on(async {
+        with_executor(async |executor| {
             let mut command = std::process::Command::new("sh");
             command.args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"]);
-            let mut child =
-                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::null())
-                    .expect("spawn contained process tree");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::piped(),
+                Stdio::null(),
+            )
+            .expect("spawn contained process tree");
             let mut output = BufReader::new(child.stdout.take().expect("captured stdout"));
             let mut line = String::new();
             output
@@ -1142,47 +1196,60 @@ mod windows_job {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
+    use super::tests::with_executor;
     use super::*;
     use std::time::{Duration, Instant};
 
     #[test]
     fn test_completed_output_preserves_status_and_descendant_output() {
-        let mut command = gpui_util::new_std_command("cmd.exe");
-        command.args(["/d", "/c", "cmd /d /c echo child&echo parent"]);
-        let mut child =
-            Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
-                .expect("spawn contained process tree");
-        let output = smol::block_on(child.output_until_cancelled(futures::future::pending()))
-            .expect("naturally completed command must succeed");
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"child\r\nparent\r\n");
-        assert!(output.stderr.is_empty());
-        assert_eq!(
-            child.has_running_processes().expect("inactive job"),
-            Some(false)
-        );
+        with_executor(async |executor| {
+            let mut command = gpui_util::new_std_command("cmd.exe");
+            command.args(["/d", "/c", "cmd /d /c echo child&echo parent"]);
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::piped(),
+                Stdio::piped(),
+            )
+            .expect("spawn contained process tree");
+            let output = child
+                .output_until_cancelled(futures::future::pending())
+                .await
+                .expect("naturally completed command must succeed");
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"child\r\nparent\r\n");
+            assert!(output.stderr.is_empty());
+            assert_eq!(
+                child.has_running_processes().expect("inactive job"),
+                Some(false)
+            );
+        });
     }
 
     #[test]
     fn test_cancelled_output_waits_for_descendants() {
-        let temp_dir = tempfile::tempdir().expect("process tree directory");
-        let (mut child, descendant) = spawn_contained_process_tree(temp_dir.path());
-        let error = smol::block_on(
-            child.output_until_cancelled(futures::future::ready(anyhow::anyhow!(
-                "test cancellation"
-            ))),
-        )
-        .expect_err("cancelled process must fail after cleanup");
-        assert_eq!(error.to_string(), "test cancellation");
-        assert!(child.exit_status().is_some());
-        assert_eq!(
-            child.has_running_processes().expect("inactive job"),
-            Some(false)
-        );
-        assert!(
-            !process_is_alive(descendant),
-            "descendant survived cancellation"
-        );
+        with_executor(async |executor| {
+            let temp_dir = tempfile::tempdir().expect("process tree directory");
+            let (mut child, descendant) =
+                spawn_contained_process_tree(temp_dir.path(), executor.clone());
+            let error = child
+                .output_until_cancelled(futures::future::ready(anyhow::anyhow!(
+                    "test cancellation"
+                )))
+                .await
+                .expect_err("cancelled process must fail after cleanup");
+            assert_eq!(error.to_string(), "test cancellation");
+            assert!(child.exit_status().is_some());
+            assert_eq!(
+                child.has_running_processes().expect("inactive job"),
+                Some(false)
+            );
+            assert!(
+                !process_is_alive(descendant),
+                "descendant survived cancellation"
+            );
+        });
     }
 
     #[test]
@@ -1216,63 +1283,84 @@ mod windows_tests {
 
     #[test]
     fn test_contained_termination_waits_for_descendants() {
-        let temp_dir = tempfile::tempdir().expect("process tree directory");
-        let (mut child, descendant) = spawn_contained_process_tree(temp_dir.path());
-        assert_eq!(
-            child.has_running_processes().expect("query contained job"),
-            Some(true)
-        );
-        smol::block_on(child.terminate_and_wait()).expect("terminate and reap contained tree");
-        assert_eq!(
-            child.has_running_processes().expect("query terminated job"),
-            Some(false)
-        );
-        assert!(
-            !process_is_alive(descendant),
-            "descendant survived completed teardown"
-        );
+        with_executor(async |executor| {
+            let temp_dir = tempfile::tempdir().expect("process tree directory");
+            let (mut child, descendant) =
+                spawn_contained_process_tree(temp_dir.path(), executor.clone());
+            assert_eq!(
+                child.has_running_processes().expect("query contained job"),
+                Some(true)
+            );
+            child
+                .terminate_and_wait()
+                .await
+                .expect("terminate and reap contained tree");
+            assert_eq!(
+                child.has_running_processes().expect("query terminated job"),
+                Some(false)
+            );
+            assert!(
+                !process_is_alive(descendant),
+                "descendant survived completed teardown"
+            );
+        });
     }
 
     #[test]
     fn test_job_tracks_grandchild_after_direct_child_exits() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("grandchild_pid");
-        let mut command = gpui_util::new_std_command("powershell.exe");
-        command.args(["-NoProfile", "-Command"]).arg(format!(
+        with_executor(async |executor| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let pid_file = temp_dir.path().join("grandchild_pid");
+            let mut command = gpui_util::new_std_command("powershell.exe");
+            command.args(["-NoProfile", "-Command"]).arg(format!(
             "$p = Start-Process -FilePath ping.exe -ArgumentList @('-n','60','127.0.0.1') -PassThru -WindowStyle Hidden; \
              Set-Content -LiteralPath '{}' -Value $p.Id",
             pid_file.display()
         ));
-        let mut child =
-            Child::spawn_contained(command, Stdio::null(), Stdio::null(), Stdio::null())
-                .expect("failed to spawn powershell");
-        smol::block_on(child.wait_for_exit()).expect("failed to await powershell");
+            let mut child = Child::spawn_contained(
+                executor.clone(),
+                command,
+                Stdio::null(),
+                Stdio::null(),
+                Stdio::null(),
+            )
+            .expect("failed to spawn powershell");
+            child
+                .wait_for_exit()
+                .await
+                .expect("failed to await powershell");
 
-        let grandchild_pid = std::fs::read_to_string(&pid_file)
-            .expect("powershell did not record grandchild pid")
-            .trim()
-            .parse::<u32>()
-            .expect("invalid grandchild pid");
-        assert!(process_is_alive(grandchild_pid));
-        assert_eq!(
-            child.has_running_processes().expect("failed to query job"),
-            Some(true),
-            "job should remain active after its direct child exits"
-        );
+            let grandchild_pid = std::fs::read_to_string(&pid_file)
+                .expect("powershell did not record grandchild pid")
+                .trim()
+                .parse::<u32>()
+                .expect("invalid grandchild pid");
+            assert!(process_is_alive(grandchild_pid));
+            assert_eq!(
+                child.has_running_processes().expect("failed to query job"),
+                Some(true),
+                "job should remain active after its direct child exits"
+            );
 
-        child.kill().expect("failed to terminate job");
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while child.has_running_processes().expect("failed to query job") != Some(false) {
-            assert!(Instant::now() < deadline, "job did not become inactive");
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert_process_exits(grandchild_pid, "job grandchild should be terminated");
+            child.kill().expect("failed to terminate job");
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while child.has_running_processes().expect("failed to query job") != Some(false) {
+                assert!(Instant::now() < deadline, "job did not become inactive");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert_process_exits(grandchild_pid, "job grandchild should be terminated");
+        });
     }
 
     /// Spawns a process tree `powershell -> ping` via `Child::spawn` and
     /// returns the `Child` along with the pid of the grandchild (`ping`).
-    fn spawn_contained_process_tree(temp_dir: &std::path::Path) -> (ContainedChild, u32) {
-        spawn_process_tree(temp_dir, Child::spawn_contained)
+    fn spawn_contained_process_tree(
+        temp_dir: &std::path::Path,
+        executor: scheduler::BackgroundExecutor,
+    ) -> (ContainedChild, u32) {
+        spawn_process_tree(temp_dir, |command, stdin, stdout, stderr| {
+            Child::spawn_contained(executor, command, stdin, stdout, stderr)
+        })
     }
 
     fn spawn_process_tree<T>(
