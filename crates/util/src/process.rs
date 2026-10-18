@@ -31,6 +31,11 @@ impl std::ops::DerefMut for Child {
 }
 
 impl Child {
+    #[cfg(test)]
+    async fn wait_for_exit(&mut self) -> std::io::Result<()> {
+        self.process.status().await.map(drop)
+    }
+
     /// Starts a command in a new Unix session or an assigned Windows job before
     /// its program can run. Unlike `spawn`, containment setup cannot fall back.
     #[cfg(not(windows))]
@@ -442,6 +447,43 @@ fn describe_command(command: &std::process::Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_exit_observation_reserves_leader_until_group_signal() {
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exit 23"]);
+            let mut child =
+                Child::spawn_contained(command, Stdio::null(), Stdio::null(), Stdio::null())
+                    .expect("spawn group leader");
+            child.wait_for_exit().await.expect("observe leader exit");
+            let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            // SAFETY: WNOWAIT observes this owned child without releasing its PID.
+            let observation = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.id(),
+                    information.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            };
+            assert_eq!(
+                observation,
+                0,
+                "leader was reaped before group signalling: {}",
+                std::io::Error::last_os_error()
+            );
+            // SAFETY: waitid succeeded and initialized the structure.
+            let information = unsafe { information.assume_init() };
+            // SAFETY: waitid initialized siginfo for an exited child.
+            assert_eq!(
+                unsafe { information.si_pid() },
+                child.id().try_into().expect("PID")
+            );
+            child.terminate_and_wait().await.expect("signal then reap");
+        });
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
