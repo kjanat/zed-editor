@@ -322,6 +322,8 @@ pub struct InstalledGitSource {
     pub reference: Option<String>,
     pub path: Option<String>,
     pub commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_tree: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -412,20 +414,70 @@ async fn with_extension_timeout<T>(
     }
 }
 
-async fn run_git(executor: &BackgroundExecutor, directory: &Path, args: &[&str]) -> Result<String> {
-    let output = with_extension_timeout(executor, GIT_COMMAND_TIMEOUT, async {
-        #[cfg(test)]
-        extension_store_test::git_command_test_hook(directory, args).await;
-        Ok(util::command::new_command("git")
-            .args(args)
-            .current_dir(directory)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .kill_on_drop(true)
-            .output()
-            .await?)
-    })
-    .await
-    .with_context(|| format!("running git {}", redact_arguments(args).join(" ")))?;
+#[derive(Clone)]
+enum GitCommandOwner {
+    Scratch(Arc<tempfile::TempDir>),
+    Checkout(Arc<OwnedMutexGuard<()>>),
+}
+
+async fn run_git(
+    executor: &BackgroundExecutor,
+    directory: &Path,
+    args: &[&str],
+    owner: GitCommandOwner,
+) -> Result<String> {
+    let (mut sender, receiver) = oneshot::channel();
+    executor.spawn({
+        let executor = executor.clone();
+        let directory = directory.to_path_buf();
+        let arguments = args.iter().map(|argument| (*argument).to_owned()).collect::<Vec<_>>();
+        async move {
+            let result = async {
+                let cancellation = async {
+                    let timeout = executor.timer(GIT_COMMAND_TIMEOUT).fuse();
+                    let cancelled = sender.cancellation().fuse();
+                    futures::pin_mut!(timeout, cancelled);
+                    select_biased! {
+                        _ = cancelled => anyhow!("Git command cancelled"),
+                        _ = timeout => anyhow!("extension operation timed out after {GIT_COMMAND_TIMEOUT:?}"),
+                    }
+                }.fuse();
+                futures::pin_mut!(cancellation);
+                #[cfg(test)]
+                {
+                    let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+                    let hook = extension_store_test::git_command_test_hook(&directory, &arguments).fuse();
+                    futures::pin_mut!(hook);
+                    select_biased! {
+                        error = cancellation => return Err(error),
+                        _ = hook => {}
+                    }
+                }
+                let mut command = util::command::new_std_command("git");
+                command.args(&arguments).current_dir(&directory).env("GIT_TERMINAL_PROMPT", "0");
+                let mut child = util::process::Child::spawn_contained(
+                    command,
+                    std::process::Stdio::null(),
+                    std::process::Stdio::piped(),
+                    std::process::Stdio::piped(),
+                )?;
+                child.output_until_cancelled(cancellation).await
+            }.await;
+            // The receiver may have been dropped. Keep staging or the publication
+            // gate until every child has exited and released its captured pipes.
+            match owner {
+                GitCommandOwner::Scratch(directory) => drop(directory),
+                GitCommandOwner::Checkout(guard) => drop(guard),
+            }
+            if let Err(result) = sender.send(result) {
+                result.context("finishing a cancelled Git command").log_err();
+            }
+        }
+    }).detach();
+    let output = receiver
+        .await
+        .context("Git command worker exited")?
+        .with_context(|| format!("running git {}", redact_arguments(args).join(" ")))?;
     anyhow::ensure!(
         output.status.success(),
         "git {} failed: {}",
@@ -486,13 +538,15 @@ async fn prepare_git_source(
 ) -> Result<PreparedGitSource> {
     validate_git_install(extension_id, source)?;
     fs.create_dir(staging_dir).await?;
-    let checkout = tempfile::tempdir_in(staging_dir)?;
+    let checkout = Arc::new(tempfile::tempdir_in(staging_dir)?);
     let directory = checkout.path();
-    run_git(executor, directory, &["init"]).await?;
+    let owner = GitCommandOwner::Scratch(checkout.clone());
+    run_git(executor, directory, &["init"], owner.clone()).await?;
     run_git(
         executor,
         directory,
         &["remote", "add", "--", "origin", &source.url],
+        owner.clone(),
     )
     .await?;
     // Repairs of pinned extensions preserve both the installed commit and configured source.
@@ -503,15 +557,17 @@ async fn prepare_git_source(
         executor,
         directory,
         &["fetch", "--depth", "1", "--", "origin", reference],
+        owner.clone(),
     )
     .await?;
     run_git(
         executor,
         directory,
         &["checkout", "--force", "--detach", "FETCH_HEAD"],
+        owner.clone(),
     )
     .await?;
-    let commit = run_git(executor, directory, &["rev-parse", "HEAD"]).await?;
+    let commit = run_git(executor, directory, &["rev-parse", "HEAD"], owner).await?;
 
     let staged_extension = git_source_subdirectory(directory.to_path_buf(), source.path.as_deref());
     let checkout_root = fs.canonicalize(directory).await?;
@@ -527,6 +583,8 @@ async fn prepare_git_source(
         manifest.id
     );
     let manifest = manifest_with_defaults(&fs, &staged_extension, manifest).await?;
+    let checkout = Arc::try_unwrap(checkout)
+        .map_err(|_| anyhow!("Git preparation still owns its checkout after command cleanup"))?;
     Ok(PreparedGitSource {
         checkout,
         manifest,
@@ -535,6 +593,7 @@ async fn prepare_git_source(
             reference: source.reference.clone(),
             path: source.path.clone(),
             commit,
+            checkout_tree: None,
         },
     })
 }
@@ -586,7 +645,7 @@ async fn publish_prepared_git_source(
     let PreparedGitSource {
         checkout,
         manifest,
-        source,
+        mut source,
     } = receiver
         .await
         .context("Git extension build worker stopped")??;
@@ -598,12 +657,155 @@ async fn publish_prepared_git_source(
             .await?;
     }
 
+    let checkout = Arc::new(checkout);
+    source.checkout_tree = Some(
+        capture_git_checkout_tree(executor, &fs, &checkout, &staged_extension, &source).await?,
+    );
+    let checkout = Arc::try_unwrap(checkout)
+        .map_err(|_| anyhow!("Git checkout is still in use after recording its contents"))?;
     let extension_path =
         git_source_extension_path(sources_dir, extension_id, source.path.as_deref());
     publisher
         .publish(extension_id, PreparedExtension::Git { checkout, source })
         .await?;
     Ok(extension_path)
+}
+
+async fn capture_git_checkout_tree(
+    executor: &BackgroundExecutor,
+    fs: &Arc<dyn Fs>,
+    checkout: &Arc<tempfile::TempDir>,
+    extension_dir: &Path,
+    source: &InstalledGitSource,
+) -> Result<String> {
+    let owner = GitCommandOwner::Scratch(checkout.clone());
+    let head = run_git(
+        executor,
+        checkout.path(),
+        &["rev-parse", "HEAD"],
+        owner.clone(),
+    )
+    .await?;
+    anyhow::ensure!(
+        head == source.commit,
+        "the extension build changed its Git commit"
+    );
+    // Build outputs may replace tracked files. Record the validated result rather
+    // than comparing future health checks against the pristine source tree.
+    run_git(
+        executor,
+        checkout.path(),
+        &["add", "--update", "--", "."],
+        owner.clone(),
+    )
+    .await?;
+    let manifest = ExtensionManifest::load(fs.clone(), extension_dir).await?;
+    let manifest = manifest_with_defaults(fs, extension_dir, manifest).await?;
+    let resources = git_runtime_resource_paths(fs, extension_dir, &manifest).await?;
+    if !resources.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "add", "--force", "--"];
+        args.extend(resources.iter().map(String::as_str));
+        run_git(executor, extension_dir, &args, owner.clone()).await?;
+    }
+    run_git(executor, checkout.path(), &["write-tree"], owner).await
+}
+
+async fn git_runtime_resource_paths(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+) -> Result<BTreeSet<String>> {
+    let mut resources = BTreeSet::new();
+    for path in manifest.themes.iter().chain(&manifest.icon_themes) {
+        resources.insert(path.as_std_path().to_string_lossy().into_owned());
+    }
+    for path in manifest
+        .snippets
+        .iter()
+        .flat_map(|snippets| snippets.paths())
+    {
+        resources.insert(path.to_string_lossy().into_owned());
+    }
+    for language_path in &manifest.languages {
+        let language_dir = extension_dir.join(language_path.as_std_path());
+        for file_name in [
+            "config.toml",
+            SemanticTokenRules::FILE_NAME,
+            TaskTemplates::FILE_NAME,
+        ] {
+            if fs.is_file(&language_dir.join(file_name)).await {
+                resources.insert(
+                    language_path
+                        .as_std_path()
+                        .join(file_name)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        let queries = discover_query_files(fs.clone(), &language_dir).await?;
+        for query in queries.query_files() {
+            resources.insert(
+                language_path
+                    .as_std_path()
+                    .join(query.file_name())
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    if fs.is_file(&extension_dir.join("extension.wasm")).await {
+        resources.insert("extension.wasm".into());
+    }
+    for grammar in manifest.grammars.keys() {
+        resources.insert(format!("grammars/{grammar}.wasm"));
+    }
+    Ok(resources)
+}
+
+async fn validate_git_checkout_tree(
+    executor: &BackgroundExecutor,
+    fs: &Arc<dyn Fs>,
+    checkout: &Path,
+    manifest: &ExtensionManifest,
+    source: &InstalledGitSource,
+    owner: GitCommandOwner,
+) -> Result<()> {
+    let tree = source
+        .checkout_tree
+        .as_deref()
+        .context("the installed checkout has no content baseline")?;
+    anyhow::ensure!(
+        is_commit_sha(tree),
+        "the installed checkout has an invalid content baseline"
+    );
+    let head = run_git(executor, checkout, &["rev-parse", "HEAD"], owner.clone()).await?;
+    anyhow::ensure!(
+        head == source.commit,
+        "the checkout no longer uses the installed Git commit"
+    );
+    for cached in [false, true] {
+        let mut args = vec!["diff", "--quiet", "--no-ext-diff", "--no-textconv"];
+        if cached {
+            args.push("--cached");
+        }
+        args.extend([tree, "--", "."]);
+        run_git(executor, checkout, &args, owner.clone())
+            .await
+            .context("the checkout differs from its validated contents")?;
+    }
+    let extension_dir = git_source_subdirectory(checkout.to_path_buf(), source.path.as_deref());
+    let resources = git_runtime_resource_paths(fs, &extension_dir, manifest).await?;
+    if !resources.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "--"];
+        args.extend(resources.iter().map(String::as_str));
+        let untracked = run_git(executor, &extension_dir, &args, owner).await?;
+        anyhow::ensure!(
+            untracked.is_empty(),
+            "unvalidated extension resources: {untracked}"
+        );
+    }
+    Ok(())
 }
 
 struct PreparedMarketplaceExtension {
@@ -742,13 +944,14 @@ async fn validate_git_compiled_artifacts(
     extension_dir: &Path,
     manifest: &ExtensionManifest,
     wasm_host: &WasmHost,
+    owner: GitCommandOwner,
 ) -> Result<()> {
     let wasm_path = extension_dir.join("extension.wasm");
     let requires_wasm = manifest.lib.kind.is_some()
         || fs.metadata(&extension_dir.join("Cargo.toml")).await?.is_some()
         || fs.metadata(&wasm_path).await?.is_some()
         // Reindexing a missing prebuilt library loses its inferred lib.kind.
-        || !run_git(executor, extension_dir, &["ls-tree", "--name-only", "HEAD", "--", "extension.wasm"])
+        || !run_git(executor, extension_dir, &["ls-tree", "--name-only", "HEAD", "--", "extension.wasm"], owner)
             .await?
             .is_empty();
     if requires_wasm {
@@ -924,14 +1127,16 @@ async fn remote_commit(
     fs.create_dir(staging_dir).await?;
     // Relative repository URLs must resolve from the same staging-child layout
     // as prepare_git_source, even after its checkout moves into sources/.
-    let directory = tempfile::tempdir_in(staging_dir)?;
-    run_git(executor, directory.path(), &["init"]).await?;
+    let directory = Arc::new(tempfile::tempdir_in(staging_dir)?);
+    let owner = GitCommandOwner::Scratch(directory.clone());
+    run_git(executor, directory.path(), &["init"], owner.clone()).await?;
     let reference = source.reference.as_deref().unwrap_or("HEAD");
     let peeled = format!("{reference}^{{}}");
     let output = run_git(
         executor,
         directory.path(),
         &["ls-remote", "--", &source.url, reference, &peeled],
+        owner,
     )
     .await?;
     let refs = output
@@ -2006,7 +2211,7 @@ impl ExtensionStore {
                             let source = installed.source();
                             let result = async {
                                 let checkout_intact = async {
-                                    let _filesystem_guard = publisher.lock_for_read().await?;
+                                    let filesystem_guard = Arc::new(publisher.lock_for_read().await?);
                                     anyhow::ensure!(
                                         !record_missing,
                                         "the installed source record is missing or unreadable"
@@ -2057,19 +2262,17 @@ impl ExtensionStore {
                                         &extension_path,
                                         &manifest,
                                         &wasm_host,
+                                        GitCommandOwner::Checkout(filesystem_guard.clone()),
                                     )
                                     .await?;
-                                    // Reindexing cannot rediscover deleted implicit resources.
-                                    let deleted = run_git(
+                                    validate_git_checkout_tree(
                                         &executor,
-                                        &extension_path,
-                                        &["ls-files", "--deleted", "--", "."],
-                                    )
-                                    .await?;
-                                    anyhow::ensure!(
-                                        deleted.is_empty(),
-                                        "missing tracked resources: {deleted}"
-                                    );
+                                        &fs,
+                                        &git_source_dir(&sources_dir, &extension_id),
+                                        &manifest,
+                                        &installed,
+                                        GitCommandOwner::Checkout(filesystem_guard),
+                                    ).await?;
                                     Ok(())
                                 }
                                 .await;

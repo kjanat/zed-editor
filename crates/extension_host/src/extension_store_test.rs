@@ -6478,86 +6478,101 @@ enum LocalRelinkInterruption {
 }
 
 #[gpui::test]
-async fn test_restart_recovers_local_dev_replacement(cx: &mut TestAppContext) {
+async fn test_restart_recovers_local_dev_replacement_after_link_created(cx: &mut TestAppContext) {
+    check_restart_recovers_local_dev_replacement(cx, LocalRelinkInterruption::LinkCreated).await;
+}
+
+#[gpui::test]
+async fn test_restart_recovers_local_dev_replacement_after_record_removed(cx: &mut TestAppContext) {
+    check_restart_recovers_local_dev_replacement(cx, LocalRelinkInterruption::RecordRemoved).await;
+}
+
+#[gpui::test]
+async fn test_restart_recovers_local_dev_replacement_after_commit(cx: &mut TestAppContext) {
+    check_restart_recovers_local_dev_replacement(cx, LocalRelinkInterruption::Committed).await;
+}
+
+async fn check_restart_recovers_local_dev_replacement(
+    cx: &mut TestAppContext,
+    interruption: LocalRelinkInterruption,
+) {
     use LocalRelinkInterruption::*;
-    for interruption in [LinkCreated, RecordRemoved, Committed] {
-        let (_tree, extensions_dir, store, debounce) = git_extension_store(cx).await;
-        let remote = GitExtensionRemote::new("git-extension", None);
-        store
-            .update(cx, |store, cx| {
-                store.install_git_extension("git-extension".into(), remote.source(), cx)
-            })
-            .await
-            .expect("initial git install");
-        let local = local_dev_extension("git-extension");
-        let fs = store.read_with(cx, |store, _| store.fs.clone());
-        let live = extensions_dir.join("sources/git-extension");
-        let installed = extensions_dir.join("installed/git-extension");
-        let record_path = extensions_dir.join("sources/git-extension.toml");
-        let old_record = std::fs::read_to_string(&record_path).expect("existing git source record");
-        let old_target = std::fs::read_link(&installed).expect("existing git link");
-        drop((store, debounce));
-        let backup = extensions_dir.join("staging/git-source.previous");
-        std::fs::create_dir_all(&backup).expect("transaction journal");
-        std::fs::write(backup.join("extension_id"), "git-extension").expect("journal extension id");
-        std::fs::write(
-            backup.join("state.toml"),
-            toml::to_string(&crate::GitSourceBackupState {
-                checkout_existed: true,
-                installed_existed: true,
-                record: Some(old_record.clone()),
-            })
-            .expect("journal serialization"),
-        )
-        .expect("journal state");
-        std::fs::rename(&live, backup.join("checkout")).expect("back up checkout");
-        std::fs::rename(&installed, backup.join("installed")).expect("back up git link");
-        fs.create_symlink(&installed, tree_root(&local))
-            .await
-            .expect("publish local link");
-        if interruption != LinkCreated {
-            std::fs::remove_file(&record_path).expect("remove git source record");
-        }
-        if interruption == Committed {
-            std::fs::write(backup.join("committed"), "").expect("commit local replacement");
-        }
-        let (restarted, _debounce) =
-            extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
-        if interruption == Committed {
-            assert!(!record_path.exists());
-            assert!(!live.exists());
-            assert_eq!(
-                std::fs::canonicalize(&installed).expect("local installed link"),
-                std::fs::canonicalize(local.path()).expect("local source")
-            );
-            assert_eq!(installed_source(&restarted, "git-extension", cx), None);
-        } else {
-            assert_eq!(
-                std::fs::read_to_string(&record_path).expect("restored source record"),
-                old_record
-            );
-            assert_eq!(
-                std::fs::read_link(&installed).expect("restored git link"),
-                old_target
-            );
-            assert!(live.is_dir());
-            assert!(installed_source(&restarted, "git-extension", cx).is_some());
-        }
-        assert_eq!(
-            installed_version(&restarted, "git-extension", cx).as_deref(),
-            Some(if interruption == Committed {
-                "9.0.0"
-            } else {
-                "0.1.0"
-            }),
-            "{interruption:?}"
-        );
-        assert!(
-            local.path().join("extension.toml").is_file(),
-            "recovery must not remove external local sources"
-        );
-        assert!(!backup.exists(), "{interruption:?}");
+    let (_tree, extensions_dir, store, debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial git install");
+    let local = local_dev_extension("git-extension");
+    let fs = store.read_with(cx, |store, _| store.fs.clone());
+    let live = extensions_dir.join("sources/git-extension");
+    let installed = extensions_dir.join("installed/git-extension");
+    let record_path = extensions_dir.join("sources/git-extension.toml");
+    let old_record = std::fs::read_to_string(&record_path).expect("existing git source record");
+    let old_target = std::fs::read_link(&installed).expect("existing git link");
+    drop((store, debounce));
+    let backup = extensions_dir.join("staging/git-source.previous");
+    std::fs::create_dir_all(&backup).expect("transaction journal");
+    std::fs::write(backup.join("extension_id"), "git-extension").expect("journal extension id");
+    std::fs::write(
+        backup.join("state.toml"),
+        toml::to_string(&crate::GitSourceBackupState {
+            checkout_existed: true,
+            installed_existed: true,
+            record: Some(old_record.clone()),
+        })
+        .expect("journal serialization"),
+    )
+    .expect("journal state");
+    std::fs::rename(&live, backup.join("checkout")).expect("back up checkout");
+    std::fs::rename(&installed, backup.join("installed")).expect("back up git link");
+    fs.create_symlink(&installed, tree_root(&local))
+        .await
+        .expect("publish local link");
+    if interruption != LinkCreated {
+        std::fs::remove_file(&record_path).expect("remove git source record");
     }
+    if interruption == Committed {
+        std::fs::write(backup.join("committed"), "").expect("commit local replacement");
+    }
+    let (restarted, _debounce) =
+        extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
+    if interruption == Committed {
+        assert!(!record_path.exists());
+        assert!(!live.exists());
+        assert_eq!(
+            std::fs::canonicalize(&installed).expect("local installed link"),
+            std::fs::canonicalize(local.path()).expect("local source")
+        );
+        assert_eq!(installed_source(&restarted, "git-extension", cx), None);
+    } else {
+        assert_eq!(
+            std::fs::read_to_string(&record_path).expect("restored source record"),
+            old_record
+        );
+        assert_eq!(
+            std::fs::read_link(&installed).expect("restored git link"),
+            old_target
+        );
+        assert!(live.is_dir());
+        assert!(installed_source(&restarted, "git-extension", cx).is_some());
+    }
+    assert_eq!(
+        installed_version(&restarted, "git-extension", cx).as_deref(),
+        Some(if interruption == Committed {
+            "9.0.0"
+        } else {
+            "0.1.0"
+        }),
+        "{interruption:?}"
+    );
+    assert!(
+        local.path().join("extension.toml").is_file(),
+        "recovery must not remove external local sources"
+    );
+    assert!(!backup.exists(), "{interruption:?}");
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -8656,6 +8671,62 @@ pub(super) async fn git_command_test_hook(directory: &Path, arguments: &[&str]) 
 }
 
 #[gpui::test]
+async fn test_cancelled_git_command_retains_scratch_until_worker_finishes(cx: &mut TestAppContext) {
+    let scratch = Arc::new(tempfile::tempdir().expect("Git scratch directory"));
+    let directory = scratch.path().to_path_buf();
+    let (stall, reached) = GitCommandStallGuard::new(&directory, "fetch");
+    let executor = cx.executor();
+    let mut command = Box::pin(crate::run_git(
+        &executor,
+        &directory,
+        &["fetch"],
+        crate::GitCommandOwner::Scratch(scratch.clone()),
+    ));
+    assert!(command.as_mut().now_or_never().is_none());
+    reached.await.expect("Git worker owns scratch");
+    drop(scratch);
+    drop(command);
+    assert!(
+        directory.is_dir(),
+        "worker must retain cancelled caller's scratch"
+    );
+    cx.run_until_parked();
+    assert!(stall.stall.cancelled.load(Ordering::SeqCst));
+    assert!(!directory.exists(), "finished worker releases scratch");
+}
+
+#[gpui::test]
+async fn test_cancelled_git_command_retains_checkout_gate_until_worker_finishes(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().expect("Git fixture directory");
+    let gate = Arc::new(futures::lock::Mutex::new(()));
+    let guard = Arc::new(gate.clone().lock_owned().await);
+    let (stall, reached) = GitCommandStallGuard::new(directory.path(), "diff");
+    let executor = cx.executor();
+    let mut command = Box::pin(crate::run_git(
+        &executor,
+        directory.path(),
+        &["diff"],
+        crate::GitCommandOwner::Checkout(guard.clone()),
+    ));
+    assert!(command.as_mut().now_or_never().is_none());
+    reached.await.expect("Git worker owns checkout gate");
+    drop(guard);
+    drop(command);
+    assert!(
+        gate.try_lock().is_none(),
+        "worker must retain cancelled caller's gate"
+    );
+    cx.run_until_parked();
+    assert!(stall.stall.cancelled.load(Ordering::SeqCst));
+    assert!(
+        gate.try_lock().is_some(),
+        "finished worker releases checkout gate"
+    );
+}
+
+#[gpui::test]
 async fn test_git_network_timeout_preserves_install_and_releases_queued_uninstall(
     cx: &mut TestAppContext,
 ) {
@@ -8844,10 +8915,18 @@ async fn test_git_errors_redact_url_credentials(cx: &mut TestAppContext) {
     let directory = extensions_dir.join("work");
     git_in(&directory, &["init"]);
     git_in(&directory, &["remote", "add", "origin", url]);
+    let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+    let owner = crate::GitCommandOwner::Checkout(Arc::new(
+        publisher
+            .lock_for_read()
+            .await
+            .expect("fixture filesystem guard"),
+    ));
     let error = crate::run_git(
         &cx.executor(),
         &directory,
         &["remote", "add", "origin", url],
+        owner,
     )
     .await
     .expect_err("a second origin should fail");
@@ -9177,6 +9256,13 @@ async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
     let remote = GitExtensionRemote::new("git-extension", None);
     let (fs, wasm_host) =
         store.read_with(cx, |store, _| (store.fs.clone(), store.wasm_host.clone()));
+    let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+    let owner = crate::GitCommandOwner::Checkout(Arc::new(
+        publisher
+            .lock_for_read()
+            .await
+            .expect("fixture filesystem guard"),
+    ));
     let mut manifest = ExtensionManifest::load(fs.clone(), &remote.seed)
         .await
         .expect("extension manifest");
@@ -9186,6 +9272,7 @@ async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
         &remote.seed,
         &manifest,
         &wasm_host,
+        owner.clone(),
     )
     .await
     .expect("metadata-only extensions need no wasm");
@@ -9207,6 +9294,7 @@ async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
             &remote.seed,
             &manifest,
             &wasm_host,
+            owner.clone(),
         )
         .await
         .expect_err("a declared or source-inferred library must exist");
@@ -9218,6 +9306,7 @@ async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
             &remote.seed,
             &manifest,
             &wasm_host,
+            owner.clone(),
         )
         .await
         .expect_err("a present compiled library must be valid wasm");
@@ -9233,6 +9322,7 @@ async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
             &remote.seed,
             &manifest,
             &wasm_host,
+            owner.clone(),
         )
         .await
         .expect("health checks compile the library without executing its trapping init");
@@ -9250,6 +9340,13 @@ async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut 
     let remote = GitExtensionRemote::new("git-extension", None);
     let (fs, wasm_host) =
         store.read_with(cx, |store, _| (store.fs.clone(), store.wasm_host.clone()));
+    let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+    let owner = crate::GitCommandOwner::Checkout(Arc::new(
+        publisher
+            .lock_for_read()
+            .await
+            .expect("fixture filesystem guard"),
+    ));
     let mut manifest = ExtensionManifest::load(fs.clone(), &remote.seed)
         .await
         .expect("extension manifest");
@@ -9264,6 +9361,7 @@ async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut 
         &remote.seed,
         &manifest,
         &wasm_host,
+        owner.clone(),
     )
     .await
     .expect_err("declared grammars are required even without language references");
@@ -9277,6 +9375,7 @@ async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut 
             &remote.seed,
             &manifest,
             &wasm_host,
+            owner.clone(),
         )
         .await
         .expect_err("grammar binary must load as the declared parser");
@@ -9293,6 +9392,7 @@ async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut 
         &remote.seed,
         &manifest,
         &wasm_host,
+        owner.clone(),
     )
     .await
     .expect("valid unused grammar passes without invoking clang");
@@ -9305,6 +9405,7 @@ async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut 
         &remote.seed,
         &manifest,
         &wasm_host,
+        owner.clone(),
     )
     .await
     .expect_err("every declared grammar is checked");
@@ -10223,6 +10324,266 @@ async fn test_git_update_skips_suppressed_durable_sources(cx: &mut TestAppContex
         std::fs::read_to_string(&suppressed_record).expect("untouched suppressed record"),
         suppressed_contents
     );
+}
+
+#[gpui::test]
+async fn test_git_update_repairs_valid_tracked_theme_edits(cx: &mut TestAppContext) {
+    check_git_checkout_content_repair(cx, GitCheckoutEdit::Theme).await;
+}
+
+#[gpui::test]
+async fn test_git_update_repairs_staged_only_theme_edits(cx: &mut TestAppContext) {
+    check_git_checkout_content_repair(cx, GitCheckoutEdit::Index).await;
+}
+
+#[gpui::test]
+async fn test_pinned_git_update_repairs_changed_head(cx: &mut TestAppContext) {
+    check_git_checkout_content_repair(cx, GitCheckoutEdit::Head).await;
+}
+
+#[gpui::test]
+async fn test_git_update_repairs_valid_tracked_wasm_edits(cx: &mut TestAppContext) {
+    check_git_checkout_content_repair(cx, GitCheckoutEdit::Wasm).await;
+}
+
+#[gpui::test]
+async fn test_git_update_removes_unvalidated_discovered_theme(cx: &mut TestAppContext) {
+    check_git_checkout_content_repair(cx, GitCheckoutEdit::AddedTheme).await;
+}
+
+enum GitCheckoutEdit {
+    Theme,
+    Index,
+    Head,
+    Wasm,
+    AddedTheme,
+}
+
+const CHECKOUT_THEME: &str = r#"{"name":"Original family","author":"Test","themes":[{"name":"Original theme","appearance":"dark","style":{}}]}"#;
+
+fn wasm_with_test_marker(mut wasm: Vec<u8>) -> Vec<u8> {
+    use wasm_encoder::{Encode, Section};
+    let marker = wasm_encoder::CustomSection {
+        name: "test-marker".into(),
+        data: std::borrow::Cow::Borrowed(b"different valid component"),
+    };
+    wasm.push(marker.id());
+    marker.encode(&mut wasm);
+    wasm
+}
+
+async fn check_git_checkout_content_repair(cx: &mut TestAppContext, edit: GitCheckoutEdit) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    std::fs::create_dir_all(remote.seed.join("themes")).expect("theme directory");
+    std::fs::write(remote.seed.join("themes/theme.json"), CHECKOUT_THEME).expect("tracked theme");
+    let wasm = git_extension_wasm(false).expect("valid component");
+    std::fs::write(remote.seed.join("extension.wasm"), &wasm).expect("tracked component");
+    remote.publish("git-extension", "0.1.1");
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial Git install");
+    let source = installed_source(&store, "git-extension", cx).expect("installed source");
+    let checkout = extensions_dir.join("sources/git-extension");
+    let theme = checkout.join("themes/theme.json");
+    let marker = checkout.join("untracked-repair-marker");
+    std::fs::write(&marker, "old checkout").expect("repair marker");
+    match edit {
+        GitCheckoutEdit::Theme => {
+            std::fs::write(&theme, CHECKOUT_THEME.replace("Original", "Modified"))
+                .expect("valid changed theme");
+        }
+        GitCheckoutEdit::Index => {
+            std::fs::write(&theme, CHECKOUT_THEME.replace("Original", "Modified"))
+                .expect("staged theme");
+            git_in(&checkout, &["add", "--", "themes/theme.json"]);
+            std::fs::write(&theme, CHECKOUT_THEME)
+                .expect("restore working file without changing index");
+        }
+        GitCheckoutEdit::Head => {
+            git_in(
+                &checkout,
+                &["commit", "--allow-empty", "-m", "local HEAD drift"],
+            );
+            cx.update(|cx| {
+                cx.update_global::<SettingsStore, _>(|settings, cx| {
+                    settings.update_user_settings(cx, |content| {
+                        content
+                            .extension
+                            .auto_update_extensions
+                            .insert("git-extension".into(), false);
+                    });
+                });
+            });
+            remote.publish("git-extension", "0.2.0");
+        }
+        GitCheckoutEdit::Wasm => {
+            std::fs::write(
+                checkout.join("extension.wasm"),
+                wasm_with_test_marker(wasm.clone()),
+            )
+            .expect("different valid component");
+        }
+        GitCheckoutEdit::AddedTheme => {
+            std::fs::write(
+                checkout.join("themes/added.json"),
+                CHECKOUT_THEME.replace("Original", "Added"),
+            )
+            .expect("new inferred theme");
+        }
+    }
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("repair content drift");
+    assert!(git_failures(&store, cx).is_empty());
+    assert!(!marker.exists(), "content drift must replace checkout");
+    assert_eq!(
+        installed_source(&store, "git-extension", cx),
+        Some(source.clone())
+    );
+    assert_eq!(git_in(&checkout, &["rev-parse", "HEAD"]), source.commit);
+    assert_eq!(
+        std::fs::read_to_string(&theme).expect("repaired theme"),
+        CHECKOUT_THEME
+    );
+    assert_eq!(
+        std::fs::read(checkout.join("extension.wasm")).expect("repaired component"),
+        wasm
+    );
+    assert!(!checkout.join("themes/added.json").exists());
+}
+
+#[gpui::test]
+async fn test_git_checkout_baseline_preserves_validated_build_outputs(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    std::fs::create_dir_all(remote.seed.join("themes")).expect("theme directory");
+    std::fs::write(remote.seed.join("themes/tracked.json"), CHECKOUT_THEME)
+        .expect("tracked source theme");
+    std::fs::write(
+        remote.seed.join(".gitignore"),
+        "extension.wasm\nsnippets.json\nlanguages/\nthemes/generated.json\ntarget/\n",
+    )
+    .expect("ignored build outputs");
+    remote.publish("git-extension", "0.1.1");
+    let wasm = git_extension_wasm(false).expect("generated component");
+    let generated_theme = CHECKOUT_THEME.replace("Original", "Generated");
+    const SNIPPETS: &str = r#"{"Hello":{"prefix":"hello","body":"Hello"}}"#;
+    store.read_with(cx, |store, _| {
+        store.builder.set_precompile_hook({
+            let wasm = wasm.clone();
+            let generated_theme = generated_theme.clone();
+            move |directory| {
+                let directory = directory.to_path_buf();
+                let wasm = wasm.clone();
+                let generated_theme = generated_theme.clone();
+                async move {
+                    std::fs::write(directory.join("extension.wasm"), wasm)?;
+                    std::fs::write(directory.join("themes/tracked.json"), &generated_theme)?;
+                    std::fs::write(directory.join("themes/generated.json"), &generated_theme)?;
+                    std::fs::write(directory.join("snippets.json"), SNIPPETS)?;
+                    std::fs::create_dir_all(directory.join("languages/plain"))?;
+                    std::fs::write(
+                        directory.join("languages/plain/config.toml"),
+                        "name = \"Generated Plain\"\n",
+                    )?;
+                    std::fs::create_dir_all(directory.join("target"))?;
+                    std::fs::write(
+                        directory.join("target/build-cache"),
+                        "not an extension resource",
+                    )?;
+                    Ok(())
+                }
+                .boxed()
+            }
+        });
+    });
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("install validated build outputs");
+    let source = installed_source(&store, "git-extension", cx).expect("postbuild source record");
+    let checkout = extensions_dir.join("sources/git-extension");
+    let source_tree = git_in(&checkout, &["rev-parse", "HEAD^{tree}"]);
+    assert_ne!(source.checkout_tree.as_deref(), Some(source_tree.as_str()));
+    git_in(
+        &checkout,
+        &[
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            "extension.wasm",
+            "themes/generated.json",
+            "snippets.json",
+            "languages/plain/config.toml",
+        ],
+    );
+    assert!(git_in(&checkout, &["ls-files", "--", "target"]).is_empty());
+    let marker = checkout.join("unchanged-marker");
+    std::fs::write(&marker, "unchanged validated checkout").expect("checkout marker");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("accept postbuild baseline");
+    assert!(git_failures(&store, cx).is_empty());
+    assert!(
+        marker.exists(),
+        "legitimate generated outputs must not trigger repairs"
+    );
+    std::fs::write(
+        checkout.join("snippets.json"),
+        SNIPPETS.replace("Hello", "Modified"),
+    )
+    .expect("valid changed generated resource");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("repair generated resource edit");
+    assert!(git_failures(&store, cx).is_empty());
+    assert!(!marker.exists());
+    assert_eq!(
+        std::fs::read_to_string(checkout.join("snippets.json"))
+            .expect("repaired generated resource"),
+        SNIPPETS
+    );
+    assert_eq!(installed_source(&store, "git-extension", cx), Some(source));
+}
+
+#[gpui::test]
+async fn test_git_checkout_without_content_baseline_is_rebuilt(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial Git install");
+    let mut source = installed_source(&store, "git-extension", cx).expect("installed source");
+    source.checkout_tree = None;
+    let record = extensions_dir.join("sources/git-extension.toml");
+    std::fs::write(
+        &record,
+        toml::to_string(&source).expect("legacy source record"),
+    )
+    .expect("remove old baseline");
+    let marker = extensions_dir.join("sources/git-extension/legacy-marker");
+    std::fs::write(&marker, "old checkout").expect("legacy marker");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("rebuild legacy checkout");
+    assert!(git_failures(&store, cx).is_empty());
+    assert!(!marker.exists());
+    let repaired = installed_source(&store, "git-extension", cx).expect("repaired source");
+    assert_eq!(repaired.commit, source.commit);
+    assert!(repaired.checkout_tree.is_some());
 }
 
 #[gpui::test]

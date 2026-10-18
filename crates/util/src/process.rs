@@ -181,6 +181,88 @@ impl Child {
         Ok(self.process.output().await?)
     }
 
+    /// Collects output until the process exits or cancellation supplies an error.
+    /// Both paths terminate remaining descendants, reap the child, and drain its
+    /// pipes before returning. The caller must keep this future alive through
+    /// cleanup: signal cancellation instead of dropping it, retaining any owners
+    /// of directories and locks used by the command until it returns.
+    pub async fn output_until_cancelled(
+        &mut self,
+        cancellation: impl std::future::Future<Output = anyhow::Error>,
+    ) -> Result<std::process::Output> {
+        use futures::{AsyncReadExt as _, FutureExt as _};
+
+        let mut stdout = self.stdout.take();
+        let mut stderr = self.stderr.take();
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        let result = {
+            let output = async {
+                let (status, _, _) = futures::try_join!(
+                    self.status(),
+                    async {
+                        match stdout.as_mut() {
+                            Some(stdout) => stdout.read_to_end(&mut stdout_bytes).await,
+                            None => Ok(0),
+                        }
+                    },
+                    async {
+                        match stderr.as_mut() {
+                            Some(stderr) => stderr.read_to_end(&mut stderr_bytes).await,
+                            None => Ok(0),
+                        }
+                    },
+                )?;
+                Ok(std::process::Output {
+                    status,
+                    stdout: stdout_bytes,
+                    stderr: stderr_bytes,
+                })
+            }
+            .fuse();
+            let cancellation = cancellation.fuse();
+            futures::pin_mut!(output, cancellation);
+            futures::select_biased! {
+                result = output => result,
+                error = cancellation => Err(error),
+            }
+        };
+        let (termination, stdout, stderr) = futures::join!(
+            self.terminate_and_wait(),
+            async {
+                match stdout.as_mut() {
+                    Some(stdout) => futures::io::copy(stdout, &mut futures::io::sink()).await,
+                    None => Ok(0),
+                }
+            },
+            async {
+                match stderr.as_mut() {
+                    Some(stderr) => futures::io::copy(stderr, &mut futures::io::sink()).await,
+                    None => Ok(0),
+                }
+            },
+        );
+        let cleanup = termination
+            .and_then(|()| {
+                stdout
+                    .context("draining terminated command stdout")
+                    .map(drop)
+            })
+            .and_then(|()| {
+                stderr
+                    .context("draining terminated command stderr")
+                    .map(drop)
+            });
+        if let Err(error) = cleanup {
+            return match result {
+                Ok(_) => Err(error),
+                Err(command_error) => Err(error)
+                    .with_context(|| format!("cleaning up failed command: {command_error:#}")),
+            };
+        }
+        result
+    }
+
     #[cfg(not(windows))]
     pub fn kill(&mut self) -> Result<()> {
         // After SIGKILL succeeds, a second signal can encounter only zombies:
@@ -189,14 +271,7 @@ impl Child {
         if self.termination_requested {
             return Ok(());
         }
-        let pid = self.process.id();
-        // SAFETY: the child starts its own session, whose process group is its PID.
-        if unsafe { libc::killpg(pid.try_into()?, libc::SIGKILL) } == -1 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(error).context("terminating child process group");
-            }
-        }
+        terminate_process_group(self.process.id().try_into()?)?;
         self.termination_requested = true;
         Ok(())
     }
@@ -261,6 +336,101 @@ impl Child {
     }
 }
 
+#[cfg(not(windows))]
+fn terminate_process_group(process_group: libc::pid_t) -> Result<()> {
+    // SAFETY: contained children start their own session and process group.
+    if unsafe { libc::killpg(process_group, libc::SIGKILL) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    if error.raw_os_error() == Some(libc::EPERM) && macos_process_group_has_exited(process_group)? {
+        // Darwin skips zombies in killpg and reports EPERM for a group containing
+        // only zombies. A live member or failed inspection must still be an error.
+        return Ok(());
+    }
+    Err(error).context("terminating child process group")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_group_members(process_group: libc::pid_t) -> Result<Vec<libc::pid_t>> {
+    // SAFETY: null requests the capacity in PIDs; no buffer is written.
+    let capacity = unsafe { libc::proc_listpgrppids(process_group, std::ptr::null_mut(), 0) };
+    anyhow::ensure!(
+        capacity > 0,
+        "failed to size child process group: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut members: Vec<libc::pid_t> = vec![0; usize::try_from(capacity)?];
+    let bytes = std::mem::size_of_val(members.as_slice()).try_into()?;
+    // libproc maps errors to zero, which also represents an empty group.
+    // SAFETY: errno is thread-local; the allocated buffer has exactly `bytes` bytes.
+    let count = unsafe {
+        *libc::__error() = 0;
+        libc::proc_listpgrppids(process_group, members.as_mut_ptr().cast(), bytes)
+    };
+    let error = std::io::Error::last_os_error();
+    anyhow::ensure!(
+        count >= 0 && (count != 0 || error.raw_os_error() == Some(0)),
+        "failed to list child process group: {error}"
+    );
+    let count = usize::try_from(count)?;
+    anyhow::ensure!(
+        count < members.len(),
+        "child process group listing was truncated"
+    );
+    members.truncate(count);
+    Ok(members)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_group_has_exited(process_group: libc::pid_t) -> Result<bool> {
+    let mut zombies = std::collections::HashSet::new();
+    for member in macos_process_group_members(process_group)? {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdshortinfo>::uninit();
+        let bytes = std::mem::size_of::<libc::proc_bsdshortinfo>().try_into()?;
+        // SAFETY: libproc fills this correctly sized structure. Argument 1 includes
+        // zombies, which are omitted when argument 0 is used for this flavor.
+        let read = unsafe {
+            *libc::__error() = 0;
+            libc::proc_pidinfo(
+                member,
+                libc::PROC_PIDT_SHORTBSDINFO,
+                1,
+                info.as_mut_ptr().cast(),
+                bytes,
+            )
+        };
+        if read == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                continue;
+            }
+            return Err(error).context("inspecting child process group member");
+        }
+        anyhow::ensure!(
+            read == bytes,
+            "incomplete child process group member information"
+        );
+        // SAFETY: the successful call wrote the entire structure.
+        let info = unsafe { info.assume_init() };
+        if info.pbsi_pgid == u32::try_from(process_group)? {
+            if info.pbsi_status != libc::SZOMB {
+                return Ok(false);
+            }
+            zombies.insert(member);
+        }
+    }
+    // A member can fork and then exit between enumeration and inspection. Reject
+    // new members rather than treating that incomplete snapshot as an empty group.
+    Ok(macos_process_group_members(process_group)?
+        .into_iter()
+        .all(|member| zombies.contains(&member)))
+}
+
 fn describe_command(command: &std::process::Command) -> String {
     crate::redact::describe_command(
         command.get_program(),
@@ -272,6 +442,127 @@ fn describe_command(command: &std::process::Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_termination_accepts_zombie_only_group_but_detects_live_members() {
+        // SAFETY: the child uses only async-signal-safe calls before _exit.
+        let child = unsafe { libc::fork() };
+        assert!(
+            child >= 0,
+            "fork failed: {}",
+            std::io::Error::last_os_error()
+        );
+        if child == 0 {
+            // SAFETY: setsid, getpid, kill, and _exit are async-signal-safe.
+            unsafe {
+                if libc::setsid() == -1 {
+                    libc::_exit(1);
+                }
+                if libc::kill(libc::getpid(), libc::SIGSTOP) == -1 {
+                    libc::_exit(2);
+                }
+                libc::_exit(0);
+            }
+        }
+        let _reap = crate::defer(move || {
+            // SAFETY: this test owns the unreaped child PID until this guard runs.
+            if unsafe { libc::kill(child, libc::SIGKILL) } == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    log::error!("failed to terminate test child: {error}");
+                }
+            }
+            // SAFETY: null discards status; waitpid reaps only the owned child.
+            if unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) } == -1 {
+                log::error!(
+                    "failed to reap test child: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        });
+        let mut status = 0;
+        // SAFETY: status points to writable memory; WUNTRACED observes the stop.
+        assert_eq!(
+            unsafe { libc::waitpid(child, &mut status, libc::WUNTRACED) },
+            child
+        );
+        assert!(
+            libc::WIFSTOPPED(status),
+            "child did not establish its group"
+        );
+        assert!(!macos_process_group_has_exited(child).expect("inspect live group"));
+        // SAFETY: this is the stopped child owned by the test.
+        assert_eq!(unsafe { libc::kill(child, libc::SIGCONT) }, 0);
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+        // SAFETY: waitid initializes siginfo and WNOWAIT deliberately retains the
+        // zombie so the cleanup result cannot depend on launchd reaping timing.
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.try_into().expect("child PID"),
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            },
+            0
+        );
+        assert!(macos_process_group_has_exited(child).expect("inspect zombie group"));
+        terminate_process_group(child).expect("an already exited group must not fail teardown");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_completed_output_preserves_status_and_descendant_output() {
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sh -c 'printf child'; printf parent"]);
+            let mut child =
+                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
+                    .expect("spawn contained process tree");
+            let output = child
+                .output_until_cancelled(futures::future::pending())
+                .await
+                .expect("naturally completed command must succeed");
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"childparent");
+            assert!(output.stderr.is_empty());
+            assert!(child.try_status().expect("reaped child status").is_some());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_cancelled_output_reaps_child_and_closes_descendant_pipes() {
+        use futures_lite::io::{AsyncBufReadExt as _, BufReader};
+
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sleep 60 & printf 'ready\\n'; wait"]);
+            let mut child =
+                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
+                    .expect("spawn contained process tree");
+            let mut stdout = BufReader::new(child.stdout.take().expect("captured stdout"));
+            let mut readiness = String::new();
+            stdout
+                .read_line(&mut readiness)
+                .await
+                .expect("descendant ready");
+            assert_eq!(readiness, "ready\n");
+            child.stdout = Some(stdout.into_inner());
+            let error = child
+                .output_until_cancelled(futures::future::ready(anyhow::anyhow!(
+                    "test cancellation"
+                )))
+                .await
+                .expect_err("cancelled process must fail after cleanup");
+            assert_eq!(error.to_string(), "test cancellation");
+            assert!(child.try_status().expect("reaped child status").is_some());
+            assert!(child.stdout.is_none());
+            assert!(child.stderr.is_none());
+        });
+    }
 
     #[cfg(unix)]
     #[test]
@@ -515,6 +806,46 @@ mod windows_job {
 mod windows_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn test_completed_output_preserves_status_and_descendant_output() {
+        let mut command = gpui_util::new_std_command("cmd.exe");
+        command.args(["/d", "/c", "cmd /d /c echo child&echo parent"]);
+        let mut child =
+            Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
+                .expect("spawn contained process tree");
+        let output = smol::block_on(child.output_until_cancelled(futures::future::pending()))
+            .expect("naturally completed command must succeed");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"child\r\nparent\r\n");
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            child.has_running_processes().expect("inactive job"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_cancelled_output_waits_for_descendants() {
+        let temp_dir = tempfile::tempdir().expect("process tree directory");
+        let (mut child, descendant) = spawn_process_tree(temp_dir.path(), true);
+        let error = smol::block_on(
+            child.output_until_cancelled(futures::future::ready(anyhow::anyhow!(
+                "test cancellation"
+            ))),
+        )
+        .expect_err("cancelled process must fail after cleanup");
+        assert_eq!(error.to_string(), "test cancellation");
+        assert!(child.try_status().expect("reaped child status").is_some());
+        assert_eq!(
+            child.has_running_processes().expect("inactive job"),
+            Some(false)
+        );
+        assert!(
+            !process_is_alive(descendant),
+            "descendant survived cancellation"
+        );
+    }
 
     #[test]
     fn test_unmanaged_child_reports_unavailable_job_activity() {
