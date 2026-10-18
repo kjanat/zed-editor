@@ -6279,7 +6279,7 @@ async fn test_cancelled_publication_recovers_before_queued_reload(cx: &mut TestA
     let reached_tx = Arc::new(Mutex::new(Some(reached_tx)));
     let (release_tx, release_rx) = futures::channel::oneshot::channel();
     let release_rx = Arc::new(Mutex::new(Some(release_rx)));
-    let executor = cx.background_executor().clone();
+    let executor = cx.executor();
     let fs = store.read_with(cx, |store, _| store.fs.clone());
     publisher.set_hook(move |info| {
         let reached_tx = reached_tx.clone();
@@ -6406,7 +6406,7 @@ async fn test_cancelled_index_rebuild_finishes_cache_write_before_uninstall(
     let started_tx = Arc::new(Mutex::new(Some(started_tx)));
     let (release_tx, release_rx) = futures::channel::oneshot::channel();
     let release_rx = Arc::new(Mutex::new(Some(release_rx)));
-    let executor = cx.background_executor().clone();
+    let executor = cx.executor();
     publisher.set_index_save_hook({
         let index_path = index_path.clone();
         move || {
@@ -7016,7 +7016,7 @@ async fn test_git_repository_url_is_not_parsed_as_option(cx: &mut TestAppContext
         reference: None,
         path: None,
     };
-    let error = crate::remote_commit(&remote.seed, &source)
+    let error = crate::remote_commit(&cx.executor(), &remote.seed, &source)
         .await
         .expect_err("an option-like repository must not turn a remote check into --get-url");
     assert!(format!("{error:#}").contains("git ls-remote -- --get-url"));
@@ -7459,6 +7459,106 @@ async fn test_auto_install_consumers_wait_for_unknown_grammar_exports(cx: &mut T
         );
         assert_eq!(
             installed_version(&store, unknown_id, cx).as_deref(),
+            Some("2.0.0")
+        );
+        assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+    }
+}
+
+#[gpui::test]
+async fn test_auto_install_timeout_releases_consumers_of_installed_grammars(
+    cx: &mut TestAppContext,
+) {
+    for stalled_id in ["unrelated", "provider"] {
+        let (client, _) = marketplace_serving_grammar_batch(vec![
+            MarketplaceGrammarFixture {
+                id: "provider",
+                provides_html: true,
+                ..Default::default()
+            },
+            MarketplaceGrammarFixture {
+                id: "consumer",
+                consumes_html: true,
+                ..Default::default()
+            },
+            MarketplaceGrammarFixture {
+                id: "unrelated",
+                ..Default::default()
+            },
+            MarketplaceGrammarFixture {
+                id: "independent",
+                ..Default::default()
+            },
+        ]);
+        let (_tree, extensions_dir, store, _debounce) =
+            git_extension_store_with_http(cx, client.clone()).await;
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        language_extension::init(
+            LspAccess::Noop,
+            store.read_with(cx, |store, _| store.proxy.clone()),
+            registry,
+        );
+        store
+            .update(cx, |store, cx| {
+                store.install_latest_extension_task("provider".into(), cx)
+            })
+            .await
+            .expect("installed grammar provider");
+        let provider_path = extensions_dir.join("installed/provider/grammars/html.wasm");
+        let original_grammar = std::fs::read(&provider_path).expect("installed grammar");
+        let (gated_client, release, started) =
+            stall_marketplace_request(client.clone(), stalled_id);
+        let (prepared, prepared_receiver) = futures::channel::oneshot::channel();
+        store.update(cx, |store, _| {
+            store.http_client = gated_client;
+            store.auto_install_prepared_observer = Some(("consumer".into(), prepared));
+        });
+        let batch = store.update(cx, |store, cx| {
+            store.install_marketplace_extensions(
+                vec!["consumer".into(), stalled_id.into(), "independent".into()],
+                cx,
+            )
+        });
+        started.await.expect("preparation stalled");
+        cx.condition(&store, |store, _| {
+            store.installed_extensions().contains_key("independent")
+        })
+        .await;
+        prepared_receiver
+            .await
+            .expect("consumer waits with preparation complete");
+        cx.run_until_parked();
+        assert!(installed_version(&store, "consumer", cx).is_none());
+        assert!(store.read_with(cx, |store, _| {
+            store.outstanding_operations().contains_key(stalled_id)
+        }));
+
+        cx.executor()
+            .advance_clock(crate::EXTENSION_PREPARATION_TIMEOUT);
+        batch.await;
+        cx.run_until_parked();
+        assert!(
+            release.send(()).is_err(),
+            "deadline cancels the stalled HTTP future"
+        );
+        assert_eq!(
+            installed_version(&store, "consumer", cx).as_deref(),
+            Some("2.0.0")
+        );
+        assert_eq!(
+            std::fs::read(&provider_path).expect("surviving provider"),
+            original_grammar
+        );
+        assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+
+        store.update(cx, |store, _| store.http_client = client);
+        store
+            .update(cx, |store, cx| {
+                store.install_marketplace_extensions(vec![stalled_id.into()], cx)
+            })
+            .await;
+        assert_eq!(
+            installed_version(&store, stalled_id, cx).as_deref(),
             Some("2.0.0")
         );
         assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
@@ -8149,6 +8249,151 @@ fn git_failures(
     })
 }
 
+struct GitCommandStall {
+    command: &'static str,
+    reached: Mutex<Option<futures::channel::oneshot::Sender<()>>>,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+static GIT_COMMAND_STALLS: std::sync::LazyLock<Mutex<HashMap<PathBuf, Arc<GitCommandStall>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::default()));
+
+struct GitCommandStallGuard {
+    directory: PathBuf,
+    stall: Arc<GitCommandStall>,
+}
+
+impl GitCommandStallGuard {
+    fn new(
+        directory: &Path,
+        command: &'static str,
+    ) -> (Self, futures::channel::oneshot::Receiver<()>) {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let stall = Arc::new(GitCommandStall {
+            command,
+            reached: Mutex::new(Some(sender)),
+            cancelled: std::sync::atomic::AtomicBool::new(false),
+        });
+        assert!(
+            GIT_COMMAND_STALLS
+                .lock()
+                .insert(directory.to_path_buf(), stall.clone())
+                .is_none()
+        );
+        (
+            Self {
+                directory: directory.to_path_buf(),
+                stall,
+            },
+            receiver,
+        )
+    }
+}
+
+impl Drop for GitCommandStallGuard {
+    fn drop(&mut self) {
+        GIT_COMMAND_STALLS.lock().remove(&self.directory);
+    }
+}
+
+pub(super) async fn git_command_test_hook(directory: &Path, arguments: &[&str]) {
+    let stall = GIT_COMMAND_STALLS.lock().iter().find_map(|(root, stall)| {
+        (directory.starts_with(root) && arguments.first() == Some(&stall.command))
+            .then(|| stall.clone())
+    });
+    if let Some(stall) = stall {
+        stall
+            .reached
+            .lock()
+            .take()
+            .expect("one stalled Git command")
+            .send(())
+            .expect("test awaits Git command");
+        let _cancelled = util::defer(move || stall.cancelled.store(true, Ordering::SeqCst));
+        futures::future::pending::<()>().await;
+    }
+}
+
+#[gpui::test]
+async fn test_git_network_timeout_preserves_install_and_releases_queued_uninstall(
+    cx: &mut TestAppContext,
+) {
+    for command in ["ls-remote", "fetch"] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("blocked", None);
+        std::fs::write(remote.seed.join("tracked.txt"), "tracked resource")
+            .expect("tracked fixture");
+        remote.publish("blocked", "0.1.1");
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("blocked".into(), remote.source(), cx)
+            })
+            .await
+            .expect("initial Git install");
+        let independent = local_dev_extension("independent");
+        store
+            .update(cx, |store, cx| {
+                store.install_dev_extension(tree_root(&independent), cx)
+            })
+            .await
+            .expect("independent local install");
+        let source = installed_source(&store, "blocked", cx);
+        let record_path = extensions_dir.join("sources/blocked.toml");
+        let original_record = std::fs::read(&record_path).expect("original record");
+        let manifest_path = extensions_dir.join("installed/blocked/extension.toml");
+        let original_manifest = std::fs::read(&manifest_path).expect("original manifest");
+        if command == "fetch" {
+            std::fs::remove_file(extensions_dir.join("sources/blocked/tracked.txt"))
+                .expect("trigger repair fetch");
+        }
+        let (stall, reached) = GitCommandStallGuard::new(&extensions_dir, command);
+        let update = store.update(cx, |store, cx| store.check_for_git_updates(cx));
+        reached.await.expect("network command owns the source lock");
+        let mut uninstall = Box::pin(store.update(cx, |store, cx| {
+            store.uninstall_extension("independent".into(), cx)
+        }));
+        cx.run_until_parked();
+        assert!(
+            uninstall.as_mut().now_or_never().is_none(),
+            "uninstall waits behind stalled {command}"
+        );
+        cx.executor().advance_clock(crate::GIT_COMMAND_TIMEOUT);
+        update
+            .await
+            .expect("update records timeout without aborting the check");
+        uninstall
+            .await
+            .expect("uninstall proceeds after Git deadline");
+        assert!(
+            stall.stall.cancelled.load(Ordering::SeqCst),
+            "deadline drops command future"
+        );
+        let failures = git_failures(&store, cx);
+        let failure = failures.first().expect("Git timeout notification");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failure.extension_id.as_ref(), "blocked");
+        assert!(failure.message.contains("timed out"), "{}", failure.message);
+        assert!(failure.message.contains(command), "{}", failure.message);
+        assert_eq!(
+            std::fs::read(&record_path).expect("preserved record"),
+            original_record
+        );
+        assert_eq!(
+            std::fs::read(&manifest_path).expect("preserved manifest"),
+            original_manifest
+        );
+        assert_eq!(installed_source(&store, "blocked", cx), source);
+        assert!(installed_version(&store, "independent", cx).is_none());
+        assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+        assert_eq!(
+            std::fs::read_dir(extensions_dir.join("staging"))
+                .expect("staging directory")
+                .count(),
+            0
+        );
+    }
+}
+
 #[gpui::test]
 async fn test_git_install_failures_are_reported_until_resolved(cx: &mut TestAppContext) {
     let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
@@ -8258,9 +8503,13 @@ async fn test_git_errors_redact_url_credentials(cx: &mut TestAppContext) {
     let directory = extensions_dir.join("work");
     git_in(&directory, &["init"]);
     git_in(&directory, &["remote", "add", "origin", url]);
-    let error = crate::run_git(&directory, &["remote", "add", "origin", url])
-        .await
-        .expect_err("a second origin should fail");
+    let error = crate::run_git(
+        &cx.executor(),
+        &directory,
+        &["remote", "add", "origin", url],
+    )
+    .await
+    .expect_err("a second origin should fail");
     let error = format!("{error:#}");
     assert!(!error.contains("hunter2"), "{error}");
     assert!(error.contains("[REDACTED]"), "{error}");
@@ -8541,9 +8790,15 @@ async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
     let mut manifest = ExtensionManifest::load(fs.clone(), &remote.seed)
         .await
         .expect("extension manifest");
-    crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-        .await
-        .expect("metadata-only extensions need no wasm");
+    crate::validate_git_compiled_artifacts(
+        &cx.executor(),
+        &fs,
+        &remote.seed,
+        &manifest,
+        &wasm_host,
+    )
+    .await
+    .expect("metadata-only extensions need no wasm");
     let wasm_path = remote.seed.join("extension.wasm");
     let cargo_path = remote.seed.join("Cargo.toml");
     for declared_in_manifest in [true, false] {
@@ -8556,25 +8811,41 @@ async fn test_git_compiled_artifacts_distinguish_optional_and_required_wasm(
             )
             .expect("Rust source marker");
         }
-        let error =
-            crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-                .await
-                .expect_err("a declared or source-inferred library must exist");
+        let error = crate::validate_git_compiled_artifacts(
+            &cx.executor(),
+            &fs,
+            &remote.seed,
+            &manifest,
+            &wasm_host,
+        )
+        .await
+        .expect_err("a declared or source-inferred library must exist");
         assert!(format!("{error:#}").contains("extension.wasm"));
         std::fs::write(&wasm_path, b"corrupt wasm").expect("damaged compiled extension");
-        let error =
-            crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-                .await
-                .expect_err("a present compiled library must be valid wasm");
+        let error = crate::validate_git_compiled_artifacts(
+            &cx.executor(),
+            &fs,
+            &remote.seed,
+            &manifest,
+            &wasm_host,
+        )
+        .await
+        .expect_err("a present compiled library must be valid wasm");
         assert!(format!("{error:#}").contains("extension.wasm"));
         std::fs::write(
             &wasm_path,
             git_extension_wasm_with_trapping_init().expect("trapping component"),
         )
         .expect("structurally valid component");
-        crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-            .await
-            .expect("health checks compile the library without executing its trapping init");
+        crate::validate_git_compiled_artifacts(
+            &cx.executor(),
+            &fs,
+            &remote.seed,
+            &manifest,
+            &wasm_host,
+        )
+        .await
+        .expect("health checks compile the library without executing its trapping init");
         std::fs::remove_file(&wasm_path).expect("remove compiled fixture");
         manifest.lib.kind = None;
         if !declared_in_manifest {
@@ -8597,17 +8868,28 @@ async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut 
         .insert("html".into(), GrammarManifestEntry::default());
     assert!(manifest.languages.is_empty());
     let grammar_path = remote.seed.join("grammars/html.wasm");
-    let error = crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-        .await
-        .expect_err("declared grammars are required even without language references");
+    let error = crate::validate_git_compiled_artifacts(
+        &cx.executor(),
+        &fs,
+        &remote.seed,
+        &manifest,
+        &wasm_host,
+    )
+    .await
+    .expect_err("declared grammars are required even without language references");
     assert!(format!("{error:#}").contains("html.wasm"));
     std::fs::create_dir_all(remote.seed.join("grammars")).expect("grammar directory");
     for bytes in [b"corrupt grammar".as_slice(), b"\0asm\x01\0\0\0".as_slice()] {
         std::fs::write(&grammar_path, bytes).expect("damaged grammar fixture");
-        let error =
-            crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-                .await
-                .expect_err("grammar binary must load as the declared parser");
+        let error = crate::validate_git_compiled_artifacts(
+            &cx.executor(),
+            &fs,
+            &remote.seed,
+            &manifest,
+            &wasm_host,
+        )
+        .await
+        .expect_err("grammar binary must load as the declared parser");
         assert!(format!("{error:#}").contains("html.wasm"));
     }
     std::fs::write(
@@ -8615,15 +8897,27 @@ async fn test_git_compiled_artifacts_validate_unused_declared_grammars(cx: &mut 
         include_bytes!("../../language/test_data/grammars/html.wasm"),
     )
     .expect("valid precompiled grammar");
-    crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-        .await
-        .expect("valid unused grammar passes without invoking clang");
+    crate::validate_git_compiled_artifacts(
+        &cx.executor(),
+        &fs,
+        &remote.seed,
+        &manifest,
+        &wasm_host,
+    )
+    .await
+    .expect("valid unused grammar passes without invoking clang");
     manifest
         .grammars
         .insert("unused".into(), GrammarManifestEntry::default());
-    let error = crate::validate_git_compiled_artifacts(&fs, &remote.seed, &manifest, &wasm_host)
-        .await
-        .expect_err("every declared grammar is checked");
+    let error = crate::validate_git_compiled_artifacts(
+        &cx.executor(),
+        &fs,
+        &remote.seed,
+        &manifest,
+        &wasm_host,
+    )
+    .await
+    .expect_err("every declared grammar is checked");
     assert!(format!("{error:#}").contains("unused.wasm"));
 }
 

@@ -35,8 +35,8 @@ use futures::{
     stream::FuturesUnordered,
 };
 use gpui::{
-    App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter, Global, Subscription,
-    Task, TaskExt, UpdateGlobal as _, WeakEntity, actions,
+    App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EntityId, EventEmitter,
+    Global, Subscription, Task, TaskExt, UpdateGlobal as _, WeakEntity, actions,
 };
 use http_client::{AsyncBody, HttpClient, HttpClientWithUrl};
 use language::{
@@ -90,10 +90,12 @@ use extension_transaction::{
 
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
+const EXTENSION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub(crate) const REMOTE_SYNC_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub(crate) const MAX_REMOTE_SYNC_RETRY_DELAY: Duration = Duration::from_secs(60);
 pub(crate) const MAX_REMOTE_SYNC_ATTEMPTS: usize = 10;
 pub(crate) const REMOTE_SYNC_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) fn remote_sync_retry_delay(attempts: usize) -> Duration {
     let exponential = REMOTE_SYNC_RETRY_DELAY * 2u32.saturating_pow(attempts.min(30) as u32);
@@ -186,6 +188,8 @@ pub struct ExtensionStore {
     git_extension_failures: BTreeMap<Arc<str>, GitExtensionFailure>,
     undelivered_git_extension_failures: BTreeSet<Arc<str>>,
     pub outstanding_operations: BTreeMap<Arc<str>, ExtensionOperation>,
+    #[cfg(test)]
+    auto_install_prepared_observer: Option<(Arc<str>, oneshot::Sender<()>)>,
     pub index_path: PathBuf,
     pub modified_extensions: HashSet<Arc<str>>,
     pub wasm_host: Arc<WasmHost>,
@@ -393,15 +397,34 @@ fn git_source_subdirectory(mut directory: PathBuf, path: Option<&str>) -> PathBu
     directory
 }
 
-async fn run_git(directory: &Path, args: &[&str]) -> Result<String> {
-    let output = util::command::new_command("git")
-        .args(args)
-        .current_dir(directory)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .kill_on_drop(true)
-        .output()
-        .await
-        .with_context(|| format!("running git {}", redact_arguments(args).join(" ")))?;
+async fn with_extension_timeout<T>(
+    executor: &BackgroundExecutor,
+    timeout: Duration,
+    operation: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let timer = executor.timer(timeout).fuse();
+    let operation = operation.fuse();
+    futures::pin_mut!(timer, operation);
+    select_biased! {
+        result = operation => result,
+        _ = timer => anyhow::bail!("extension operation timed out after {timeout:?}"),
+    }
+}
+
+async fn run_git(executor: &BackgroundExecutor, directory: &Path, args: &[&str]) -> Result<String> {
+    let output = with_extension_timeout(executor, GIT_COMMAND_TIMEOUT, async {
+        #[cfg(test)]
+        extension_store_test::git_command_test_hook(directory, args).await;
+        Ok(util::command::new_command("git")
+            .args(args)
+            .current_dir(directory)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .kill_on_drop(true)
+            .output()
+            .await?)
+    })
+    .await
+    .with_context(|| format!("running git {}", redact_arguments(args).join(" ")))?;
     anyhow::ensure!(
         output.status.success(),
         "git {} failed: {}",
@@ -412,6 +435,7 @@ async fn run_git(directory: &Path, args: &[&str]) -> Result<String> {
 }
 
 async fn build_git_source(
+    executor: &BackgroundExecutor,
     fs: Arc<dyn Fs>,
     builder: &ExtensionBuilder,
     staging_dir: &Path,
@@ -424,6 +448,7 @@ async fn build_git_source(
 ) -> Result<PathBuf> {
     publisher.recover().await?;
     let prepared = prepare_git_source(
+        executor,
         fs.clone(),
         staging_dir,
         extension_id,
@@ -450,6 +475,7 @@ struct PreparedGitSource {
 }
 
 async fn prepare_git_source(
+    executor: &BackgroundExecutor,
     fs: Arc<dyn Fs>,
     staging_dir: &Path,
     extension_id: &str,
@@ -460,23 +486,30 @@ async fn prepare_git_source(
     fs.create_dir(staging_dir).await?;
     let checkout = tempfile::tempdir_in(staging_dir)?;
     let directory = checkout.path();
-    run_git(directory, &["init"]).await?;
-    run_git(directory, &["remote", "add", "--", "origin", &source.url]).await?;
+    run_git(executor, directory, &["init"]).await?;
+    run_git(
+        executor,
+        directory,
+        &["remote", "add", "--", "origin", &source.url],
+    )
+    .await?;
     // Repairs of pinned extensions preserve both the installed commit and configured source.
     let reference = checkout_commit
         .or(source.reference.as_deref())
         .unwrap_or("HEAD");
     run_git(
+        executor,
         directory,
         &["fetch", "--depth", "1", "--", "origin", reference],
     )
     .await?;
     run_git(
+        executor,
         directory,
         &["checkout", "--force", "--detach", "FETCH_HEAD"],
     )
     .await?;
-    let commit = run_git(directory, &["rev-parse", "HEAD"]).await?;
+    let commit = run_git(executor, directory, &["rev-parse", "HEAD"]).await?;
 
     let staged_extension = git_source_subdirectory(directory.to_path_buf(), source.path.as_deref());
     let checkout_root = fs.canonicalize(directory).await?;
@@ -673,6 +706,7 @@ async fn validate_prepared_extension(
 }
 
 async fn validate_git_compiled_artifacts(
+    executor: &BackgroundExecutor,
     fs: &Arc<dyn Fs>,
     extension_dir: &Path,
     manifest: &ExtensionManifest,
@@ -683,7 +717,7 @@ async fn validate_git_compiled_artifacts(
         || fs.metadata(&extension_dir.join("Cargo.toml")).await?.is_some()
         || fs.metadata(&wasm_path).await?.is_some()
         // Reindexing a missing prebuilt library loses its inferred lib.kind.
-        || !run_git(extension_dir, &["ls-tree", "--name-only", "HEAD", "--", "extension.wasm"])
+        || !run_git(executor, extension_dir, &["ls-tree", "--name-only", "HEAD", "--", "extension.wasm"])
             .await?
             .is_empty();
     if requires_wasm {
@@ -850,10 +884,15 @@ async fn validate_git_snippet_resources(
     Ok(())
 }
 
-async fn remote_commit(directory: &Path, source: &GitExtensionSource) -> Result<Option<String>> {
+async fn remote_commit(
+    executor: &BackgroundExecutor,
+    directory: &Path,
+    source: &GitExtensionSource,
+) -> Result<Option<String>> {
     let reference = source.reference.as_deref().unwrap_or("HEAD");
     let peeled = format!("{reference}^{{}}");
     let output = run_git(
+        executor,
         directory,
         &["ls-remote", "--", &source.url, reference, &peeled],
     )
@@ -1098,6 +1137,8 @@ impl ExtensionStore {
             index_path,
             builder: Arc::new(ExtensionBuilder::new(builder_client, build_dir)),
             outstanding_operations: Default::default(),
+            #[cfg(test)]
+            auto_install_prepared_observer: None,
             modified_extensions: Default::default(),
             reload_complete_senders: Vec::new(),
             wasm_host: WasmHost::new(
@@ -1588,7 +1629,12 @@ impl ExtensionStore {
                             .map(|result| result.map(PreparedAutoExtension::Marketplace))
                             .boxed()
                     };
-                    anyhow::Ok(prepare)
+                    let executor = cx.background_executor().clone();
+                    anyhow::Ok(cx.background_spawn(async move {
+                        with_extension_timeout(&executor, EXTENSION_PREPARATION_TIMEOUT, prepare)
+                            .await
+                            .context("preparing extension candidate")
+                    }))
                 });
                 match download {
                     Ok(Ok(download)) => {
@@ -1612,7 +1658,8 @@ impl ExtensionStore {
             loop {
                 let ready = pending.iter().position(|(extension_id, _, _, prepared)| {
                     // An unresolved manifest can introduce or remove any shared grammar.
-                    // Candidates using only native or their own grammars can proceed now.
+                    // Preparation deadlines bound this wait; candidates using only
+                    // native or their own grammars can proceed immediately.
                     if !downloads.is_empty() {
                         return prepared.external_grammars().is_empty();
                     }
@@ -1629,6 +1676,19 @@ impl ExtensionStore {
                     {
                         match result {
                             Ok(prepared) => {
+                                #[cfg(test)]
+                                this.update(cx, |this, _| {
+                                    if this
+                                        .auto_install_prepared_observer
+                                        .as_ref()
+                                        .is_some_and(|(id, _)| id == &extension_id)
+                                        && let Some((_, observer)) =
+                                            this.auto_install_prepared_observer.take()
+                                    {
+                                        observer.send(()).expect("candidate preparation observer");
+                                    }
+                                })
+                                .log_err();
                                 pending.push((extension_id, operation, git_url, prepared));
                             }
                             Err(error) => {
@@ -1885,6 +1945,7 @@ impl ExtensionStore {
                         let proxy = proxy.clone();
                         let wasm_host = wasm_host.clone();
                         let extension_id = extension_id.clone();
+                        let executor = cx.background_executor().clone();
                         async move {
                             let installed =
                                 load_git_source_record(&fs, &sources_dir, &extension_id).await;
@@ -1943,6 +2004,7 @@ impl ExtensionStore {
                                     )
                                     .await?;
                                     validate_git_compiled_artifacts(
+                                        &executor,
                                         &fs,
                                         &extension_path,
                                         &manifest,
@@ -1951,6 +2013,7 @@ impl ExtensionStore {
                                     .await?;
                                     // Reindexing cannot rediscover deleted implicit resources.
                                     let deleted = run_git(
+                                        &executor,
                                         &extension_path,
                                         &["ls-files", "--deleted", "--", "."],
                                     )
@@ -1966,7 +2029,7 @@ impl ExtensionStore {
                                     if !auto_update {
                                         return anyhow::Ok(needs_reload);
                                     }
-                                    match remote_commit(&sources_dir, &source).await? {
+                                    match remote_commit(&executor, &sources_dir, &source).await? {
                                         Some(remote_commit)
                                             if remote_commit == installed.commit =>
                                         {
@@ -1985,6 +2048,7 @@ impl ExtensionStore {
                                     }
                                 }
                                 build_git_source(
+                                    &executor,
                                     fs,
                                     &builder,
                                     &staging_dir,
@@ -2060,6 +2124,7 @@ impl ExtensionStore {
         let publisher = self.publisher.clone();
         let source_lock = self.git_source_lock.clone();
         let auto_update = ExtensionSettings::get_global(cx).should_auto_update(&extension_id);
+        let executor = cx.background_executor().clone();
         let indexed_source = self
             .extension_index
             .extensions
@@ -2107,7 +2172,7 @@ impl ExtensionStore {
                 None
             };
             let prepared = prepare_git_source(
-                fs.clone(), &staging_dir, &extension_id, &source, checkout_commit.as_deref(),
+                &executor, fs.clone(), &staging_dir, &extension_id, &source, checkout_commit.as_deref(),
             ).await?;
             affected_grammars.extend(prepared.manifest.grammars.keys().cloned());
             let directory = git_source_subdirectory(
@@ -2192,8 +2257,10 @@ impl ExtensionStore {
                 .background_spawn({
                     let fs = fs.clone();
                     let extension_id = extension_id.clone();
+                    let executor = cx.background_executor().clone();
                     async move {
                         build_git_source(
+                            &executor,
                             fs,
                             &builder,
                             &staging_dir,
@@ -2729,8 +2796,10 @@ impl ExtensionStore {
                     .background_spawn({
                         let fs = fs.clone();
                         let extension_id = extension_id.clone();
+                        let executor = cx.background_executor().clone();
                         async move {
                             build_git_source(
+                                &executor,
                                 fs,
                                 &builder,
                                 &staging_dir,
