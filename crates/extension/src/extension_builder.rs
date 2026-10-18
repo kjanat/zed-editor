@@ -1053,7 +1053,7 @@ mod tests {
             return;
         };
         if mode == "parent" {
-            let mut command = util::command::new_std_command(
+            let mut command = util::command::new_command(
                 std::env::current_exe().expect("current test executable"),
             );
             command
@@ -1062,9 +1062,11 @@ mod tests {
                     "extension_builder::tests::build_process_fixture",
                     "--nocapture",
                 ])
-                .env("ZED_BUILD_PROCESS_FIXTURE", "descendant");
-            let mut descendant = command.spawn().expect("spawn build descendant");
-            descendant.wait().expect("wait for build descendant");
+                .env("ZED_BUILD_PROCESS_FIXTURE", "descendant")
+                .stdin(util::command::Stdio::inherit())
+                .stdout(util::command::Stdio::inherit())
+                .stderr(util::command::Stdio::inherit());
+            futures::executor::block_on(command.status()).expect("wait for build descendant");
         } else {
             let readiness =
                 std::env::var_os("ZED_BUILD_PROCESS_READY").expect("descendant readiness path");

@@ -208,7 +208,7 @@ impl Child {
             .context("reaping terminated child")?;
         #[cfg(windows)]
         while self.has_running_processes()? == Some(true) {
-            smol::Timer::after(std::time::Duration::from_millis(10)).await;
+            smol::unblock(|| std::thread::sleep(std::time::Duration::from_millis(10))).await;
         }
         Ok(())
     }
@@ -285,6 +285,9 @@ mod tests {
                 .terminate_and_wait()
                 .await
                 .expect("terminate and reap process group");
+            // Native process exit needs a wall-clock deadline. Dropping the sender
+            // cancels the blocking wait when pipe draining wins the race.
+            let (cancel_deadline, deadline) = std::sync::mpsc::channel::<()>();
             let closed = futures_lite::future::race(
                 async {
                     output
@@ -294,11 +297,17 @@ mod tests {
                     true
                 },
                 async {
-                    smol::Timer::after(std::time::Duration::from_secs(5)).await;
-                    false
+                    smol::unblock(move || {
+                        matches!(
+                            deadline.recv_timeout(std::time::Duration::from_secs(5)),
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+                        )
+                    })
+                    .await
                 },
             )
             .await;
+            drop(cancel_deadline);
             assert!(closed, "a surviving descendant retained the captured pipe");
         });
     }
@@ -414,7 +423,8 @@ mod windows_job {
             });
             let previous_count = ResumeThread(thread);
             if previous_count == u32::MAX {
-                return Err(windows::core::Error::from_win32()).context("resuming contained child");
+                return Err(windows::core::Error::from_thread())
+                    .context("resuming contained child");
             }
             anyhow::ensure!(
                 previous_count == 1,
