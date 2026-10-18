@@ -1121,25 +1121,31 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         cx.background_executor.allow_parking();
-        let directory = tempfile::tempdir().expect("readiness directory");
-        let mut command =
-            util::command::new_std_command(std::env::current_exe().expect("test executable"));
-        command
-            .args([
-                "--exact",
-                "extension_builder::tests::build_process_fixture",
-                "--nocapture",
-            ])
-            .env("ZED_BUILD_PROCESS_FIXTURE", "orphan")
-            .env("ZED_BUILD_PROCESS_READY", directory.path().join("ready"));
-        let session = super::BuildSession::new(cx.background_executor.clone());
-        let result = session.output(command).await;
-        session.terminate().await.expect("finish build cleanup");
-        let output = result.expect("natural exit must complete without deadline");
-        assert!(output.status.success());
-        assert!(String::from_utf8_lossy(&output.stdout).contains("parent output"));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("parent diagnostic"));
-        assert!(session.children.lock().is_empty());
+        let executor = cx.background_executor.clone();
+        cx.background_executor
+            .spawn(async move {
+                let directory = tempfile::tempdir().expect("readiness directory");
+                let mut command = util::command::new_std_command(
+                    std::env::current_exe().expect("test executable"),
+                );
+                command
+                    .args([
+                        "--exact",
+                        "extension_builder::tests::build_process_fixture",
+                        "--nocapture",
+                    ])
+                    .env("ZED_BUILD_PROCESS_FIXTURE", "orphan")
+                    .env("ZED_BUILD_PROCESS_READY", directory.path().join("ready"));
+                let session = super::BuildSession::new(executor);
+                let result = session.output(command).await;
+                session.terminate().await.expect("finish build cleanup");
+                let output = result.expect("natural exit must complete without deadline");
+                assert!(output.status.success());
+                assert!(String::from_utf8_lossy(&output.stdout).contains("parent output"));
+                assert!(String::from_utf8_lossy(&output.stderr).contains("parent diagnostic"));
+                assert!(session.children.lock().is_empty());
+            })
+            .await;
     }
 
     #[gpui::test]
