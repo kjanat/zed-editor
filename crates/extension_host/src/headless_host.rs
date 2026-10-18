@@ -15,6 +15,7 @@ use extension::{
 use fs::{Fs, RemoveOptions, RenameOptions};
 use futures::{
     StreamExt as _,
+    channel::oneshot,
     future::{FutureExt as _, join_all},
 };
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Task, WeakEntity};
@@ -24,7 +25,10 @@ use lsp::LanguageServerName;
 use node_runtime::NodeRuntime;
 use util::ResultExt as _;
 
-use crate::wasm_host::{WasmExtension, WasmHost};
+use crate::{
+    extension_transaction::{ExtensionPublisher, PreparedExtension, StagedDirectory},
+    wasm_host::{WasmExtension, WasmHost},
+};
 
 #[derive(Clone, Debug)]
 pub struct ExtensionVersion {
@@ -45,6 +49,8 @@ pub struct HeadlessExtensionStore {
     pub(crate) loaded_extensions: BTreeMap<Arc<str>, LoadedExtension>,
     failed_removals: HashSet<Arc<str>>,
     operation_lock: Arc<futures::lock::Mutex<()>>,
+    pub(super) publisher: ExtensionPublisher,
+    staging_dir: PathBuf,
     _stale_uploads_sweep: Task<()>,
 }
 
@@ -69,6 +75,16 @@ impl HeadlessExtensionStore {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
+            let transaction_dir = extension_dir.with_extension("transactions");
+            let staging_dir = transaction_dir.join("staging");
+            let publisher = ExtensionPublisher::new(
+                fs.clone(),
+                staging_dir.clone(),
+                transaction_dir.join("sources"),
+                transaction_dir.join("index.json"),
+                extension_dir.clone(),
+                cx.background_executor().clone(),
+            );
             let stale_uploads_sweep = cx.spawn({
                 let fs = fs.clone();
                 async move |_, cx| {
@@ -94,6 +110,8 @@ impl HeadlessExtensionStore {
                 loaded_extensions: BTreeMap::default(),
                 failed_removals: HashSet::default(),
                 operation_lock: Arc::default(),
+                publisher,
+                staging_dir,
                 _stale_uploads_sweep: stale_uploads_sweep,
             }
         })
@@ -105,8 +123,13 @@ impl HeadlessExtensionStore {
         cx: &Context<Self>,
     ) -> Task<Result<Vec<ExtensionVersion>>> {
         let operation_lock = self.operation_lock.clone();
-        cx.spawn(async move |store, cx| {
+        let publisher = self.publisher.clone();
+        let operation = cx.spawn(async move |store, cx| {
             let _operation_guard = operation_lock.lock().await;
+            drop(publisher.lock_for_read().await?);
+            for extension in &extensions {
+                validate_extension_id(&extension.id)?;
+            }
             let (to_remove, to_load) = store.update(cx, |store, _cx| {
                 let on_client = HashSet::from_iter(extensions.iter().map(|e| e.id.as_str()));
                 store
@@ -185,6 +208,26 @@ impl HeadlessExtensionStore {
             }
 
             result
+        });
+        Self::complete_operation(operation, cx)
+    }
+
+    fn complete_operation<T: 'static>(
+        operation: Task<Result<T>>,
+        cx: &Context<Self>,
+    ) -> Task<Result<T>> {
+        let (sender, receiver) = oneshot::channel();
+        // RPC cancellation must not separate filesystem publication from registry updates.
+        cx.spawn(async move |_, _| {
+            if let Err(result) = sender.send(operation.await) {
+                result.log_err();
+            }
+        })
+        .detach();
+        cx.spawn(async move |_, _| {
+            receiver
+                .await
+                .context("headless extension operation stopped")?
         })
     }
 
@@ -258,6 +301,13 @@ impl HeadlessExtensionStore {
         cx: &mut AsyncApp,
     ) -> Result<LoadedExtension> {
         let manifest = Arc::new(ExtensionManifest::load(fs.clone(), &load_dir).await?);
+
+        anyhow::ensure!(
+            manifest.id.as_ref() == extension.id.as_str(),
+            "mismatched extension ids: ({}) != ({})",
+            manifest.id,
+            extension.id,
+        );
 
         debug_assert!(!manifest.languages.is_empty() || manifest.allow_remote_load());
 
@@ -497,22 +547,16 @@ impl HeadlessExtensionStore {
     ) -> Task<Result<()>> {
         let removal_tasks = self.commit_extension(extension_id.clone(), None, cx);
 
-        let path = self.extension_dir.join(extension_id.as_ref());
-        let fs = self.fs.clone();
+        let publisher = self.publisher.clone();
+        let extension_id = extension_id.clone();
         cx.spawn(async move |_, _cx| {
             for removal in join_all(removal_tasks).await {
                 removal.log_err();
             }
 
-            fs.remove_dir(
-                &path,
-                RemoveOptions {
-                    recursive: true,
-                    ignore_if_not_exists: true,
-                },
-            )
-            .await
-            .with_context(|| format!("Removing directory {path:?}"))
+            publisher
+                .publish(&extension_id, PreparedExtension::Remove)
+                .await
         })
     }
 
@@ -526,9 +570,13 @@ impl HeadlessExtensionStore {
         let fs = self.fs.clone();
         let wasm_host = self.wasm_host.clone();
         let operation_lock = self.operation_lock.clone();
+        let publisher = self.publisher.clone();
+        let staging_dir = self.staging_dir.clone();
 
-        cx.spawn(async move |store, cx| {
+        let operation = cx.spawn(async move |store, cx| {
             let _operation_guard = operation_lock.lock().await;
+            validate_extension_id(&extension.id)?;
+            publisher.recover().await?;
 
             let loaded_fingerprint = store.read_with(cx, |store, _cx| {
                 store
@@ -555,12 +603,21 @@ impl HeadlessExtensionStore {
                 return Ok(());
             }
 
-            let mut installed_dir_touched = false;
             let result = async {
+                let staged = StagedDirectory::new(
+                    fs.clone(),
+                    &staging_dir,
+                    cx.background_executor().clone(),
+                )
+                .await?;
+                let load_dir = staged.path().join(&extension.id);
+                fs.rename(&tmp_path, &load_dir, RenameOptions::default())
+                    .await
+                    .with_context(|| format!("Staging uploaded extension {tmp_path:?}"))?;
                 let loaded = Self::prepare_extension(
                     fs.clone(),
                     wasm_host,
-                    tmp_path.clone(),
+                    load_dir,
                     path.clone(),
                     &extension,
                     content_fingerprint,
@@ -568,24 +625,13 @@ impl HeadlessExtensionStore {
                 )
                 .await?;
 
-                installed_dir_touched = true;
-                fs.remove_dir(
-                    &path,
-                    RemoveOptions {
-                        recursive: true,
-                        ignore_if_not_exists: true,
-                    },
-                )
-                .await
-                .with_context(|| format!("Removing existing directory {path:?}"))?;
-                fs.rename(&tmp_path, &path, RenameOptions::default())
-                    .await
-                    .with_context(|| format!("Failed to rename {tmp_path:?} to {path:?}"))?;
+                publisher
+                    .publish(&extension.id, PreparedExtension::Marketplace { staged })
+                    .await?;
 
                 let removal_tasks = store.update(cx, |store, cx| {
                     store.commit_extension(extension.id.as_str().into(), Some(loaded), cx)
                 })?;
-                installed_dir_touched = false;
                 for removal in join_all(removal_tasks).await {
                     removal.log_err();
                 }
@@ -605,24 +651,11 @@ impl HeadlessExtensionStore {
                 )
                 .await
                 .log_err();
-
-                if installed_dir_touched
-                    && let Ok(removal_tasks) = store.update(cx, |store, cx| {
-                        store
-                            .failed_removals
-                            .insert(Arc::from(extension.id.as_str()));
-                        store.commit_extension(extension.id.as_str().into(), None, cx)
-                    })
-                {
-                    for removal in join_all(removal_tasks).await {
-                        removal.log_err();
-                    }
-                    store.update(cx, |_, cx| notify_extensions_changed(cx)).ok();
-                }
             }
 
             result
-        })
+        });
+        Self::complete_operation(operation, cx)
     }
 
     pub async fn handle_sync_extensions(
@@ -693,6 +726,14 @@ impl HeadlessExtensionStore {
 
         Ok(proto::Ack {})
     }
+}
+
+fn validate_extension_id(extension_id: &str) -> Result<()> {
+    anyhow::ensure!(
+        crate::is_single_path_component(extension_id) && extension_id != "work",
+        "invalid headless extension id: {extension_id:?}"
+    );
+    Ok(())
 }
 
 pub(crate) async fn remove_stale_uploads(fs: &Arc<dyn Fs>, uploads_dir: &Path) {

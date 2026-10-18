@@ -46,6 +46,21 @@ use wasmtime::{
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wit::Extension;
 
+const EXTENSION_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn await_extension_initialization<T>(
+    executor: &BackgroundExecutor,
+    initialization: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let initialization = initialization.fuse();
+    let timeout = executor.timer(EXTENSION_INITIALIZATION_TIMEOUT).fuse();
+    futures::pin_mut!(initialization, timeout);
+    futures::select_biased! {
+        result = initialization => result,
+        _ = timeout => bail!("extension initialization timed out after {EXTENSION_INITIALIZATION_TIMEOUT:?}"),
+    }
+}
+
 pub struct WasmHost {
     engine: Engine,
     release_channel: ReleaseChannel,
@@ -850,8 +865,15 @@ impl WasmHost {
 
             // Run wasi-dependent operations on tokio.
             // wasmtime_wasi internally uses tokio for I/O operations.
+            let initialization =
+                gpui_tokio::Tokio::spawn(cx, load_extension(zed_api_version, component));
+            // Staged validation holds the publication gate. Dropping the Tokio
+            // task aborts stalled initialization instead of retaining that gate.
             let (extension_task, manifest, work_dir, tx, zed_api_version) =
-                gpui_tokio::Tokio::spawn(cx, load_extension(zed_api_version, component)).await??;
+                await_extension_initialization(cx.background_executor(), async move {
+                    initialization.await?
+                })
+                .await?;
 
             // Run the extension message loop on tokio since extension
             // calls may invoke wasi functions that require a tokio runtime.
@@ -1215,6 +1237,45 @@ mod tests {
     use settings::SettingsStore;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wasmtime::component::{Instance, Linker};
+
+    #[gpui::test]
+    async fn initialization_timeout_cancels_the_tokio_task(cx: &mut TestAppContext) {
+        cx.update(gpui_tokio::init);
+        cx.executor().allow_parking();
+        let (started, started_receiver) = oneshot::channel();
+        let (lifetime, cancelled) = oneshot::channel::<()>();
+        let initialization = cx.update(|cx| {
+            gpui_tokio::Tokio::spawn(cx, async move {
+                let _lifetime = lifetime;
+                started.send(()).expect("initialization observer");
+                futures::future::pending::<Result<()>>().await
+            })
+        });
+        let executor = cx.executor();
+        let result = executor.spawn({
+            let executor = executor.clone();
+            async move {
+                await_extension_initialization(&executor, async move { initialization.await? })
+                    .await
+            }
+        });
+        started_receiver.await.expect("initialization started");
+        cx.run_until_parked();
+        executor.advance_clock(EXTENSION_INITIALIZATION_TIMEOUT);
+        let error = result
+            .await
+            .expect_err("stalled initialization must terminate");
+        assert!(error.to_string().contains("initialization timed out"));
+        assert!(cancelled.await.is_err(), "timed-out Tokio task was dropped");
+
+        let initialization = cx.update(|cx| gpui_tokio::Tokio::spawn(cx, async { Ok(7) }));
+        assert_eq!(
+            await_extension_initialization(&executor, async move { initialization.await? })
+                .await
+                .expect("subsequent initialization succeeds"),
+            7
+        );
+    }
 
     fn test_component(engine: &Engine) -> Result<Component> {
         use wasm_encoder::{

@@ -748,9 +748,9 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         // The on-disk manifest limits the number of FS calls that need to be made
         // on startup.
         assert_eq!(fs.read_dir_call_count(), prev_fs_read_dir_call_count);
-        // Two cache freshness reads, plus three journal probes both before reading
-        // the cache and after acquiring the publication gate for initial loading.
-        assert_eq!(fs.metadata_call_count(), prev_fs_metadata_call_count + 8);
+        // Two cache freshness reads, three recovery passes with three journal probes,
+        // and one probe for Git sources that may be missing from the cached index.
+        assert_eq!(fs.metadata_call_count(), prev_fs_metadata_call_count + 12);
     });
 
     store.update(cx, |store, cx| {
@@ -1745,6 +1745,30 @@ async fn test_register_remote_client_resyncs_after_simulated_reconnect(
     );
 }
 
+fn fail_headless_publications(
+    store: &Entity<HeadlessExtensionStore>,
+    extension_ids: &[&str],
+    cx: &mut TestAppContext,
+) -> crate::extension_transaction::ExtensionPublisher {
+    use crate::extension_transaction::TransactionPhase;
+
+    let extension_ids = extension_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>();
+    let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+    publisher.set_hook(move |info| {
+        let fail = info.phase == TransactionPhase::BeforePublish
+            && extension_ids.contains(&info.extension_id);
+        async move {
+            anyhow::ensure!(!fail, "injected headless publication failure");
+            Ok(())
+        }
+        .boxed()
+    });
+    publisher
+}
+
 #[gpui::test]
 async fn test_headless_sync_extensions_notifications(cx: &mut TestAppContext) {
     init_test(cx);
@@ -2072,7 +2096,7 @@ async fn test_headless_sync_uninstall_failure_does_not_block_other_extensions(
         .await
         .unwrap();
 
-    fs.set_remove_dir_error("/extensions/ext-a", "simulated removal failure".to_string());
+    let _publisher = fail_headless_publications(&store, &["ext-a"], cx);
 
     let missing = store
         .update(cx, |store, cx| {
@@ -3140,9 +3164,7 @@ async fn test_headless_dev_reload_replaces_registrations(cx: &mut TestAppContext
 }
 
 #[gpui::test]
-async fn test_headless_install_failure_after_removing_old_files_evicts_extension(
-    cx: &mut TestAppContext,
-) {
+async fn test_headless_failed_promotion_preserves_files_and_registrations(cx: &mut TestAppContext) {
     init_test(cx);
 
     let extension_files = |suffix: &str| {
@@ -3169,12 +3191,16 @@ languages = ["languages/foo"]
         .await;
     fs.insert_tree("/staged/foo", extension_files("foo2")).await;
 
+    let languages = Arc::new(LanguageRegistry::test(cx.executor()));
+    let proxy = Arc::new(ExtensionHostProxy::new());
+    language_extension::init(LspAccess::Noop, proxy.clone(), languages.clone());
+
     let store = cx.update(|cx| {
         HeadlessExtensionStore::new(
             fs.clone(),
             FakeHttpClient::with_200_response(),
             PathBuf::from("/extensions"),
-            Arc::new(ExtensionHostProxy::new()),
+            proxy,
             NodeRuntime::unavailable(),
             cx,
         )
@@ -3201,7 +3227,25 @@ languages = ["languages/foo"]
         );
     });
 
-    fs.set_remove_dir_error("/extensions/foo", "simulated removal failure".to_string());
+    let original_config = fs
+        .load(Path::new("/extensions/foo/languages/foo/config.toml"))
+        .await
+        .expect("original language config");
+    let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+    publisher.set_hook({
+        let fs = fs.clone();
+        move |info| {
+            let fs = fs.clone();
+            async move {
+                if info.phase == crate::extension_transaction::TransactionPhase::BeforePublish {
+                    fs.atomic_write(info.installed, "promotion obstruction".into())
+                        .await?;
+                }
+                Ok(())
+            }
+            .boxed()
+        }
+    });
     let install_result = store
         .update(cx, |store, cx| {
             store.install_extension(extension(), PathBuf::from("/staged/foo"), cx)
@@ -3209,8 +3253,20 @@ languages = ["languages/foo"]
         .await;
     assert!(
         install_result.is_err(),
-        "an install whose removal step failed should report the error"
+        "a failed promotion should report the error"
     );
+    publisher.clear_hook();
+    assert_eq!(
+        fs.load(Path::new("/extensions/foo/languages/foo/config.toml"))
+            .await
+            .expect("preserved language config"),
+        original_config
+    );
+    assert_eq!(
+        languages.language_name_for_extension("foo"),
+        Some(LanguageName::new("Foo"))
+    );
+    assert!(languages.language_name_for_extension("foo2").is_none());
 
     store.read_with(cx, |store, _cx| {
         assert_eq!(
@@ -3218,8 +3274,8 @@ languages = ["languages/foo"]
                 .loaded_extensions
                 .get("foo")
                 .map(|extension| extension.version.as_ref()),
-            None,
-            "a failed install after destructive operations started should evict the extension"
+            Some("1.0.0"),
+            "a failed promotion must retain the previously loaded extension"
         );
     });
 
@@ -3230,7 +3286,7 @@ languages = ["languages/foo"]
     assert_eq!(
         missing.len(),
         0,
-        "a later sync should reload the evicted extension from the intact installed files"
+        "a later sync should find the preserved extension installed"
     );
     store.read_with(cx, |store, _cx| {
         assert_eq!(
@@ -3239,13 +3295,210 @@ languages = ["languages/foo"]
                 .get("foo")
                 .map(|extension| extension.version.as_ref()),
             Some("1.0.0"),
-            "a later sync should repair the evicted extension"
+            "a later sync should keep the preserved extension"
         );
     });
 }
 
 #[gpui::test]
-async fn test_headless_failed_install_cleanup_is_retried_on_later_syncs(cx: &mut TestAppContext) {
+async fn test_cancelled_headless_install_commits_before_queued_sync(cx: &mut TestAppContext) {
+    use crate::extension_transaction::TransactionPhase;
+
+    init_test(cx);
+    let files = |version: &str, suffix: &str| {
+        json!({
+            "extension.toml": format!("id = \"foo\"\nname = \"foo\"\nversion = \"{version}\"\nschema_version = 1\nlanguages = [\"languages/foo\"]\n"),
+            "languages": { "foo": { "config.toml": format!("name = \"Foo\"\npath_suffixes = [\"{suffix}\"]\n") } }
+        })
+    };
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/extensions/foo", files("1.0.0", "old"))
+        .await;
+    fs.insert_tree("/staged/foo", files("2.0.0", "new")).await;
+    let languages = Arc::new(LanguageRegistry::test(cx.executor()));
+    let proxy = Arc::new(ExtensionHostProxy::new());
+    language_extension::init(LspAccess::Noop, proxy.clone(), languages.clone());
+    let store = cx.update(|cx| {
+        HeadlessExtensionStore::new(
+            fs.clone(),
+            FakeHttpClient::with_200_response(),
+            PathBuf::from("/extensions"),
+            proxy,
+            NodeRuntime::unavailable(),
+            cx,
+        )
+    });
+    let extension = |version: &str| ExtensionVersion {
+        id: "foo".into(),
+        version: version.into(),
+        dev: false,
+        content_fingerprint: None,
+    };
+    store
+        .update(cx, |store, cx| {
+            store.sync_extensions(vec![extension("1.0.0")], cx)
+        })
+        .await
+        .expect("load original extension");
+
+    let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+    let (reached, reached_receiver) = futures::channel::oneshot::channel();
+    let reached = Arc::new(Mutex::new(Some(reached)));
+    let (release, release_receiver) = futures::channel::oneshot::channel();
+    let release_receiver = Arc::new(Mutex::new(Some(release_receiver)));
+    publisher.set_hook(move |info| {
+        let reached = reached.clone();
+        let release_receiver = release_receiver.clone();
+        async move {
+            if info.phase == TransactionPhase::BeforePublish {
+                reached
+                    .lock()
+                    .take()
+                    .expect("one headless publication")
+                    .send(())
+                    .expect("publication observer");
+                let release_receiver = release_receiver.lock().take().expect("one release");
+                release_receiver
+                    .await
+                    .expect("release headless publication");
+            }
+            Ok(())
+        }
+        .boxed()
+    });
+    let install = store.update(cx, |store, cx| {
+        store.install_extension(extension("2.0.0"), PathBuf::from("/staged/foo"), cx)
+    });
+    reached_receiver
+        .await
+        .expect("headless publication reached");
+    drop(install);
+    let mut sync = Box::pin(store.update(cx, |store, cx| {
+        store.sync_extensions(vec![extension("2.0.0")], cx)
+    }));
+    cx.run_until_parked();
+    assert!(
+        sync.as_mut().now_or_never().is_none(),
+        "sync waits for filesystem and registry commit"
+    );
+    assert_eq!(
+        languages.language_name_for_extension("old"),
+        Some(LanguageName::new("Foo"))
+    );
+    assert!(languages.language_name_for_extension("new").is_none());
+    publisher.clear_hook();
+    release
+        .send(())
+        .expect("publication survives RPC cancellation");
+    assert!(
+        sync.await
+            .expect("sync after canceled installation")
+            .is_empty()
+    );
+    store.read_with(cx, |store, _| {
+        assert_eq!(
+            store
+                .loaded_extensions
+                .get("foo")
+                .map(|loaded| loaded.version.as_ref()),
+            Some("2.0.0")
+        )
+    });
+    assert_eq!(
+        languages.language_name_for_extension("new"),
+        Some(LanguageName::new("Foo"))
+    );
+    assert!(languages.language_name_for_extension("old").is_none());
+    assert!(
+        fs.load(Path::new("/extensions/foo/extension.toml"))
+            .await
+            .expect("published manifest")
+            .contains("2.0.0")
+    );
+    assert!(
+        !fs.is_dir(Path::new(
+            "/extensions.transactions/staging/git-source.previous"
+        ))
+        .await
+    );
+}
+
+#[gpui::test]
+async fn test_headless_sync_recovers_interrupted_publication(cx: &mut TestAppContext) {
+    init_test(cx);
+    let files = |suffix: &str| {
+        json!({
+            "extension.toml": "id = \"foo\"\nname = \"foo\"\nversion = \"1.0.0\"\nschema_version = 1\nlanguages = [\"languages/foo\"]\n",
+            "languages": { "foo": { "config.toml": format!("name = \"Foo\"\npath_suffixes = [\"{suffix}\"]\n") } }
+        })
+    };
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/extensions/foo", files("uncommitted"))
+        .await;
+    fs.insert_tree(
+        "/extensions.transactions/staging/git-source.previous",
+        json!({
+            "extension_id": "foo",
+            "state.toml": toml::to_string(&crate::extension_transaction::GitSourceBackupState {
+                checkout_existed: false, installed_existed: true, record: None,
+            }).expect("recovery journal state"),
+            "installed": files("original"),
+        }),
+    )
+    .await;
+    let languages = Arc::new(LanguageRegistry::test(cx.executor()));
+    let proxy = Arc::new(ExtensionHostProxy::new());
+    language_extension::init(LspAccess::Noop, proxy.clone(), languages.clone());
+    let store = cx.update(|cx| {
+        HeadlessExtensionStore::new(
+            fs.clone(),
+            FakeHttpClient::with_200_response(),
+            PathBuf::from("/extensions"),
+            proxy,
+            NodeRuntime::unavailable(),
+            cx,
+        )
+    });
+    let missing = store
+        .update(cx, |store, cx| {
+            store.sync_extensions(
+                vec![ExtensionVersion {
+                    id: "foo".into(),
+                    version: "1.0.0".into(),
+                    dev: false,
+                    content_fingerprint: None,
+                }],
+                cx,
+            )
+        })
+        .await
+        .expect("recover before loading remote extensions");
+    assert!(missing.is_empty());
+    assert_eq!(
+        languages.language_name_for_extension("original"),
+        Some(LanguageName::new("Foo"))
+    );
+    assert!(
+        languages
+            .language_name_for_extension("uncommitted")
+            .is_none()
+    );
+    assert!(
+        fs.load(Path::new("/extensions/foo/languages/foo/config.toml"))
+            .await
+            .expect("recovered language config")
+            .contains("original")
+    );
+    assert!(
+        !fs.is_dir(Path::new(
+            "/extensions.transactions/staging/git-source.previous"
+        ))
+        .await
+    );
+}
+
+#[gpui::test]
+async fn test_headless_failed_replacement_keeps_uninstall_retryable(cx: &mut TestAppContext) {
     init_test(cx);
 
     let extension_files = |suffix: &str| {
@@ -3295,7 +3548,7 @@ languages = ["languages/foo"]
         .await
         .unwrap();
 
-    fs.set_remove_dir_error("/extensions/foo", "simulated removal failure".to_string());
+    let publisher = fail_headless_publications(&store, &["foo"], cx);
     let install_result = store
         .update(cx, |store, cx| {
             store.install_extension(extension(), PathBuf::from("/staged/foo"), cx)
@@ -3303,7 +3556,7 @@ languages = ["languages/foo"]
         .await;
     assert!(
         install_result.is_err(),
-        "an install whose removal step failed should report the error"
+        "a failed replacement should report the error"
     );
 
     store
@@ -3315,7 +3568,7 @@ languages = ["languages/foo"]
         "the cleanup retry should leave the files while removal keeps failing"
     );
 
-    fs.clear_remove_dir_error("/extensions/foo");
+    publisher.clear_hook();
     store
         .update(cx, |store, cx| store.sync_extensions(Vec::new(), cx))
         .await
@@ -3500,8 +3753,7 @@ async fn test_headless_failed_uninstall_is_retried_on_later_syncs(cx: &mut TestA
         .await
         .unwrap();
 
-    fs.set_remove_dir_error("/extensions/ext-a", "simulated removal failure".to_string());
-    fs.set_remove_dir_error("/extensions/ext-c", "simulated removal failure".to_string());
+    let publisher = fail_headless_publications(&store, &["ext-a", "ext-c"], cx);
     store
         .update(cx, |store, cx| {
             store.sync_extensions(vec![extension("ext-b")], cx)
@@ -3544,7 +3796,7 @@ async fn test_headless_failed_uninstall_is_retried_on_later_syncs(cx: &mut TestA
         "a removal that keeps failing should keep the files on disk"
     );
 
-    fs.clear_remove_dir_error("/extensions/ext-a");
+    publisher.clear_hook();
     store
         .update(cx, |store, cx| {
             store.sync_extensions(vec![extension("ext-b"), extension("ext-c")], cx)
@@ -5087,6 +5339,8 @@ async fn extension_store_in(
     });
     let initial_load = store.read_with(cx, |store, _| store.initial_index_load.clone());
     initial_load.await;
+    let initial_maintenance = store.read_with(cx, |store, _| store.initial_maintenance.clone());
+    initial_maintenance.await;
     (store, debounce)
 }
 
@@ -5116,6 +5370,63 @@ fn installed_version(
             .get(extension_id)
             .map(|entry| entry.manifest.version.clone())
     })
+}
+
+#[gpui::test]
+async fn test_git_source_namespace_collisions_preserve_existing_install(cx: &mut TestAppContext) {
+    for (existing_id, colliding_id) in [("foo", "foo.toml"), ("foo.toml", "foo")] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new(existing_id, None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension(existing_id.into(), remote.source(), cx)
+            })
+            .await
+            .expect("install first source");
+        let original_source = installed_source(&store, existing_id, cx);
+        let record_path = extensions_dir
+            .join("sources")
+            .join(format!("{existing_id}.toml"));
+        let original_record = std::fs::read(&record_path).expect("first source record");
+        let manifest_path = extensions_dir
+            .join("sources")
+            .join(existing_id)
+            .join("extension.toml");
+        let original_manifest = std::fs::read(&manifest_path).expect("first checkout manifest");
+        let colliding_remote = GitExtensionRemote::new(colliding_id, None);
+        let error = store
+            .update(cx, |store, cx| {
+                store.install_git_extension(colliding_id.into(), colliding_remote.source(), cx)
+            })
+            .await
+            .expect_err("colliding source paths must not replace another extension");
+        assert!(format!("{error:#}").contains("collides"), "{error:#}");
+        let error = store
+            .update(cx, |store, cx| {
+                store.uninstall_extension(colliding_id.into(), cx)
+            })
+            .await
+            .expect_err("removing the colliding id must not delete another source");
+        assert!(format!("{error:#}").contains("collides"), "{error:#}");
+        assert_eq!(
+            std::fs::read(&record_path).expect("preserved record"),
+            original_record
+        );
+        assert_eq!(
+            std::fs::read(&manifest_path).expect("preserved checkout"),
+            original_manifest
+        );
+        assert_eq!(installed_source(&store, existing_id, cx), original_source);
+        assert!(
+            extensions_dir
+                .join("installed")
+                .join(existing_id)
+                .join("extension.toml")
+                .is_file()
+        );
+        assert!(!extensions_dir.join("installed").join(colliding_id).exists());
+        assert!(!extensions_dir.join("staging/git-source.previous").exists());
+    }
 }
 
 #[gpui::test]
@@ -5336,8 +5647,11 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
     let publisher = store.read_with(cx, |store, _| store.publisher.clone());
     let (committed_tx, committed_rx) = futures::channel::oneshot::channel();
     let committed_tx = Arc::new(Mutex::new(Some(committed_tx)));
+    let (release_tx, release_rx) = futures::channel::oneshot::channel();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
     publisher.set_hook(move |info| {
         let committed_tx = committed_tx.clone();
+        let release_rx = release_rx.clone();
         async move {
             if info.phase == TransactionPhase::AfterCommit {
                 assert!(
@@ -5350,7 +5664,8 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
                     .expect("one commit")
                     .send(())
                     .expect("test awaits commit");
-                futures::future::pending::<()>().await;
+                let release_rx = release_rx.lock().take().expect("one commit release");
+                release_rx.await.expect("release committed publication");
             }
             Ok(())
         }
@@ -5364,6 +5679,17 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
     publisher.clear_hook();
     drop((install, store, debounce));
     cx.run_until_parked();
+    assert!(
+        publisher.lock().now_or_never().is_none(),
+        "publication retains the gate after cancellation"
+    );
+    release_tx
+        .send(())
+        .expect("publication survives caller drop");
+    publisher
+        .recover()
+        .await
+        .expect("wait for committed cleanup");
 
     let (restarted, _restarted_debounce) =
         extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
@@ -5375,6 +5701,54 @@ async fn test_git_source_commit_invalidates_the_cached_index(cx: &mut TestAppCon
         installed_source(&restarted, "git-extension", cx).map(|source| source.commit),
         Some(commit)
     );
+    assert!(!extensions_dir.join("staging/git-source.previous").exists());
+}
+
+#[gpui::test]
+async fn test_committed_git_update_succeeds_when_final_write_reports_an_error(
+    cx: &mut TestAppContext,
+) {
+    use crate::extension_transaction::TransactionPhase;
+
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial Git install");
+    let commit = remote.publish("git-extension", "0.2.0");
+    let (publisher, fs) =
+        store.read_with(cx, |store, _| (store.publisher.clone(), store.fs.clone()));
+    publisher.set_hook(move |info| {
+        let fs = fs.clone();
+        async move {
+            if info.phase == TransactionPhase::BeforeCommit {
+                fs.atomic_write(info.backup.join("committed"), String::new())
+                    .await?;
+                anyhow::bail!("injected flush failure after publishing commit marker");
+            }
+            Ok(())
+        }
+        .boxed()
+    });
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("visible commit marker determines successful outcome");
+    publisher.clear_hook();
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.2.0")
+    );
+    assert_eq!(
+        installed_source(&store, "git-extension", cx).map(|source| source.commit),
+        Some(commit)
+    );
+    assert!(git_failures(&store, cx).is_empty());
     assert!(!extensions_dir.join("staging/git-source.previous").exists());
 }
 
@@ -5903,17 +6277,40 @@ async fn test_cancelled_publication_recovers_before_queued_reload(cx: &mut TestA
     let publisher = store.read_with(cx, |store, _| store.publisher.clone());
     let (reached_tx, reached_rx) = futures::channel::oneshot::channel();
     let reached_tx = Arc::new(Mutex::new(Some(reached_tx)));
+    let (release_tx, release_rx) = futures::channel::oneshot::channel();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let executor = cx.background_executor().clone();
+    let fs = store.read_with(cx, |store, _| store.fs.clone());
     publisher.set_hook(move |info| {
         let reached_tx = reached_tx.clone();
+        let release_rx = release_rx.clone();
+        let executor = executor.clone();
+        let fs = fs.clone();
         async move {
             if info.phase == TransactionPhase::BeforePublish {
+                let candidate = info.candidate.expect("marketplace staging candidate");
                 reached_tx
                     .lock()
                     .take()
                     .expect("one publication")
-                    .send(())
+                    .send(candidate.clone())
                     .expect("test waits for publication");
-                futures::future::pending::<()>().await;
+                let release_rx = release_rx.lock().take().expect("one mutation release");
+                let (completed_tx, completed_rx) = futures::channel::oneshot::channel();
+                // Like RealFs's blocking worker, this mutation outlives a cancelled waiter.
+                executor
+                    .spawn(async move {
+                        release_rx.await.expect("release delayed filesystem write");
+                        let result = fs
+                            .atomic_write(candidate.join("late-write"), "completed".into())
+                            .await;
+                        completed_tx
+                            .send(result)
+                            .expect("transaction still awaits filesystem worker");
+                    })
+                    .detach();
+                completed_rx.await.expect("filesystem worker completed")?;
+                anyhow::bail!("injected failure after delayed filesystem write");
             }
             Ok(())
         }
@@ -5922,7 +6319,7 @@ async fn test_cancelled_publication_recovers_before_queued_reload(cx: &mut TestA
     let install = store.update(cx, |store, cx| {
         store.install_latest_extension_task("git-extension".into(), cx)
     });
-    reached_rx.await.expect("publication reached after backup");
+    let candidate = reached_rx.await.expect("publication reached after backup");
     assert!(!extensions_dir.join("installed/git-extension").exists());
     let mut reload = Box::pin(store.update(cx, |store, cx| store.reload(None, cx)));
     cx.run_until_parked();
@@ -5936,7 +6333,24 @@ async fn test_cancelled_publication_recovers_before_queued_reload(cx: &mut TestA
     );
     publisher.clear_hook();
     drop(install);
+    let mut recovery = Box::pin(publisher.recover());
+    cx.run_until_parked();
+    assert!(candidate.is_dir(), "cancelled caller must not drop staging");
+    assert!(
+        recovery.as_mut().now_or_never().is_none(),
+        "next recovery waits for the in-flight mutation"
+    );
+    assert!(
+        reload.as_mut().now_or_never().is_none(),
+        "reader remains blocked after cancellation"
+    );
+    release_tx.send(()).expect("release filesystem worker");
+    recovery.await.expect("recovery after completed rollback");
     reload.await;
+    assert!(
+        !candidate.exists(),
+        "staging cleaned after mutation completes"
+    );
     assert_eq!(
         installed_source(&store, "git-extension", cx),
         original_source
@@ -5966,6 +6380,94 @@ async fn test_cancelled_publication_recovers_before_queued_reload(cx: &mut TestA
         installed_version(&restarted, "git-extension", cx).as_deref(),
         Some("0.1.0")
     );
+}
+
+#[gpui::test]
+async fn test_cancelled_index_rebuild_finishes_cache_write_before_uninstall(
+    cx: &mut TestAppContext,
+) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial Git install");
+    let index_path = extensions_dir.join("index.json");
+    let old_index = std::fs::read_to_string(&index_path).expect("initial cached index");
+    let (publisher, fs) =
+        store.read_with(cx, |store, _| (store.publisher.clone(), store.fs.clone()));
+    let guard = publisher
+        .lock_for_read()
+        .await
+        .expect("lock for index rebuild");
+    let (started_tx, started_rx) = futures::channel::oneshot::channel();
+    let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+    let (release_tx, release_rx) = futures::channel::oneshot::channel();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let executor = cx.background_executor().clone();
+    publisher.set_index_save_hook({
+        let index_path = index_path.clone();
+        move || {
+            let started_tx = started_tx.clone();
+            let release_rx = release_rx.clone();
+            let executor = executor.clone();
+            let fs = fs.clone();
+            let index_path = index_path.clone();
+            let old_index = old_index.clone();
+            async move {
+                let release_rx = release_rx.lock().take().expect("one delayed cache write");
+                let (completed_tx, completed_rx) = futures::channel::oneshot::channel();
+                executor
+                    .spawn(async move {
+                        release_rx.await.expect("release cache write");
+                        let result = fs.atomic_write(index_path, old_index).await;
+                        completed_tx
+                            .send(result)
+                            .expect("cache writer retains its waiter");
+                    })
+                    .detach();
+                started_tx
+                    .lock()
+                    .take()
+                    .expect("one cache save")
+                    .send(())
+                    .expect("test waits for cache write");
+                completed_rx.await.expect("cache write completed")
+            }
+            .boxed()
+        }
+    });
+    let rebuild = store.update(cx, |store, cx| store.rebuild_extension_index(guard, cx));
+    started_rx.await.expect("cache save worker started");
+    publisher.clear_index_save_hook();
+    drop(rebuild);
+    let mut uninstall = Box::pin(store.update(cx, |store, cx| {
+        store.uninstall_extension("git-extension".into(), cx)
+    }));
+    cx.run_until_parked();
+    assert!(
+        uninstall.as_mut().now_or_never().is_none(),
+        "uninstall waits for the cancelled rebuild's cache write"
+    );
+    assert!(
+        extensions_dir
+            .join("installed/git-extension/extension.toml")
+            .is_file()
+    );
+    release_tx
+        .send(())
+        .expect("cache write remains alive after caller cancellation");
+    uninstall
+        .await
+        .expect("uninstall after cache writer completes");
+    let index: ExtensionIndex =
+        serde_json::from_slice(&std::fs::read(&index_path).expect("rebuilt cache"))
+            .expect("valid cache");
+    assert!(!index.extensions.contains_key("git-extension"));
+    assert!(installed_version(&store, "git-extension", cx).is_none());
+    assert!(!extensions_dir.join("installed/git-extension").exists());
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -6802,6 +7304,226 @@ fn marketplace_settings(extension_id: &str) -> crate::ExtensionSettings {
         )]),
         ..Default::default()
     }
+}
+
+#[gpui::test]
+async fn test_auto_install_publishes_independent_candidates_while_preparation_is_stalled(
+    cx: &mut TestAppContext,
+) {
+    let (client, _) = marketplace_serving_grammar_batch(vec![
+        MarketplaceGrammarFixture {
+            id: "stalled",
+            ..Default::default()
+        },
+        MarketplaceGrammarFixture {
+            id: "independent-marketplace",
+            ..Default::default()
+        },
+    ]);
+    let (client, release, started) = stall_marketplace_request(client, "stalled");
+    let (_tree, _extensions_dir, store, _debounce) =
+        git_extension_store_with_http(cx, client).await;
+    let remote = GitExtensionRemote::new("independent-git", None);
+    let batch = store.update(cx, |store, cx| {
+        store.install_auto_extensions(
+            vec![
+                "stalled".into(),
+                "independent-marketplace".into(),
+                "missing".into(),
+            ],
+            vec![("independent-git".into(), remote.source())],
+            cx,
+        )
+    });
+    started.await.expect("stalled preparation started");
+    cx.condition(&store, |store, _| {
+        store
+            .installed_extensions()
+            .contains_key("independent-marketplace")
+            && store.installed_extensions().contains_key("independent-git")
+            && !store.outstanding_operations().contains_key("missing")
+    })
+    .await;
+    assert_eq!(
+        installed_version(&store, "independent-marketplace", cx).as_deref(),
+        Some("2.0.0")
+    );
+    assert_eq!(
+        installed_version(&store, "independent-git", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert!(installed_version(&store, "stalled", cx).is_none());
+    assert!(installed_version(&store, "missing", cx).is_none());
+    assert!(store.read_with(cx, |store, _| {
+        store.outstanding_operations().contains_key("stalled")
+    }));
+    release.send(()).expect("stalled request still waits");
+    batch.await;
+    assert_eq!(
+        installed_version(&store, "stalled", cx).as_deref(),
+        Some("2.0.0")
+    );
+    assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+}
+
+#[gpui::test]
+async fn test_auto_install_consumers_wait_for_unknown_grammar_exports(cx: &mut TestAppContext) {
+    for removes_existing_provider in [false, true] {
+        let (client, _) = marketplace_serving_grammar_batch(vec![MarketplaceGrammarFixture {
+            id: "provider",
+            provides_html: true,
+            ..Default::default()
+        }]);
+        let (_tree, extensions_dir, store, _debounce) =
+            git_extension_store_with_http(cx, client).await;
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        language_extension::init(
+            LspAccess::Noop,
+            store.read_with(cx, |store, _| store.proxy.clone()),
+            registry,
+        );
+        store
+            .update(cx, |store, cx| {
+                store.install_latest_extension_task("provider".into(), cx)
+            })
+            .await
+            .expect("existing html provider");
+        let remote = GitExtensionRemote::new("consumer", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("consumer".into(), remote.source(), cx)
+            })
+            .await
+            .expect("existing consumer");
+        let original_source = installed_source(&store, "consumer", cx);
+        let record = extensions_dir.join("sources/consumer.toml");
+        let original_record = std::fs::read(&record).expect("original consumer record");
+        let unknown_id = if removes_existing_provider {
+            "provider"
+        } else {
+            "other-provider"
+        };
+        let (client, _) = marketplace_serving_grammar_batch(vec![
+            MarketplaceGrammarFixture {
+                id: "consumer",
+                consumes_html: true,
+                ..Default::default()
+            },
+            MarketplaceGrammarFixture {
+                id: unknown_id,
+                provides_html: !removes_existing_provider,
+                ..Default::default()
+            },
+            MarketplaceGrammarFixture {
+                id: "independent",
+                ..Default::default()
+            },
+        ]);
+        let (client, release, started) = stall_marketplace_request(client, unknown_id);
+        store.update(cx, |store, _| store.http_client = client);
+        let batch = store.update(cx, |store, cx| {
+            store.install_marketplace_extensions(
+                vec!["consumer".into(), unknown_id.into(), "independent".into()],
+                cx,
+            )
+        });
+        started.await.expect("unknown provider request started");
+        cx.condition(&store, |store, _| {
+            store.installed_extensions().contains_key("independent")
+        })
+        .await;
+        cx.run_until_parked();
+        assert_eq!(installed_source(&store, "consumer", cx), original_source);
+        assert_eq!(
+            installed_version(&store, "consumer", cx).as_deref(),
+            Some("0.1.0"),
+            "consumer must wait for unknown exports"
+        );
+        release.send(()).expect("unknown provider still waits");
+        batch.await;
+        assert_eq!(installed_source(&store, "consumer", cx), original_source);
+        assert_eq!(
+            std::fs::read(&record).expect("preserved record"),
+            original_record
+        );
+        assert_eq!(
+            installed_version(&store, "consumer", cx).as_deref(),
+            Some("0.1.0"),
+            "consumer rejects the final missing or ambiguous grammar"
+        );
+        assert_eq!(
+            extensions_dir
+                .join("installed/provider/grammars/html.wasm")
+                .is_file(),
+            !removes_existing_provider
+        );
+        assert_eq!(
+            installed_version(&store, unknown_id, cx).as_deref(),
+            Some("2.0.0")
+        );
+        assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+    }
+}
+
+#[gpui::test]
+async fn test_cancelled_auto_install_releases_stalled_preparation(cx: &mut TestAppContext) {
+    let (client, _) = marketplace_serving_grammar_batch(vec![MarketplaceGrammarFixture {
+        id: "stalled",
+        ..Default::default()
+    }]);
+    let (client, release, started) = stall_marketplace_request(client, "stalled");
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store_with_http(cx, client).await;
+    let batch = store.update(cx, |store, cx| {
+        store.install_marketplace_extensions(vec!["stalled".into()], cx)
+    });
+    started.await.expect("preparation waits on response");
+    drop(batch);
+    cx.condition(&store, |store, _| store.outstanding_operations().is_empty())
+        .await;
+    cx.run_until_parked();
+    assert!(
+        release.send(()).is_err(),
+        "cancelled task drops the HTTP future"
+    );
+    assert!(installed_version(&store, "stalled", cx).is_none());
+    assert!(!extensions_dir.join("installed/stalled").exists());
+}
+
+fn stall_marketplace_request(
+    client: Arc<HttpClientWithUrl>,
+    extension_id: &'static str,
+) -> (
+    Arc<HttpClientWithUrl>,
+    futures::channel::oneshot::Sender<()>,
+    futures::channel::oneshot::Receiver<()>,
+) {
+    use http_client::HttpClient as _;
+
+    let (release_tx, release_rx) = futures::channel::oneshot::channel();
+    let (started_tx, started_rx) = futures::channel::oneshot::channel();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+    let gated = FakeHttpClient::create(move |request| {
+        let client = client.clone();
+        let release_rx = release_rx.clone();
+        let started_tx = started_tx.clone();
+        async move {
+            if request
+                .uri()
+                .path()
+                .ends_with(&format!("/extensions/{extension_id}/download"))
+            {
+                let started = started_tx.lock().take().context("one stalled request")?;
+                let release = release_rx.lock().take().context("one stalled response")?;
+                started
+                    .send(())
+                    .map_err(|_| anyhow::anyhow!("test stopped waiting for request"))?;
+                release.await.context("stalled request was cancelled")?;
+            }
+            client.send(request).await
+        }
+    });
+    (gated, release_tx, started_rx)
 }
 
 #[gpui::test]
@@ -8416,6 +9138,92 @@ fn local_dev_extension(extension_id: &str) -> TempTree {
 }
 
 #[gpui::test]
+async fn test_local_extension_rejects_aliases_into_other_managed_extensions(
+    cx: &mut TestAppContext,
+) {
+    for git_parent in [true, false] {
+        let (_tree, extensions_dir, store, _debounce) =
+            git_extension_store_with_http(cx, marketplace_serving("parent", "2.0.0")).await;
+        let parent_remote = GitExtensionRemote::new("parent", None);
+        if git_parent {
+            store
+                .update(cx, |store, cx| {
+                    store.install_git_extension("parent".into(), parent_remote.source(), cx)
+                })
+                .await
+                .expect("install Git parent");
+        } else {
+            store
+                .update(cx, |store, cx| {
+                    store.install_latest_extension_task("parent".into(), cx)
+                })
+                .await
+                .expect("install marketplace parent");
+        }
+        let child_remote = GitExtensionRemote::new("child", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("child".into(), child_remote.source(), cx)
+            })
+            .await
+            .expect("install original child");
+        let parent_source = installed_source(&store, "parent", cx);
+        let child_source = installed_source(&store, "child", cx);
+        let parent_manifest_path = extensions_dir.join("installed/parent/extension.toml");
+        let parent_manifest = std::fs::read(&parent_manifest_path).expect("parent manifest");
+        let child_record_path = extensions_dir.join("sources/child.toml");
+        let child_record = std::fs::read(&child_record_path).expect("child source record");
+        let nested = extensions_dir.join(if git_parent {
+            "sources/parent/nested"
+        } else {
+            "installed/parent/nested"
+        });
+        std::fs::create_dir(&nested).expect("nested extension directory");
+        std::fs::write(
+            nested.join("extension.toml"),
+            "id = \"child\"\nname = \"Nested\"\nversion = \"9.0.0\"\nschema_version = 1\n",
+        )
+        .expect("nested extension manifest");
+        let aliases = TempTree::new(json!({}));
+        let alias = tree_root(&aliases).join("external-alias");
+        store
+            .read_with(cx, |store, _| store.fs.clone())
+            .create_symlink(&alias, nested.clone())
+            .await
+            .expect("external alias to managed directory");
+        for source in [nested, alias] {
+            let error = store
+                .update(cx, |store, cx| store.install_dev_extension(source, cx))
+                .await
+                .expect_err("local source must not depend on another managed extension lifetime");
+            assert!(
+                format!("{error:#}").contains("another managed extension"),
+                "{error:#}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(&parent_manifest_path).expect("preserved parent"),
+            parent_manifest
+        );
+        assert_eq!(
+            std::fs::read(&child_record_path).expect("preserved child record"),
+            child_record
+        );
+        assert_eq!(installed_source(&store, "parent", cx), parent_source);
+        assert_eq!(installed_source(&store, "child", cx), child_source);
+        assert_eq!(
+            installed_version(&store, "child", cx).as_deref(),
+            Some("0.1.0")
+        );
+        assert!(
+            extensions_dir
+                .join("installed/child/extension.toml")
+                .is_file()
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_local_dev_extension_replaces_git_source(cx: &mut TestAppContext) {
     let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
     let remote = GitExtensionRemote::new("git-extension", None);
@@ -9120,6 +9928,443 @@ async fn test_pinned_git_extension_checks_health_and_repairs_only_its_installed_
         Some(&original_source)
     );
     assert!(!installed_wasm.exists());
+}
+
+#[gpui::test]
+async fn test_git_update_repairs_legacy_declared_resources(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", Some("git-extension"));
+    let directory = remote.seed.join("git-extension");
+    std::fs::remove_file(directory.join("extension.toml")).expect("replace modern manifest");
+    std::fs::write(
+        directory.join("extension.json"),
+        r#"{"name":"Legacy Fixture","version":"0.1.0","themes":{"Fixture":"custom/theme.json"}}"#,
+    )
+    .expect("legacy manifest");
+    std::fs::create_dir_all(directory.join("custom")).expect("declared resource directory");
+    let theme = r#"{"name":"Fixture","author":"Test","themes":[]}"#;
+    std::fs::write(directory.join("custom/theme.json"), theme).expect("valid declared theme");
+    git_in(&remote.seed, &["add", "-A"]);
+    git_in(&remote.seed, &["commit", "-m", "legacy fixture"]);
+    git_in(
+        &remote.seed,
+        &["push", &remote.bare.to_string_lossy(), "HEAD:master"],
+    );
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("legacy extension installs");
+    let source = installed_source(&store, "git-extension", cx);
+    let installed_theme = extensions_dir.join("installed/git-extension/custom/theme.json");
+    std::fs::write(&installed_theme, "{").expect("damage custom declared theme");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("repair legacy theme");
+    assert!(git_failures(&store, cx).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&installed_theme).expect("restored theme"),
+        theme
+    );
+    assert_eq!(installed_source(&store, "git-extension", cx), source);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+async fn test_git_source_path_symlinks_stay_inside_the_checkout(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", Some("actual"));
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial install");
+    let original_source = installed_source(&store, "git-extension", cx);
+    let external = local_dev_extension("git-extension");
+    std::os::unix::fs::symlink(tree_root(&external), remote.seed.join("escape"))
+        .expect("external directory symlink");
+    std::os::unix::fs::symlink("actual", remote.seed.join("alias"))
+        .expect("repository directory symlink");
+    git_in(&remote.seed, &["add", "-A"]);
+    git_in(&remote.seed, &["commit", "-m", "directory aliases"]);
+    git_in(
+        &remote.seed,
+        &["push", &remote.bare.to_string_lossy(), "HEAD:master"],
+    );
+
+    let mut source = remote.source();
+    source.path = Some("escape".into());
+    let error = store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), source, cx)
+        })
+        .await
+        .expect_err("external source path must be rejected before building");
+    assert!(format!("{error:#}").contains("resolves outside its repository"));
+    assert_eq!(
+        installed_source(&store, "git-extension", cx),
+        original_source
+    );
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert!(tree_root(&external).join("extension.toml").is_file());
+
+    let mut source = remote.source();
+    source.path = Some("alias".into());
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), source, cx)
+        })
+        .await
+        .expect("a relative alias inside the repository remains valid");
+    assert_eq!(
+        std::fs::canonicalize(extensions_dir.join("installed/git-extension"))
+            .expect("installed alias"),
+        std::fs::canonicalize(extensions_dir.join("sources/git-extension/actual"))
+            .expect("repository target"),
+    );
+}
+
+#[gpui::test]
+async fn test_configured_git_update_reports_lost_provenance_after_reindex(cx: &mut TestAppContext) {
+    for (missing_install, malformed_record, removed_directory) in [
+        (false, false, None),
+        (true, false, None),
+        (false, true, None),
+        (false, false, Some("editors/ext")),
+        (true, true, Some("")),
+    ] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", Some("editors/ext"));
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("initial install");
+        let original_source =
+            installed_source(&store, "git-extension", cx).expect("installed source");
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|settings, cx| {
+                settings.update_user_settings(cx, |content| {
+                    content
+                        .extension
+                        .auto_update_extensions
+                        .insert("git-extension".into(), false);
+                    content.extension.auto_install_extensions.insert(
+                        "git-extension".into(),
+                        settings::AutoInstallExtensionContent::Git {
+                            git: remote.url.clone(),
+                            reference: Some("master".into()),
+                            path: Some("editors/ext".into()),
+                        },
+                    );
+                });
+            });
+        });
+        let checkout = extensions_dir.join("sources/git-extension");
+        let manifest = checkout.join("editors/ext/extension.toml");
+        let original_manifest = std::fs::read(&manifest).expect("installed manifest");
+        remote.publish("git-extension", "0.2.0");
+        let record = extensions_dir.join("sources/git-extension.toml");
+        if malformed_record {
+            std::fs::write(&record, "[").expect("corrupt source record");
+        } else {
+            std::fs::remove_file(&record).expect("remove source record");
+        }
+        if missing_install {
+            let fs = store.read_with(cx, |store, _| store.fs.clone());
+            fs.remove_file(
+                &extensions_dir.join("installed/git-extension"),
+                RemoveOptions::default(),
+            )
+            .await
+            .expect("remove installed link");
+        }
+        if let Some(directory) = removed_directory {
+            std::fs::remove_dir_all(checkout.join(directory))
+                .expect("remove managed source directory");
+        }
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert!(installed_source(&store, "git-extension", cx).is_none());
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("report lost provenance");
+        let failures = git_failures(&store, cx);
+        assert_eq!(failures.len(), 1);
+        assert!(
+            failures
+                .first()
+                .expect("Git failure")
+                .message
+                .contains("installed Git commit cannot be recovered")
+        );
+        if removed_directory.is_none() {
+            assert_eq!(
+                std::fs::read(&manifest).expect("preserved manifest"),
+                original_manifest
+            );
+        } else {
+            assert!(
+                !manifest.exists(),
+                "lost provenance must not fetch a replacement"
+            );
+        }
+        if removed_directory != Some("") {
+            assert_eq!(
+                git_in(&checkout, &["rev-parse", "HEAD"]),
+                original_source.commit
+            );
+        } else {
+            assert!(
+                !checkout.exists(),
+                "lost provenance must not recreate the checkout"
+            );
+        }
+        assert_eq!(record.exists(), malformed_record);
+
+        let local = local_dev_extension("git-extension");
+        store
+            .update(cx, |store, cx| {
+                store.install_dev_extension(tree_root(&local), cx)
+            })
+            .await
+            .expect("explicit local replacement");
+        std::fs::create_dir_all(&checkout).expect("orphan checkout directory");
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("local replacement stays local");
+        assert!(git_failures(&store, cx).is_empty());
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("9.0.0")
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_pinned_git_update_recovers_after_reindex(cx: &mut TestAppContext) {
+    for damaged_resource in ["extension.toml", "languages/plain/config.toml"] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        std::fs::create_dir_all(remote.seed.join("languages/plain")).expect("language directory");
+        std::fs::write(
+            remote.seed.join("languages/plain/config.toml"),
+            "name = \"Plain Fixture\"\n",
+        )
+        .expect("language config");
+        remote.publish("git-extension", "0.1.1");
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("initial install");
+        let original_source = installed_source(&store, "git-extension", cx);
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|settings, cx| {
+                settings.update_user_settings(cx, |content| {
+                    content
+                        .extension
+                        .auto_update_extensions
+                        .insert("git-extension".into(), false);
+                });
+            });
+        });
+        remote.publish("git-extension", "0.2.0");
+        std::fs::write(
+            extensions_dir
+                .join("installed/git-extension")
+                .join(damaged_resource),
+            "[",
+        )
+        .expect("corrupt indexed resource");
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert!(installed_version(&store, "git-extension", cx).is_none());
+        store
+            .update(cx, |store, cx| store.check_for_git_updates(cx))
+            .await
+            .expect("repair from sidecar");
+        assert!(git_failures(&store, cx).is_empty());
+        assert_eq!(
+            installed_source(&store, "git-extension", cx),
+            original_source
+        );
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("0.1.1")
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_git_update_repairs_a_missing_installed_link(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial install");
+    let original_source = installed_source(&store, "git-extension", cx);
+    let fs = store.read_with(cx, |store, _| store.fs.clone());
+    fs.remove_file(
+        &extensions_dir.join("installed/git-extension"),
+        RemoveOptions::default(),
+    )
+    .await
+    .expect("remove installed link without its checkout");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("repair link");
+    assert!(git_failures(&store, cx).is_empty());
+    assert_eq!(
+        installed_source(&store, "git-extension", cx),
+        original_source
+    );
+    assert_eq!(
+        std::fs::canonicalize(extensions_dir.join("installed/git-extension"))
+            .expect("repaired link"),
+        std::fs::canonicalize(extensions_dir.join("sources/git-extension"))
+            .expect("source checkout")
+    );
+}
+
+#[gpui::test]
+async fn test_pinned_git_update_recovers_after_restart(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("initial install");
+    let original_source = installed_source(&store, "git-extension", cx);
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|settings, cx| {
+            settings.update_user_settings(cx, |content| {
+                content
+                    .extension
+                    .auto_update_extensions
+                    .insert("git-extension".into(), false);
+            });
+        });
+    });
+    remote.publish("git-extension", "0.2.0");
+    std::fs::write(
+        extensions_dir.join("installed/git-extension/extension.toml"),
+        "[",
+    )
+    .expect("corrupt manifest before shutdown");
+    store.update(cx, |store, cx| store.reload(None, cx)).await;
+    assert!(installed_version(&store, "git-extension", cx).is_none());
+    drop((store, debounce));
+    let (restarted, _debounce) =
+        extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
+    restarted
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("repair after restart");
+    assert!(git_failures(&restarted, cx).is_empty());
+    assert_eq!(
+        installed_source(&restarted, "git-extension", cx),
+        original_source
+    );
+    assert_eq!(
+        installed_version(&restarted, "git-extension", cx).as_deref(),
+        Some("0.1.0")
+    );
+}
+
+#[gpui::test]
+async fn test_pinned_git_auto_install_requires_the_recorded_commit(cx: &mut TestAppContext) {
+    for record_damage in [None, Some("malformed"), Some("missing")] {
+        let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+        let remote = GitExtensionRemote::new("git-extension", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("git-extension".into(), remote.source(), cx)
+            })
+            .await
+            .expect("initial install");
+        let original_source = installed_source(&store, "git-extension", cx);
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|settings, cx| {
+                settings.update_user_settings(cx, |content| {
+                    content
+                        .extension
+                        .auto_update_extensions
+                        .insert("git-extension".into(), false);
+                });
+            });
+        });
+        remote.publish("git-extension", "0.2.0");
+        std::fs::write(
+            extensions_dir.join("installed/git-extension/extension.toml"),
+            "[",
+        )
+        .expect("corrupt manifest");
+        let record = extensions_dir.join("sources/git-extension.toml");
+        match record_damage {
+            Some("malformed") => std::fs::write(&record, "[").expect("corrupt source record"),
+            Some(_) => std::fs::remove_file(&record).expect("remove source record"),
+            None => {}
+        }
+        store.update(cx, |store, cx| store.reload(None, cx)).await;
+        assert!(installed_version(&store, "git-extension", cx).is_none());
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extensions(vec![("git-extension".into(), remote.source())], cx)
+            })
+            .await;
+        if record_damage.is_none() {
+            assert!(git_failures(&store, cx).is_empty());
+            assert_eq!(
+                installed_source(&store, "git-extension", cx),
+                original_source
+            );
+            assert_eq!(
+                installed_version(&store, "git-extension", cx).as_deref(),
+                Some("0.1.0")
+            );
+            let replacement = GitExtensionRemote::new("git-extension", None);
+            replacement.publish("git-extension", "0.3.0");
+            store
+                .update(cx, |store, cx| {
+                    store.install_git_extensions(
+                        vec![("git-extension".into(), replacement.source())],
+                        cx,
+                    )
+                })
+                .await;
+            assert!(git_failures(&store, cx).is_empty());
+            assert_eq!(
+                installed_version(&store, "git-extension", cx).as_deref(),
+                Some("0.3.0")
+            );
+        } else {
+            assert!(installed_version(&store, "git-extension", cx).is_none());
+            let failures = git_failures(&store, cx);
+            assert_eq!(failures.len(), 1);
+            assert!(
+                failures
+                    .first()
+                    .expect("repair failure")
+                    .message
+                    .contains("installed commit")
+            );
+        }
+    }
 }
 
 #[gpui::test]

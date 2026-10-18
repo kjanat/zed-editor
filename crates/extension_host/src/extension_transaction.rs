@@ -1,6 +1,11 @@
 use anyhow::{Context as _, Result};
 use fs::{Fs, RemoveOptions, RenameOptions};
-use futures::lock::{Mutex, MutexGuard};
+#[cfg(test)]
+use futures::lock::MutexGuard;
+use futures::{
+    channel::oneshot,
+    lock::{Mutex, OwnedMutexGuard},
+};
 use gpui::BackgroundExecutor;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -35,15 +40,15 @@ pub(super) enum GitSourceDisposition {
 
 pub(super) enum PreparedExtension {
     Git {
-        checkout: PathBuf,
+        checkout: tempfile::TempDir,
         source: InstalledGitSource,
     },
     Local {
-        staged_link: PathBuf,
+        staged: tempfile::TempDir,
         git_source: GitSourceDisposition,
     },
     Marketplace {
-        directory: PathBuf,
+        staged: StagedDirectory,
     },
     Remove,
 }
@@ -136,6 +141,10 @@ type TransactionHook = Arc<
     dyn Fn(PhaseInfo) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync + 'static,
 >;
 
+#[cfg(test)]
+type IndexSaveHook =
+    Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync + 'static>;
+
 #[derive(Clone)]
 pub(super) struct ExtensionPublisher {
     fs: Arc<dyn Fs>,
@@ -144,8 +153,11 @@ pub(super) struct ExtensionPublisher {
     index_path: PathBuf,
     installed_dir: PathBuf,
     gate: Arc<Mutex<()>>,
+    executor: BackgroundExecutor,
     #[cfg(test)]
     hook: Arc<parking_lot::Mutex<Option<TransactionHook>>>,
+    #[cfg(test)]
+    index_save_hook: Arc<parking_lot::Mutex<Option<IndexSaveHook>>>,
 }
 
 impl ExtensionPublisher {
@@ -155,6 +167,7 @@ impl ExtensionPublisher {
         sources_dir: PathBuf,
         index_path: PathBuf,
         installed_dir: PathBuf,
+        executor: BackgroundExecutor,
     ) -> Self {
         Self {
             fs,
@@ -163,18 +176,27 @@ impl ExtensionPublisher {
             index_path,
             installed_dir,
             gate: Arc::new(Mutex::new(())),
+            executor,
             #[cfg(test)]
             hook: Arc::default(),
+            #[cfg(test)]
+            index_save_hook: Arc::default(),
         }
     }
 
+    #[cfg(test)]
     pub(super) async fn lock(&self) -> MutexGuard<'_, ()> {
         self.gate.lock().await
     }
 
     pub(super) async fn recover(&self) -> Result<()> {
-        let _guard = self.lock().await;
-        self.recover_locked().await
+        let publisher = self.clone();
+        let guard = self.gate.clone().lock_owned().await;
+        self.complete_mutation(async move {
+            let _guard = guard;
+            publisher.recover_locked().await
+        })
+        .await
     }
 
     pub(super) async fn recover_locked(&self) -> Result<()> {
@@ -188,16 +210,46 @@ impl ExtensionPublisher {
         .await
     }
 
-    pub(super) async fn recover_for_read_locked(&self) -> Result<()> {
-        recover_git_source_inner(
-            &self.fs,
-            &self.staging_dir,
-            &self.sources_dir,
-            &self.index_path,
-            &self.installed_dir,
-            RecoveryMode::Read,
-        )
+    pub(super) async fn lock_for_read(&self) -> Result<OwnedMutexGuard<()>> {
+        let publisher = self.clone();
+        let guard = self.gate.clone().lock_owned().await;
+        self.complete_mutation(async move {
+            recover_git_source_inner(
+                &publisher.fs,
+                &publisher.staging_dir,
+                &publisher.sources_dir,
+                &publisher.index_path,
+                &publisher.installed_dir,
+                RecoveryMode::Read,
+            )
+            .await?;
+            Ok(guard)
+        })
         .await
+    }
+
+    pub(super) async fn complete_mutation<T: Send + 'static>(
+        &self,
+        mutation: impl Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T> {
+        let (sender, receiver) = oneshot::channel();
+        // Filesystem workers can finish a syscall after their awaiting future is dropped.
+        // Keep the gate and staging owners alive until every mutation has settled.
+        self.executor
+            .spawn(async move {
+                let result = mutation.await;
+                if let Err(result) = sender.send(result) {
+                    result
+                        .context(
+                            "finishing an extension transaction after its caller was cancelled",
+                        )
+                        .log_err();
+                }
+            })
+            .detach();
+        receiver
+            .await
+            .context("extension transaction worker exited")?
     }
 
     #[cfg(test)]
@@ -214,6 +266,28 @@ impl ExtensionPublisher {
     #[cfg(test)]
     pub(super) fn clear_hook(&self) {
         *self.hook.lock() = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_index_save_hook(
+        &self,
+        hook: impl Fn() -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync + 'static,
+    ) {
+        *self.index_save_hook.lock() = Some(Arc::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_index_save_hook(&self) {
+        *self.index_save_hook.lock() = None;
+    }
+
+    #[cfg(test)]
+    pub(super) async fn before_index_save(&self) -> Result<()> {
+        let hook = self.index_save_hook.lock().clone();
+        if let Some(hook) = hook {
+            hook().await?;
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -234,9 +308,13 @@ impl ExtensionPublisher {
                 backup: git_source_backup_dir(&self.staging_dir),
                 index: self.index_path.clone(),
                 candidate: match candidate {
-                    PreparedExtension::Git { checkout, .. } => Some(checkout.clone()),
-                    PreparedExtension::Local { staged_link, .. } => Some(staged_link.clone()),
-                    PreparedExtension::Marketplace { directory } => Some(directory.clone()),
+                    PreparedExtension::Git { checkout, .. } => Some(checkout.path().to_path_buf()),
+                    PreparedExtension::Local { staged, .. } => {
+                        Some(staged.path().join(extension_id))
+                    }
+                    PreparedExtension::Marketplace { staged } => {
+                        Some(staged.path().join(extension_id))
+                    }
                     PreparedExtension::Remove => None,
                 },
             })
@@ -250,35 +328,64 @@ impl ExtensionPublisher {
         extension_id: &str,
         candidate: PreparedExtension,
     ) -> Result<()> {
+        let publisher = self.clone();
+        let extension_id = extension_id.to_string();
+        let guard = self.gate.clone().lock_owned().await;
+        self.complete_mutation(async move {
+            let _guard = guard;
+            let result = publisher.publish_inner(&extension_id, &candidate).await;
+            if let PreparedExtension::Marketplace { staged } = candidate {
+                staged.cleanup().await.log_err();
+            }
+            result
+        })
+        .await
+    }
+
+    async fn publish_inner(&self, extension_id: &str, candidate: &PreparedExtension) -> Result<()> {
         anyhow::ensure!(
             is_single_path_component(extension_id),
             "extension id {extension_id:?} must be a single path component"
         );
-        if let PreparedExtension::Git { source, .. } = &candidate {
+        if let PreparedExtension::Git { source, .. } = candidate {
             super::validate_git_install(extension_id, &source.source())?;
         }
-        let _guard = self.lock().await;
         self.fs.create_dir(&self.staging_dir).await?;
         self.recover_locked().await?;
-        self.fs
-            .remove_file(&self.index_path, remove_options(false))
-            .await?;
-
         let backup = git_source_backup_dir(&self.staging_dir);
         let checkout = git_source_dir(&self.sources_dir, extension_id);
         let installed = self.installed_dir.join(extension_id);
         let record_path = git_source_record_path(&self.sources_dir, extension_id);
+        let checkout_metadata = self.fs.metadata(&checkout).await?;
+        let record_metadata = self.fs.metadata(&record_path).await?;
+        anyhow::ensure!(
+            checkout_metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.is_dir),
+            "extension checkout collides with a source record: {}",
+            checkout.display()
+        );
+        anyhow::ensure!(
+            record_metadata
+                .as_ref()
+                .is_none_or(|metadata| !metadata.is_dir),
+            "extension source record collides with a checkout: {}",
+            record_path.display()
+        );
         let state = GitSourceBackupState {
-            checkout_existed: self.fs.metadata(&checkout).await?.is_some(),
+            checkout_existed: checkout_metadata.is_some(),
             installed_existed: self.fs.metadata(&installed).await?.is_some(),
-            record: if self.fs.metadata(&record_path).await?.is_some() {
+            record: if record_metadata.is_some() {
                 Some(self.fs.load(&record_path).await?)
             } else {
                 None
             },
         };
+        self.fs
+            .remove_file(&self.index_path, remove_options(false))
+            .await?;
         let retain_git_source = matches!(
-            &candidate,
+            candidate,
             PreparedExtension::Local {
                 git_source: GitSourceDisposition::Retain,
                 ..
@@ -296,7 +403,7 @@ impl ExtensionPublisher {
                 )
                 .await?;
             #[cfg(test)]
-            self.run_hook(TransactionPhase::BeforeBackup, extension_id, &candidate)
+            self.run_hook(TransactionPhase::BeforeBackup, extension_id, candidate)
                 .await?;
 
             if state.checkout_existed && !retain_git_source {
@@ -311,11 +418,11 @@ impl ExtensionPublisher {
             if let PreparedExtension::Git {
                 checkout: prepared_checkout,
                 ..
-            } = &candidate
+            } = candidate
             {
                 self.fs
                     .rename(
-                        prepared_checkout,
+                        prepared_checkout.path(),
                         &checkout,
                         RenameOptions {
                             create_parents: true,
@@ -334,10 +441,10 @@ impl ExtensionPublisher {
                     .await?;
             }
             #[cfg(test)]
-            self.run_hook(TransactionPhase::BeforePublish, extension_id, &candidate)
+            self.run_hook(TransactionPhase::BeforePublish, extension_id, candidate)
                 .await?;
 
-            match &candidate {
+            match candidate {
                 PreparedExtension::Git { source, .. } => {
                     self.fs.create_dir(&self.installed_dir).await?;
                     self.fs
@@ -351,19 +458,21 @@ impl ExtensionPublisher {
                         )
                         .await?;
                 }
-                PreparedExtension::Local { staged_link, .. } => {
-                    self.publish_entry(staged_link, &installed).await?;
+                PreparedExtension::Local { staged, .. } => {
+                    self.publish_entry(&staged.path().join(extension_id), &installed)
+                        .await?;
                 }
-                PreparedExtension::Marketplace { directory } => {
-                    self.publish_entry(directory, &installed).await?;
+                PreparedExtension::Marketplace { staged } => {
+                    self.publish_entry(&staged.path().join(extension_id), &installed)
+                        .await?;
                 }
                 PreparedExtension::Remove => {}
             }
             #[cfg(test)]
-            self.run_hook(TransactionPhase::BeforeRecord, extension_id, &candidate)
+            self.run_hook(TransactionPhase::BeforeRecord, extension_id, candidate)
                 .await?;
 
-            match &candidate {
+            match candidate {
                 PreparedExtension::Git { source, .. } => {
                     self.fs
                         .atomic_write(record_path.clone(), toml::to_string(source)?)
@@ -383,7 +492,7 @@ impl ExtensionPublisher {
                 }
             }
             #[cfg(test)]
-            self.run_hook(TransactionPhase::BeforeCommit, extension_id, &candidate)
+            self.run_hook(TransactionPhase::BeforeCommit, extension_id, candidate)
                 .await?;
 
             // The source record alone cannot distinguish a repair from an interrupted swap.
@@ -394,6 +503,21 @@ impl ExtensionPublisher {
         .await;
 
         if let Err(error) = result {
+            if self
+                .fs
+                .metadata(&backup.join(GIT_SOURCE_BACKUP_COMMITTED))
+                .await?
+                .is_some()
+            {
+                log::error!(
+                    "extension {extension_id} committed but its final write reported an error: {error:#}"
+                );
+                self.recover_locked()
+                    .await
+                    .context("cleaning up an extension replacement after its commit write failed")
+                    .log_err();
+                return Ok(());
+            }
             self.recover_locked()
                 .await
                 .with_context(|| format!("recovering failed extension replacement: {error:#}"))?;
@@ -405,7 +529,7 @@ impl ExtensionPublisher {
             TransactionPhase::AfterCommit,
             TransactionPhase::BeforeCleanup,
         ] {
-            if let Err(error) = self.run_hook(phase, extension_id, &candidate).await {
+            if let Err(error) = self.run_hook(phase, extension_id, candidate).await {
                 log::error!("cleaning up committed extension {extension_id}: {error:#}");
                 return Ok(());
             }
