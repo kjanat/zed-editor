@@ -6874,6 +6874,276 @@ async fn test_marketplace_batch_installs_grammar_provider_before_consumer(cx: &m
     }
 }
 
+#[derive(Clone, Copy)]
+enum GrammarBatchSource {
+    Git,
+    Marketplace,
+}
+
+async fn assert_auto_install_grammar_batch(
+    provider_source: GrammarBatchSource,
+    consumer_source: GrammarBatchSource,
+    consumer_first: bool,
+    cx: &mut TestAppContext,
+) {
+    use crate::extension_transaction::TransactionPhase;
+
+    let grammar_repository = GitExtensionRemote::new("grammar-fixture", None);
+    let mut remotes = Vec::new();
+    let mut git_sources = Vec::new();
+    let mut marketplace_fixtures = Vec::new();
+    let mut marketplace_ids = Vec::new();
+    for (id, source) in [("provider", provider_source), ("consumer", consumer_source)] {
+        match source {
+            GrammarBatchSource::Marketplace => {
+                marketplace_ids.push(Arc::from(id));
+                marketplace_fixtures.push(MarketplaceGrammarFixture {
+                    id,
+                    provides_html: id == "provider",
+                    consumes_html: id == "consumer",
+                    ..Default::default()
+                });
+            }
+            GrammarBatchSource::Git => {
+                let remote = GitExtensionRemote::new(id, None);
+                let declaration = if id == "provider" {
+                    std::fs::create_dir(remote.seed.join("grammars")).expect("grammar directory");
+                    std::fs::write(
+                        remote.seed.join("grammars/html.wasm"),
+                        include_bytes!("../../language/test_data/grammars/html.wasm"),
+                    )
+                    .expect("precompiled grammar");
+                    format!(
+                        "[grammars.html]\nrepository = {}\nrev = \"master\"\n",
+                        toml::Value::String(grammar_repository.url.clone())
+                    )
+                } else {
+                    std::fs::create_dir_all(remote.seed.join("languages/html"))
+                        .expect("language directory");
+                    std::fs::write(
+                        remote.seed.join("languages/html/config.toml"),
+                        "name = \"Language consumer\"\ngrammar = \"html\"\n",
+                    )
+                    .expect("language config");
+                    std::fs::write(
+                        remote.seed.join("languages/html/highlights.scm"),
+                        "(tag_name) @tag",
+                    )
+                    .expect("language query");
+                    String::new()
+                };
+                remote.publish_with_manifest(id, "2.0.0", &declaration);
+                git_sources.push((Arc::from(id), remote.source()));
+                remotes.push(remote);
+            }
+        }
+    }
+    if consumer_first {
+        git_sources.reverse();
+        marketplace_ids.reverse();
+    }
+    let expected_downloads = marketplace_ids.len();
+    let (client, downloads) = marketplace_serving_grammar_batch(marketplace_fixtures);
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store_with_http(cx, client).await;
+    // No parser sources means the bundled WASM is current. An empty compiler
+    // satisfies SDK discovery but fails if this fixture unexpectedly compiles.
+    let compiler = extensions_dir
+        .join("build/wasi-sdk/bin")
+        .join(format!("clang{}", std::env::consts::EXE_SUFFIX));
+    std::fs::create_dir_all(compiler.parent().expect("compiler directory"))
+        .expect("cached SDK directory");
+    std::fs::write(compiler, []).expect("unused compiler fixture");
+    let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+    language_extension::init(
+        LspAccess::Noop,
+        store.read_with(cx, |store, _| store.proxy.clone()),
+        registry.clone(),
+    );
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+    publisher.set_hook({
+        let published = published.clone();
+        move |info| {
+            let published = published.clone();
+            async move {
+                if info.phase == TransactionPhase::BeforePublish {
+                    published.lock().push(info.extension_id);
+                }
+                Ok(())
+            }
+            .boxed()
+        }
+    });
+    store
+        .update(cx, |store, cx| {
+            if marketplace_ids.is_empty() {
+                store.install_git_extensions(git_sources, cx)
+            } else {
+                store.install_auto_extensions(marketplace_ids, git_sources, cx)
+            }
+        })
+        .await;
+    publisher.clear_hook();
+    assert_eq!(*published.lock(), ["provider", "consumer"]);
+    assert_eq!(downloads.load(Ordering::SeqCst), expected_downloads);
+    assert!(git_failures(&store, cx).is_empty());
+    for id in ["provider", "consumer"] {
+        assert_eq!(installed_version(&store, id, cx).as_deref(), Some("2.0.0"));
+    }
+    registry
+        .language_for_name("Language consumer")
+        .await
+        .expect("consumer queries load through the newly installed grammar");
+    assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+}
+
+#[gpui::test]
+async fn test_git_batch_installs_grammar_provider_before_consumer(cx: &mut TestAppContext) {
+    for consumer_first in [true, false] {
+        assert_auto_install_grammar_batch(
+            GrammarBatchSource::Git,
+            GrammarBatchSource::Git,
+            consumer_first,
+            cx,
+        )
+        .await;
+    }
+}
+
+#[gpui::test]
+async fn test_git_consumer_waits_for_marketplace_grammar_provider(cx: &mut TestAppContext) {
+    assert_auto_install_grammar_batch(
+        GrammarBatchSource::Marketplace,
+        GrammarBatchSource::Git,
+        true,
+        cx,
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_marketplace_consumer_waits_for_git_grammar_provider(cx: &mut TestAppContext) {
+    assert_auto_install_grammar_batch(
+        GrammarBatchSource::Git,
+        GrammarBatchSource::Marketplace,
+        true,
+        cx,
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_git_batch_reports_grammar_cycles_without_publishing(cx: &mut TestAppContext) {
+    let (_tree, _extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let mut remotes = Vec::new();
+    let mut sources = Vec::new();
+    for (id, dependency) in [("alpha", "beta"), ("beta", "alpha")] {
+        let remote = GitExtensionRemote::new(id, None);
+        std::fs::create_dir_all(remote.seed.join("languages/test")).expect("language directory");
+        std::fs::write(
+            remote.seed.join("languages/test/config.toml"),
+            format!("name = \"{id}\"\ngrammar = \"{dependency}\"\n"),
+        )
+        .expect("language config");
+        remote.publish_with_manifest(
+            id,
+            "2.0.0",
+            &format!("[grammars.{id}]\nrepository = \"unused\"\nrev = \"unused\"\n"),
+        );
+        sources.push((Arc::from(id), remote.source()));
+        remotes.push(remote);
+    }
+    store
+        .update(cx, |store, cx| store.install_git_extensions(sources, cx))
+        .await;
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 2);
+    for failure in failures {
+        assert!(failure.message.contains("cyclic"), "{failure:?}");
+    }
+    for id in ["alpha", "beta"] {
+        assert!(installed_version(&store, id, cx).is_none());
+    }
+    assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+}
+
+#[gpui::test]
+async fn test_failed_marketplace_provider_keeps_existing_git_consumer(cx: &mut TestAppContext) {
+    let (client, downloads) = marketplace_serving_grammar_batch(vec![MarketplaceGrammarFixture {
+        id: "provider",
+        provides_html: true,
+        malformed_theme: true,
+        ..Default::default()
+    }]);
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store_with_http(cx, client).await;
+    let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+    language_extension::init(
+        LspAccess::Noop,
+        store.read_with(cx, |store, _| store.proxy.clone()),
+        registry,
+    );
+    let remote = GitExtensionRemote::new("consumer", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("consumer".into(), remote.source(), cx)
+        })
+        .await
+        .expect("original consumer");
+    let original_source = installed_source(&store, "consumer", cx);
+    let record = extensions_dir.join("sources/consumer.toml");
+    let original_record = std::fs::read(&record).expect("original record");
+    let installed = extensions_dir.join("installed/consumer");
+    let original_target = std::fs::read_link(&installed).expect("original link");
+    let original_manifest =
+        std::fs::read(installed.join("extension.toml")).expect("original manifest");
+    std::fs::create_dir_all(remote.seed.join("languages/html")).expect("language directory");
+    std::fs::write(
+        remote.seed.join("languages/html/config.toml"),
+        "name = \"Consumer\"\ngrammar = \"html\"\n",
+    )
+    .expect("language config");
+    remote.publish("consumer", "2.0.0");
+    store
+        .update(cx, |store, cx| {
+            store.install_auto_extensions(
+                vec!["provider".into()],
+                vec![("consumer".into(), remote.source())],
+                cx,
+            )
+        })
+        .await;
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures
+            .first()
+            .expect("consumer failure")
+            .message
+            .contains("no such grammar html"),
+        "{failures:?}"
+    );
+    assert_eq!(installed_source(&store, "consumer", cx), original_source);
+    assert_eq!(
+        std::fs::read(&record).expect("preserved record"),
+        original_record
+    );
+    assert_eq!(
+        std::fs::read_link(&installed).expect("preserved link"),
+        original_target
+    );
+    assert_eq!(
+        std::fs::read(installed.join("extension.toml")).expect("preserved manifest"),
+        original_manifest
+    );
+    assert_eq!(
+        installed_version(&store, "consumer", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert!(installed_version(&store, "provider", cx).is_none());
+    assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+}
+
 #[gpui::test]
 async fn test_marketplace_batch_waits_for_removed_grammar_exports(cx: &mut TestAppContext) {
     let (client, _) = marketplace_serving_grammar_batch(vec![MarketplaceGrammarFixture {
@@ -7467,6 +7737,10 @@ async fn test_git_update_rejects_invalid_snippets(cx: &mut TestAppContext) {
             })
             .await
             .expect("valid snippets install without a snippet proxy");
+        let installed_snippets =
+            extensions_dir.join("installed/git-extension/snippets/global.json");
+        let original_snippets =
+            std::fs::read(&installed_snippets).expect("installed snippet bytes");
         let original_source = installed_source(&store, "git-extension", cx);
         let record_path = extensions_dir.join("sources/git-extension.toml");
         let original_record = std::fs::read(&record_path).expect("source record");
@@ -7499,11 +7773,8 @@ async fn test_git_update_rejects_invalid_snippets(cx: &mut TestAppContext) {
             Some("0.1.1")
         );
         assert_eq!(
-            std::fs::read_to_string(
-                extensions_dir.join("installed/git-extension/snippets/global.json")
-            )
-            .expect("original snippets"),
-            valid_snippets
+            std::fs::read(&installed_snippets).expect("original snippets"),
+            original_snippets
         );
     }
 }

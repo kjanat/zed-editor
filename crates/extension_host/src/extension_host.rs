@@ -418,8 +418,42 @@ async fn build_git_source(
     source: &GitExtensionSource,
     checkout_commit: Option<&str>,
 ) -> Result<PathBuf> {
-    fs.create_dir(staging_dir).await?;
     publisher.recover().await?;
+    let prepared = prepare_git_source(
+        fs.clone(),
+        staging_dir,
+        extension_id,
+        source,
+        checkout_commit,
+    )
+    .await?;
+    publish_prepared_git_source(
+        fs,
+        builder,
+        sources_dir,
+        publisher,
+        wasm_host,
+        extension_id,
+        prepared,
+    )
+    .await
+}
+
+struct PreparedGitSource {
+    checkout: tempfile::TempDir,
+    manifest: ExtensionManifest,
+    source: InstalledGitSource,
+}
+
+async fn prepare_git_source(
+    fs: Arc<dyn Fs>,
+    staging_dir: &Path,
+    extension_id: &str,
+    source: &GitExtensionSource,
+    checkout_commit: Option<&str>,
+) -> Result<PreparedGitSource> {
+    validate_git_install(extension_id, source)?;
+    fs.create_dir(staging_dir).await?;
     let checkout = tempfile::tempdir_in(staging_dir)?;
     let directory = checkout.path();
     run_git(directory, &["init"]).await?;
@@ -441,12 +475,41 @@ async fn build_git_source(
     let commit = run_git(directory, &["rev-parse", "HEAD"]).await?;
 
     let staged_extension = git_source_subdirectory(directory.to_path_buf(), source.path.as_deref());
-    let mut manifest = ExtensionManifest::load(fs.clone(), &staged_extension).await?;
+    let manifest = ExtensionManifest::load(fs.clone(), &staged_extension).await?;
     anyhow::ensure!(
         manifest.id.as_ref() == extension_id,
         "the repository declares extension id {}, expected {extension_id}",
         manifest.id
     );
+    let manifest = manifest_with_defaults(&fs, &staged_extension, manifest).await?;
+    Ok(PreparedGitSource {
+        checkout,
+        manifest,
+        source: InstalledGitSource {
+            url: source.url.clone(),
+            reference: source.reference.clone(),
+            path: source.path.clone(),
+            commit,
+        },
+    })
+}
+
+async fn publish_prepared_git_source(
+    fs: Arc<dyn Fs>,
+    builder: &ExtensionBuilder,
+    sources_dir: &Path,
+    publisher: &ExtensionPublisher,
+    wasm_host: Arc<WasmHost>,
+    extension_id: &str,
+    prepared: PreparedGitSource,
+) -> Result<PathBuf> {
+    let PreparedGitSource {
+        checkout,
+        mut manifest,
+        source,
+    } = prepared;
+    let staged_extension =
+        git_source_subdirectory(checkout.path().to_path_buf(), source.path.as_deref());
     builder
         .compile_extension(
             &staged_extension,
@@ -455,22 +518,21 @@ async fn build_git_source(
             fs.clone(),
         )
         .await?;
-    validate_prepared_extension(&fs, &staged_extension, sources_dir, manifest, &wasm_host).await?;
+    {
+        let _filesystem_guard = publisher.lock().await;
+        publisher.recover_for_read_locked().await?;
+        validate_prepared_extension(&fs, &staged_extension, sources_dir, manifest, &wasm_host)
+            .await?;
+    }
 
-    let installed_source = InstalledGitSource {
-        url: source.url.clone(),
-        reference: source.reference.clone(),
-        path: source.path.clone(),
-        commit,
-    };
     let extension_path =
         git_source_extension_path(sources_dir, extension_id, source.path.as_deref());
     publisher
         .publish(
             extension_id,
             PreparedExtension::Git {
-                checkout: directory.to_path_buf(),
-                source: installed_source,
+                checkout: checkout.path().to_path_buf(),
+                source,
             },
         )
         .await?;
@@ -482,6 +544,60 @@ struct PreparedMarketplaceExtension {
     manifest: ExtensionManifest,
     external_grammars: BTreeSet<Arc<str>>,
     affected_grammars: BTreeSet<Arc<str>>,
+}
+
+struct PreparedGitExtension {
+    prepared: PreparedGitSource,
+    external_grammars: BTreeSet<Arc<str>>,
+    affected_grammars: BTreeSet<Arc<str>>,
+}
+
+enum PreparedAutoExtension {
+    Marketplace(PreparedMarketplaceExtension),
+    Git(PreparedGitExtension),
+}
+
+impl PreparedAutoExtension {
+    fn external_grammars(&self) -> &BTreeSet<Arc<str>> {
+        match self {
+            Self::Marketplace(prepared) => &prepared.external_grammars,
+            Self::Git(prepared) => &prepared.external_grammars,
+        }
+    }
+
+    fn affected_grammars(&self) -> &BTreeSet<Arc<str>> {
+        match self {
+            Self::Marketplace(prepared) => &prepared.affected_grammars,
+            Self::Git(prepared) => &prepared.affected_grammars,
+        }
+    }
+}
+
+async fn external_grammar_dependencies(
+    fs: &Arc<dyn Fs>,
+    directory: &Path,
+    manifest: &ExtensionManifest,
+    proxy: &ExtensionHostProxy,
+) -> Result<BTreeSet<Arc<str>>> {
+    let mut external_grammars = BTreeSet::new();
+    for language_path in &manifest.languages {
+        let config = fs
+            .load(
+                &directory
+                    .join(language_path)
+                    .join(LanguageConfig::FILE_NAME),
+            )
+            .await
+            .and_then(|contents| LanguageConfig::from_toml(&contents).map_err(Into::into))
+            .with_context(|| format!("validating language resources in {language_path}"))?;
+        if let Some(grammar) = config.grammar
+            && !manifest.grammars.contains_key(&grammar)
+            && !proxy.is_native_grammar(&grammar)
+        {
+            external_grammars.insert(grammar);
+        }
+    }
+    Ok(external_grammars)
 }
 
 async fn manifest_with_defaults(
@@ -1386,9 +1502,7 @@ impl ExtensionStore {
         let git_extensions_to_install = self.git_extensions_to_install(extension_settings);
         let extensions_to_install = self.marketplace_extensions_to_install(extension_settings);
 
-        self.install_marketplace_extensions(extensions_to_install, cx)
-            .detach();
-        self.install_git_extensions(git_extensions_to_install, cx)
+        self.install_auto_extensions(extensions_to_install, git_extensions_to_install, cx)
             .detach();
     }
 
@@ -1417,71 +1531,173 @@ impl ExtensionStore {
         extension_ids: Vec<Arc<str>>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
+        self.install_auto_extensions(extension_ids, Vec::new(), cx)
+    }
+
+    pub fn install_auto_extensions(
+        &mut self,
+        marketplace_extensions: Vec<Arc<str>>,
+        git_extensions: Vec<(Arc<str>, GitExtensionSource)>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
         cx.spawn(async move |this, cx| {
             let mut downloads = Vec::new();
-            for extension_id in extension_ids {
+            let extensions = marketplace_extensions
+                .into_iter()
+                .map(|extension_id| (extension_id, None))
+                .chain(
+                    git_extensions
+                        .into_iter()
+                        .map(|(id, source)| (id, Some(source))),
+                );
+            for (extension_id, source) in extensions {
+                let git_url = source.as_ref().map(|source| source.url.clone());
                 let operation = match Self::begin_operation(
-                    &this, &extension_id, ExtensionOperation::Install, cx,
+                    &this,
+                    &extension_id,
+                    ExtensionOperation::Install,
+                    cx,
                 ) {
                     Ok(operation) => operation,
                     Err(error) => {
-                        log::error!("failed to install extension {extension_id}: {error:#}");
+                        Self::record_auto_install_result(
+                            &this,
+                            &extension_id,
+                            git_url.as_deref(),
+                            &Err(error),
+                            cx,
+                        )
+                        .log_err();
                         continue;
                     }
                 };
                 let download = this.update(cx, |this, cx| {
-                    let url = this.latest_extension_url(&extension_id, cx)?;
-                    anyhow::Ok(this.prepare_marketplace_extension(extension_id.clone(), url, cx))
+                    let prepare = if let Some(source) = source {
+                        this.prepare_git_extension(extension_id.clone(), source, cx)
+                            .map(|result| result.map(PreparedAutoExtension::Git))
+                            .boxed()
+                    } else {
+                        let url = this.latest_extension_url(&extension_id, cx)?;
+                        this.prepare_marketplace_extension(extension_id.clone(), url, cx)
+                            .map(|result| result.map(PreparedAutoExtension::Marketplace))
+                            .boxed()
+                    };
+                    anyhow::Ok(prepare)
                 });
                 match download {
-                    Ok(Ok(download)) => downloads.push((extension_id, operation, download)),
+                    Ok(Ok(download)) => {
+                        downloads.push((extension_id, operation, git_url, download))
+                    }
                     Ok(Err(error)) | Err(error) => {
-                        log::error!("failed to install extension {extension_id}: {error:#}");
+                        Self::record_auto_install_result(
+                            &this,
+                            &extension_id,
+                            git_url.as_deref(),
+                            &Err(error),
+                            cx,
+                        )
+                        .log_err();
                     }
                 }
             }
-            let mut pending = join_all(downloads.into_iter().map(
-                |(extension_id, operation, download)| async move {
-                    match download.await {
-                        Ok(prepared) => Some((extension_id, operation, prepared)),
-                        Err(error) => {
-                            log::error!("failed to prepare extension {extension_id}: {error:#}");
-                            None
-                        }
-                    }
+            let downloads = join_all(downloads.into_iter().map(
+                |(extension_id, operation, git_url, download)| async move {
+                    (extension_id, operation, git_url, download.await)
                 },
             ))
-            .await
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
+            .await;
+            let mut pending = Vec::new();
+            for (extension_id, operation, git_url, result) in downloads {
+                match result {
+                    Ok(prepared) => pending.push((extension_id, operation, git_url, prepared)),
+                    Err(error) => {
+                        Self::record_auto_install_result(
+                            &this,
+                            &extension_id,
+                            git_url.as_deref(),
+                            &Err(error),
+                            cx,
+                        )
+                        .log_err();
+                    }
+                }
+            }
 
             // Resolve against the whole batch before publication: a consumer must not
             // validate against an old provider or whichever concurrent provider finishes first.
             while !pending.is_empty() {
-                let ready = pending.iter().position(|(extension_id, _, prepared)| {
-                    !pending.iter().any(|(other_id, _, provider)| {
+                let ready = pending.iter().position(|(extension_id, _, _, prepared)| {
+                    !pending.iter().any(|(other_id, _, _, provider)| {
                         other_id != extension_id
-                            && prepared.external_grammars.iter().any(|name| {
-                                provider.affected_grammars.contains(name)
-                            })
+                            && prepared
+                                .external_grammars()
+                                .iter()
+                                .any(|name| provider.affected_grammars().contains(name))
                     })
                 });
                 let Some(ready) = ready else {
-                    for (extension_id, _, prepared) in &pending {
-                        log::error!(
-                            "cannot install extension {extension_id}: cyclic grammar dependencies {:?}",
-                            prepared.external_grammars
+                    for (extension_id, _, git_url, prepared) in &pending {
+                        let error = anyhow!(
+                            "cyclic grammar dependencies {:?}",
+                            prepared.external_grammars()
                         );
+                        Self::record_auto_install_result(
+                            &this,
+                            extension_id,
+                            git_url.as_deref(),
+                            &Err(error),
+                            cx,
+                        )
+                        .log_err();
                     }
                     break;
                 };
-                let (extension_id, _operation, prepared) = pending.remove(ready);
-                if let Err(error) = Self::install_prepared_marketplace_extension(
-                    &this, &extension_id, prepared, ExtensionOperation::Install, cx,
-                ).await {
-                    log::error!("failed to install extension {extension_id}: {error:#}");
-                }
+                let (extension_id, _operation, git_url, prepared) = pending.remove(ready);
+                let result = match prepared {
+                    PreparedAutoExtension::Marketplace(prepared) => {
+                        Self::install_prepared_marketplace_extension(
+                            &this,
+                            &extension_id,
+                            prepared,
+                            ExtensionOperation::Install,
+                            cx,
+                        )
+                        .await
+                    }
+                    PreparedAutoExtension::Git(prepared) => {
+                        Self::install_prepared_git_extension(
+                            &this,
+                            &extension_id,
+                            prepared.prepared,
+                            cx,
+                        )
+                        .await
+                    }
+                };
+                Self::record_auto_install_result(
+                    &this,
+                    &extension_id,
+                    git_url.as_deref(),
+                    &result,
+                    cx,
+                )
+                .log_err();
+            }
+        })
+    }
+
+    fn record_auto_install_result(
+        this: &WeakEntity<Self>,
+        extension_id: &Arc<str>,
+        git_url: Option<&str>,
+        result: &Result<()>,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        this.update(cx, |this, cx| {
+            if let Some(url) = git_url {
+                this.record_git_extension_result(extension_id, url, result, cx);
+            } else if let Err(error) = result {
+                log::error!("failed to install extension {extension_id}: {error:#}");
             }
         })
     }
@@ -1491,25 +1707,7 @@ impl ExtensionStore {
         extensions: Vec<(Arc<str>, GitExtensionSource)>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
-        cx.spawn(async move |this, cx| {
-            for (extension_id, source) in extensions {
-                let url = source.url.clone();
-                let Ok(install) = this.update(cx, |this, cx| {
-                    this.install_git_extension(extension_id.clone(), source, cx)
-                }) else {
-                    break;
-                };
-                let result = install.await;
-                if this
-                    .update(cx, |this, cx| {
-                        this.record_git_extension_result(&extension_id, &url, &result, cx)
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
+        self.install_auto_extensions(Vec::new(), extensions, cx)
     }
 
     pub fn git_extensions_to_install(
@@ -1758,6 +1956,80 @@ impl ExtensionStore {
             }
             Ok(())
         })
+    }
+
+    fn prepare_git_extension(
+        &self,
+        extension_id: Arc<str>,
+        source: GitExtensionSource,
+        cx: &Context<Self>,
+    ) -> Task<Result<PreparedGitExtension>> {
+        let fs = self.fs.clone();
+        let staging_dir = self.staging_dir.clone();
+        let proxy = self.proxy.clone();
+        let mut affected_grammars = self
+            .extension_manifest_for_id(&extension_id)
+            .map(|manifest| manifest.grammars.keys().cloned().collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        cx.background_spawn(async move {
+            let prepared =
+                prepare_git_source(fs.clone(), &staging_dir, &extension_id, &source, None).await?;
+            affected_grammars.extend(prepared.manifest.grammars.keys().cloned());
+            let directory = git_source_subdirectory(
+                prepared.checkout.path().to_path_buf(),
+                prepared.source.path.as_deref(),
+            );
+            let external_grammars =
+                external_grammar_dependencies(&fs, &directory, &prepared.manifest, &proxy).await?;
+            Ok(PreparedGitExtension {
+                prepared,
+                external_grammars,
+                affected_grammars,
+            })
+        })
+    }
+
+    async fn install_prepared_git_extension(
+        this: &WeakEntity<Self>,
+        extension_id: &Arc<str>,
+        prepared: PreparedGitSource,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        let (fs, builder, sources_dir, publisher, wasm_host, source_lock) =
+            this.read_with(cx, |this, _| {
+                (
+                    this.fs.clone(),
+                    this.builder.clone(),
+                    this.sources_dir.clone(),
+                    this.publisher.clone(),
+                    this.wasm_host.clone(),
+                    this.git_source_lock.clone(),
+                )
+            })?;
+        let _source_guard = source_lock.lock().await;
+        let result = cx
+            .background_spawn({
+                let extension_id = extension_id.clone();
+                async move {
+                    publisher.recover().await?;
+                    publish_prepared_git_source(
+                        fs,
+                        &builder,
+                        &sources_dir,
+                        &publisher,
+                        wasm_host,
+                        &extension_id,
+                        prepared,
+                    )
+                    .await
+                }
+            })
+            .await;
+        if let Err(error) = result {
+            this.update(cx, |this, cx| this.reload(None, cx))?.await;
+            return Err(error);
+        }
+        Self::finish_extension_install(this, extension_id, ExtensionOperation::Install, cx).await
     }
 
     pub fn install_git_extension(
@@ -2011,24 +2283,8 @@ impl ExtensionStore {
             let manifest = manifest_with_defaults(&fs, &directory, manifest).await?;
             // Consumers also wait for replacements which remove an installed grammar.
             affected_grammars.extend(manifest.grammars.keys().cloned());
-            let mut external_grammars = BTreeSet::new();
-            for language_path in &manifest.languages {
-                let config = fs
-                    .load(
-                        &directory
-                            .join(language_path)
-                            .join(LanguageConfig::FILE_NAME),
-                    )
-                    .await
-                    .and_then(|contents| LanguageConfig::from_toml(&contents).map_err(Into::into))
-                    .with_context(|| format!("validating language resources in {language_path}"))?;
-                if let Some(grammar) = config.grammar
-                    && !manifest.grammars.contains_key(&grammar)
-                    && !proxy.is_native_grammar(&grammar)
-                {
-                    external_grammars.insert(grammar);
-                }
-            }
+            let external_grammars =
+                external_grammar_dependencies(&fs, &directory, &manifest, &proxy).await?;
             Ok(PreparedMarketplaceExtension {
                 staged,
                 manifest,
