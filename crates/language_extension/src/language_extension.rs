@@ -5,8 +5,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use extension::{ExtensionGrammarProxy, ExtensionHostProxy, ExtensionLanguageProxy};
-use gpui::{App, Entity, WeakEntity};
-use language::{LanguageLoader, LanguageMatcher, LanguageName, LanguageRegistry};
+use gpui::{App, Entity, Task, WeakEntity};
+use language::{
+    LanguageConfig, LanguageLoader, LanguageMatcher, LanguageName, LanguageQueries,
+    LanguageRegistry,
+};
 use project::LspStore;
 
 #[derive(Clone)]
@@ -37,6 +40,16 @@ struct LanguageServerRegistryProxy {
 }
 
 impl ExtensionGrammarProxy for LanguageServerRegistryProxy {
+    fn validate_language_queries(
+        &self,
+        extension_id: Arc<str>,
+        config: LanguageConfig,
+        queries: LanguageQueries,
+    ) -> Task<Result<()>> {
+        self.language_registry
+            .validate_extension_language_queries(extension_id, config, queries)
+    }
+
     fn is_native_grammar(&self, name: &str) -> bool {
         self.language_registry.is_native_grammar(name)
     }

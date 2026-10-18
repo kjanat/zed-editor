@@ -265,6 +265,7 @@ mod tests {
                 ExtensionIndexEntry {
                     manifest: Arc::new(manifest),
                     dev: false,
+                    source: None,
                 },
             );
         }

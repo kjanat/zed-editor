@@ -866,6 +866,8 @@ impl Fs for RealFs {
         smol::fs::unix::symlink(target, path).await?;
 
         #[cfg(windows)]
+        let target = target.components().collect::<PathBuf>();
+        #[cfg(windows)]
         if smol::fs::metadata(&target).await?.is_dir() {
             let status = new_command("cmd")
                 .args(["/C", "mklink", "/J"])
@@ -1018,9 +1020,8 @@ impl Fs for RealFs {
 
     async fn remove_file(&self, path: &Path, options: RemoveOptions) -> Result<()> {
         #[cfg(windows)]
-        if let Ok(Some(metadata)) = self.metadata(path).await
-            && metadata.is_symlink
-            && metadata.is_dir
+        if let Ok(metadata) = smol::fs::symlink_metadata(path).await
+            && std::os::windows::fs::FileTypeExt::is_symlink_dir(&metadata.file_type())
         {
             self.remove_dir(
                 path,
@@ -1264,6 +1265,8 @@ impl Fs for RealFs {
         };
 
         let is_symlink = symlink_metadata.file_type().is_symlink();
+        #[cfg(windows)]
+        let mut is_broken_symlink = false;
         let metadata = if is_symlink {
             let path_buf = path.to_path_buf();
             // Read target metadata, if the target exists
@@ -1283,6 +1286,10 @@ impl Fs for RealFs {
                     // For a broken or recursive symlink, return the symlink metadata. (Or
                     // as edge cases, a symlink into a directory we can't read, which is hard
                     // to distinguish from just being broken.)
+                    #[cfg(windows)]
+                    {
+                        is_broken_symlink = true;
+                    }
                     symlink_metadata
                 }
             }
@@ -1294,7 +1301,7 @@ impl Fs for RealFs {
         let (inode, device) = (metadata.ino(), metadata.dev());
 
         #[cfg(windows)]
-        let (inode, device) = file_id(path).await?;
+        let (inode, device) = file_id(path, is_broken_symlink).await?;
 
         #[cfg(windows)]
         let is_fifo = false;
@@ -3978,20 +3985,25 @@ fn read_recursive<'a>(
 // can we get file id not open the file twice?
 // https://github.com/rust-lang/rust/issues/63010
 #[cfg(target_os = "windows")]
-async fn file_id(path: impl AsRef<Path>) -> Result<(u64, u64)> {
+async fn file_id(path: impl AsRef<Path>, open_reparse_point: bool) -> Result<(u64, u64)> {
     use std::os::windows::io::AsRawHandle;
 
     use smol::fs::windows::OpenOptionsExt;
     use windows::Win32::{
         Foundation::HANDLE,
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            GetFileInformationByHandle,
         },
     };
 
+    let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
+    if open_reparse_point {
+        flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+    }
     let file = smol::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .custom_flags(flags.0)
         .open(path)
         .await?;
 

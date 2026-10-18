@@ -12,6 +12,7 @@ excludes    = [
   "**/node_modules",
   "**/target",
   "**/test_data",
+  "**/golden",
   "crates/gpui_web/examples/hello_web/.cargo/config.toml",
   "script/lib/deploy-helpers.sh"
 ]

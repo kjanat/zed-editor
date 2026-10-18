@@ -1,5 +1,6 @@
 mod capability_granter;
 pub mod extension_settings;
+mod extension_transaction;
 pub mod headless_host;
 mod language_collisions;
 pub mod wasm_host;
@@ -20,7 +21,7 @@ use extension::{
     ExtensionGrammarProxy, ExtensionHostProxy, ExtensionLanguageProxy,
     ExtensionLanguageServerProxy, ExtensionSnippetProxy, ExtensionThemeProxy,
 };
-use fs::{Fs, RemoveOptions, RenameOptions};
+use fs::{Fs, RemoveOptions};
 use futures::future::{Shared, join_all};
 use futures::{
     AsyncReadExt as _, Future, FutureExt as _, StreamExt as _,
@@ -54,6 +55,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::{
     borrow::Cow,
     cmp::Ordering,
+    mem,
     path::{self, Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -63,6 +65,7 @@ use url::Url;
 use util::{
     PathExt, ResultExt,
     paths::{PathStyle, RemotePathBuf},
+    redact::{redact_arguments, redact_command},
 };
 use wasm_host::{
     WasmExtension, WasmHost,
@@ -72,11 +75,16 @@ use wasm_host::{
 pub use extension::{
     ExtensionLibraryKind, GrammarManifestEntry, OldExtensionManifest, SchemaVersion,
 };
-pub use extension_settings::ExtensionSettings;
+pub use extension_settings::{ExtensionSettings, GitExtensionSource};
 use language_collisions::LanguageCollisions;
 pub use language_collisions::{LanguageCollision, LanguageCollisionKey};
 
 use crate::headless_host::hash_directory_contents;
+#[cfg(test)]
+use extension_transaction::GitSourceBackupState;
+use extension_transaction::{
+    ExtensionPublisher, GitSourceDisposition, PreparedExtension, StagedDirectory,
+};
 
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
@@ -170,6 +178,11 @@ pub struct ExtensionStore {
     pub reload_complete_senders: Vec<oneshot::Sender<()>>,
     pub installed_dir: PathBuf,
     pub staging_dir: PathBuf,
+    pub sources_dir: PathBuf,
+    git_source_lock: Arc<futures::lock::Mutex<()>>,
+    publisher: ExtensionPublisher,
+    git_extension_failures: BTreeMap<Arc<str>, GitExtensionFailure>,
+    undelivered_git_extension_failures: BTreeSet<Arc<str>>,
     pub outstanding_operations: BTreeMap<Arc<str>, ExtensionOperation>,
     pub index_path: PathBuf,
     pub modified_extensions: HashSet<Arc<str>>,
@@ -291,6 +304,499 @@ impl RemoteSyncExtensions {
 pub struct ExtensionIndexEntry {
     pub manifest: Arc<ExtensionManifest>,
     pub dev: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<InstalledGitSource>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+pub struct InstalledGitSource {
+    pub url: String,
+    pub reference: Option<String>,
+    pub path: Option<String>,
+    pub commit: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GitExtensionFailure {
+    pub extension_id: Arc<str>,
+    pub url: String,
+    pub message: String,
+}
+
+enum GitUpdate {
+    RecordMissing,
+    Checked { url: String, result: Result<bool> },
+}
+
+impl InstalledGitSource {
+    fn matches(&self, source: &GitExtensionSource) -> bool {
+        self.url == source.url && self.reference == source.reference && self.path == source.path
+    }
+
+    fn source(&self) -> GitExtensionSource {
+        GitExtensionSource {
+            url: self.url.clone(),
+            reference: self.reference.clone(),
+            path: self.path.clone(),
+        }
+    }
+}
+
+fn is_single_path_component(extension_id: &str) -> bool {
+    let mut components = Path::new(extension_id).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(path::Component::Normal(name)), None) if name == std::ffi::OsStr::new(extension_id)
+    )
+}
+
+fn validate_git_install(extension_id: &str, source: &GitExtensionSource) -> Result<()> {
+    anyhow::ensure!(
+        is_single_path_component(extension_id),
+        "extension id {extension_id:?} must be a single path component"
+    );
+    if let Some(path) = &source.path {
+        anyhow::ensure!(
+            Path::new(path).components().all(|component| matches!(
+                component,
+                path::Component::Normal(_) | path::Component::CurDir
+            )),
+            "path {path:?} of extension {extension_id} must stay inside its repository"
+        );
+    }
+    Ok(())
+}
+
+fn git_source_dir(sources_dir: &Path, extension_id: &str) -> PathBuf {
+    sources_dir.join(extension_id)
+}
+
+fn git_source_record_path(sources_dir: &Path, extension_id: &str) -> PathBuf {
+    sources_dir.join(format!("{extension_id}.toml"))
+}
+
+fn git_source_extension_path(
+    sources_dir: &Path,
+    extension_id: &str,
+    path: Option<&str>,
+) -> PathBuf {
+    git_source_subdirectory(git_source_dir(sources_dir, extension_id), path)
+}
+
+fn git_source_subdirectory(mut directory: PathBuf, path: Option<&str>) -> PathBuf {
+    if let Some(path) = path {
+        directory.extend(Path::new(path).components());
+    }
+    directory
+}
+
+async fn run_git(directory: &Path, args: &[&str]) -> Result<String> {
+    let output = util::command::new_command("git")
+        .args(args)
+        .current_dir(directory)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .await
+        .with_context(|| format!("running git {}", redact_arguments(args).join(" ")))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git {} failed: {}",
+        redact_arguments(args).join(" "),
+        redact_command(String::from_utf8_lossy(&output.stderr).trim())
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn build_git_source(
+    fs: Arc<dyn Fs>,
+    builder: &ExtensionBuilder,
+    staging_dir: &Path,
+    sources_dir: &Path,
+    publisher: &ExtensionPublisher,
+    wasm_host: Arc<WasmHost>,
+    extension_id: &str,
+    source: &GitExtensionSource,
+    checkout_commit: Option<&str>,
+) -> Result<PathBuf> {
+    fs.create_dir(staging_dir).await?;
+    publisher.recover().await?;
+    let checkout = tempfile::tempdir_in(staging_dir)?;
+    let directory = checkout.path();
+    run_git(directory, &["init"]).await?;
+    run_git(directory, &["remote", "add", "--", "origin", &source.url]).await?;
+    // Repairs of pinned extensions preserve both the installed commit and configured source.
+    let reference = checkout_commit
+        .or(source.reference.as_deref())
+        .unwrap_or("HEAD");
+    run_git(
+        directory,
+        &["fetch", "--depth", "1", "--", "origin", reference],
+    )
+    .await?;
+    run_git(
+        directory,
+        &["checkout", "--force", "--detach", "FETCH_HEAD"],
+    )
+    .await?;
+    let commit = run_git(directory, &["rev-parse", "HEAD"]).await?;
+
+    let staged_extension = git_source_subdirectory(directory.to_path_buf(), source.path.as_deref());
+    let mut manifest = ExtensionManifest::load(fs.clone(), &staged_extension).await?;
+    anyhow::ensure!(
+        manifest.id.as_ref() == extension_id,
+        "the repository declares extension id {}, expected {extension_id}",
+        manifest.id
+    );
+    builder
+        .compile_extension(
+            &staged_extension,
+            &mut manifest,
+            CompileExtensionOptions::dev(),
+            fs.clone(),
+        )
+        .await?;
+    validate_prepared_extension(&fs, &staged_extension, sources_dir, manifest, &wasm_host).await?;
+
+    let installed_source = InstalledGitSource {
+        url: source.url.clone(),
+        reference: source.reference.clone(),
+        path: source.path.clone(),
+        commit,
+    };
+    let extension_path =
+        git_source_extension_path(sources_dir, extension_id, source.path.as_deref());
+    publisher
+        .publish(
+            extension_id,
+            PreparedExtension::Git {
+                checkout: directory.to_path_buf(),
+                source: installed_source,
+            },
+        )
+        .await?;
+    Ok(extension_path)
+}
+
+struct PreparedMarketplaceExtension {
+    staged: StagedDirectory,
+    manifest: ExtensionManifest,
+    external_grammars: BTreeSet<Arc<str>>,
+    affected_grammars: BTreeSet<Arc<str>>,
+}
+
+async fn manifest_with_defaults(
+    fs: &Arc<dyn Fs>,
+    directory: &Path,
+    mut manifest: ExtensionManifest,
+) -> Result<ExtensionManifest> {
+    let declared = manifest.clone();
+    extension::extension_builder::populate_defaults(&mut manifest, directory, fs.clone()).await?;
+    // Legacy defaults clear declarations; retain them so missing explicit resources still fail.
+    if manifest.schema_version.is_v0() {
+        for path in declared.languages {
+            if !manifest.languages.contains(&path) {
+                manifest.languages.push(path);
+            }
+        }
+        for path in declared.themes {
+            if !manifest.themes.contains(&path) {
+                manifest.themes.push(path);
+            }
+        }
+        for (name, grammar) in declared.grammars {
+            manifest.grammars.entry(name).or_insert(grammar);
+        }
+    }
+    Ok(manifest)
+}
+
+async fn validate_prepared_extension(
+    fs: &Arc<dyn Fs>,
+    directory: &Path,
+    sources_dir: &Path,
+    manifest: ExtensionManifest,
+    wasm_host: &Arc<WasmHost>,
+) -> Result<()> {
+    let manifest = manifest_with_defaults(fs, directory, manifest).await?;
+    validate_git_theme_resources(fs, directory, &manifest).await?;
+    validate_git_snippet_resources(fs, directory, &manifest).await?;
+    validate_git_language_resources(fs, directory, &manifest, &wasm_host.proxy).await?;
+    validate_grammar_artifacts(fs, directory, &manifest).await?;
+    let mut staged_index = ExtensionIndex::default();
+    ExtensionStore::add_extension_to_index(
+        fs.clone(),
+        directory.to_path_buf(),
+        sources_dir,
+        &mut staged_index,
+        wasm_host.proxy.clone(),
+    )
+    .await
+    .context("indexing the prepared extension")?;
+
+    let entry = staged_index
+        .extensions
+        .get(&manifest.id)
+        .context("the prepared extension is missing from the staged index")?;
+    validate_git_theme_resources(fs, directory, &entry.manifest).await?;
+    validate_git_snippet_resources(fs, directory, &entry.manifest).await?;
+    validate_git_language_resources(fs, directory, &entry.manifest, &wasm_host.proxy).await?;
+    if manifest.lib.kind.is_some() || entry.manifest.lib.kind.is_some() {
+        let wasm_bytes = fs
+            .load_bytes(&directory.join("extension.wasm"))
+            .await
+            .context("reading the prepared wasm extension")?;
+        wasm_host
+            .validate_extension(wasm_bytes, entry.manifest.clone())
+            .await
+            .context("validating the prepared wasm extension")?;
+    }
+    Ok(())
+}
+
+async fn validate_git_compiled_artifacts(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+    wasm_host: &WasmHost,
+) -> Result<()> {
+    let wasm_path = extension_dir.join("extension.wasm");
+    let requires_wasm = manifest.lib.kind.is_some()
+        || fs.metadata(&extension_dir.join("Cargo.toml")).await?.is_some()
+        || fs.metadata(&wasm_path).await?.is_some()
+        // Reindexing a missing prebuilt library loses its inferred lib.kind.
+        || !run_git(extension_dir, &["ls-tree", "--name-only", "HEAD", "--", "extension.wasm"])
+            .await?
+            .is_empty();
+    if requires_wasm {
+        let bytes = fs
+            .load_bytes(&wasm_path)
+            .await
+            .context("reading extension.wasm")?;
+        wasm_host
+            .validate_compiled_extension(&manifest.id, &bytes)
+            .context("validating extension.wasm")?;
+    }
+    validate_grammar_artifacts(fs, extension_dir, manifest).await
+}
+
+async fn validate_grammar_artifacts(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+) -> Result<()> {
+    for grammar_name in manifest.grammars.keys() {
+        let grammar_path = extension_dir
+            .join("grammars")
+            .join(format!("{grammar_name}.wasm"));
+        let bytes = fs
+            .load_bytes(&grammar_path)
+            .await
+            .with_context(|| format!("reading grammar {grammar_name}.wasm"))?;
+        language::with_parser(|parser| {
+            let mut store = parser.take_wasm_store().context("missing wasm store")?;
+            let grammar = store.load_language(grammar_name, &bytes);
+            parser.set_wasm_store(store)?;
+            grammar.map(drop).map_err(anyhow::Error::from)
+        })
+        .with_context(|| format!("validating grammar {grammar_name}.wasm"))?;
+    }
+    Ok(())
+}
+
+async fn validate_git_language_resources(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+    proxy: &ExtensionHostProxy,
+) -> Result<()> {
+    for language_path in &manifest.languages {
+        let language_dir = extension_dir.join(language_path);
+        let result = async {
+            let config = fs
+                .load(&language_dir.join(LanguageConfig::FILE_NAME))
+                .await?;
+            let config = LanguageConfig::from_toml(&config)?;
+            let rules_path = language_dir.join(SemanticTokenRules::FILE_NAME);
+            if fs
+                .metadata(&rules_path)
+                .await
+                .with_context(|| format!("checking {}", SemanticTokenRules::FILE_NAME))?
+                .is_some()
+            {
+                let contents = fs
+                    .load(&rules_path)
+                    .await
+                    .with_context(|| format!("reading {}", SemanticTokenRules::FILE_NAME))?;
+                SemanticTokenRules::parse(&contents)
+                    .with_context(|| format!("validating {}", SemanticTokenRules::FILE_NAME))?;
+            }
+            let tasks_path = language_dir.join(TaskTemplates::FILE_NAME);
+            if fs
+                .metadata(&tasks_path)
+                .await
+                .with_context(|| format!("checking {}", TaskTemplates::FILE_NAME))?
+                .is_some()
+            {
+                let contents = fs
+                    .load(&tasks_path)
+                    .await
+                    .with_context(|| format!("reading {}", TaskTemplates::FILE_NAME))?;
+                serde_json_lenient::from_str::<TaskTemplates>(&contents)
+                    .with_context(|| format!("validating {}", TaskTemplates::FILE_NAME))?;
+            }
+            let Some(grammar_name) = config.grammar.clone() else {
+                return Ok(());
+            };
+            let query_files = discover_query_files(fs.clone(), &language_dir).await?;
+            let mut files = Vec::new();
+            for query_file in query_files.query_files() {
+                let contents = fs.load(&language_dir.join(query_file.file_name())).await?;
+                files.push(QueryFileContents::new(query_file, Cow::Owned(contents)));
+            }
+            let queries = LanguageQueries::from_files(files);
+            if manifest.grammars.contains_key(&grammar_name) {
+                let grammar_path = extension_dir
+                    .join("grammars")
+                    .join(format!("{grammar_name}.wasm"));
+                let bytes = fs.load_bytes(&grammar_path).await?;
+                let grammar = language::with_parser(|parser| {
+                    let mut store = parser.take_wasm_store().context("missing wasm store")?;
+                    let grammar = store.load_language(&grammar_name, &bytes);
+                    parser.set_wasm_store(store)?;
+                    grammar.map_err(anyhow::Error::from)
+                })?;
+                language::Language::new(config, Some(grammar)).with_queries(queries)?;
+            } else {
+                proxy
+                    .validate_language_queries(manifest.id.clone(), config, queries)
+                    .await?;
+            }
+            anyhow::Ok(())
+        }
+        .await;
+        result.with_context(|| format!("validating language resources in {language_path}"))?;
+    }
+    Ok(())
+}
+
+async fn validate_git_theme_resources(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+) -> Result<()> {
+    // Indexing tolerates broken resources and absent UI proxies; a replacement must not.
+    for theme_path in &manifest.themes {
+        let path = extension_dir.join(theme_path.as_std_path());
+        let contents = fs
+            .load_bytes(&path)
+            .await
+            .with_context(|| format!("reading theme {theme_path}"))?;
+        theme_settings::deserialize_user_theme(&contents)
+            .with_context(|| format!("validating theme {theme_path}"))?;
+    }
+    for icon_theme_path in &manifest.icon_themes {
+        let path = extension_dir.join(icon_theme_path.as_std_path());
+        let contents = fs
+            .load_bytes(&path)
+            .await
+            .with_context(|| format!("reading icon theme {icon_theme_path}"))?;
+        theme::deserialize_icon_theme(&contents)
+            .with_context(|| format!("validating icon theme {icon_theme_path}"))?;
+    }
+    Ok(())
+}
+
+async fn validate_git_snippet_resources(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    manifest: &ExtensionManifest,
+) -> Result<()> {
+    for snippet_path in manifest
+        .snippets
+        .iter()
+        .flat_map(|snippets| snippets.paths())
+    {
+        let path = extension_dir.join(snippet_path);
+        let contents = fs
+            .load(&path)
+            .await
+            .with_context(|| format!("reading snippets {}", snippet_path.display()))?;
+        let snippets =
+            serde_json_lenient::from_str::<snippet_provider::format::VsSnippetsFile>(&contents)
+                .with_context(|| format!("parsing snippets {}", snippet_path.display()))?;
+        for snippet in snippet_provider::file_to_snippets(snippets, &path) {
+            snippet?;
+        }
+    }
+    Ok(())
+}
+
+async fn remote_commit(directory: &Path, source: &GitExtensionSource) -> Result<Option<String>> {
+    let reference = source.reference.as_deref().unwrap_or("HEAD");
+    let peeled = format!("{reference}^{{}}");
+    let output = run_git(
+        directory,
+        &["ls-remote", "--", &source.url, reference, &peeled],
+    )
+    .await?;
+    let refs = output
+        .lines()
+        .filter_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            Some((name, commit))
+        })
+        .collect::<HashMap<_, _>>();
+    Ok(resolve_advertised_ref(&refs, reference).map(str::to_string))
+}
+
+fn is_commit_sha(reference: &str) -> bool {
+    matches!(reference.len(), 40 | 64) && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn resolve_advertised_ref<'a>(refs: &HashMap<&str, &'a str>, reference: &str) -> Option<&'a str> {
+    [
+        reference.to_string(),
+        format!("refs/{reference}"),
+        format!("refs/tags/{reference}"),
+        format!("refs/heads/{reference}"),
+        format!("refs/remotes/{reference}"),
+        format!("refs/remotes/{reference}/HEAD"),
+    ]
+    .iter()
+    .find_map(|name| {
+        refs.get(format!("{name}^{{}}").as_str())
+            .or_else(|| refs.get(name.as_str()))
+            .copied()
+    })
+}
+
+async fn git_source_for_dev_extension(
+    fs: &Arc<dyn Fs>,
+    extension_dir: &Path,
+    sources_dir: &Path,
+    extension_id: &str,
+) -> Option<InstalledGitSource> {
+    let record = load_git_source_record(fs, sources_dir, extension_id).await?;
+    let linked = fs.canonicalize(extension_dir).await.log_err()?;
+    let checkout = git_source_extension_path(sources_dir, extension_id, record.path.as_deref());
+    let checkout = fs.canonicalize(&checkout).await.ok()?;
+    (linked == checkout).then_some(record)
+}
+
+async fn load_git_source_record(
+    fs: &Arc<dyn Fs>,
+    sources_dir: &Path,
+    extension_id: &str,
+) -> Option<InstalledGitSource> {
+    let record_path = git_source_record_path(sources_dir, extension_id);
+    if !fs.is_file(&record_path).await {
+        return None;
+    }
+    fs.load(&record_path)
+        .await
+        .and_then(|record| Ok(toml::from_str(&record)?))
+        .with_context(|| format!("reading git source record {record_path:?}"))
+        .log_err()
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Deserialize, Serialize)]
@@ -374,6 +880,54 @@ impl ExtensionStore {
         self.language_collisions.take_warnings()
     }
 
+    pub fn active_git_extension_failures(&self) -> &BTreeMap<Arc<str>, GitExtensionFailure> {
+        &self.git_extension_failures
+    }
+
+    pub fn take_git_extension_failures(&mut self) -> Vec<GitExtensionFailure> {
+        mem::take(&mut self.undelivered_git_extension_failures)
+            .into_iter()
+            .filter_map(|extension_id| self.git_extension_failures.get(&extension_id).cloned())
+            .collect()
+    }
+
+    fn clear_git_extension_failure(&mut self, extension_id: &str, cx: &mut Context<Self>) {
+        self.undelivered_git_extension_failures.remove(extension_id);
+        if self.git_extension_failures.remove(extension_id).is_some() {
+            cx.notify();
+        }
+    }
+
+    fn record_git_extension_result(
+        &mut self,
+        extension_id: &Arc<str>,
+        url: &str,
+        result: &Result<()>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(()) => {
+                self.clear_git_extension_failure(extension_id, cx);
+            }
+            Err(error) => {
+                let url = redact_command(url);
+                let message = redact_command(&format!("{error:#}"));
+                log::error!("failed to install extension {extension_id} from {url}: {message}");
+                self.git_extension_failures.insert(
+                    extension_id.clone(),
+                    GitExtensionFailure {
+                        extension_id: extension_id.clone(),
+                        url,
+                        message,
+                    },
+                );
+                self.undelivered_git_extension_failures
+                    .insert(extension_id.clone());
+                cx.notify();
+            }
+        }
+    }
+
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
         cx.try_global::<GlobalExtensionStore>()
             .map(|store| store.0.clone())
@@ -398,7 +952,15 @@ impl ExtensionStore {
         let build_dir = build_dir.unwrap_or_else(|| extensions_dir.join("build"));
         let installed_dir = extensions_dir.join("installed");
         let staging_dir = extensions_dir.join("staging");
+        let sources_dir = extensions_dir.join("sources");
         let index_path = extensions_dir.join("index.json");
+        let publisher = ExtensionPublisher::new(
+            fs.clone(),
+            staging_dir.clone(),
+            sources_dir.clone(),
+            index_path.clone(),
+            installed_dir.clone(),
+        );
 
         let (reload_tx, mut reload_rx) = unbounded();
         let mut this = Self {
@@ -408,6 +970,11 @@ impl ExtensionStore {
             registered_languages: Default::default(),
             installed_dir,
             staging_dir,
+            sources_dir,
+            git_source_lock: Arc::default(),
+            publisher,
+            git_extension_failures: BTreeMap::default(),
+            undelivered_git_extension_failures: BTreeSet::default(),
             index_path,
             builder: Arc::new(ExtensionBuilder::new(builder_client, build_dir)),
             outstanding_operations: Default::default(),
@@ -431,6 +998,14 @@ impl ExtensionStore {
             remote_clients: HashMap::default(),
             initial_index_load: Task::ready(()).shared(),
         };
+
+        cx.foreground_executor()
+            .block_on(async {
+                let _filesystem_guard = this.publisher.lock().await;
+                this.publisher.recover_for_read_locked().await
+            })
+            .context("recovering an interrupted extension transaction")
+            .log_err();
 
         // The extensions store maintains an index file, which contains a complete
         // list of the installed extensions and the resources that they provide.
@@ -463,21 +1038,42 @@ impl ExtensionStore {
             }
         }
 
-        // Immediately load all of the extensions in the initial manifest. If the
-        // index needs to be rebuild, then enqueue
-        let load_initial_extensions = this.extensions_updated(extension_index, cx);
-        let mut reload_future = None;
-        if extension_index_needs_rebuild {
-            reload_future = Some(this.reload(None, cx));
-        }
-
-        let initial_index_load = cx
-            .spawn(async move |_, _| {
-                if let Some(future) = reload_future {
-                    future.await;
+        let publisher = this.publisher.clone();
+        let fs = this.fs.clone();
+        let index_path = this.index_path.clone();
+        let load_initial_extensions = cx
+            .spawn(async move |this, cx| {
+                let _filesystem_guard = publisher.lock().await;
+                if publisher
+                    .recover_for_read_locked()
+                    .await
+                    .log_err()
+                    .is_none()
+                {
+                    return;
+                }
+                // A publication may invalidate the cache before this task acquires the gate.
+                let extension_index =
+                    if extension_index_needs_rebuild || !fs.is_file(&index_path).await {
+                        let Some(rebuild) = this
+                            .update(cx, |this, cx| this.rebuild_extension_index(cx))
+                            .log_err()
+                        else {
+                            return;
+                        };
+                        rebuild.await
+                    } else {
+                        extension_index
+                    };
+                if let Some(load) = this
+                    .update(cx, |this, cx| this.extensions_updated(extension_index, cx))
+                    .log_err()
+                {
+                    load.await;
                 }
             })
             .shared();
+        let initial_index_load = load_initial_extensions.clone();
         this.initial_index_load = initial_index_load.clone();
 
         cx.spawn(async move |this, cx| {
@@ -502,6 +1098,17 @@ impl ExtensionStore {
                     select_biased! {
                         _ = debounce_timer => {
                             if index_changed {
+                                let publisher = this.read_with(cx, |this, _| this.publisher.clone())?;
+                                let _filesystem_guard = publisher.lock().await;
+                                if publisher.recover_for_read_locked().await.log_err().is_none() {
+                                    this.update(cx, |this, _| {
+                                        for sender in this.reload_complete_senders.drain(..) {
+                                            sender.send(()).ok();
+                                        }
+                                    })?;
+                                    index_changed = false;
+                                    continue;
+                                }
                                 let index = this
                                     .update(cx, |this, cx| this.rebuild_extension_index(cx))?
                                     .await;
@@ -776,35 +1383,458 @@ impl ExtensionStore {
 
         let extension_settings = ExtensionSettings::get_global(cx);
 
-        let extensions_to_install = extension_settings
-            .auto_install_extensions
-            .keys()
+        let git_extensions_to_install = self.git_extensions_to_install(extension_settings);
+        let extensions_to_install = self.marketplace_extensions_to_install(extension_settings);
+
+        self.install_marketplace_extensions(extensions_to_install, cx)
+            .detach();
+        self.install_git_extensions(git_extensions_to_install, cx)
+            .detach();
+    }
+
+    pub fn marketplace_extensions_to_install(
+        &self,
+        extension_settings: &ExtensionSettings,
+    ) -> Vec<Arc<str>> {
+        extension_settings
+            .marketplace_extensions()
             .filter(|extension_id| extension_settings.should_auto_install(extension_id))
             .filter(|extension_id| {
-                let is_already_installed = self
+                let installed_from_marketplace = self
                     .extension_index
                     .extensions
-                    .contains_key(extension_id.as_ref());
-                !is_already_installed && !SUPPRESSED_EXTENSIONS.contains(extension_id.as_ref())
+                    .get(extension_id.as_ref())
+                    .is_some_and(|entry| entry.source.is_none());
+                !installed_from_marketplace
+                    && !SUPPRESSED_EXTENSIONS.contains(extension_id.as_ref())
             })
             .cloned()
+            .collect()
+    }
+
+    pub fn install_marketplace_extensions(
+        &mut self,
+        extension_ids: Vec<Arc<str>>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let mut downloads = Vec::new();
+            for extension_id in extension_ids {
+                let operation = match Self::begin_operation(
+                    &this, &extension_id, ExtensionOperation::Install, cx,
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        log::error!("failed to install extension {extension_id}: {error:#}");
+                        continue;
+                    }
+                };
+                let download = this.update(cx, |this, cx| {
+                    let url = this.latest_extension_url(&extension_id, cx)?;
+                    anyhow::Ok(this.prepare_marketplace_extension(extension_id.clone(), url, cx))
+                });
+                match download {
+                    Ok(Ok(download)) => downloads.push((extension_id, operation, download)),
+                    Ok(Err(error)) | Err(error) => {
+                        log::error!("failed to install extension {extension_id}: {error:#}");
+                    }
+                }
+            }
+            let mut pending = join_all(downloads.into_iter().map(
+                |(extension_id, operation, download)| async move {
+                    match download.await {
+                        Ok(prepared) => Some((extension_id, operation, prepared)),
+                        Err(error) => {
+                            log::error!("failed to prepare extension {extension_id}: {error:#}");
+                            None
+                        }
+                    }
+                },
+            ))
+            .await
+            .into_iter()
+            .flatten()
             .collect::<Vec<_>>();
 
-        cx.spawn(async move |this, cx| {
-            for extension_id in extensions_to_install {
-                this.update(cx, |this, cx| {
-                    this.install_latest_extension(extension_id.clone(), cx);
-                })
-                .ok();
+            // Resolve against the whole batch before publication: a consumer must not
+            // validate against an old provider or whichever concurrent provider finishes first.
+            while !pending.is_empty() {
+                let ready = pending.iter().position(|(extension_id, _, prepared)| {
+                    !pending.iter().any(|(other_id, _, provider)| {
+                        other_id != extension_id
+                            && prepared.external_grammars.iter().any(|name| {
+                                provider.affected_grammars.contains(name)
+                            })
+                    })
+                });
+                let Some(ready) = ready else {
+                    for (extension_id, _, prepared) in &pending {
+                        log::error!(
+                            "cannot install extension {extension_id}: cyclic grammar dependencies {:?}",
+                            prepared.external_grammars
+                        );
+                    }
+                    break;
+                };
+                let (extension_id, _operation, prepared) = pending.remove(ready);
+                if let Err(error) = Self::install_prepared_marketplace_extension(
+                    &this, &extension_id, prepared, ExtensionOperation::Install, cx,
+                ).await {
+                    log::error!("failed to install extension {extension_id}: {error:#}");
+                }
             }
         })
-        .detach();
+    }
+
+    pub fn install_git_extensions(
+        &mut self,
+        extensions: Vec<(Arc<str>, GitExtensionSource)>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            for (extension_id, source) in extensions {
+                let url = source.url.clone();
+                let Ok(install) = this.update(cx, |this, cx| {
+                    this.install_git_extension(extension_id.clone(), source, cx)
+                }) else {
+                    break;
+                };
+                let result = install.await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.record_git_extension_result(&extension_id, &url, &result, cx)
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+    }
+
+    pub fn git_extensions_to_install(
+        &self,
+        extension_settings: &ExtensionSettings,
+    ) -> Vec<(Arc<str>, GitExtensionSource)> {
+        extension_settings
+            .git_sources()
+            .filter(|(extension_id, source)| {
+                self.extension_index
+                    .extensions
+                    .get(extension_id.as_ref())
+                    .and_then(|entry| entry.source.as_ref())
+                    .is_none_or(|installed| !installed.matches(source))
+            })
+            .map(|(extension_id, source)| (extension_id.clone(), source))
+            .collect()
     }
 
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         let task = self.fetch_extensions_with_update_available(cx);
         cx.spawn(async move |this, cx| Self::upgrade_extensions(this, task.await?, cx).await)
             .detach();
+        self.check_for_git_updates(cx).detach_and_log_err(cx);
+    }
+
+    pub fn check_for_git_updates(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let extensions = self
+            .extension_index
+            .extensions
+            .iter()
+            .filter_map(|(extension_id, entry)| entry.source.as_ref().map(|_| extension_id.clone()))
+            .collect::<Vec<_>>();
+        let fs = self.fs.clone();
+        let builder = self.builder.clone();
+        let staging_dir = self.staging_dir.clone();
+        let sources_dir = self.sources_dir.clone();
+        let publisher = self.publisher.clone();
+        let proxy = self.proxy.clone();
+        let wasm_host = self.wasm_host.clone();
+        let git_source_lock = self.git_source_lock.clone();
+
+        cx.spawn(async move |this, cx| {
+            for extension_id in extensions {
+                let _source_guard = git_source_lock.lock().await;
+                publisher.recover().await?;
+                let Some((indexed_source, auto_update)) = this.read_with(cx, |this, cx| {
+                    let extension_settings = ExtensionSettings::get_global(cx);
+                    let configured_source = extension_settings
+                        .git_sources()
+                        .find(|(id, _)| *id == &extension_id)
+                        .map(|(_, source)| source);
+                    this.extension_index
+                        .extensions
+                        .get(&extension_id)
+                        .and_then(|entry| entry.source.as_ref())
+                        .filter(|installed| {
+                            configured_source
+                                .as_ref()
+                                .is_none_or(|source| installed.matches(source))
+                        })
+                        .map(|source| {
+                            (
+                                source.clone(),
+                                extension_settings.should_auto_update(&extension_id),
+                            )
+                        })
+                })?
+                else {
+                    continue;
+                };
+                let indexed_url = indexed_source.url.clone();
+                let _operation = match Self::begin_operation(
+                    &this,
+                    &extension_id,
+                    ExtensionOperation::Upgrade,
+                    cx,
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        log::error!("skipping git update of extension {extension_id}: {error:#}");
+                        continue;
+                    }
+                };
+                let update = cx
+                    .background_spawn({
+                        let fs = fs.clone();
+                        let builder = builder.clone();
+                        let staging_dir = staging_dir.clone();
+                        let sources_dir = sources_dir.clone();
+                        let publisher = publisher.clone();
+                        let proxy = proxy.clone();
+                        let wasm_host = wasm_host.clone();
+                        let extension_id = extension_id.clone();
+                        async move {
+                            let installed =
+                                load_git_source_record(&fs, &sources_dir, &extension_id).await;
+                            let record_missing = installed.is_none();
+                            let installed = match installed {
+                                Some(installed) => installed,
+                                None if !auto_update => indexed_source,
+                                None => return GitUpdate::RecordMissing,
+                            };
+                            let source = installed.source();
+                            let result = async {
+                                let checkout_intact = async {
+                                    anyhow::ensure!(
+                                        !record_missing,
+                                        "the installed source record is missing or unreadable"
+                                    );
+                                    let extension_path = git_source_extension_path(
+                                        &sources_dir,
+                                        &extension_id,
+                                        source.path.as_deref(),
+                                    );
+                                    let mut index = ExtensionIndex::default();
+                                    ExtensionStore::add_extension_to_index(
+                                        fs.clone(),
+                                        extension_path.clone(),
+                                        &sources_dir,
+                                        &mut index,
+                                        proxy.clone(),
+                                    )
+                                    .await?;
+                                    let entry = index.extensions.get(&extension_id).context(
+                                        "the checkout no longer declares the installed extension",
+                                    )?;
+                                    let mut manifest = (*entry.manifest).clone();
+                                    extension::extension_builder::populate_defaults(
+                                        &mut manifest,
+                                        &extension_path,
+                                        fs.clone(),
+                                    )
+                                    .await?;
+                                    validate_git_theme_resources(&fs, &extension_path, &manifest)
+                                        .await?;
+                                    validate_git_snippet_resources(&fs, &extension_path, &manifest)
+                                        .await?;
+                                    validate_git_language_resources(
+                                        &fs,
+                                        &extension_path,
+                                        &manifest,
+                                        &proxy,
+                                    )
+                                    .await?;
+                                    validate_git_compiled_artifacts(
+                                        &fs,
+                                        &extension_path,
+                                        &manifest,
+                                        &wasm_host,
+                                    )
+                                    .await?;
+                                    // Reindexing cannot rediscover deleted implicit resources.
+                                    let deleted = run_git(
+                                        &extension_path,
+                                        &["ls-files", "--deleted", "--", "."],
+                                    )
+                                    .await?;
+                                    anyhow::ensure!(
+                                        deleted.is_empty(),
+                                        "missing tracked resources: {deleted}"
+                                    );
+                                    Ok(())
+                                }
+                                .await;
+                                if checkout_intact.is_ok() {
+                                    if !auto_update {
+                                        return anyhow::Ok(false);
+                                    }
+                                    match remote_commit(&sources_dir, &source).await? {
+                                        Some(remote_commit)
+                                            if remote_commit == installed.commit =>
+                                        {
+                                            return anyhow::Ok(false);
+                                        }
+                                        Some(_) => {}
+                                        None => {
+                                            let reference =
+                                                source.reference.as_deref().unwrap_or("HEAD");
+                                            anyhow::ensure!(
+                                                is_commit_sha(reference),
+                                                "the repository no longer advertises {reference}"
+                                            );
+                                            return Ok(false);
+                                        }
+                                    }
+                                }
+                                build_git_source(
+                                    fs,
+                                    &builder,
+                                    &staging_dir,
+                                    &sources_dir,
+                                    &publisher,
+                                    wasm_host,
+                                    &extension_id,
+                                    &source,
+                                    (!auto_update).then_some(installed.commit.as_str()),
+                                )
+                                .await
+                                .with_context(|| {
+                                    match checkout_intact {
+                                        Ok(()) => "updating git extension".to_string(),
+                                        Err(error) => format!(
+                                            "repairing invalid git extension artifacts: {error:#}"
+                                        ),
+                                    }
+                                })?;
+                                Ok(true)
+                            }
+                            .await;
+                            GitUpdate::Checked {
+                                url: source.url,
+                                result,
+                            }
+                        }
+                    })
+                    .await;
+                let (url, result) = match update {
+                    GitUpdate::Checked { url, result } => (url, result),
+                    GitUpdate::RecordMissing => {
+                        let error = anyhow!(
+                            "the source record of extension {extension_id} is missing or unreadable"
+                        );
+                        this.update(cx, |this, cx| {
+                            this.record_git_extension_result(
+                                &extension_id,
+                                &indexed_url,
+                                &Err(error),
+                                cx,
+                            )
+                        })?;
+                        this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
+                            .await;
+                        this.update(cx, |this, cx| this.auto_install_extensions(cx))?;
+                        continue;
+                    }
+                };
+                let updated = matches!(result, Ok(true));
+                this.update(cx, |this, cx| {
+                    this.record_git_extension_result(&extension_id, &url, &result.map(|_| ()), cx)
+                })?;
+                if updated {
+                    this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
+                        .await;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    pub fn install_git_extension(
+        &mut self,
+        extension_id: Arc<str>,
+        source: GitExtensionSource,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        if let Err(error) = validate_git_install(&extension_id, &source) {
+            return Task::ready(Err(error));
+        }
+        let fs = self.fs.clone();
+        let builder = self.builder.clone();
+        let staging_dir = self.staging_dir.clone();
+        let sources_dir = self.sources_dir.clone();
+        let publisher = self.publisher.clone();
+        let wasm_host = self.wasm_host.clone();
+        let git_source_lock = self.git_source_lock.clone();
+
+        cx.spawn(async move |this, cx| {
+            let _source_guard = git_source_lock.lock().await;
+            let _operation =
+                Self::begin_operation(&this, &extension_id, ExtensionOperation::Install, cx)?;
+            let result = cx
+                .background_spawn({
+                    let fs = fs.clone();
+                    let extension_id = extension_id.clone();
+                    async move {
+                        build_git_source(
+                            fs,
+                            &builder,
+                            &staging_dir,
+                            &sources_dir,
+                            &publisher,
+                            wasm_host,
+                            &extension_id,
+                            &source,
+                            None,
+                        )
+                        .await
+                    }
+                })
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |this, cx| this.reload(None, cx))?.await;
+                return Err(error);
+            }
+            Self::finish_extension_install(&this, &extension_id, ExtensionOperation::Install, cx)
+                .await
+        })
+    }
+
+    fn begin_operation(
+        this: &WeakEntity<Self>,
+        extension_id: &Arc<str>,
+        operation: ExtensionOperation,
+        cx: &mut AsyncApp,
+    ) -> Result<util::Deferred<impl FnOnce() + use<>>> {
+        let claimed = this.update(cx, |this, cx| {
+            match this.outstanding_operations.entry(extension_id.clone()) {
+                btree_map::Entry::Occupied(_) => return false,
+                btree_map::Entry::Vacant(entry) => entry.insert(operation),
+            };
+            cx.notify();
+            true
+        })?;
+        anyhow::ensure!(
+            claimed,
+            "extension {extension_id} has another operation in progress"
+        );
+        Ok(cx.on_drop(this, {
+            let extension_id = extension_id.clone();
+            move |this, cx| {
+                this.outstanding_operations.remove(extension_id.as_ref());
+                cx.notify();
+            }
+        }))
     }
 
     async fn upgrade_extensions(
@@ -891,145 +1921,213 @@ impl ExtensionStore {
         operation: ExtensionOperation,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let extension_dir = self.installed_dir.join(extension_id.as_ref());
-        let staging_dir = self.staging_dir.clone();
-        let http_client = self.http_client.clone();
-        let fs = self.fs.clone();
-
-        match self.outstanding_operations.entry(extension_id.clone()) {
-            btree_map::Entry::Occupied(_) => return Task::ready(Ok(())),
-            btree_map::Entry::Vacant(e) => e.insert(operation),
-        };
-        cx.notify();
-
         cx.spawn(async move |this, cx| {
-            let _finish = cx.on_drop(&this, {
-                let extension_id = extension_id.clone();
-                move |this, cx| {
-                    this.outstanding_operations.remove(extension_id.as_ref());
-                    cx.notify();
-                }
-            });
-
-            cx.background_spawn(async move {
-                let mut response = http_client
-                    .get(url.as_ref(), Default::default(), true)
-                    .await
-                    .context("downloading extension")?;
-
-                let content_length = response
-                    .headers()
-                    .get(http_client::http::header::CONTENT_LENGTH)
-                    .and_then(|value| value.to_str().ok()?.parse::<usize>().ok());
-
-                let mut body = BufReader::new(response.body_mut());
-                let mut tar_gz_bytes = Vec::new();
-                body.read_to_end(&mut tar_gz_bytes).await?;
-
-                if let Some(content_length) = content_length {
-                    let actual_len = tar_gz_bytes.len();
-                    if content_length != actual_len {
-                        bail!(
-                            "downloaded extension size {actual_len} \
-                        does not match content length {content_length}"
-                        );
-                    }
-                }
-
-                let decompressed_bytes = GzipDecoder::new(BufReader::new(tar_gz_bytes.as_slice()));
-                let archive = Archive::new(decompressed_bytes);
-
-                let remove_dir = || {
-                    fs.remove_dir(
-                        &extension_dir,
-                        RemoveOptions {
-                            recursive: true,
-                            ignore_if_not_exists: true,
-                        },
-                    )
-                };
-
-                let temp_dir = fs
-                    .create_dir(&staging_dir)
-                    .await
-                    .and_then(|()| tempfile::tempdir_in(&staging_dir).map_err(Into::into));
-
-                match temp_dir {
-                    Ok(temp_dir) => {
-                        archive.unpack(temp_dir.path()).await?;
-                        remove_dir().await?;
-                        fs.rename(
-                            temp_dir.path(),
-                            &extension_dir,
-                            RenameOptions {
-                                overwrite: true,
-                                ignore_if_exists: true,
-                                create_parents: true,
-                            },
-                        )
-                        .await
-                    }
-                    Err(_) => {
-                        remove_dir().await?;
-                        archive.unpack(extension_dir).await.map_err(Into::into)
-                    }
-                }
-            })
-            .await?;
-
-            this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
-                .await;
-
-            if let ExtensionOperation::Install = operation {
-                this.update(cx, |this, cx| {
-                    cx.emit(Event::ExtensionInstalled(extension_id.clone()));
-                    if let Some(events) = ExtensionEvents::try_global(cx)
-                        && let Some(manifest) = this.extension_manifest_for_id(&extension_id)
-                    {
-                        events.update(cx, |this, cx| {
-                            this.emit(extension::Event::ExtensionInstalled(manifest.clone()), cx)
-                        });
-                    }
-                })
-                .ok();
-            }
-
-            anyhow::Ok(())
+            let _operation = Self::begin_operation(&this, &extension_id, operation, cx)?;
+            let prepared = this
+                .update(cx, |this, cx| {
+                    this.prepare_marketplace_extension(extension_id.clone(), url, cx)
+                })?
+                .await?;
+            Self::install_prepared_marketplace_extension(
+                &this,
+                &extension_id,
+                prepared,
+                operation,
+                cx,
+            )
+            .await
         })
     }
 
+    fn prepare_marketplace_extension(
+        &self,
+        extension_id: Arc<str>,
+        url: Url,
+        cx: &Context<Self>,
+    ) -> Task<Result<PreparedMarketplaceExtension>> {
+        if !is_single_path_component(&extension_id) {
+            return Task::ready(Err(anyhow!("extension id must be a single path component")));
+        }
+        let staging_dir = self.staging_dir.clone();
+        let http_client = self.http_client.clone();
+        let fs = self.fs.clone();
+        let executor = cx.background_executor().clone();
+        let proxy = self.proxy.clone();
+        let mut affected_grammars = self
+            .extension_index
+            .extensions
+            .get(&extension_id)
+            .map(|entry| {
+                entry
+                    .manifest
+                    .grammars
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        cx.background_spawn(async move {
+            let mut response = http_client
+                .get(url.as_ref(), Default::default(), true)
+                .await
+                .context("downloading extension")?;
+
+            let content_length = response
+                .headers()
+                .get(http_client::http::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok()?.parse::<usize>().ok());
+
+            let mut body = BufReader::new(response.body_mut());
+            let mut tar_gz_bytes = Vec::new();
+            body.read_to_end(&mut tar_gz_bytes).await?;
+
+            if let Some(content_length) = content_length {
+                let actual_len = tar_gz_bytes.len();
+                if content_length != actual_len {
+                    bail!(
+                        "downloaded extension size {actual_len} \
+                does not match content length {content_length}"
+                    );
+                }
+            }
+
+            let staged = StagedDirectory::new(fs.clone(), &staging_dir, executor)
+                .await
+                .context("staging the downloaded extension")?;
+            let directory = staged.path().join(extension_id.as_ref());
+            fs.create_dir(&directory).await?;
+            let decompressed =
+                std::pin::pin!(GzipDecoder::new(BufReader::new(tar_gz_bytes.as_slice())));
+            let reader: std::pin::Pin<&mut (dyn futures::AsyncRead + Send)> = decompressed;
+            fs.extract_tar_file(&directory, Archive::new(reader))
+                .await
+                .context("unpacking the downloaded extension")?;
+            let manifest = ExtensionManifest::load(fs.clone(), &directory).await?;
+            anyhow::ensure!(
+                manifest.id == extension_id,
+                "downloaded extension declares id {}, expected {extension_id}",
+                manifest.id
+            );
+            let manifest = manifest_with_defaults(&fs, &directory, manifest).await?;
+            // Consumers also wait for replacements which remove an installed grammar.
+            affected_grammars.extend(manifest.grammars.keys().cloned());
+            let mut external_grammars = BTreeSet::new();
+            for language_path in &manifest.languages {
+                let config = fs
+                    .load(
+                        &directory
+                            .join(language_path)
+                            .join(LanguageConfig::FILE_NAME),
+                    )
+                    .await
+                    .and_then(|contents| LanguageConfig::from_toml(&contents).map_err(Into::into))
+                    .with_context(|| format!("validating language resources in {language_path}"))?;
+                if let Some(grammar) = config.grammar
+                    && !manifest.grammars.contains_key(&grammar)
+                    && !proxy.is_native_grammar(&grammar)
+                {
+                    external_grammars.insert(grammar);
+                }
+            }
+            Ok(PreparedMarketplaceExtension {
+                staged,
+                manifest,
+                external_grammars,
+                affected_grammars,
+            })
+        })
+    }
+
+    async fn install_prepared_marketplace_extension(
+        this: &WeakEntity<Self>,
+        extension_id: &Arc<str>,
+        prepared: PreparedMarketplaceExtension,
+        operation: ExtensionOperation,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        let (fs, sources_dir, wasm_host, publisher, source_lock) =
+            this.read_with(cx, |this, _| {
+                (
+                    this.fs.clone(),
+                    this.sources_dir.clone(),
+                    this.wasm_host.clone(),
+                    this.publisher.clone(),
+                    this.git_source_lock.clone(),
+                )
+            })?;
+        let _source_guard = source_lock.lock().await;
+        let directory = prepared.staged.path().join(extension_id.as_ref());
+        cx.background_spawn({
+            let directory = directory.clone();
+            let publisher = publisher.clone();
+            async move {
+                let _filesystem_guard = publisher.lock().await;
+                publisher.recover_for_read_locked().await?;
+                validate_prepared_extension(
+                    &fs,
+                    &directory,
+                    &sources_dir,
+                    prepared.manifest,
+                    &wasm_host,
+                )
+                .await
+            }
+        })
+        .await?;
+        let result = publisher
+            .publish(extension_id, PreparedExtension::Marketplace { directory })
+            .await;
+        prepared.staged.cleanup().await.log_err();
+        if let Err(error) = result {
+            this.update(cx, |this, cx| this.reload(None, cx))?.await;
+            return Err(error);
+        }
+        this.update(cx, |this, cx| {
+            this.clear_git_extension_failure(extension_id, cx)
+        })?;
+        Self::finish_extension_install(this, extension_id, operation, cx).await
+    }
+
     pub fn install_latest_extension(&mut self, extension_id: Arc<str>, cx: &mut Context<Self>) {
+        self.install_latest_extension_task(extension_id, cx)
+            .detach_and_log_err(cx);
+    }
+
+    fn install_latest_extension_task(
+        &mut self,
+        extension_id: Arc<str>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("installing extension {extension_id} latest version");
 
-        let schema_versions = schema_version_range();
-        let wasm_api_versions = wasm_api_version_range(ReleaseChannel::global(cx));
-
-        let Some(url) = self
-            .http_client
-            .build_zed_api_url(
-                &format!("/extensions/{extension_id}/download"),
-                &[
-                    ("min_schema_version", &schema_versions.start().to_string()),
-                    ("max_schema_version", &schema_versions.end().to_string()),
-                    (
-                        "min_wasm_api_version",
-                        &wasm_api_versions.start().to_string(),
-                    ),
-                    ("max_wasm_api_version", &wasm_api_versions.end().to_string()),
-                ],
-            )
-            .log_err()
-        else {
-            return;
+        let url = match self.latest_extension_url(&extension_id, cx) {
+            Ok(url) => url,
+            Err(error) => return Task::ready(Err(error)),
         };
-
         self.install_or_upgrade_extension_at_endpoint(
             extension_id,
             url,
             ExtensionOperation::Install,
             cx,
         )
-        .detach_and_log_err(cx);
+    }
+
+    fn latest_extension_url(&self, extension_id: &str, cx: &App) -> Result<Url> {
+        let schema_versions = schema_version_range();
+        let wasm_api_versions = wasm_api_version_range(ReleaseChannel::global(cx));
+
+        self.http_client.build_zed_api_url(
+            &format!("/extensions/{extension_id}/download"),
+            &[
+                ("min_schema_version", &schema_versions.start().to_string()),
+                ("max_schema_version", &schema_versions.end().to_string()),
+                (
+                    "min_wasm_api_version",
+                    &wasm_api_versions.start().to_string(),
+                ),
+                ("max_wasm_api_version", &wasm_api_versions.end().to_string()),
+            ],
+        )
     }
 
     pub fn upgrade_extension(
@@ -1068,14 +2166,18 @@ impl ExtensionStore {
         extension_id: Arc<str>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let extension_dir = self.installed_dir.join(extension_id.as_ref());
         let work_dir = self.wasm_host.work_dir.join(extension_id.as_ref());
+        let publisher = self.publisher.clone();
+        let git_source_lock = self.git_source_lock.clone();
         let fs = self.fs.clone();
 
         let extension_manifest = self.extension_manifest_for_id(&extension_id).cloned();
-
         match self.outstanding_operations.entry(extension_id.clone()) {
-            btree_map::Entry::Occupied(_) => return Task::ready(Ok(())),
+            btree_map::Entry::Occupied(_) => {
+                return Task::ready(Err(anyhow!(
+                    "extension {extension_id} already has an operation in progress"
+                )));
+            }
             btree_map::Entry::Vacant(e) => e.insert(ExtensionOperation::Remove),
         };
 
@@ -1088,15 +2190,20 @@ impl ExtensionStore {
                 }
             });
 
-            fs.remove_dir(
-                &extension_dir,
-                RemoveOptions {
-                    recursive: true,
-                    ignore_if_not_exists: true,
-                },
-            )
-            .await
-            .with_context(|| format!("Removing extension dir {extension_dir:?}"))?;
+            let _source_guard = git_source_lock.lock().await;
+            let result = publisher
+                .publish(&extension_id, PreparedExtension::Remove)
+                .await;
+            if let Err(error) = result {
+                extension_store
+                    .update(cx, |store, cx| store.reload(None, cx))?
+                    .await;
+                return Err(error);
+            }
+
+            extension_store.update(cx, |extension_store, cx| {
+                extension_store.clear_git_extension_failure(&extension_id, cx);
+            })?;
 
             extension_store
                 .update(cx, |extension_store, cx| extension_store.reload(None, cx))?
@@ -1147,60 +2254,128 @@ impl ExtensionStore {
         extension_source_path: PathBuf,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.install_dev_extension_with_operation(
+            extension_source_path,
+            ExtensionOperation::Install,
+            cx,
+        )
+    }
+
+    fn install_dev_extension_with_operation(
+        &mut self,
+        extension_source_path: PathBuf,
+        operation: ExtensionOperation,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let extensions_dir = self.extensions_dir();
+        let sources_dir = self.sources_dir.clone();
+        let staging_dir = self.staging_dir.clone();
+        let publisher = self.publisher.clone();
+        let wasm_host = self.wasm_host.clone();
+        let git_source_lock = self.git_source_lock.clone();
         let fs = self.fs.clone();
         let builder = self.builder.clone();
 
         cx.spawn(async move |this, cx| {
+            let _source_guard = git_source_lock.lock().await;
+            fs.create_dir(&staging_dir).await?;
+            publisher.recover().await?;
             let mut extension_manifest =
                 ExtensionManifest::load(fs.clone(), &extension_source_path).await?;
             let extension_id = extension_manifest.id.clone();
-
-            if let Some(uninstall_task) = this
-                .update(cx, |this, cx| {
-                    this.extension_index
-                        .extensions
-                        .get(extension_id.as_ref())
-                        .is_some_and(|index_entry| !index_entry.dev)
-                        .then(|| this.uninstall_extension(extension_id.clone(), cx))
-                })
-                .ok()
-                .flatten()
+            anyhow::ensure!(
+                is_single_path_component(&extension_id),
+                "extension id must be a single path component"
+            );
+            let resolved_source = fs.canonicalize(&extension_source_path).await?;
+            let output_path = extensions_dir.join(extension_id.as_ref());
+            if let Some(metadata) = fs.metadata(&output_path).await?
+                && !metadata.is_symlink
             {
-                uninstall_task.await.log_err();
+                anyhow::ensure!(
+                    !resolved_source.starts_with(fs.canonicalize(&output_path).await?),
+                    "cannot replace an installed directory with a link into itself"
+                );
             }
+            let checkout = git_source_dir(&sources_dir, &extension_id);
+            let replacement = if fs.metadata(&checkout).await?.is_some()
+                && resolved_source.starts_with(fs.canonicalize(&checkout).await?)
+            {
+                GitSourceDisposition::Retain
+            } else {
+                GitSourceDisposition::Retire
+            };
 
-            if !this.update(cx, |this, cx| {
-                match this.outstanding_operations.entry(extension_id.clone()) {
-                    btree_map::Entry::Occupied(_) => return false,
-                    btree_map::Entry::Vacant(e) => e.insert(ExtensionOperation::Install),
-                };
-                cx.notify();
-                true
-            })? {
+            let _operation = Self::begin_operation(&this, &extension_id, operation, cx)?;
+
+            if matches!(replacement, GitSourceDisposition::Retain) {
+                let installed = load_git_source_record(&fs, &sources_dir, &extension_id)
+                    .await
+                    .context("managed Git source record is missing or unreadable")?;
+                let recorded_path = git_source_extension_path(
+                    &sources_dir,
+                    &extension_id,
+                    installed.path.as_deref(),
+                );
+                anyhow::ensure!(
+                    resolved_source == fs.canonicalize(&recorded_path).await?,
+                    "local target differs from the managed Git extension directory"
+                );
+                let result = cx
+                    .background_spawn({
+                        let fs = fs.clone();
+                        let extension_id = extension_id.clone();
+                        async move {
+                            build_git_source(
+                                fs,
+                                &builder,
+                                &staging_dir,
+                                &sources_dir,
+                                &publisher,
+                                wasm_host,
+                                &extension_id,
+                                &installed.source(),
+                                Some(&installed.commit),
+                            )
+                            .await
+                        }
+                    })
+                    .await;
+                if let Err(error) = result {
+                    this.update(cx, |this, cx| this.reload(None, cx))?.await;
+                    return Err(error);
+                }
+                Self::finish_extension_install(&this, &extension_id, operation, cx).await?;
+                this.update(cx, |this, cx| {
+                    this.clear_git_extension_failure(&extension_id, cx)
+                })?;
                 return Ok(());
             }
-
-            let _finish = cx.on_drop(&this, {
-                let extension_id = extension_id.clone();
-                move |this, cx| {
-                    this.outstanding_operations.remove(extension_id.as_ref());
-                    cx.notify();
-                }
-            });
 
             cx.background_spawn({
                 let extension_source_path = extension_source_path.clone();
                 let fs = fs.clone();
+                let publisher = publisher.clone();
+                let sources_dir = sources_dir.clone();
                 async move {
+                    let _filesystem_guard = publisher.lock().await;
+                    publisher.recover_for_read_locked().await?;
                     builder
                         .compile_extension(
                             &extension_source_path,
                             &mut extension_manifest,
                             CompileExtensionOptions::dev(),
-                            fs,
+                            fs.clone(),
                         )
-                        .await
+                        .await?;
+                    validate_prepared_extension(
+                        &fs,
+                        &extension_source_path,
+                        &sources_dir,
+                        extension_manifest,
+                        &wasm_host,
+                    )
+                    .await
                 }
             })
             .await
@@ -1208,75 +2383,58 @@ impl ExtensionStore {
                 util::log_err(error);
             })?;
 
-            let output_path = &extensions_dir.join(extension_id.as_ref());
-            if let Some(metadata) = fs.metadata(output_path).await? {
-                if metadata.is_symlink {
-                    fs.remove_file(
-                        output_path,
-                        RemoveOptions {
-                            recursive: false,
-                            ignore_if_not_exists: true,
-                        },
-                    )
-                    .await?;
-                } else {
-                    bail!("extension {extension_id} is still installed");
-                }
+            let staged = tempfile::tempdir_in(&staging_dir)?;
+            let staged_link = staged.path().join(extension_id.as_ref());
+            fs.create_symlink(&staged_link, resolved_source).await?;
+            let result = publisher
+                .publish(
+                    &extension_id,
+                    PreparedExtension::Local {
+                        staged_link,
+                        git_source: replacement,
+                    },
+                )
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |this, cx| this.reload(None, cx))?.await;
+                return Err(error);
             }
+            Self::finish_extension_install(&this, &extension_id, operation, cx).await?;
+            this.update(cx, |this, cx| {
+                this.clear_git_extension_failure(&extension_id, cx);
+            })?;
+            Ok(())
+        })
+    }
 
-            fs.create_symlink(output_path, extension_source_path)
-                .await?;
-
-            this.update(cx, |this, cx| this.reload(None, cx))?.await;
+    async fn finish_extension_install(
+        this: &WeakEntity<Self>,
+        extension_id: &Arc<str>,
+        operation: ExtensionOperation,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
+            .await;
+        if let ExtensionOperation::Install = operation {
             this.update(cx, |this, cx| {
                 cx.emit(Event::ExtensionInstalled(extension_id.clone()));
                 if let Some(events) = ExtensionEvents::try_global(cx)
-                    && let Some(manifest) = this.extension_manifest_for_id(&extension_id)
+                    && let Some(manifest) = this.extension_manifest_for_id(extension_id)
                 {
                     events.update(cx, |this, cx| {
                         this.emit(extension::Event::ExtensionInstalled(manifest.clone()), cx)
                     });
                 }
             })?;
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
     pub fn rebuild_dev_extension(&mut self, extension_id: Arc<str>, cx: &mut Context<Self>) {
         let path = self.installed_dir.join(extension_id.as_ref());
-        let builder = self.builder.clone();
-        let fs = self.fs.clone();
-
-        match self.outstanding_operations.entry(extension_id.clone()) {
-            btree_map::Entry::Occupied(_) => return,
-            btree_map::Entry::Vacant(e) => e.insert(ExtensionOperation::Upgrade),
-        };
-
-        cx.notify();
-        let compile = cx.background_spawn(async move {
-            let mut manifest = ExtensionManifest::load(fs.clone(), &path).await?;
-            builder
-                .compile_extension(&path, &mut manifest, CompileExtensionOptions::dev(), fs)
-                .await
-        });
-
-        cx.spawn(async move |this, cx| {
-            let result = compile.await;
-
-            this.update(cx, |this, cx| {
-                this.outstanding_operations.remove(&extension_id);
-                cx.notify();
-            })?;
-
-            if result.is_ok() {
-                this.update(cx, |this, cx| this.reload(Some(extension_id), cx))?
-                    .await;
-            }
-
-            result
-        })
-        .detach_and_log_err(cx)
+        self.install_dev_extension_with_operation(path, ExtensionOperation::Upgrade, cx)
+            .detach_and_log_err(cx);
     }
 
     /// Updates the set of installed extensions.
@@ -1754,6 +2912,7 @@ impl ExtensionStore {
         let fs = self.fs.clone();
         let work_dir = self.wasm_host.work_dir.clone();
         let extensions_dir = self.installed_dir.clone();
+        let sources_dir = self.sources_dir.clone();
         let index_path = self.index_path.clone();
         let proxy = self.proxy.clone();
         cx.background_spawn(async move {
@@ -1780,6 +2939,7 @@ impl ExtensionStore {
                     Self::add_extension_to_index(
                         fs.clone(),
                         extension_dir,
+                        &sources_dir,
                         &mut index,
                         proxy.clone(),
                     )
@@ -1803,6 +2963,7 @@ impl ExtensionStore {
     async fn add_extension_to_index(
         fs: Arc<dyn Fs>,
         extension_dir: PathBuf,
+        sources_dir: &Path,
         index: &mut ExtensionIndex,
         proxy: Arc<ExtensionHostProxy>,
     ) -> Result<()> {
@@ -1944,11 +3105,17 @@ impl ExtensionStore {
                 .get_or_insert(ExtensionLibraryKind::Rust);
         }
 
+        let source = if is_dev {
+            git_source_for_dev_extension(&fs, &extension_dir, sources_dir, &extension_id).await
+        } else {
+            None
+        };
         index.extensions.insert(
             extension_id.clone(),
             ExtensionIndexEntry {
                 dev: is_dev,
                 manifest: Arc::new(extension_manifest),
+                source,
             },
         );
 
