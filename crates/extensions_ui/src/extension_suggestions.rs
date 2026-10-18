@@ -8,7 +8,7 @@ use gpui::{App, AppContext as _, Context, Entity, SharedString};
 use language::{Buffer, PLAIN_TEXT};
 use markdown::{Markdown, MarkdownElement};
 use project::lsp_store::LspStoreEvent;
-use settings::Settings as _;
+use settings::{AutoInstallExtensionContent, Settings as _};
 use ui::prelude::*;
 use util::ResultExt;
 use workspace::notifications::{
@@ -208,10 +208,15 @@ fn show_suggestion(
         || extension_store
             .outstanding_operations()
             .contains_key(extension_id)
-        || ExtensionSettings::get_global(cx)
-            .auto_install_extensions
-            .get(extension_id)
-            == Some(&true)
+        || matches!(
+            ExtensionSettings::get_global(cx)
+                .auto_install_extensions
+                .get(extension_id),
+            Some(
+                AutoInstallExtensionContent::Marketplace(true)
+                    | AutoInstallExtensionContent::Git { .. }
+            )
+        )
         || suggestion_dismissed(extension_id, cx)
     {
         return;
@@ -859,10 +864,10 @@ mod tests {
             AppState::set_global(app_state.clone(), cx);
             cx.update_global::<SettingsStore, _>(|store, cx| {
                 store.update_user_settings(cx, |content| {
-                    content
-                        .extension
-                        .auto_install_extensions
-                        .insert(Arc::from("html"), false);
+                    content.extension.auto_install_extensions.insert(
+                        Arc::from("html"),
+                        AutoInstallExtensionContent::Marketplace(false),
+                    );
                 });
             });
             cx.set_global(db::AppDatabase::test_new());
@@ -975,10 +980,10 @@ mod tests {
         cx.update(|cx| {
             cx.update_global::<SettingsStore, _>(|store, cx| {
                 store.update_user_settings(cx, |content| {
-                    content
-                        .extension
-                        .auto_install_extensions
-                        .insert(Arc::from(EMMET_EXTENSION_ID), auto_install);
+                    content.extension.auto_install_extensions.insert(
+                        Arc::from(EMMET_EXTENSION_ID),
+                        AutoInstallExtensionContent::Marketplace(auto_install),
+                    );
                 });
             });
         });

@@ -46,6 +46,7 @@ async_zip.workspace    = true
 dirs.workspace         = true
 futures.workspace      = true
 futures-lite.workspace = true
+scheduler.workspace    = true
 shlex.workspace        = true
 smol.workspace         = true
 walkdir.workspace      = true
@@ -64,7 +65,7 @@ tempfile.workspace = true
 which.workspace = true
 
 [target."cfg(windows)".dependencies]
-windows = { workspace = true, features = ["Win32_System_JobObjects"] }
+windows = { workspace = true, features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects"] }
 
 [features]
 # Embed `fs_embed!` assets at compile time even in debug builds.

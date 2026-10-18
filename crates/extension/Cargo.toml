@@ -50,5 +50,8 @@ indoc.workspace             = true
 pretty_assertions.workspace = true
 tempfile.workspace          = true
 
+[features]
+test-support = []
+
 [lints]
 workspace = true

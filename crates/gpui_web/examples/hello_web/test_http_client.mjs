@@ -17,7 +17,12 @@ const chrome = process.env.CHROME
 	?? (process.platform === 'darwin'
 		? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 		: 'chromium');
-const output = path.join(path.dirname(fileURLToPath(import.meta.url)), 'target', 'http-client-test', String(Date.now()));
+const output = path.join(
+	path.dirname(fileURLToPath(import.meta.url)),
+	'target',
+	'http-client-test',
+	String(Date.now()),
+);
 fs.mkdirSync(output, { recursive: true });
 const log = fs.openSync(path.join(output, 'chrome.log'), 'w');
 const browser = spawn(chrome, [

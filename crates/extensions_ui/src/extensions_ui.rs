@@ -12,7 +12,8 @@ use collections::{BTreeMap, BTreeSet};
 use command_palette_hooks::CommandPaletteFilter;
 use editor::{Editor, EditorElement, EditorStyle};
 use extension_host::{
-    ExtensionIndexEntry, ExtensionManifest, ExtensionStore, LanguageCollision, LanguageCollisionKey,
+    ExtensionIndexEntry, ExtensionManifest, ExtensionStore, GitExtensionFailure, LanguageCollision,
+    LanguageCollisionKey,
 };
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
 use git::{GitHostingProviderRegistry, parse_git_remote_url};
@@ -166,6 +167,95 @@ fn reconcile_language_collision_warnings(
     });
 }
 
+struct GitExtensionInstallError(GitExtensionFailure);
+
+impl WorkspaceError for GitExtensionInstallError {
+    fn primary_message(&self) -> SharedString {
+        format!(
+            "Extension '{}' could not be installed from git",
+            self.0.extension_id
+        )
+        .into()
+    }
+
+    fn secondary_message(&self) -> Option<SharedString> {
+        Some(format!("{}: {}", self.0.url, self.0.message).into())
+    }
+
+    fn primary_action(&self) -> ErrorAction {
+        ErrorAction::new("Open Log", workspace::OpenLog)
+    }
+
+    fn secondary_action(&self) -> Option<ErrorAction> {
+        Some(ErrorAction::new(
+            "Manage Extensions",
+            zed_actions::Extensions::default(),
+        ))
+    }
+
+    fn severity(&self) -> ErrorSeverity {
+        ErrorSeverity::Error
+    }
+}
+
+fn git_failure_notification_id(extension_id: &str) -> NotificationId {
+    NotificationId::composite::<GitExtensionInstallError>(SharedString::from(
+        extension_id.to_string(),
+    ))
+}
+
+fn show_git_extension_failures(
+    workspace: &mut Workspace,
+    store: &Entity<ExtensionStore>,
+    displayed: &mut BTreeSet<Arc<str>>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let active = store.read(cx).active_git_extension_failures().clone();
+    reconcile_git_extension_failures(workspace, displayed, &active, cx);
+    if window.is_window_active() {
+        for failure in store.update(cx, |store, _| store.take_git_extension_failures()) {
+            displayed.insert(failure.extension_id.clone());
+            show_git_extension_failure(workspace, failure, cx);
+        }
+    }
+}
+
+fn show_git_extension_failure(
+    workspace: &mut Workspace,
+    failure: GitExtensionFailure,
+    cx: &mut Context<Workspace>,
+) {
+    workspace.show_notification(
+        git_failure_notification_id(&failure.extension_id),
+        cx,
+        |cx| {
+            cx.new(|cx| {
+                MessageNotification::from_workspace_error(GitExtensionInstallError(failure), cx)
+            })
+        },
+    );
+}
+
+fn reconcile_git_extension_failures(
+    workspace: &mut Workspace,
+    displayed: &mut BTreeSet<Arc<str>>,
+    active: &BTreeMap<Arc<str>, GitExtensionFailure>,
+    cx: &mut Context<Workspace>,
+) {
+    displayed.retain(|extension_id| {
+        let id = git_failure_notification_id(extension_id);
+        if !workspace.has_notification(&id) {
+            return false;
+        }
+        if active.contains_key(extension_id) {
+            return true;
+        }
+        workspace.dismiss_notification(&id, cx);
+        false
+    });
+}
+
 impl WorkspaceError for DevExtensionNotInstalledError {
     fn primary_message(&self) -> SharedString {
         match &self.extension_id {
@@ -210,13 +300,22 @@ pub fn init(cx: &mut App) {
             return;
         };
         let displayed = Rc::new(RefCell::new(BTreeMap::new()));
+        let displayed_git_failures = Rc::new(RefCell::new(BTreeSet::new()));
         cx.observe_in(&store, window, {
             let displayed = displayed.clone();
+            let displayed_git_failures = displayed_git_failures.clone();
             move |workspace, store, window, cx| {
                 show_language_collision_warnings(
                     workspace,
                     &store,
                     &mut displayed.borrow_mut(),
+                    window,
+                    cx,
+                );
+                show_git_extension_failures(
+                    workspace,
+                    &store,
+                    &mut displayed_git_failures.borrow_mut(),
                     window,
                     cx,
                 );
@@ -226,6 +325,7 @@ pub fn init(cx: &mut App) {
         cx.observe_window_activation(window, {
             let store = store.clone();
             let displayed = displayed.clone();
+            let displayed_git_failures = displayed_git_failures.clone();
             move |workspace, window, cx| {
                 show_language_collision_warnings(
                     workspace,
@@ -233,7 +333,14 @@ pub fn init(cx: &mut App) {
                     &mut displayed.borrow_mut(),
                     window,
                     cx,
-                )
+                );
+                show_git_extension_failures(
+                    workspace,
+                    &store,
+                    &mut displayed_git_failures.borrow_mut(),
+                    window,
+                    cx,
+                );
             }
         })
         .detach();
@@ -246,7 +353,14 @@ pub fn init(cx: &mut App) {
                 &mut displayed.borrow_mut(),
                 window,
                 cx,
-            )
+            );
+            show_git_extension_failures(
+                workspace,
+                &store,
+                &mut displayed_git_failures.borrow_mut(),
+                window,
+                cx,
+            );
         });
         workspace.register_action_renderer(|div, _, _, cx| {
             div.on_action(cx.entity_listener(
@@ -1869,6 +1983,51 @@ mod tests {
                 workspace.notification_ids().is_empty(),
                 "dismissed warnings must not reappear during reconciliation"
             );
+            assert!(displayed.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_git_extension_failure_notification_lifecycle(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        cx.run_until_parked();
+        let extension_id: Arc<str> = "zed-ldap".into();
+        let failure = GitExtensionFailure {
+            extension_id: extension_id.clone(),
+            url: "https://example.com/zed-ldap".into(),
+            message: "git fetch --depth 1 origin HEAD failed".into(),
+        };
+        let id = git_failure_notification_id(&extension_id);
+        let active = BTreeMap::from_iter([(extension_id.clone(), failure.clone())]);
+        workspace.update_in(cx, |workspace, _, cx| {
+            let mut displayed = BTreeSet::from_iter([extension_id.clone()]);
+            show_git_extension_failure(workspace, failure.clone(), cx);
+            assert_eq!(workspace.notification_ids(), vec![id.clone()]);
+
+            reconcile_git_extension_failures(workspace, &mut displayed, &active, cx);
+            assert_eq!(workspace.notification_ids(), vec![id.clone()]);
+            assert!(displayed.contains(&extension_id));
+
+            reconcile_git_extension_failures(workspace, &mut displayed, &BTreeMap::new(), cx);
+            assert!(
+                workspace.notification_ids().is_empty(),
+                "a resolved failure should dismiss its notification"
+            );
+            assert!(displayed.is_empty());
+
+            show_git_extension_failure(workspace, failure, cx);
+            displayed.insert(extension_id.clone());
+            workspace.dismiss_notification(&id, cx);
+            reconcile_git_extension_failures(workspace, &mut displayed, &active, cx);
+            assert!(workspace.notification_ids().is_empty());
             assert!(displayed.is_empty());
         });
     }

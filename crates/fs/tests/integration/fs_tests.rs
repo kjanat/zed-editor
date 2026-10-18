@@ -1694,6 +1694,51 @@ async fn test_realfs_symlink_loop_metadata(executor: BackgroundExecutor) {
 }
 
 #[gpui::test]
+async fn test_realfs_metadata_of_link_to_removed_directory(executor: BackgroundExecutor) {
+    // Windows file IDs await Smol I/O outside the deterministic scheduler.
+    executor.allow_parking();
+    let tempdir = TempDir::new().unwrap();
+    let fs = RealFs::new(None, executor);
+    let target = tempdir.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = tempdir.path().join("link");
+    gpui::block_on(fs.create_symlink(&link, target.clone())).unwrap();
+    std::fs::remove_dir(&target).unwrap();
+
+    let metadata = fs
+        .metadata(&link)
+        .await
+        .expect("metadata call succeeds")
+        .expect("metadata returned");
+    assert!(metadata.is_symlink);
+
+    gpui::block_on(fs.remove_file(&link, RemoveOptions::default())).unwrap();
+    assert!(std::fs::symlink_metadata(&link).is_err());
+}
+
+#[gpui::test]
+async fn test_realfs_links_a_directory_named_with_forward_slashes(executor: BackgroundExecutor) {
+    let tempdir = TempDir::new().expect("temporary filesystem fixture");
+    let fs = RealFs::new(None, executor);
+    let target = tempdir.path().join("editors").join("ext");
+    std::fs::create_dir_all(&target).expect("target directory");
+    std::fs::create_dir(tempdir.path().join("links")).expect("link parent directory");
+    let slashed_target = PathBuf::from(format!("{}/editors/ext", tempdir.path().display()));
+
+    for link in [
+        tempdir.path().join("link"),
+        tempdir.path().join("links/nested"),
+    ] {
+        gpui::block_on(fs.create_symlink(&link, slashed_target.clone()))
+            .expect("directory link accepts forward slashes in either path");
+        assert_eq!(
+            std::fs::canonicalize(&link).expect("linked directory"),
+            std::fs::canonicalize(&target).expect("target directory")
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_fake_fs_trash(executor: BackgroundExecutor) {
     let fs = FakeFs::new(executor.clone());
     fs.insert_tree(

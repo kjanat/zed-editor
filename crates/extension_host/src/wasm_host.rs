@@ -46,8 +46,24 @@ use wasmtime::{
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wit::Extension;
 
+const EXTENSION_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn await_extension_initialization<T>(
+    executor: &BackgroundExecutor,
+    initialization: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let initialization = initialization.fuse();
+    let timeout = executor.timer(EXTENSION_INITIALIZATION_TIMEOUT).fuse();
+    futures::pin_mut!(initialization, timeout);
+    futures::select_biased! {
+        result = initialization => result,
+        _ = timeout => bail!("extension initialization timed out after {EXTENSION_INITIALIZATION_TIMEOUT:?}"),
+    }
+}
+
 pub struct WasmHost {
     engine: Engine,
+    executor: BackgroundExecutor,
     release_channel: ReleaseChannel,
     http_client: Arc<dyn HttpClient>,
     node_runtime: NodeRuntime,
@@ -732,6 +748,7 @@ impl WasmHost {
 
         Arc::new(Self {
             engine: wasm_engine(cx.background_executor()),
+            executor: cx.background_executor().clone(),
             fs,
             work_dir,
             http_client,
@@ -742,6 +759,43 @@ impl WasmHost {
             _main_thread_message_task: task,
             main_thread_message_tx: tx,
         })
+    }
+
+    pub(crate) fn validate_compiled_extension(
+        &self,
+        extension_id: &str,
+        wasm_bytes: &[u8],
+    ) -> Result<()> {
+        // Update checks must not run extension initialization again.
+        self.compile_extension(extension_id, wasm_bytes).map(drop)
+    }
+
+    fn compile_extension(
+        &self,
+        extension_id: &str,
+        wasm_bytes: &[u8],
+    ) -> Result<(Version, Component)> {
+        let zed_api_version = parse_wasm_extension_version(extension_id, wasm_bytes)?;
+        let component = Component::from_binary(&self.engine, wasm_bytes)
+            .map_err(anyhow::Error::from)
+            .context("failed to compile wasm component")?;
+        Ok((zed_api_version, component))
+    }
+
+    pub(crate) async fn validate_extension(
+        self: &Arc<Self>,
+        wasm_bytes: Vec<u8>,
+        manifest: Arc<ExtensionManifest>,
+    ) -> Result<()> {
+        let host = self.clone();
+        self.executor
+            .spawn(async move {
+                let (version, component) = host.compile_extension(&manifest.id, &wasm_bytes)?;
+                // Preflight must not execute module start functions or Extension::new():
+                // both may use host imports or mutate the active extension's work directory.
+                Extension::validate(&host.executor, host.release_channel, version, &component)
+            })
+            .await
     }
 
     pub fn load_extension(
@@ -758,19 +812,12 @@ impl WasmHost {
         // These are cpu-bound operations that don't require a tokio runtime.
         let compile_task = {
             let manifest_id = manifest.id.clone();
-            let engine = this.engine.clone();
+            let host = this.clone();
 
-            executor.spawn(async move {
-                let zed_api_version = parse_wasm_extension_version(&manifest_id, &wasm_bytes)?;
-                let component = Component::from_binary(&engine, &wasm_bytes)
-                    .map_err(anyhow::Error::from)
-                    .context("failed to compile wasm component")?;
-
-                anyhow::Ok((zed_api_version, component))
-            })
+            executor.spawn(async move { host.compile_extension(&manifest_id, &wasm_bytes) })
         };
 
-        let load_extension = |zed_api_version: Version, component: Component| async move {
+        let load_extension = move |zed_api_version: Version, component: Component| async move {
             let instantiate = {
                 let this = this.clone();
                 let manifest = manifest.clone();
@@ -793,13 +840,14 @@ impl WasmHost {
                 }
             };
             let initial_instance = instantiate().await?;
+            let work_dir = initial_instance.1.data().work_dir().into();
             let (tx, rx) = mpsc::unbounded::<ExtensionCall>();
             let extension_task = run_extension_calls(rx, initial_instance, instantiate);
 
             anyhow::Ok((
                 extension_task,
                 manifest.clone(),
-                this.work_dir.join(manifest.id.as_ref()).into(),
+                work_dir,
                 tx,
                 zed_api_version,
             ))
@@ -810,8 +858,14 @@ impl WasmHost {
 
             // Run wasi-dependent operations on tokio.
             // wasmtime_wasi internally uses tokio for I/O operations.
+            let initialization =
+                gpui_tokio::Tokio::spawn(cx, load_extension(zed_api_version, component));
+            // Dropping the Tokio task aborts stalled initialization.
             let (extension_task, manifest, work_dir, tx, zed_api_version) =
-                gpui_tokio::Tokio::spawn(cx, load_extension(zed_api_version, component)).await??;
+                await_extension_initialization(cx.background_executor(), async move {
+                    initialization.await?
+                })
+                .await?;
 
             // Run the extension message loop on tokio since extension
             // calls may invoke wasi functions that require a tokio runtime.
@@ -882,9 +936,8 @@ impl WasmHost {
         let path = path.replace('\\', "/");
 
         let mut ctx = WasiCtxBuilder::new();
-        ctx.inherit_stdio()
-            .env("PWD", &path)
-            .env("RUST_BACKTRACE", "full");
+        ctx.inherit_stdio();
+        ctx.env("PWD", &path).env("RUST_BACKTRACE", "full");
 
         ctx.preopened_dir(&path, ".", permissions)?;
         ctx.preopened_dir(&path, &path, permissions)?;
@@ -1175,6 +1228,45 @@ mod tests {
     use settings::SettingsStore;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wasmtime::component::{Instance, Linker};
+
+    #[gpui::test]
+    async fn initialization_timeout_cancels_the_tokio_task(cx: &mut TestAppContext) {
+        cx.update(gpui_tokio::init);
+        cx.executor().allow_parking();
+        let (started, started_receiver) = oneshot::channel();
+        let (lifetime, cancelled) = oneshot::channel::<()>();
+        let initialization = cx.update(|cx| {
+            gpui_tokio::Tokio::spawn(cx, async move {
+                let _lifetime = lifetime;
+                started.send(()).expect("initialization observer");
+                futures::future::pending::<Result<()>>().await
+            })
+        });
+        let executor = cx.executor();
+        let result = executor.spawn({
+            let executor = executor.clone();
+            async move {
+                await_extension_initialization(&executor, async move { initialization.await? })
+                    .await
+            }
+        });
+        started_receiver.await.expect("initialization started");
+        cx.run_until_parked();
+        executor.advance_clock(EXTENSION_INITIALIZATION_TIMEOUT);
+        let error = result
+            .await
+            .expect_err("stalled initialization must terminate");
+        assert!(error.to_string().contains("initialization timed out"));
+        assert!(cancelled.await.is_err(), "timed-out Tokio task was dropped");
+
+        let initialization = cx.update(|cx| gpui_tokio::Tokio::spawn(cx, async { Ok(7) }));
+        assert_eq!(
+            await_extension_initialization(&executor, async move { initialization.await? })
+                .await
+                .expect("subsequent initialization succeeds"),
+            7
+        );
+    }
 
     fn test_component(engine: &Engine) -> Result<Component> {
         use wasm_encoder::{

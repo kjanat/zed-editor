@@ -2,7 +2,7 @@ use collections::HashMap;
 use extension::{
     DownloadFileCapability, ExtensionCapability, NpmInstallPackageCapability, ProcessExecCapability,
 };
-use settings::{RegisterSetting, Settings};
+use settings::{AutoInstallExtensionContent, RegisterSetting, Settings};
 use std::sync::Arc;
 
 #[derive(Debug, Default, Clone, RegisterSetting)]
@@ -13,19 +13,53 @@ pub struct ExtensionSettings {
     /// available out-of-the-box.
     ///
     /// Default: { "html": true }
-    pub auto_install_extensions: HashMap<Arc<str>, bool>,
+    pub auto_install_extensions: HashMap<Arc<str>, AutoInstallExtensionContent>,
     pub auto_update_extensions: HashMap<Arc<str>, bool>,
     pub suggest_extensions: bool,
     pub granted_capabilities: Vec<ExtensionCapability>,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GitExtensionSource {
+    pub url: String,
+    pub reference: Option<String>,
+    pub path: Option<String>,
+}
+
 impl ExtensionSettings {
     /// Returns whether the given extension should be auto-installed.
     pub fn should_auto_install(&self, extension_id: &str) -> bool {
+        match self.auto_install_extensions.get(extension_id) {
+            Some(AutoInstallExtensionContent::Marketplace(install)) => *install,
+            Some(AutoInstallExtensionContent::Git { .. }) | None => true,
+        }
+    }
+
+    pub fn marketplace_extensions(&self) -> impl Iterator<Item = &Arc<str>> {
         self.auto_install_extensions
-            .get(extension_id)
-            .copied()
-            .unwrap_or(true)
+            .iter()
+            .filter(|(_, entry)| matches!(entry, AutoInstallExtensionContent::Marketplace(_)))
+            .map(|(id, _)| id)
+    }
+
+    pub fn git_sources(&self) -> impl Iterator<Item = (&Arc<str>, GitExtensionSource)> {
+        self.auto_install_extensions
+            .iter()
+            .filter_map(|(id, entry)| match entry {
+                AutoInstallExtensionContent::Git {
+                    git,
+                    reference,
+                    path,
+                } => Some((
+                    id,
+                    GitExtensionSource {
+                        url: git.clone(),
+                        reference: reference.clone(),
+                        path: path.clone(),
+                    },
+                )),
+                AutoInstallExtensionContent::Marketplace(_) => None,
+            })
     }
 
     pub fn should_auto_update(&self, extension_id: &str) -> bool {

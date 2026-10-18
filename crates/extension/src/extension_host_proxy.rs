@@ -4,7 +4,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use fs::Fs;
 use gpui::{App, EntityId, Global, ReadGlobal, SharedString, Task};
-use language::{BinaryStatus, LanguageLoader, LanguageMatcher, LanguageName};
+use language::{
+    BinaryStatus, LanguageConfig, LanguageLoader, LanguageMatcher, LanguageName, LanguageQueries,
+};
 use lsp::LanguageServerName;
 use parking_lot::RwLock;
 
@@ -213,11 +215,31 @@ impl ExtensionThemeProxy for ExtensionHostProxy {
 }
 
 pub trait ExtensionGrammarProxy: Send + Sync + 'static {
+    fn validate_language_queries(
+        &self,
+        extension_id: Arc<str>,
+        config: LanguageConfig,
+        queries: LanguageQueries,
+    ) -> Task<Result<()>>;
     fn register_grammars(&self, extension_id: Arc<str>, grammars: Vec<(Arc<str>, PathBuf)>);
     fn is_native_grammar(&self, name: &str) -> bool;
 }
 
 impl ExtensionGrammarProxy for ExtensionHostProxy {
+    fn validate_language_queries(
+        &self,
+        extension_id: Arc<str>,
+        config: LanguageConfig,
+        queries: LanguageQueries,
+    ) -> Task<Result<()>> {
+        let Some(proxy) = self.grammar_proxy.read().clone() else {
+            return Task::ready(Err(anyhow::anyhow!(
+                "language grammar registry is unavailable"
+            )));
+        };
+        proxy.validate_language_queries(extension_id, config, queries)
+    }
+
     fn is_native_grammar(&self, name: &str) -> bool {
         self.grammar_proxy
             .read()

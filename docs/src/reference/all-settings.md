@@ -361,6 +361,33 @@ Define extensions which should be installed (`true`) or never installed
 }
 ```
 
+An extension that is not in the marketplace can be installed from a git
+repository instead. `git` is the repository URL, `ref` is the branch, tag or
+commit to check out, and `path` is the directory that holds `extension.toml`.
+`ref` defaults to the remote's default branch and `path` to the repository
+root.
+
+```json [settings]
+{
+  "auto_install_extensions": {
+    "zed-ldap": { "git": "https://github.com/kjanat/zed-ldap" },
+    "turborepo": {
+      "git": "https://github.com/kjanat/zed-turborepo",
+      "ref": "master",
+      "path": "crates/turbo-zed"
+    }
+  }
+}
+```
+
+Zed fetches the repository with the `git` command, so private repositories
+work through your git credentials. It builds the extension like a dev
+extension, which needs Rust and the `wasm32-wasip2` target for extensions with
+a `Cargo.toml`. When Zed checks for extension updates, it fetches again if the
+remote ref has moved and rebuilds the extension. If a fetched commit fails to
+build or declares another extension id, Zed keeps the version already
+installed.
+
 ## Suggest Extensions
 
 - Description: Whether to suggest installing extensions based on the files you open.
@@ -386,7 +413,8 @@ Define extensions which should be installed (`true`) or never installed
 **Options**
 
 By default, every installed extension is auto-updated when Zed starts. Add an
-extension here with `false` to pin it to its currently installed version.
+extension here with `false` to pin it to its currently installed version. For
+an extension installed from git, `false` keeps the checked-out commit.
 
 ```json [settings]
 {

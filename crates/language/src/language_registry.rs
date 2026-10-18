@@ -19,7 +19,7 @@ use futures::{
     future::{BoxFuture, FutureExt as _},
 };
 use globset::GlobSet;
-use gpui::{App, BackgroundExecutor, EntityId, Subscription};
+use gpui::{App, BackgroundExecutor, EntityId, Subscription, Task};
 use lsp::LanguageServerId;
 use parking_lot::{Mutex, RwLock};
 use postage::watch;
@@ -929,6 +929,32 @@ impl LanguageRegistry {
         self.load_language(language_id)
     }
 
+    pub fn validate_extension_language_queries(
+        self: &Arc<Self>,
+        extension_id: Arc<str>,
+        config: LanguageConfig,
+        queries: LanguageQueries,
+    ) -> Task<Result<()>> {
+        let this = self.clone();
+        self.executor.spawn(async move {
+            if let Some(name) = config.grammar.clone() {
+                // The replacement may have removed its old grammar declaration.
+                let key = this.state.read().grammar_key(
+                    name.clone(),
+                    &LanguageOrigin::Native,
+                    Some(&extension_id),
+                )?;
+                let origin = key
+                    .extension_id
+                    .map(LanguageOrigin::Extension)
+                    .unwrap_or(LanguageOrigin::Native);
+                let grammar = this.get_or_load_grammar(name, &origin).await?;
+                Language::new(config, Some(grammar)).with_queries(queries)?;
+            }
+            Ok(())
+        })
+    }
+
     fn get_or_load_grammar(
         self: &Arc<Self>,
         name: Arc<str>,
@@ -939,7 +965,7 @@ impl LanguageRegistry {
         let (tx, rx) = oneshot::channel();
         let mut state = self.state.write();
 
-        let key = state.grammar_key(name.clone(), origin);
+        let key = state.grammar_key(name.clone(), origin, None);
         if let Ok(key) = &key
             && let Some(grammar) = state.grammars.get_mut(key)
         {
@@ -1118,13 +1144,19 @@ impl LanguageRegistry {
 }
 
 impl LanguageRegistryState {
-    fn grammar_key(&self, name: Arc<str>, origin: &LanguageOrigin) -> Result<GrammarKey> {
+    fn grammar_key(
+        &self,
+        name: Arc<str>,
+        origin: &LanguageOrigin,
+        excluded_extension: Option<&str>,
+    ) -> Result<GrammarKey> {
         if let LanguageOrigin::Extension(extension_id) = origin {
             let key = GrammarKey {
                 name: name.clone(),
                 extension_id: Some(extension_id.clone()),
             };
-            if self.grammars.contains_key(&key) {
+            if key.extension_id.as_deref() != excluded_extension && self.grammars.contains_key(&key)
+            {
                 return Ok(key);
             }
         }
@@ -1135,7 +1167,11 @@ impl LanguageRegistryState {
         if self.grammars.contains_key(&native_key) {
             return Ok(native_key);
         }
-        let mut candidates = self.grammars.keys().filter(|key| key.name == name);
+        let mut candidates = self.grammars.keys().filter(|key| {
+            key.name == name
+                && (excluded_extension.is_none()
+                    || key.extension_id.as_deref() != excluded_extension)
+        });
         match (candidates.next(), candidates.next()) {
             (Some(key), None) => Ok(key.clone()),
             (None, _) => Err(anyhow!("no such grammar {name}")),
@@ -1286,6 +1322,83 @@ mod tests {
             include_bytes!("../test_data/grammars/html-jinja.wasm"),
         )?;
         Ok(tree)
+    }
+
+    #[gpui::test]
+    async fn staged_language_queries_exclude_removed_own_grammars(cx: &mut TestAppContext) {
+        let result: Result<()> = async {
+            let tree = grammar_fixtures()?;
+            let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+            registry.register_wasm_grammars(
+                "replacement".into(),
+                vec![("html".into(), tree.path().join("html-jinja/html.wasm"))],
+            );
+            let config = LanguageConfig {
+                name: "Replacement".into(),
+                grammar: Some("html".into()),
+                ..Default::default()
+            };
+            let queries = || LanguageQueries {
+                highlights: Some("(tag_name) @tag".into()),
+                ..Default::default()
+            };
+            assert!(
+                registry
+                    .validate_extension_language_queries(
+                        "replacement".into(),
+                        config.clone(),
+                        queries(),
+                    )
+                    .await
+                    .is_err()
+            );
+            registry.register_wasm_grammars(
+                "shared".into(),
+                vec![("html".into(), tree.path().join("html/html.wasm"))],
+            );
+            registry
+                .validate_extension_language_queries(
+                    "replacement".into(),
+                    config.clone(),
+                    queries(),
+                )
+                .await?;
+            let jinja_queries = LanguageQueries {
+                highlights: Some("(jinja) @tag".into()),
+                ..Default::default()
+            };
+            assert!(
+                registry
+                    .validate_extension_language_queries(
+                        "replacement".into(),
+                        config.clone(),
+                        jinja_queries,
+                    )
+                    .await
+                    .is_err()
+            );
+            registry.register_wasm_grammars(
+                "another".into(),
+                vec![("html".into(), tree.path().join("html/html.wasm"))],
+            );
+            assert!(
+                registry
+                    .validate_extension_language_queries(
+                        "replacement".into(),
+                        config.clone(),
+                        queries(),
+                    )
+                    .await
+                    .is_err()
+            );
+            registry.register_native_grammars([("html", tree_sitter_html::LANGUAGE)]);
+            registry
+                .validate_extension_language_queries("replacement".into(), config, queries())
+                .await?;
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
     }
 
     fn register_html_language(
