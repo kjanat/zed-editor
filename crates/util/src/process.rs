@@ -11,9 +11,41 @@ use std::process::Stdio;
 pub struct Child {
     process: smol::process::Child,
     #[cfg(not(windows))]
-    termination_requested: bool,
+    group: std::sync::Arc<std::sync::Mutex<ProcessGroupState>>,
     #[cfg(windows)]
     job: Option<windows_job::JobObject>,
+}
+
+#[cfg(not(windows))]
+#[derive(Default)]
+enum ProcessGroupState {
+    #[default]
+    Unreaped,
+    Signalled,
+    Reaped,
+}
+
+#[cfg(not(windows))]
+impl ProcessGroupState {
+    fn signal(&mut self, signal: impl FnOnce() -> Result<()>) -> Result<()> {
+        if matches!(self, Self::Unreaped) {
+            signal()?;
+            *self = Self::Signalled;
+        }
+        Ok(())
+    }
+}
+
+/// Owns containment and the only access to the child's reaping operations.
+pub struct ContainedChild {
+    process: smol::process::Child,
+    pub stdout: Option<smol::process::ChildStdout>,
+    pub stderr: Option<smol::process::ChildStderr>,
+    #[cfg(not(windows))]
+    group: ProcessGroupState,
+    #[cfg(windows)]
+    job: windows_job::JobObject,
+    status: Option<std::process::ExitStatus>,
 }
 
 impl std::ops::Deref for Child {
@@ -31,15 +63,207 @@ impl std::ops::DerefMut for Child {
 }
 
 impl Child {
-    #[cfg(test)]
+    /// Starts a command in a new Unix session or an assigned Windows job before
+    /// its program can run. Unlike `spawn`, containment setup cannot fall back.
+    pub fn spawn_contained(
+        command: std::process::Command,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> Result<ContainedChild> {
+        ContainedChild::spawn(command, stdin, stdout, stderr)
+    }
+
+    // Status futures can outlive the mutable borrow. Serialize every reaping
+    // poll with group signalling, including when callers poll on another thread.
+    #[cfg(not(windows))]
+    pub fn status(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::io::Result<std::process::ExitStatus>> + use<> {
+        let future = self.process.status();
+        let group = self.group.clone();
+        async move {
+            let mut future = std::pin::pin!(future);
+            futures::future::poll_fn(move |cx| {
+                let mut group = match group.lock() {
+                    Ok(group) => group,
+                    Err(_) => return std::task::Poll::Ready(Err(std::io::Error::other("process lifecycle lock poisoned"))),
+                };
+                let result = future.as_mut().poll(cx);
+                if matches!(&result, std::task::Poll::Ready(Ok(_)))
+                    || matches!(&result, std::task::Poll::Ready(Err(error)) if error.raw_os_error() == Some(libc::ECHILD))
+                {
+                    *group = ProcessGroupState::Reaped;
+                }
+                result
+            })
+            .await
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn try_status(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let mut group = self
+            .group
+            .lock()
+            .map_err(|_| std::io::Error::other("process lifecycle lock poisoned"))?;
+        let status = self.process.try_status();
+        if matches!(&status, Ok(Some(_)))
+            || matches!(&status, Err(error) if error.raw_os_error() == Some(libc::ECHILD))
+        {
+            *group = ProcessGroupState::Reaped;
+        }
+        status
+    }
+
+    #[cfg(not(windows))]
+    pub fn spawn(
+        mut command: std::process::Command,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> Result<Self> {
+        crate::set_pre_exec_to_start_new_session(&mut command);
+        let description = describe_command(&command);
+        let process = smol::process::Command::from(command)
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+            .with_context(|| format!("failed to spawn command {description}"))?;
+        Ok(Self {
+            process,
+            group: Default::default(),
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn spawn(
+        command: std::process::Command,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> Result<Self> {
+        let description = describe_command(&command);
+        let process = smol::process::Command::from(command)
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+            .with_context(|| format!("failed to spawn command {description}"))?;
+        let job = windows_job::JobObject::new()
+            .and_then(|job| {
+                job.assign_process(process.id())?;
+                Ok(job)
+            })
+            .map_err(|error| {
+                log::error!("failed to assign spawned process to a job object: {error:#}");
+            })
+            .ok();
+        Ok(Self { process, job })
+    }
+
+    /// Consumes the child, draining its stdout/stderr and waiting for it to exit.
+    pub async fn output(self) -> Result<std::process::Output> {
+        // Keep the remaining fields of self alive across the await: dropping
+        // the Windows job early would kill the child before output is collected.
+        Ok(self.process.output().await?)
+    }
+
+    #[cfg(not(windows))]
+    pub fn kill(&mut self) -> Result<()> {
+        let mut group = self
+            .group
+            .lock()
+            .map_err(|_| anyhow::anyhow!("process lifecycle lock poisoned"))?;
+        group.signal(|| terminate_process_group(self.process.id().try_into()?))
+    }
+
+    #[cfg(windows)]
+    pub fn kill(&mut self) -> Result<()> {
+        if let Some(job) = &self.job {
+            job.terminate()
+        } else {
+            self.process.kill()?;
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn has_running_processes(&self) -> Result<Option<bool>> {
+        self.job
+            .as_ref()
+            .map(windows_job::JobObject::has_running_processes)
+            .transpose()
+    }
+}
+
+impl ContainedChild {
+    pub fn id(&self) -> u32 {
+        self.process.id()
+    }
+
+    pub fn exit_status(&self) -> Option<std::process::ExitStatus> {
+        self.status
+    }
+
+    #[cfg(not(windows))]
+    async fn wait_for_exit(&mut self) -> std::io::Result<()> {
+        self.process.stdin.take();
+        let process_id = self.process.id();
+        #[cfg(target_os = "freebsd")]
+        let process_id = i64::from(process_id);
+        loop {
+            let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            // SAFETY: waitid initializes siginfo; WNOWAIT reserves the leader PID
+            // until group signalling succeeds. No other API can reap this child.
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    process_id,
+                    information.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            };
+            if result == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    self.group = ProcessGroupState::Reaped;
+                }
+                return Err(error);
+            }
+            // SAFETY: waitid succeeded; zeroed si_pid represents a pending exit.
+            let information = unsafe { information.assume_init() };
+            // SAFETY: waitid populated the child-status fields of siginfo.
+            if unsafe { information.si_pid() } != 0 {
+                return Ok(());
+            }
+            smol::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(windows)]
     async fn wait_for_exit(&mut self) -> std::io::Result<()> {
         self.process.status().await.map(drop)
     }
 
-    /// Starts a command in a new Unix session or an assigned Windows job before
-    /// its program can run. Unlike `spawn`, containment setup cannot fall back.
+    /// Observes exit, signals remaining descendants, then reaps the leader.
+    pub async fn wait(&mut self) -> Result<std::process::ExitStatus> {
+        if let Some(status) = self.status {
+            return Ok(status);
+        }
+        self.wait_for_exit()
+            .await
+            .context("observing contained child exit")?;
+        self.terminate_and_wait().await?;
+        self.status.context("missing reaped child status")
+    }
+
     #[cfg(not(windows))]
-    pub fn spawn_contained(
+    fn spawn(
         mut command: std::process::Command,
         stdin: Stdio,
         stdout: Stdio,
@@ -57,7 +281,7 @@ impl Child {
             });
         }
         let description = describe_command(&command);
-        let process = smol::process::Command::from(command)
+        let mut process = smol::process::Command::from(command)
             .stdin(stdin)
             .stdout(stdout)
             .stderr(stderr)
@@ -65,15 +289,18 @@ impl Child {
             .spawn()
             .with_context(|| format!("failed to spawn contained command {description}"))?;
         Ok(Self {
+            stdout: process.stdout.take(),
+            stderr: process.stderr.take(),
             process,
-            termination_requested: false,
+            group: ProcessGroupState::Unreaped,
+            status: None,
         })
     }
 
     /// Starts a command suspended, assigns its job, then resumes its primary
     /// thread. Setup failure terminates and reaps the child without a fallback.
     #[cfg(windows)]
-    pub fn spawn_contained(
+    fn spawn(
         mut command: std::process::Command,
         stdin: Stdio,
         stdout: Stdio,
@@ -112,78 +339,12 @@ impl Child {
             return Err(error).with_context(|| format!("containing command {description}"));
         }
         Ok(Self {
+            stdout: process.stdout.take(),
+            stderr: process.stderr.take(),
             process,
-            job: Some(job),
+            job,
+            status: None,
         })
-    }
-
-    #[cfg(not(windows))]
-    pub fn spawn(
-        mut command: std::process::Command,
-        stdin: Stdio,
-        stdout: Stdio,
-        stderr: Stdio,
-    ) -> Result<Self> {
-        crate::set_pre_exec_to_start_new_session(&mut command);
-        let description = describe_command(&command);
-        let process = smol::process::Command::from(command)
-            .stdin(stdin)
-            .stdout(stdout)
-            .stderr(stderr)
-            .spawn()
-            .with_context(|| format!("failed to spawn command {description}"))?;
-        Ok(Self {
-            process,
-            termination_requested: false,
-        })
-    }
-
-    #[cfg(windows)]
-    pub fn spawn(
-        command: std::process::Command,
-        stdin: Stdio,
-        stdout: Stdio,
-        stderr: Stdio,
-    ) -> Result<Self> {
-        let description = describe_command(&command);
-        let process = smol::process::Command::from(command)
-            .stdin(stdin)
-            .stdout(stdout)
-            .stderr(stderr)
-            .spawn()
-            .with_context(|| format!("failed to spawn command {description}"))?;
-
-        // Assign the child to a job object configured to kill the entire
-        // process tree when the last job handle is closed, so descendants
-        // (e.g. node workers and MCP servers spawned by agent servers) are
-        // reaped even if the direct child doesn't clean them up. Any process
-        // the child spawns after this assignment is automatically part of the
-        // job.
-        //
-        // Descendants spawned before this assignment escape the job. This
-        // compatibility path permits job-setup failure; callers requiring
-        // containment before execution must use `spawn_contained` instead.
-        let job = windows_job::JobObject::new()
-            .and_then(|job| {
-                job.assign_process(process.id())?;
-                Ok(job)
-            })
-            .map_err(|error| {
-                log::error!("failed to assign spawned process to a job object: {error:#}");
-            })
-            .ok();
-
-        Ok(Self { process, job })
-    }
-
-    /// Consumes the child, draining its stdout/stderr and waiting for it to
-    /// exit, then returns the collected output.
-    pub async fn output(self) -> Result<std::process::Output> {
-        // NOTE: Keep `self` alive across this await, do not destructure it to
-        // pull `process` out first. On Windows that drops the job object early,
-        // which triggers `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and kills the
-        // child before `output()` finishes collecting its stdout/stderr.
-        Ok(self.process.output().await?)
     }
 
     /// Collects output until the process exits or cancellation supplies an error.
@@ -204,16 +365,22 @@ impl Child {
         let result = {
             let output = async {
                 let (status, _, _) = futures::try_join!(
-                    self.status(),
+                    self.wait(),
                     async {
                         match stdout.as_mut() {
-                            Some(stdout) => stdout.read_to_end(&mut stdout_bytes).await,
+                            Some(stdout) => stdout
+                                .read_to_end(&mut stdout_bytes)
+                                .await
+                                .context("reading command stdout"),
                             None => Ok(0),
                         }
                     },
                     async {
                         match stderr.as_mut() {
-                            Some(stderr) => stderr.read_to_end(&mut stderr_bytes).await,
+                            Some(stderr) => stderr
+                                .read_to_end(&mut stderr_bytes)
+                                .await
+                                .context("reading command stderr"),
                             None => Ok(0),
                         }
                     },
@@ -232,6 +399,14 @@ impl Child {
                 error = cancellation => Err(error),
             }
         };
+        // A failed signal can leave a writer alive indefinitely. Close our pipe
+        // handles on that path instead of waiting for an EOF that cannot arrive.
+        if let Err(error) = self.kill() {
+            return Err(error).with_context(|| match &result {
+                Ok(_) => "cleaning up completed command".to_owned(),
+                Err(command_error) => format!("cleaning up failed command: {command_error:#}"),
+            });
+        }
         let (termination, stdout, stderr) = futures::join!(
             self.terminate_and_wait(),
             async {
@@ -270,25 +445,13 @@ impl Child {
 
     #[cfg(not(windows))]
     pub fn kill(&mut self) -> Result<()> {
-        // After SIGKILL succeeds, a second signal can encounter only zombies:
-        // macOS reports EPERM for that group. Reaping and pipe draining remain
-        // necessary, but must not signal the group again (or a reused group ID).
-        if self.termination_requested {
-            return Ok(());
-        }
-        terminate_process_group(self.process.id().try_into()?)?;
-        self.termination_requested = true;
-        Ok(())
+        self.group
+            .signal(|| terminate_process_group(self.process.id().try_into()?))
     }
 
     #[cfg(windows)]
     pub fn kill(&mut self) -> Result<()> {
-        if let Some(job) = &self.job {
-            job.terminate()
-        } else {
-            self.process.kill()?;
-            Ok(())
-        }
+        self.job.terminate()
     }
 
     /// Terminates the group/job and reaps the direct child. Windows additionally
@@ -297,21 +460,33 @@ impl Child {
     /// their group indefinitely even though they can no longer execute.
     pub async fn terminate_and_wait(&mut self) -> Result<()> {
         self.kill()?;
-        self.process
-            .status()
-            .await
-            .context("reaping terminated child")?;
+        if self.status.is_none() {
+            self.status = Some(
+                self.process
+                    .status()
+                    .await
+                    .context("reaping terminated child")?,
+            );
+            #[cfg(not(windows))]
+            {
+                self.group = ProcessGroupState::Reaped;
+            }
+        }
         #[cfg(windows)]
         while self.has_running_processes()? == Some(true) {
-            smol::unblock(|| std::thread::sleep(std::time::Duration::from_millis(10))).await;
+            smol::Timer::after(std::time::Duration::from_millis(10)).await;
         }
         Ok(())
     }
 
-    /// Reports whether the Unix process group still exists, including zombies.
+    /// Reports whether the owned Unix process group exists, including zombies.
+    /// Returns `None` after reaping releases ownership of the group ID.
     /// This is not a teardown barrier; use `terminate_and_wait` and drain pipes.
     #[cfg(not(windows))]
     pub fn has_running_processes(&self) -> Result<Option<bool>> {
+        if matches!(self.group, ProcessGroupState::Reaped) {
+            return Ok(None);
+        }
         // SAFETY: signal zero queries the child's process group without signaling it.
         if unsafe { libc::killpg(self.process.id().try_into()?, 0) } == 0 {
             return Ok(Some(true));
@@ -324,20 +499,22 @@ impl Child {
         }
     }
 
-    /// Returns job activity, or `None` when descendant cleanup is unavailable.
-    ///
-    /// The count includes descendants after the direct child exits. `None`
-    /// means job setup failed, not that the process tree is empty.
+    /// Returns activity of the job established before the child started running.
     ///
     /// # Errors
     ///
     /// Returns an error if Windows cannot query the owned job's activity.
     #[cfg(windows)]
     pub fn has_running_processes(&self) -> Result<Option<bool>> {
-        self.job
-            .as_ref()
-            .map(windows_job::JobObject::has_running_processes)
-            .transpose()
+        self.job.has_running_processes().map(Some)
+    }
+}
+
+impl Drop for ContainedChild {
+    fn drop(&mut self) {
+        if let Err(error) = self.kill() {
+            log::error!("failed to terminate contained child: {error:#}");
+        }
     }
 }
 
@@ -459,11 +636,14 @@ mod tests {
                     .expect("spawn group leader");
             child.wait_for_exit().await.expect("observe leader exit");
             let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            let process_id = child.id();
+            #[cfg(target_os = "freebsd")]
+            let process_id = i64::from(process_id);
             // SAFETY: WNOWAIT observes this owned child without releasing its PID.
             let observation = unsafe {
                 libc::waitid(
                     libc::P_PID,
-                    child.id(),
+                    process_id,
                     information.as_mut_ptr(),
                     libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
                 )
@@ -482,6 +662,122 @@ mod tests {
                 child.id().try_into().expect("PID")
             );
             child.terminate_and_wait().await.expect("signal then reap");
+            assert_eq!(
+                child.exit_status().and_then(|status| status.code()),
+                Some(23)
+            );
+            child.terminate_and_wait().await.expect("repeat cleanup");
+            child.kill().expect("repeat signal after reaping");
+            assert_eq!(
+                child
+                    .has_running_processes()
+                    .expect("released group ownership"),
+                None
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_signal_failure_preserves_ownership_for_cleanup_retry() {
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exit 23"]);
+            let mut child =
+                Child::spawn_contained(command, Stdio::null(), Stdio::null(), Stdio::null())
+                    .expect("spawn leader");
+            child.wait_for_exit().await.expect("observe exited leader");
+            let error = child
+                .group
+                .signal(|| anyhow::bail!("injected signal failure"))
+                .expect_err("signal error must propagate");
+            assert_eq!(error.to_string(), "injected signal failure");
+            assert!(child.exit_status().is_none());
+            child
+                .wait_for_exit()
+                .await
+                .expect("failed signal must retain waitable child");
+            child
+                .terminate_and_wait()
+                .await
+                .expect("retry real cleanup");
+            child
+                .group
+                .signal(|| anyhow::bail!("signalled twice"))
+                .expect("reaped ownership must never signal again");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ordinary_owned_status_future_prevents_signalling_reaped_group() {
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exit 23"]);
+            let mut child = Child::spawn(command, Stdio::null(), Stdio::null(), Stdio::null())
+                .expect("spawn ordinary child");
+            let status = child.status();
+            // ACP and kernel watchers poll this future after releasing the child lock.
+            assert_eq!(status.await.expect("reap watched child").code(), Some(23));
+            let mut group = child.group.lock().expect("lifecycle lock");
+            group
+                .signal(|| anyhow::bail!("signalled reaped group"))
+                .expect("owned wait must revoke group signalling");
+            drop(group);
+            child.kill().expect("safe cleanup after detached wait");
+            assert!(child.try_status().expect("cached status").is_some());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_natural_exit_closes_descendant_pipes_and_preserves_output() {
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args([
+                "-c",
+                "sleep 60 & printf output; printf diagnostic >&2; exit 23",
+            ]);
+            let mut child =
+                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
+                    .expect("spawn pipe-holding descendant");
+            let cancellation = async {
+                smol::Timer::after(std::time::Duration::from_secs(5)).await;
+                anyhow::anyhow!("descendant retained pipes after leader exit")
+            };
+            let output = child
+                .output_until_cancelled(cancellation)
+                .await
+                .expect("natural exit cleanup");
+            assert_eq!(output.status.code(), Some(23));
+            assert_eq!(output.stdout, b"output");
+            assert_eq!(output.stderr, b"diagnostic");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_deadline_reaps_process_and_closes_pipes() {
+        smol::block_on(async {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sleep 60 & wait"]);
+            let mut child =
+                Child::spawn_contained(command, Stdio::null(), Stdio::piped(), Stdio::piped())
+                    .expect("spawn process for deadline");
+            let deadline = async {
+                smol::Timer::after(std::time::Duration::from_millis(20)).await;
+                anyhow::anyhow!("deadline expired")
+            };
+            let error = child
+                .output_until_cancelled(deadline)
+                .await
+                .expect_err("deadline must cancel");
+            assert_eq!(error.to_string(), "deadline expired");
+            assert!(child.exit_status().is_some());
+            child
+                .terminate_and_wait()
+                .await
+                .expect("repeat deadline cleanup");
         });
     }
 
@@ -570,7 +866,7 @@ mod tests {
             assert!(output.status.success());
             assert_eq!(output.stdout, b"childparent");
             assert!(output.stderr.is_empty());
-            assert!(child.try_status().expect("reaped child status").is_some());
+            assert!(child.exit_status().is_some());
         });
     }
 
@@ -600,7 +896,7 @@ mod tests {
                 .await
                 .expect_err("cancelled process must fail after cleanup");
             assert_eq!(error.to_string(), "test cancellation");
-            assert!(child.try_status().expect("reaped child status").is_some());
+            assert!(child.exit_status().is_some());
             assert!(child.stdout.is_none());
             assert!(child.stderr.is_none());
         });
@@ -630,7 +926,7 @@ mod tests {
                 Some(true)
             );
             child.kill().expect("signal process group");
-            child.status().await.expect("reap signalled child");
+            child.wait().await.expect("reap signalled child");
             child
                 .terminate_and_wait()
                 .await
@@ -870,7 +1166,7 @@ mod windows_tests {
     #[test]
     fn test_cancelled_output_waits_for_descendants() {
         let temp_dir = tempfile::tempdir().expect("process tree directory");
-        let (mut child, descendant) = spawn_process_tree(temp_dir.path(), true);
+        let (mut child, descendant) = spawn_contained_process_tree(temp_dir.path());
         let error = smol::block_on(
             child.output_until_cancelled(futures::future::ready(anyhow::anyhow!(
                 "test cancellation"
@@ -878,7 +1174,7 @@ mod windows_tests {
         )
         .expect_err("cancelled process must fail after cleanup");
         assert_eq!(error.to_string(), "test cancellation");
-        assert!(child.try_status().expect("reaped child status").is_some());
+        assert!(child.exit_status().is_some());
         assert_eq!(
             child.has_running_processes().expect("inactive job"),
             Some(false)
@@ -921,7 +1217,7 @@ mod windows_tests {
     #[test]
     fn test_contained_termination_waits_for_descendants() {
         let temp_dir = tempfile::tempdir().expect("process tree directory");
-        let (mut child, descendant) = spawn_process_tree(temp_dir.path(), true);
+        let (mut child, descendant) = spawn_contained_process_tree(temp_dir.path());
         assert_eq!(
             child.has_running_processes().expect("query contained job"),
             Some(true)
@@ -950,8 +1246,7 @@ mod windows_tests {
         let mut child =
             Child::spawn_contained(command, Stdio::null(), Stdio::null(), Stdio::null())
                 .expect("failed to spawn powershell");
-        let status = smol::block_on(child.status()).expect("failed to await powershell");
-        assert!(status.success(), "powershell failed: {status}");
+        smol::block_on(child.wait_for_exit()).expect("failed to await powershell");
 
         let grandchild_pid = std::fs::read_to_string(&pid_file)
             .expect("powershell did not record grandchild pid")
@@ -976,7 +1271,14 @@ mod windows_tests {
 
     /// Spawns a process tree `powershell -> ping` via `Child::spawn` and
     /// returns the `Child` along with the pid of the grandchild (`ping`).
-    fn spawn_process_tree(temp_dir: &std::path::Path, contained: bool) -> (Child, u32) {
+    fn spawn_contained_process_tree(temp_dir: &std::path::Path) -> (ContainedChild, u32) {
+        spawn_process_tree(temp_dir, Child::spawn_contained)
+    }
+
+    fn spawn_process_tree<T>(
+        temp_dir: &std::path::Path,
+        spawn: impl FnOnce(std::process::Command, Stdio, Stdio, Stdio) -> Result<T>,
+    ) -> (T, u32) {
         let pid_file = temp_dir.join("grandchild_pid");
         let partial_pid_file = temp_dir.join("grandchild_pid.partial");
         let mut command = std::process::Command::new("powershell.exe");
@@ -988,11 +1290,6 @@ mod windows_tests {
             partial_pid_file.display(),
             pid_file.display()
         ));
-        let spawn = if contained {
-            Child::spawn_contained
-        } else {
-            Child::spawn
-        };
         let child = spawn(command, Stdio::null(), Stdio::null(), Stdio::null())
             .expect("failed to spawn powershell");
 
@@ -1048,7 +1345,7 @@ mod windows_tests {
     #[test]
     fn test_kill_terminates_grandchildren() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let (mut child, grandchild_pid) = spawn_process_tree(temp_dir.path(), false);
+        let (mut child, grandchild_pid) = spawn_process_tree(temp_dir.path(), Child::spawn);
 
         child.kill().expect("failed to kill child");
 
@@ -1061,7 +1358,7 @@ mod windows_tests {
     #[test]
     fn test_drop_terminates_grandchildren() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let (child, grandchild_pid) = spawn_process_tree(temp_dir.path(), false);
+        let (child, grandchild_pid) = spawn_process_tree(temp_dir.path(), Child::spawn);
 
         drop(child);
 
