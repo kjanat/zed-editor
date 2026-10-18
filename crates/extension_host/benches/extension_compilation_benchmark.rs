@@ -61,7 +61,7 @@ fn init() -> TestAppContext {
 }
 
 fn wasm_bytes(cx: &TestAppContext, manifest: &mut ExtensionManifest, fs: Arc<dyn Fs>) -> Vec<u8> {
-    let extension_builder = extension_builder();
+    let extension_builder = extension_builder(cx);
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -82,7 +82,7 @@ fn wasm_bytes(cx: &TestAppContext, manifest: &mut ExtensionManifest, fs: Arc<dyn
     std::fs::read(path.join("extension.wasm")).unwrap()
 }
 
-fn extension_builder() -> ExtensionBuilder {
+fn extension_builder(cx: &TestAppContext) -> ExtensionBuilder {
     let user_agent = format!(
         "Zed Extension CLI/{} ({}; {})",
         env!("CARGO_PKG_VERSION"),
@@ -92,7 +92,7 @@ fn extension_builder() -> ExtensionBuilder {
     let http_client = Arc::new(ReqwestClient::user_agent(&user_agent).unwrap());
     // Local dir so that we don't have to download it on every run
     let build_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/.build");
-    ExtensionBuilder::new(http_client, build_dir)
+    ExtensionBuilder::new(http_client, build_dir, cx.executor())
 }
 
 fn wasm_host(cx: &TestAppContext, extensions_dir: &TempTree) -> Arc<WasmHost> {

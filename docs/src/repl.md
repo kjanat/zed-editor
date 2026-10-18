@@ -13,10 +13,10 @@ you can run code interactively in regular editor files.
 
 <figure style="width: 100%; margin: 0; overflow: hidden; border-top-left-radius: 2px; border-top-right-radius: 2px;">
   <video loop controls playsinline>
-    <source
-      src="https://customer-snccc0j9v3kfzkif.cloudflarestream.com/aec66e79f23d6d1a0bee5e388a3f17cc/downloads/default.mp4"
-      type='video/mp4; codecs="avc1.4D401E, mp4a.40.2"'
-    />
+      <source
+        src="https://customer-snccc0j9v3kfzkif.cloudflarestream.com/aec66e79f23d6d1a0bee5e388a3f17cc/downloads/default.mp4"
+        type='video/mp4; codecs="avc1.4D401E, mp4a.40.2"'
+      />
   </video>
 </figure>
 

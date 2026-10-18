@@ -50,6 +50,7 @@ const WASI_SDK_PLATFORM: Option<&str> = cfg_select! {
 
 pub struct ExtensionBuilder {
     cache_dir: PathBuf,
+    executor: BackgroundExecutor,
     pub http: Arc<dyn HttpClient>,
     build_lock: Mutex<()>,
     #[cfg(any(test, feature = "test-support"))]
@@ -60,21 +61,22 @@ pub struct ExtensionBuilder {
 type PrecompileHook =
     Arc<dyn Fn(&Path) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
 
-#[derive(Default)]
 struct BuildSession {
+    executor: BackgroundExecutor,
     // A failed sibling or timeout drops command futures before teardown. Keep
     // their processes and pipes here so cancellation cannot lose the exit barrier.
     children: parking_lot::Mutex<Vec<Arc<BuildProcess>>>,
 }
 
 struct BuildProcess {
-    child: Mutex<util::process::Child>,
+    child: Mutex<util::process::ContainedChild>,
     stdout: Mutex<Box<dyn io::AsyncRead + Send + Unpin>>,
     stderr: Mutex<Box<dyn io::AsyncRead + Send + Unpin>>,
 }
 
 impl BuildProcess {
     async fn terminate(&self) -> Result<()> {
+        self.child.lock().await.kill()?;
         let (status, stdout, stderr) = futures::join!(
             async { self.child.lock().await.terminate_and_wait().await },
             async { io::copy(&mut *self.stdout.lock().await, &mut io::sink()).await },
@@ -88,8 +90,16 @@ impl BuildProcess {
 }
 
 impl BuildSession {
+    fn new(executor: BackgroundExecutor) -> Self {
+        Self {
+            executor,
+            children: Default::default(),
+        }
+    }
+
     async fn output(&self, command: std::process::Command) -> Result<std::process::Output> {
         let mut child = util::process::Child::spawn_contained(
+            self.executor.scheduler_executor(),
             command,
             Stdio::null(),
             Stdio::piped(),
@@ -106,7 +116,7 @@ impl BuildSession {
         let mut stdout_bytes = Vec::new();
         let mut stderr_bytes = Vec::new();
         let (status, _, _) = futures::try_join!(
-            async { process.child.lock().await.status().await },
+            async { process.child.lock().await.wait().await },
             async {
                 process
                     .stdout
@@ -114,6 +124,7 @@ impl BuildSession {
                     .await
                     .read_to_end(&mut stdout_bytes)
                     .await
+                    .context("reading build stdout")
             },
             async {
                 process
@@ -122,6 +133,7 @@ impl BuildSession {
                     .await
                     .read_to_end(&mut stderr_bytes)
                     .await
+                    .context("reading build stderr")
             },
         )?;
         process.terminate().await?;
@@ -201,9 +213,14 @@ struct CargoTomlPackage {
 }
 
 impl ExtensionBuilder {
-    pub fn new(http_client: Arc<dyn HttpClient>, cache_dir: PathBuf) -> Self {
+    pub fn new(
+        http_client: Arc<dyn HttpClient>,
+        cache_dir: PathBuf,
+        executor: BackgroundExecutor,
+    ) -> Self {
         Self {
             cache_dir,
+            executor,
             http: http_client,
             build_lock: Mutex::new(()),
             #[cfg(any(test, feature = "test-support"))]
@@ -273,7 +290,7 @@ impl ExtensionBuilder {
             guard = build_lock => guard,
             () = timeout => anyhow::bail!("extension compilation timed out waiting for another build"),
         };
-        let session = BuildSession::default();
+        let session = BuildSession::new(self.executor.clone());
         let result = {
             let compilation = self
                 .compile_extension_inner(extension_dir, extension_manifest, options, fs, &session)
@@ -1052,7 +1069,7 @@ mod tests {
         let Ok(mode) = std::env::var("ZED_BUILD_PROCESS_FIXTURE") else {
             return;
         };
-        if mode == "parent" {
+        if mode == "parent" || mode == "orphan" {
             let mut command = util::command::new_command(
                 std::env::current_exe().expect("current test executable"),
             );
@@ -1066,7 +1083,29 @@ mod tests {
                 .stdin(util::command::Stdio::inherit())
                 .stdout(util::command::Stdio::inherit())
                 .stderr(util::command::Stdio::inherit());
-            futures::executor::block_on(command.status()).expect("wait for build descendant");
+            if mode == "parent" {
+                futures::executor::block_on(command.status()).expect("wait for build descendant");
+            } else {
+                let mut descendant = command.spawn().expect("spawn build descendant");
+                let readiness =
+                    std::env::var_os("ZED_BUILD_PROCESS_READY").expect("descendant readiness path");
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while !Path::new(&readiness).is_file() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "descendant never became ready"
+                    );
+                    assert!(
+                        descendant
+                            .try_status()
+                            .expect("descendant status")
+                            .is_none()
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                println!("parent output");
+                eprintln!("parent diagnostic");
+            }
         } else {
             let readiness =
                 std::env::var_os("ZED_BUILD_PROCESS_READY").expect("descendant readiness path");
@@ -1078,6 +1117,135 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_build_session_cleans_descendant_pipes_after_natural_exit(
+        cx: &mut TestAppContext,
+    ) {
+        cx.background_executor.allow_parking();
+        let executor = cx.background_executor.clone();
+        cx.background_executor
+            .spawn(async move {
+                let directory = tempfile::tempdir().expect("readiness directory");
+                let mut command = util::command::new_std_command(
+                    std::env::current_exe().expect("test executable"),
+                );
+                command
+                    .args([
+                        "--exact",
+                        "extension_builder::tests::build_process_fixture",
+                        "--nocapture",
+                    ])
+                    .env("ZED_BUILD_PROCESS_FIXTURE", "orphan")
+                    .env("ZED_BUILD_PROCESS_READY", directory.path().join("ready"));
+                let session = super::BuildSession::new(executor);
+                let result = session.output(command).await;
+                session.terminate().await.expect("finish build cleanup");
+                let output = result.expect("natural exit must complete without deadline");
+                assert!(output.status.success());
+                assert!(String::from_utf8_lossy(&output.stdout).contains("parent output"));
+                assert!(String::from_utf8_lossy(&output.stderr).contains("parent diagnostic"));
+                assert!(session.children.lock().is_empty());
+            })
+            .await;
+    }
+
+    #[gpui::test]
+    async fn test_failed_build_sibling_keeps_process_owned_until_cleanup(cx: &mut TestAppContext) {
+        use futures::FutureExt as _;
+        cx.background_executor.allow_parking();
+        let directory = tempfile::tempdir().expect("readiness directory");
+        let readiness = directory.path().join("ready");
+        let session = super::BuildSession::new(cx.background_executor.clone());
+        let mut command =
+            util::command::new_std_command(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "extension_builder::tests::build_process_fixture",
+                "--nocapture",
+            ])
+            .env("ZED_BUILD_PROCESS_FIXTURE", "parent")
+            .env("ZED_BUILD_PROCESS_READY", &readiness);
+        let sibling_failure = async {
+            // Let the native descendant inherit its pipes before a sibling fails.
+            cx.background_executor
+                .spawn(async move {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                    while !readiness.is_file() {
+                        anyhow::ensure!(
+                            std::time::Instant::now() < deadline,
+                            "descendant never became ready"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await?;
+            let missing = util::command::new_std_command("zed-missing-build-command");
+            session.output(missing).await
+        };
+        let result = {
+            let running = session.output(command).fuse();
+            let failure = sibling_failure.fuse();
+            futures::pin_mut!(running, failure);
+            futures::try_join!(running, failure)
+        };
+        assert!(result.is_err());
+        let processes = session.children.lock().clone();
+        assert_eq!(processes.len(), 1);
+        session
+            .terminate()
+            .await
+            .expect("clean up failed build siblings");
+        assert!(processes.iter().all(|process| {
+            process
+                .child
+                .try_lock()
+                .is_some_and(|child| child.exit_status().is_some())
+        }));
+        assert!(session.children.lock().is_empty());
+        session.terminate().await.expect("repeat session cleanup");
+    }
+
+    #[gpui::test]
+    async fn test_build_cleanup_reaps_child_when_pipe_drain_fails(cx: &mut TestAppContext) {
+        cx.background_executor.allow_parking();
+        struct BrokenPipe;
+        impl futures::io::AsyncRead for BrokenPipe {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buffer: &mut [u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                std::task::Poll::Ready(Err(std::io::Error::other("injected pipe failure")))
+            }
+        }
+        let mut command =
+            util::command::new_std_command(std::env::current_exe().expect("test executable"));
+        command.args(["--exact", "extension_builder::tests::build_process_fixture"]);
+        // Prevent inherited fixture mode when nextest itself was launched by a fixture.
+        command.env_remove("ZED_BUILD_PROCESS_FIXTURE");
+        let child = util::process::Child::spawn_contained(
+            cx.background_executor.scheduler_executor(),
+            command,
+            std::process::Stdio::null(),
+            std::process::Stdio::null(),
+            std::process::Stdio::null(),
+        )
+        .expect("spawn build child");
+        let process = super::BuildProcess {
+            child: futures::lock::Mutex::new(child),
+            stdout: futures::lock::Mutex::new(Box::new(BrokenPipe)),
+            stderr: futures::lock::Mutex::new(Box::new(futures::io::empty())),
+        };
+        let error = process
+            .terminate()
+            .await
+            .expect_err("pipe cleanup failure must propagate");
+        assert!(format!("{error:#}").contains("injected pipe failure"));
+        assert!(process.child.lock().await.exit_status().is_some());
+    }
+
+    #[gpui::test]
     async fn test_cancelled_build_session_reaps_siblings_and_descendants(cx: &mut TestAppContext) {
         use futures::{AsyncReadExt as _, FutureExt as _};
         cx.background_executor.allow_parking();
@@ -1086,7 +1254,7 @@ mod tests {
             directory.path().join("first"),
             directory.path().join("second"),
         ];
-        let session = super::BuildSession::default();
+        let session = super::BuildSession::new(cx.background_executor.clone());
         let command = |readiness: &Path| {
             let mut command = util::command::new_std_command(
                 std::env::current_exe().expect("current test executable"),
@@ -1131,13 +1299,8 @@ mod tests {
             .expect("terminate build process trees");
         assert!(session.children.lock().is_empty());
         for process in processes {
-            let mut child = process.child.lock().await;
-            assert!(
-                child
-                    .try_status()
-                    .expect("read child exit status")
-                    .is_some()
-            );
+            let child = process.child.lock().await;
+            assert!(child.exit_status().is_some());
             #[cfg(windows)]
             assert_eq!(
                 child.has_running_processes().expect("query job"),
