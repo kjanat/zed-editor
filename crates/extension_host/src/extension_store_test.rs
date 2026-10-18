@@ -7059,15 +7059,112 @@ async fn test_git_option_like_ref_reports_failure_without_replacing_install(
 async fn test_git_repository_url_is_not_parsed_as_option(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let remote = GitExtensionRemote::new("git-extension", None);
+    let fs: Arc<dyn Fs> = RealFs::new(None, cx.executor());
     let source = crate::GitExtensionSource {
         url: "--get-url".into(),
         reference: None,
         path: None,
     };
-    let error = crate::remote_commit(&cx.executor(), &remote.seed, &source)
+    let error = crate::remote_commit(&cx.executor(), &fs, &remote.seed, &source)
         .await
         .expect_err("an option-like repository must not turn a remote check into --get-url");
     assert!(format!("{error:#}").contains("git ls-remote -- --get-url"));
+}
+
+#[gpui::test]
+async fn test_relative_git_url_updates_from_preparation_directory(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let mut remote = GitExtensionRemote::new("git-extension", Some("editors/ext"));
+    let staging = extensions_dir.join("staging");
+    std::fs::create_dir_all(&staging).expect("staging directory");
+    let bare = staging.join("relative-remote.git");
+    std::fs::rename(&remote.bare, &bare).expect("relative remote fixture");
+    remote.bare = bare;
+    remote.url = "../relative-remote.git".into();
+    let source = remote.source();
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), source.clone(), cx)
+        })
+        .await
+        .expect("install relative Git source");
+    let marker = extensions_dir.join("sources/git-extension/unchanged-marker");
+    std::fs::write(&marker, "preserve unchanged checkout").expect("checkout marker");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("check unchanged relative source");
+    assert!(git_failures(&store, cx).is_empty());
+    assert!(marker.exists(), "unchanged source must not rebuild");
+
+    let commit = remote.publish("git-extension", "0.2.0");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("update relative source");
+    assert!(git_failures(&store, cx).is_empty());
+    let installed = installed_source(&store, "git-extension", cx).expect("updated Git source");
+    assert!(
+        installed.matches(&source),
+        "configured relative identity is preserved"
+    );
+    assert_eq!(installed.commit, commit);
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.2.0")
+    );
+}
+
+#[gpui::test]
+async fn test_pinned_relative_git_url_repairs_installed_commit(cx: &mut TestAppContext) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let mut remote = GitExtensionRemote::new("git-extension", None);
+    let staging = extensions_dir.join("staging");
+    std::fs::create_dir_all(&staging).expect("staging directory");
+    let bare = staging.join("relative-remote.git");
+    std::fs::rename(&remote.bare, &bare).expect("relative remote fixture");
+    remote.bare = bare;
+    remote.url = "../relative-remote.git".into();
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("install relative Git source");
+    let installed = installed_source(&store, "git-extension", cx);
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|settings, cx| {
+            settings.update_user_settings(cx, |content| {
+                content
+                    .extension
+                    .auto_update_extensions
+                    .insert("git-extension".into(), false);
+            });
+        });
+    });
+    remote.publish("git-extension", "0.2.0");
+    let fs = store.read_with(cx, |store, _| store.fs.clone());
+    fs.remove_file(
+        &extensions_dir.join("installed/git-extension"),
+        RemoveOptions::default(),
+    )
+    .await
+    .expect("remove pinned extension link");
+    store
+        .update(cx, |store, cx| store.check_for_git_updates(cx))
+        .await
+        .expect("repair pinned relative source");
+    assert!(git_failures(&store, cx).is_empty());
+    assert_eq!(installed_source(&store, "git-extension", cx), installed);
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert!(
+        extensions_dir
+            .join("installed/git-extension/extension.toml")
+            .is_file()
+    );
 }
 
 #[gpui::test]

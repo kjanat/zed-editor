@@ -869,7 +869,7 @@ impl WasmHost {
             executor.spawn(async move { host.compile_extension(&manifest_id, &wasm_bytes) })
         };
 
-        let load_extension = |zed_api_version: Version, component: Component| async move {
+        let load_extension = move |zed_api_version: Version, component: Component| async move {
             let instantiate = {
                 let this = this.clone();
                 let manifest = manifest.clone();

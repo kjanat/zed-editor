@@ -917,14 +917,20 @@ async fn validate_git_snippet_resources(
 
 async fn remote_commit(
     executor: &BackgroundExecutor,
-    directory: &Path,
+    fs: &Arc<dyn Fs>,
+    staging_dir: &Path,
     source: &GitExtensionSource,
 ) -> Result<Option<String>> {
+    fs.create_dir(staging_dir).await?;
+    // Relative repository URLs must resolve from the same staging-child layout
+    // as prepare_git_source, even after its checkout moves into sources/.
+    let directory = tempfile::tempdir_in(staging_dir)?;
+    run_git(executor, directory.path(), &["init"]).await?;
     let reference = source.reference.as_deref().unwrap_or("HEAD");
     let peeled = format!("{reference}^{{}}");
     let output = run_git(
         executor,
-        directory,
+        directory.path(),
         &["ls-remote", "--", &source.url, reference, &peeled],
     )
     .await?;
@@ -2071,7 +2077,7 @@ impl ExtensionStore {
                                     if !auto_update {
                                         return anyhow::Ok(needs_reload);
                                     }
-                                    match remote_commit(&executor, &sources_dir, &source).await? {
+                                    match remote_commit(&executor, &fs, &staging_dir, &source).await? {
                                         Some(remote_commit)
                                             if remote_commit == installed.commit =>
                                         {
