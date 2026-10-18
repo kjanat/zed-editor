@@ -748,7 +748,9 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         // The on-disk manifest limits the number of FS calls that need to be made
         // on startup.
         assert_eq!(fs.read_dir_call_count(), prev_fs_read_dir_call_count);
-        assert_eq!(fs.metadata_call_count(), prev_fs_metadata_call_count + 2);
+        // Two cache freshness reads, plus three journal probes both before reading
+        // the cache and after acquiring the publication gate for initial loading.
+        assert_eq!(fs.metadata_call_count(), prev_fs_metadata_call_count + 8);
     });
 
     store.update(cx, |store, cx| {
@@ -5669,11 +5671,16 @@ async fn test_marketplace_preparation_failure_keeps_git_install(cx: &mut TestApp
             .await
             .expect_err("preparation failure must preserve installed extension");
         if let Some(theme) = theme {
-            let theme_path = match theme {
-                LegacyMissingDeclared => "missing.json",
-                DeclaredMalformed | LegacyDiscoveredMalformed => "themes/theme.json",
+            let expected_context = match theme {
+                LegacyMissingDeclared => "reading theme missing.json",
+                DeclaredMalformed | LegacyDiscoveredMalformed => {
+                    "validating theme themes/theme.json"
+                }
             };
-            assert!(format!("{error:#}").contains(&format!("validating theme {theme_path}")));
+            assert!(
+                format!("{error:#}").contains(expected_context),
+                "expected {expected_context}: {error:#}"
+            );
         }
         assert_eq!(
             std::fs::read_link(&installed).expect("old link remains"),
@@ -7531,20 +7538,27 @@ async fn test_git_update_skips_an_extension_uninstalled_after_snapshot(cx: &mut 
         .await
         .expect("install should succeed");
 
-    let source_lock = store.read_with(cx, |store, _| store.git_source_lock.clone());
-    let source_guard = source_lock.lock().await;
+    let (source_lock, publisher) = store.read_with(cx, |store, _| {
+        (store.git_source_lock.clone(), store.publisher.clone())
+    });
+    let publication_guard = publisher.lock().await;
+    let uninstall = store.update(cx, |store, cx| {
+        store.uninstall_extension("git-extension".into(), cx)
+    });
+    cx.run_until_parked();
+    assert!(
+        source_lock.try_lock().is_none(),
+        "uninstall owns the source lock"
+    );
+    assert!(installed_version(&store, "git-extension", cx).is_some());
     let update = store.update(cx, |store, cx| store.check_for_git_updates(cx));
     cx.run_until_parked();
-    store
-        .update(cx, |store, cx| {
-            store.uninstall_extension("git-extension".into(), cx)
-        })
-        .await
-        .expect("uninstall should succeed");
+    drop(publication_guard);
+    uninstall.await.expect("uninstall should succeed");
     assert!(installed_version(&store, "git-extension", cx).is_none());
-    drop(source_guard);
     update.await.expect("update check should succeed");
 
+    assert!(installed_version(&store, "git-extension", cx).is_none());
     assert!(git_failures(&store, cx).is_empty());
     assert!(
         store

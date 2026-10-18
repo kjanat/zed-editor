@@ -80,11 +80,11 @@ use language_collisions::LanguageCollisions;
 pub use language_collisions::{LanguageCollision, LanguageCollisionKey};
 
 use crate::headless_host::hash_directory_contents;
+#[cfg(test)]
+use extension_transaction::GitSourceBackupState;
 use extension_transaction::{
     ExtensionPublisher, GitSourceDisposition, PreparedExtension, StagedDirectory,
 };
-#[cfg(test)]
-use extension_transaction::{GitSourceBackupState, recover_git_source};
 
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
