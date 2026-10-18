@@ -557,8 +557,8 @@ fn terminate_process_group(process_group: libc::pid_t) -> Result<()> {
             if result == -1 && error.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            assert_eq!(
-                result, 0,
+            anyhow::ensure!(
+                result == 0,
                 "leader reaped before process group signal: {error}"
             );
             break;
