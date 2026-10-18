@@ -537,6 +537,33 @@ impl Drop for ContainedChild {
 
 #[cfg(not(windows))]
 fn terminate_process_group(process_group: libc::pid_t) -> Result<()> {
+    #[cfg(test)]
+    {
+        let process_id = u32::try_from(process_group).expect("owned child PID");
+        #[cfg(target_os = "freebsd")]
+        let process_id = i64::from(process_id);
+        loop {
+            let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            // SAFETY: the test observes ownership without consuming child status.
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    process_id,
+                    information.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            };
+            let error = std::io::Error::last_os_error();
+            if result == -1 && error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            assert_eq!(
+                result, 0,
+                "leader reaped before process group signal: {error}"
+            );
+            break;
+        }
+    }
     // SAFETY: contained children start their own session and process group.
     if unsafe { libc::killpg(process_group, libc::SIGKILL) } == 0 {
         return Ok(());
