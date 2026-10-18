@@ -6627,6 +6627,16 @@ async fn check_restart_recovers_git_relink(
 ) {
     use GitRelinkInterruption::*;
     let (_tree, extensions_dir, store, debounce) = git_extension_store(cx).await;
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|settings, cx| {
+            settings.update_user_settings(cx, |content| {
+                content
+                    .extension
+                    .auto_update_extensions
+                    .insert("git-extension".into(), false);
+            });
+        });
+    });
     let remote = GitExtensionRemote::new("git-extension", None);
     store
         .update(cx, |store, cx| {
@@ -6646,8 +6656,18 @@ async fn check_restart_recovers_git_relink(
     let mut new_source = installed_source(&store, "git-extension", cx)
         .expect("installed extension should have a source record");
     new_source.path = Some("nested".into());
-    let new_record = toml::to_string(&new_source).expect("source record should serialize");
     let new_manifest = old_manifest.replace("0.1.0", "0.2.0");
+    std::fs::create_dir_all(remote.seed.join("nested")).expect("replacement extension directory");
+    std::fs::write(remote.seed.join("nested/extension.toml"), &new_manifest)
+        .expect("replacement extension manifest");
+    new_source.commit = remote.publish("git-extension", "0.2.0");
+    new_source.checkout_tree = Some(git_in(&remote.seed, &["rev-parse", "HEAD^{tree}"]));
+    let new_record = toml::to_string(&new_source).expect("source record should serialize");
+    let recovery_marker = "recovery-checkout-marker";
+    std::fs::write(live.join(recovery_marker), "previous checkout")
+        .expect("mark previous checkout");
+    std::fs::write(remote.seed.join(recovery_marker), "replacement checkout")
+        .expect("mark replacement checkout");
     drop((store, debounce));
 
     let backup = extensions_dir.join("staging/git-source.previous");
@@ -6665,10 +6685,7 @@ async fn check_restart_recovers_git_relink(
     )
     .expect("transaction state fixture should be written");
     std::fs::rename(&live, backup.join("checkout")).expect("transaction fixture entry should move");
-    std::fs::create_dir_all(live.join("nested"))
-        .expect("transaction fixture directory should be created");
-    std::fs::write(live.join("nested/extension.toml"), &new_manifest)
-        .expect("transaction fixture should be written");
+    std::fs::rename(&remote.seed, &live).expect("move the prepared Git checkout into place");
     if interruption != CheckoutReplaced {
         std::fs::rename(&installed, backup.join("installed"))
             .expect("transaction fixture entry should move");
@@ -6710,6 +6727,15 @@ async fn check_restart_recovers_git_relink(
     let (restarted, _debounce) =
         extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
     let committed = interruption == Committed;
+    assert_eq!(
+        std::fs::read_to_string(live.join(recovery_marker)).expect("retained checkout marker"),
+        if committed {
+            "replacement checkout"
+        } else {
+            "previous checkout"
+        },
+        "recovery must preserve the checkout rather than reinstall it: {interruption:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(&record_path)
             .expect("extension fixture contents should be readable"),
@@ -6754,7 +6780,7 @@ enum GitSourceSwapInterruption {
 fn interrupt_git_source_swap(
     extensions_dir: &Path,
     interruption: GitSourceSwapInterruption,
-    new_manifest: &str,
+    new_checkout: &Path,
     new_record: &str,
 ) {
     use GitSourceSwapInterruption::*;
@@ -6775,8 +6801,7 @@ fn interrupt_git_source_swap(
         interruption,
         NewCheckoutMovedIn | FirstCheckoutMovedIn | RecordWritten
     ) {
-        std::fs::create_dir_all(&live).unwrap();
-        std::fs::write(live.join("extension.toml"), new_manifest).unwrap();
+        std::fs::rename(new_checkout, &live).expect("move the prepared Git checkout into place");
     }
     if interruption == RecordWritten {
         std::fs::write(
@@ -6842,13 +6867,23 @@ async fn check_restart_finishes_git_source_swap(
         .unwrap();
     let record_path = extensions_dir.join("sources/git-extension.toml");
     let old_record = std::fs::read_to_string(&record_path).unwrap();
-    let old_manifest =
-        std::fs::read_to_string(extensions_dir.join("sources/git-extension/extension.toml"))
-            .unwrap();
-    let old_commit = installed_source(&store, "git-extension", cx)
-        .unwrap()
-        .commit;
-    let new_record = old_record.replace(&old_commit, &remote.publish("git-extension", "0.2.0"));
+    let mut new_source =
+        installed_source(&store, "git-extension", cx).expect("installed Git source");
+    new_source.commit = remote.publish("git-extension", "0.2.0");
+    // This metadata-only fixture has no build outputs, so its committed tree is
+    // also the validated checkout tree. Keep the record and real checkout paired.
+    new_source.checkout_tree = Some(git_in(&remote.seed, &["rev-parse", "HEAD^{tree}"]));
+    let new_record = toml::to_string(&new_source).expect("replacement source record");
+    let recovery_marker = "recovery-checkout-marker";
+    std::fs::write(
+        extensions_dir
+            .join("sources/git-extension")
+            .join(recovery_marker),
+        "previous checkout",
+    )
+    .expect("mark previous checkout");
+    std::fs::write(remote.seed.join(recovery_marker), "replacement checkout")
+        .expect("mark replacement checkout");
     if interruption == FirstCheckoutMovedIn {
         store
             .update(cx, |store, cx| {
@@ -6858,12 +6893,7 @@ async fn check_restart_finishes_git_source_swap(
             .unwrap();
     }
     drop((store, debounce));
-    interrupt_git_source_swap(
-        &extensions_dir,
-        interruption,
-        &old_manifest.replace("0.1.0", "0.2.0"),
-        &new_record,
-    );
+    interrupt_git_source_swap(&extensions_dir, interruption, &remote.seed, &new_record);
 
     let (restarted, _restarted_debounce) =
         extension_store_in(&extensions_dir, FakeHttpClient::with_200_response(), cx).await;
@@ -6886,6 +6916,21 @@ async fn check_restart_finishes_git_source_swap(
         extensions_dir.join("sources/git-extension").exists(),
         expected.is_some(),
         "{interruption:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            extensions_dir
+                .join("sources/git-extension")
+                .join(recovery_marker)
+        )
+        .ok()
+        .as_deref(),
+        match interruption {
+            FirstCheckoutMovedIn => None,
+            RecordWritten => Some("replacement checkout"),
+            _ => Some("previous checkout"),
+        },
+        "recovery must preserve the checkout rather than reinstall it: {interruption:?}"
     );
     assert_eq!(
         std::fs::read_dir(extensions_dir.join("staging"))
@@ -6911,15 +6956,17 @@ async fn test_git_install_restores_an_interrupted_swap_first(cx: &mut TestAppCon
     let old_manifest =
         std::fs::read_to_string(extensions_dir.join("sources/git-extension/extension.toml"))
             .unwrap();
-    let old_commit = installed_source(&store, "git-extension", cx)
-        .unwrap()
-        .commit;
+    let mut new_source =
+        installed_source(&store, "git-extension", cx).expect("installed Git source");
     let commit = remote.publish("git-extension", "0.2.0");
+    new_source.commit = commit.clone();
+    new_source.checkout_tree = Some(git_in(&remote.seed, &["rev-parse", "HEAD^{tree}"]));
+    let new_record = toml::to_string(&new_source).expect("replacement source record");
     interrupt_git_source_swap(
         &extensions_dir,
         GitSourceSwapInterruption::NewCheckoutMovedIn,
-        &old_manifest.replace("0.1.0", "0.2.0"),
-        &old_record.replace(&old_commit, &commit),
+        &remote.seed,
+        &new_record,
     );
 
     let other = GitExtensionRemote::new("other-extension", None);
