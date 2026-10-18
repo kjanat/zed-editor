@@ -423,12 +423,16 @@ async fn build_git_source(
     let checkout = tempfile::tempdir_in(staging_dir)?;
     let directory = checkout.path();
     run_git(directory, &["init"]).await?;
-    run_git(directory, &["remote", "add", "origin", &source.url]).await?;
+    run_git(directory, &["remote", "add", "--", "origin", &source.url]).await?;
     // Repairs of pinned extensions preserve both the installed commit and configured source.
     let reference = checkout_commit
         .or(source.reference.as_deref())
         .unwrap_or("HEAD");
-    run_git(directory, &["fetch", "--depth", "1", "origin", reference]).await?;
+    run_git(
+        directory,
+        &["fetch", "--depth", "1", "--", "origin", reference],
+    )
+    .await?;
     run_git(
         directory,
         &["checkout", "--force", "--detach", "FETCH_HEAD"],
@@ -473,13 +477,18 @@ async fn build_git_source(
     Ok(extension_path)
 }
 
-async fn validate_prepared_extension(
+struct PreparedMarketplaceExtension {
+    staged: StagedDirectory,
+    manifest: ExtensionManifest,
+    external_grammars: BTreeSet<Arc<str>>,
+    affected_grammars: BTreeSet<Arc<str>>,
+}
+
+async fn manifest_with_defaults(
     fs: &Arc<dyn Fs>,
     directory: &Path,
-    sources_dir: &Path,
     mut manifest: ExtensionManifest,
-    wasm_host: &Arc<WasmHost>,
-) -> Result<()> {
+) -> Result<ExtensionManifest> {
     let declared = manifest.clone();
     extension::extension_builder::populate_defaults(&mut manifest, directory, fs.clone()).await?;
     // Legacy defaults clear declarations; retain them so missing explicit resources still fail.
@@ -498,6 +507,17 @@ async fn validate_prepared_extension(
             manifest.grammars.entry(name).or_insert(grammar);
         }
     }
+    Ok(manifest)
+}
+
+async fn validate_prepared_extension(
+    fs: &Arc<dyn Fs>,
+    directory: &Path,
+    sources_dir: &Path,
+    manifest: ExtensionManifest,
+    wasm_host: &Arc<WasmHost>,
+) -> Result<()> {
+    let manifest = manifest_with_defaults(fs, directory, manifest).await?;
     validate_git_theme_resources(fs, directory, &manifest).await?;
     validate_git_snippet_resources(fs, directory, &manifest).await?;
     validate_git_language_resources(fs, directory, &manifest, &wasm_host.proxy).await?;
@@ -714,7 +734,11 @@ async fn validate_git_snippet_resources(
 async fn remote_commit(directory: &Path, source: &GitExtensionSource) -> Result<Option<String>> {
     let reference = source.reference.as_deref().unwrap_or("HEAD");
     let peeled = format!("{reference}^{{}}");
-    let output = run_git(directory, &["ls-remote", &source.url, reference, &peeled]).await?;
+    let output = run_git(
+        directory,
+        &["ls-remote", "--", &source.url, reference, &peeled],
+    )
+    .await?;
     let refs = output
         .lines()
         .filter_map(|line| {
@@ -1393,24 +1417,72 @@ impl ExtensionStore {
         extension_ids: Vec<Arc<str>>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
-        let installs = extension_ids
-            .into_iter()
-            .map(|extension_id| {
-                let install = self.install_latest_extension_task(extension_id.clone(), cx);
-                (extension_id, install)
-            })
-            .collect::<Vec<_>>();
-        cx.spawn(async move |_, _| {
-            join_all(
-                installs
-                    .into_iter()
-                    .map(|(extension_id, install)| async move {
-                        if let Err(error) = install.await {
-                            log::error!("failed to install extension {extension_id}: {error:#}");
+        cx.spawn(async move |this, cx| {
+            let mut downloads = Vec::new();
+            for extension_id in extension_ids {
+                let operation = match Self::begin_operation(
+                    &this, &extension_id, ExtensionOperation::Install, cx,
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        log::error!("failed to install extension {extension_id}: {error:#}");
+                        continue;
+                    }
+                };
+                let download = this.update(cx, |this, cx| {
+                    let url = this.latest_extension_url(&extension_id, cx)?;
+                    anyhow::Ok(this.prepare_marketplace_extension(extension_id.clone(), url, cx))
+                });
+                match download {
+                    Ok(Ok(download)) => downloads.push((extension_id, operation, download)),
+                    Ok(Err(error)) | Err(error) => {
+                        log::error!("failed to install extension {extension_id}: {error:#}");
+                    }
+                }
+            }
+            let mut pending = join_all(downloads.into_iter().map(
+                |(extension_id, operation, download)| async move {
+                    match download.await {
+                        Ok(prepared) => Some((extension_id, operation, prepared)),
+                        Err(error) => {
+                            log::error!("failed to prepare extension {extension_id}: {error:#}");
+                            None
                         }
-                    }),
-            )
-            .await;
+                    }
+                },
+            ))
+            .await
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+
+            // Resolve against the whole batch before publication: a consumer must not
+            // validate against an old provider or whichever concurrent provider finishes first.
+            while !pending.is_empty() {
+                let ready = pending.iter().position(|(extension_id, _, prepared)| {
+                    !pending.iter().any(|(other_id, _, provider)| {
+                        other_id != extension_id
+                            && prepared.external_grammars.iter().any(|name| {
+                                provider.affected_grammars.contains(name)
+                            })
+                    })
+                });
+                let Some(ready) = ready else {
+                    for (extension_id, _, prepared) in &pending {
+                        log::error!(
+                            "cannot install extension {extension_id}: cyclic grammar dependencies {:?}",
+                            prepared.external_grammars
+                        );
+                    }
+                    break;
+                };
+                let (extension_id, _operation, prepared) = pending.remove(ready);
+                if let Err(error) = Self::install_prepared_marketplace_extension(
+                    &this, &extension_id, prepared, ExtensionOperation::Install, cx,
+                ).await {
+                    log::error!("failed to install extension {extension_id}: {error:#}");
+                }
+            }
         })
     }
 
@@ -1849,130 +1921,171 @@ impl ExtensionStore {
         operation: ExtensionOperation,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        cx.spawn(async move |this, cx| {
+            let _operation = Self::begin_operation(&this, &extension_id, operation, cx)?;
+            let prepared = this
+                .update(cx, |this, cx| {
+                    this.prepare_marketplace_extension(extension_id.clone(), url, cx)
+                })?
+                .await?;
+            Self::install_prepared_marketplace_extension(
+                &this,
+                &extension_id,
+                prepared,
+                operation,
+                cx,
+            )
+            .await
+        })
+    }
+
+    fn prepare_marketplace_extension(
+        &self,
+        extension_id: Arc<str>,
+        url: Url,
+        cx: &Context<Self>,
+    ) -> Task<Result<PreparedMarketplaceExtension>> {
         if !is_single_path_component(&extension_id) {
             return Task::ready(Err(anyhow!("extension id must be a single path component")));
         }
         let staging_dir = self.staging_dir.clone();
         let http_client = self.http_client.clone();
-        let sources_dir = self.sources_dir.clone();
-        let wasm_host = self.wasm_host.clone();
         let fs = self.fs.clone();
         let executor = cx.background_executor().clone();
-        let publisher = self.publisher.clone();
-        let git_source_lock = self.git_source_lock.clone();
+        let proxy = self.proxy.clone();
+        let mut affected_grammars = self
+            .extension_index
+            .extensions
+            .get(&extension_id)
+            .map(|entry| {
+                entry
+                    .manifest
+                    .grammars
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        cx.background_spawn(async move {
+            let mut response = http_client
+                .get(url.as_ref(), Default::default(), true)
+                .await
+                .context("downloading extension")?;
 
-        match self.outstanding_operations.entry(extension_id.clone()) {
-            btree_map::Entry::Occupied(_) => {
-                return Task::ready(Err(anyhow!(
-                    "extension {extension_id} already has an operation in progress"
-                )));
-            }
-            btree_map::Entry::Vacant(e) => e.insert(operation),
-        };
-        cx.notify();
+            let content_length = response
+                .headers()
+                .get(http_client::http::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok()?.parse::<usize>().ok());
 
-        cx.spawn(async move |this, cx| {
-            let _finish = cx.on_drop(&this, {
-                let extension_id = extension_id.clone();
-                move |this, cx| {
-                    this.outstanding_operations.remove(extension_id.as_ref());
-                    cx.notify();
-                }
-            });
+            let mut body = BufReader::new(response.body_mut());
+            let mut tar_gz_bytes = Vec::new();
+            body.read_to_end(&mut tar_gz_bytes).await?;
 
-            let prepared_id = extension_id.clone();
-            let staged = cx
-                .background_spawn(async move {
-                    let mut response = http_client
-                        .get(url.as_ref(), Default::default(), true)
-                        .await
-                        .context("downloading extension")?;
-
-                    let content_length = response
-                        .headers()
-                        .get(http_client::http::header::CONTENT_LENGTH)
-                        .and_then(|value| value.to_str().ok()?.parse::<usize>().ok());
-
-                    let mut body = BufReader::new(response.body_mut());
-                    let mut tar_gz_bytes = Vec::new();
-                    body.read_to_end(&mut tar_gz_bytes).await?;
-
-                    if let Some(content_length) = content_length {
-                        let actual_len = tar_gz_bytes.len();
-                        if content_length != actual_len {
-                            bail!(
-                                "downloaded extension size {actual_len} \
-                        does not match content length {content_length}"
-                            );
-                        }
-                    }
-
-                    let staged = StagedDirectory::new(fs.clone(), &staging_dir, executor)
-                        .await
-                        .context("staging the downloaded extension")?;
-                    let directory = staged.path().join(prepared_id.as_ref());
-                    fs.create_dir(&directory).await?;
-                    let decompressed =
-                        std::pin::pin!(GzipDecoder::new(BufReader::new(tar_gz_bytes.as_slice())));
-                    let reader: std::pin::Pin<&mut (dyn futures::AsyncRead + Send)> = decompressed;
-                    fs.extract_tar_file(&directory, Archive::new(reader))
-                        .await
-                        .context("unpacking the downloaded extension")?;
-                    let manifest = ExtensionManifest::load(fs.clone(), &directory).await?;
-                    anyhow::ensure!(
-                        manifest.id == prepared_id,
-                        "downloaded extension declares id {}, expected {prepared_id}",
-                        manifest.id
+            if let Some(content_length) = content_length {
+                let actual_len = tar_gz_bytes.len();
+                if content_length != actual_len {
+                    bail!(
+                        "downloaded extension size {actual_len} \
+                does not match content length {content_length}"
                     );
-                    validate_prepared_extension(
-                        &fs,
-                        &directory,
-                        &sources_dir,
-                        manifest,
-                        &wasm_host,
+                }
+            }
+
+            let staged = StagedDirectory::new(fs.clone(), &staging_dir, executor)
+                .await
+                .context("staging the downloaded extension")?;
+            let directory = staged.path().join(extension_id.as_ref());
+            fs.create_dir(&directory).await?;
+            let decompressed =
+                std::pin::pin!(GzipDecoder::new(BufReader::new(tar_gz_bytes.as_slice())));
+            let reader: std::pin::Pin<&mut (dyn futures::AsyncRead + Send)> = decompressed;
+            fs.extract_tar_file(&directory, Archive::new(reader))
+                .await
+                .context("unpacking the downloaded extension")?;
+            let manifest = ExtensionManifest::load(fs.clone(), &directory).await?;
+            anyhow::ensure!(
+                manifest.id == extension_id,
+                "downloaded extension declares id {}, expected {extension_id}",
+                manifest.id
+            );
+            let manifest = manifest_with_defaults(&fs, &directory, manifest).await?;
+            // Consumers also wait for replacements which remove an installed grammar.
+            affected_grammars.extend(manifest.grammars.keys().cloned());
+            let mut external_grammars = BTreeSet::new();
+            for language_path in &manifest.languages {
+                let config = fs
+                    .load(
+                        &directory
+                            .join(language_path)
+                            .join(LanguageConfig::FILE_NAME),
                     )
-                    .await?;
-                    anyhow::Ok(staged)
-                })
-                .await?;
-
-            let _source_guard = git_source_lock.lock().await;
-            let result = publisher
-                .publish(
-                    &extension_id,
-                    PreparedExtension::Marketplace {
-                        directory: staged.path().join(extension_id.as_ref()),
-                    },
-                )
-                .await;
-            staged.cleanup().await.log_err();
-            if let Err(error) = result {
-                this.update(cx, |this, cx| this.reload(None, cx))?.await;
-                return Err(error);
+                    .await
+                    .and_then(|contents| LanguageConfig::from_toml(&contents).map_err(Into::into))
+                    .with_context(|| format!("validating language resources in {language_path}"))?;
+                if let Some(grammar) = config.grammar
+                    && !manifest.grammars.contains_key(&grammar)
+                    && !proxy.is_native_grammar(&grammar)
+                {
+                    external_grammars.insert(grammar);
+                }
             }
-            this.update(cx, |this, cx| {
-                this.clear_git_extension_failure(&extension_id, cx)
-            })?;
-
-            this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
-                .await;
-
-            if let ExtensionOperation::Install = operation {
-                this.update(cx, |this, cx| {
-                    cx.emit(Event::ExtensionInstalled(extension_id.clone()));
-                    if let Some(events) = ExtensionEvents::try_global(cx)
-                        && let Some(manifest) = this.extension_manifest_for_id(&extension_id)
-                    {
-                        events.update(cx, |this, cx| {
-                            this.emit(extension::Event::ExtensionInstalled(manifest.clone()), cx)
-                        });
-                    }
-                })
-                .ok();
-            }
-
-            anyhow::Ok(())
+            Ok(PreparedMarketplaceExtension {
+                staged,
+                manifest,
+                external_grammars,
+                affected_grammars,
+            })
         })
+    }
+
+    async fn install_prepared_marketplace_extension(
+        this: &WeakEntity<Self>,
+        extension_id: &Arc<str>,
+        prepared: PreparedMarketplaceExtension,
+        operation: ExtensionOperation,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        let (fs, sources_dir, wasm_host, publisher, source_lock) =
+            this.read_with(cx, |this, _| {
+                (
+                    this.fs.clone(),
+                    this.sources_dir.clone(),
+                    this.wasm_host.clone(),
+                    this.publisher.clone(),
+                    this.git_source_lock.clone(),
+                )
+            })?;
+        let _source_guard = source_lock.lock().await;
+        let directory = prepared.staged.path().join(extension_id.as_ref());
+        cx.background_spawn({
+            let directory = directory.clone();
+            let publisher = publisher.clone();
+            async move {
+                let _filesystem_guard = publisher.lock().await;
+                publisher.recover_for_read_locked().await?;
+                validate_prepared_extension(
+                    &fs,
+                    &directory,
+                    &sources_dir,
+                    prepared.manifest,
+                    &wasm_host,
+                )
+                .await
+            }
+        })
+        .await?;
+        let result = publisher
+            .publish(extension_id, PreparedExtension::Marketplace { directory })
+            .await;
+        prepared.staged.cleanup().await.log_err();
+        if let Err(error) = result {
+            this.update(cx, |this, cx| this.reload(None, cx))?.await;
+            return Err(error);
+        }
+        this.update(cx, |this, cx| {
+            this.clear_git_extension_failure(extension_id, cx)
+        })?;
+        Self::finish_extension_install(this, extension_id, operation, cx).await
     }
 
     pub fn install_latest_extension(&mut self, extension_id: Arc<str>, cx: &mut Context<Self>) {
@@ -1987,10 +2100,23 @@ impl ExtensionStore {
     ) -> Task<Result<()>> {
         log::info!("installing extension {extension_id} latest version");
 
+        let url = match self.latest_extension_url(&extension_id, cx) {
+            Ok(url) => url,
+            Err(error) => return Task::ready(Err(error)),
+        };
+        self.install_or_upgrade_extension_at_endpoint(
+            extension_id,
+            url,
+            ExtensionOperation::Install,
+            cx,
+        )
+    }
+
+    fn latest_extension_url(&self, extension_id: &str, cx: &App) -> Result<Url> {
         let schema_versions = schema_version_range();
         let wasm_api_versions = wasm_api_version_range(ReleaseChannel::global(cx));
 
-        let url = match self.http_client.build_zed_api_url(
+        self.http_client.build_zed_api_url(
             &format!("/extensions/{extension_id}/download"),
             &[
                 ("min_schema_version", &schema_versions.start().to_string()),
@@ -2001,16 +2127,6 @@ impl ExtensionStore {
                 ),
                 ("max_wasm_api_version", &wasm_api_versions.end().to_string()),
             ],
-        ) {
-            Ok(url) => url,
-            Err(error) => return Task::ready(Err(error)),
-        };
-
-        self.install_or_upgrade_extension_at_endpoint(
-            extension_id,
-            url,
-            ExtensionOperation::Install,
-            cx,
         )
     }
 

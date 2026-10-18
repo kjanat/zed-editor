@@ -4960,6 +4960,90 @@ fn marketplace_serving_with_theme(
     })
 }
 
+#[derive(Clone, Copy, Default)]
+struct MarketplaceGrammarFixture {
+    id: &'static str,
+    provides_html: bool,
+    consumes_html: bool,
+    malformed_query: bool,
+    malformed_theme: bool,
+}
+
+fn marketplace_serving_grammar_batch(
+    extensions: Vec<MarketplaceGrammarFixture>,
+) -> (Arc<HttpClientWithUrl>, Arc<AtomicUsize>) {
+    let downloads = Arc::new(AtomicUsize::new(0));
+    let client = FakeHttpClient::create({
+        let downloads = downloads.clone();
+        move |request| {
+            let fixture = extensions
+                .iter()
+                .find(|fixture| {
+                    request
+                        .uri()
+                        .path()
+                        .ends_with(&format!("/extensions/{}/download", fixture.id))
+                })
+                .copied();
+            let downloads = downloads.clone();
+            async move {
+                let Some(fixture) = fixture else {
+                    return Ok(Response::builder().status(404).body("not found".into())?);
+                };
+                downloads.fetch_add(1, Ordering::SeqCst);
+                let mut manifest = format!(
+                    "id = \"{}\"\nname = \"{}\"\nversion = \"2.0.0\"\nschema_version = 1\n",
+                    fixture.id, fixture.id,
+                );
+                let mut files = Vec::new();
+                if fixture.consumes_html {
+                    manifest.push_str("languages = [\"languages/html\"]\n");
+                    files.push((
+                        "languages/html/config.toml",
+                        format!("name = \"Language {}\"\ngrammar = \"html\"\n", fixture.id,)
+                            .into_bytes(),
+                    ));
+                    let query = if fixture.malformed_query {
+                        "("
+                    } else {
+                        "(tag_name) @tag"
+                    };
+                    files.push(("languages/html/highlights.scm", query.as_bytes().to_vec()));
+                }
+                if fixture.malformed_theme {
+                    manifest.push_str("themes = [\"themes/broken.json\"]\n");
+                    files.push(("themes/broken.json", b"{invalid".to_vec()));
+                }
+                if fixture.provides_html {
+                    manifest.push_str("[grammars.html]\nrepository = \"https://example.com/html\"\nrev = \"fixture\"\n");
+                    files.push((
+                        "grammars/html.wasm",
+                        include_bytes!("../../language/test_data/grammars/html.wasm").to_vec(),
+                    ));
+                }
+                files.push(("extension.toml", manifest.into_bytes()));
+                let mut bytes = Vec::new();
+                let mut archive = async_tar::Builder::new(&mut bytes);
+                for (path, contents) in files {
+                    let mut header = async_tar::Header::new_gnu();
+                    header.set_size(contents.len() as u64);
+                    header.set_mode(0o644);
+                    archive
+                        .append_data(&mut header, path, contents.as_slice())
+                        .await?;
+                }
+                archive.into_inner().await?;
+                let mut compressed = Vec::new();
+                GzipEncoder::new(BufReader::new(bytes.as_slice()))
+                    .read_to_end(&mut compressed)
+                    .await?;
+                Ok(Response::new(compressed.into()))
+            }
+        }
+    });
+    (client, downloads)
+}
+
 async fn git_extension_store_with_http(
     cx: &mut TestAppContext,
     http_client: Arc<HttpClientWithUrl>,
@@ -6352,6 +6436,91 @@ async fn test_git_extension_on_annotated_tag_is_not_refetched(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+async fn test_git_option_like_ref_reports_failure_without_replacing_install(
+    cx: &mut TestAppContext,
+) {
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store(cx).await;
+    let remote = GitExtensionRemote::new("git-extension", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("git-extension".into(), remote.source(), cx)
+        })
+        .await
+        .expect("install branch before testing invalid ref");
+    let original = installed_source(&store, "git-extension", cx).expect("installed Git source");
+    let record_path = extensions_dir.join("sources/git-extension.toml");
+    let original_record = std::fs::read(&record_path).expect("original source record");
+    remote.tag("v0.1.0");
+    remote.publish("git-extension", "0.2.0");
+
+    let mut source = remote.source();
+    source.reference = Some("--tags".into());
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extensions(vec![("git-extension".into(), source)], cx)
+        })
+        .await;
+
+    let failures = git_failures(&store, cx);
+    assert_eq!(failures.len(), 1);
+    assert!(failures.iter().all(|failure| {
+        failure.extension_id.as_ref() == "git-extension" && failure.message.contains("--tags")
+    }));
+    assert_eq!(
+        installed_source(&store, "git-extension", cx),
+        Some(original.clone())
+    );
+    assert_eq!(
+        installed_version(&store, "git-extension", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert_eq!(
+        std::fs::read(&record_path).expect("preserved record"),
+        original_record
+    );
+    assert_eq!(
+        git_in(
+            &extensions_dir.join("sources/git-extension"),
+            &["rev-parse", "HEAD"]
+        ),
+        original.commit
+    );
+
+    for reference in [original.commit.clone(), "v0.1.0".into()] {
+        let mut source = remote.source();
+        source.reference = Some(reference.clone());
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extensions(vec![("git-extension".into(), source)], cx)
+            })
+            .await;
+        assert!(git_failures(&store, cx).is_empty());
+        let installed = installed_source(&store, "git-extension", cx).expect("valid source");
+        assert_eq!(installed.reference.as_deref(), Some(reference.as_str()));
+        assert_eq!(installed.commit, original.commit);
+        assert_eq!(
+            installed_version(&store, "git-extension", cx).as_deref(),
+            Some("0.1.0")
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_git_repository_url_is_not_parsed_as_option(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let remote = GitExtensionRemote::new("git-extension", None);
+    let source = crate::GitExtensionSource {
+        url: "--get-url".into(),
+        reference: None,
+        path: None,
+    };
+    let error = crate::remote_commit(&remote.seed, &source)
+        .await
+        .expect_err("an option-like repository must not turn a remote check into --get-url");
+    assert!(format!("{error:#}").contains("git ls-remote -- --get-url"));
+}
+
+#[gpui::test]
 async fn test_git_source_replacement_started_before_update_check(cx: &mut TestAppContext) {
     replace_git_source_during_update_check(cx, false).await;
 }
@@ -6632,6 +6801,263 @@ fn marketplace_settings(extension_id: &str) -> crate::ExtensionSettings {
             settings::AutoInstallExtensionContent::Marketplace(true),
         )]),
         ..Default::default()
+    }
+}
+
+#[gpui::test]
+async fn test_marketplace_batch_installs_grammar_provider_before_consumer(cx: &mut TestAppContext) {
+    use crate::extension_transaction::TransactionPhase;
+
+    for order in [["consumer", "provider"], ["provider", "consumer"]] {
+        let (client, downloads) = marketplace_serving_grammar_batch(vec![
+            MarketplaceGrammarFixture {
+                id: "consumer",
+                consumes_html: true,
+                ..Default::default()
+            },
+            MarketplaceGrammarFixture {
+                id: "provider",
+                provides_html: true,
+                ..Default::default()
+            },
+        ]);
+        let (_tree, _extensions_dir, store, _debounce) =
+            git_extension_store_with_http(cx, client).await;
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        language_extension::init(
+            LspAccess::Noop,
+            store.read_with(cx, |store, _| store.proxy.clone()),
+            registry.clone(),
+        );
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let publisher = store.read_with(cx, |store, _| store.publisher.clone());
+        publisher.set_hook({
+            let published = published.clone();
+            move |info| {
+                let published = published.clone();
+                async move {
+                    if info.phase == TransactionPhase::BeforePublish {
+                        published.lock().push(info.extension_id);
+                    }
+                    Ok(())
+                }
+                .boxed()
+            }
+        });
+        store
+            .update(cx, |store, cx| {
+                store.install_marketplace_extensions(order.into_iter().map(Arc::from).collect(), cx)
+            })
+            .await;
+        publisher.clear_hook();
+        assert_eq!(
+            *published.lock(),
+            ["provider", "consumer"],
+            "input order: {order:?}"
+        );
+        assert_eq!(
+            downloads.load(Ordering::SeqCst),
+            2,
+            "each archive downloaded once"
+        );
+        for extension_id in order {
+            assert_eq!(
+                installed_version(&store, extension_id, cx).as_deref(),
+                Some("2.0.0")
+            );
+        }
+        registry
+            .language_for_name("Language consumer")
+            .await
+            .expect("consumer queries load using newly installed provider");
+        assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+    }
+}
+
+#[gpui::test]
+async fn test_marketplace_batch_waits_for_removed_grammar_exports(cx: &mut TestAppContext) {
+    let (client, _) = marketplace_serving_grammar_batch(vec![MarketplaceGrammarFixture {
+        id: "provider",
+        provides_html: true,
+        ..Default::default()
+    }]);
+    let (_tree, extensions_dir, store, _debounce) = git_extension_store_with_http(cx, client).await;
+    let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+    language_extension::init(
+        LspAccess::Noop,
+        store.read_with(cx, |store, _| store.proxy.clone()),
+        registry,
+    );
+    store
+        .update(cx, |store, cx| {
+            store.install_latest_extension_task("provider".into(), cx)
+        })
+        .await
+        .expect("initial provider exports html");
+    let provider_grammar = extensions_dir.join("installed/provider/grammars/html.wasm");
+    assert!(provider_grammar.is_file());
+    let remote = GitExtensionRemote::new("consumer", None);
+    store
+        .update(cx, |store, cx| {
+            store.install_git_extension("consumer".into(), remote.source(), cx)
+        })
+        .await
+        .expect("existing consumer install");
+    let original_source = installed_source(&store, "consumer", cx);
+    let installed = extensions_dir.join("installed/consumer");
+    let original_target = std::fs::read_link(&installed).expect("original consumer link");
+    let original_manifest =
+        std::fs::read(installed.join("extension.toml")).expect("original consumer manifest");
+    let record = extensions_dir.join("sources/consumer.toml");
+    let original_record = std::fs::read(&record).expect("original consumer source record");
+    let (client, downloads) = marketplace_serving_grammar_batch(vec![
+        MarketplaceGrammarFixture {
+            id: "consumer",
+            consumes_html: true,
+            ..Default::default()
+        },
+        MarketplaceGrammarFixture {
+            id: "provider",
+            ..Default::default()
+        },
+    ]);
+    store.update(cx, |store, _| store.http_client = client);
+    store
+        .update(cx, |store, cx| {
+            store.install_marketplace_extensions(vec!["consumer".into(), "provider".into()], cx)
+        })
+        .await;
+    assert_eq!(downloads.load(Ordering::SeqCst), 2);
+    assert!(
+        !provider_grammar.exists(),
+        "provider replacement removed its grammar"
+    );
+    assert_eq!(
+        installed_version(&store, "provider", cx).as_deref(),
+        Some("2.0.0")
+    );
+    assert_eq!(installed_source(&store, "consumer", cx), original_source);
+    assert_eq!(
+        installed_version(&store, "consumer", cx).as_deref(),
+        Some("0.1.0")
+    );
+    assert_eq!(
+        std::fs::read_link(&installed).expect("consumer link preserved"),
+        original_target
+    );
+    assert_eq!(
+        std::fs::read(installed.join("extension.toml")).expect("consumer checkout preserved"),
+        original_manifest
+    );
+    assert_eq!(
+        std::fs::read(&record).expect("consumer source record preserved"),
+        original_record
+    );
+    assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MarketplaceDependencyFailure {
+    MalformedConsumer,
+    RejectedProvider,
+    AmbiguousProviders,
+}
+
+#[gpui::test]
+async fn test_marketplace_batch_keeps_existing_consumer_when_validation_fails(
+    cx: &mut TestAppContext,
+) {
+    use MarketplaceDependencyFailure::*;
+
+    for failure in [MalformedConsumer, RejectedProvider, AmbiguousProviders] {
+        let mut fixtures = vec![
+            MarketplaceGrammarFixture {
+                id: "consumer",
+                consumes_html: true,
+                malformed_query: matches!(failure, MalformedConsumer),
+                ..Default::default()
+            },
+            MarketplaceGrammarFixture {
+                id: "provider",
+                provides_html: true,
+                malformed_theme: matches!(failure, RejectedProvider),
+                ..Default::default()
+            },
+        ];
+        if matches!(failure, AmbiguousProviders) {
+            fixtures.push(MarketplaceGrammarFixture {
+                id: "other-provider",
+                provides_html: true,
+                ..Default::default()
+            });
+        }
+        let ids = fixtures
+            .iter()
+            .map(|fixture| Arc::from(fixture.id))
+            .collect::<Vec<_>>();
+        let (client, downloads) = marketplace_serving_grammar_batch(fixtures);
+        let (_tree, extensions_dir, store, _debounce) =
+            git_extension_store_with_http(cx, client).await;
+        let registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        language_extension::init(
+            LspAccess::Noop,
+            store.read_with(cx, |store, _| store.proxy.clone()),
+            registry,
+        );
+        let remote = GitExtensionRemote::new("consumer", None);
+        store
+            .update(cx, |store, cx| {
+                store.install_git_extension("consumer".into(), remote.source(), cx)
+            })
+            .await
+            .expect("existing consumer install");
+        let original_source = installed_source(&store, "consumer", cx);
+        let installed = extensions_dir.join("installed/consumer");
+        let original_target = std::fs::read_link(&installed).expect("original consumer link");
+        let original_manifest =
+            std::fs::read(installed.join("extension.toml")).expect("original consumer manifest");
+        let record = extensions_dir.join("sources/consumer.toml");
+        let original_record = std::fs::read(&record).expect("original source record");
+        let count = ids.len();
+        store
+            .update(cx, |store, cx| {
+                store.install_marketplace_extensions(ids, cx)
+            })
+            .await;
+        assert_eq!(downloads.load(Ordering::SeqCst), count, "{failure:?}");
+        assert_eq!(
+            installed_source(&store, "consumer", cx),
+            original_source,
+            "{failure:?}"
+        );
+        assert_eq!(
+            installed_version(&store, "consumer", cx).as_deref(),
+            Some("0.1.0"),
+            "{failure:?}"
+        );
+        assert_eq!(
+            std::fs::read_link(&installed).expect("consumer link remains"),
+            original_target
+        );
+        assert_eq!(
+            std::fs::read(installed.join("extension.toml")).expect("consumer checkout remains"),
+            original_manifest
+        );
+        assert_eq!(
+            std::fs::read(&record).expect("consumer record remains"),
+            original_record
+        );
+        assert_eq!(
+            installed_version(&store, "provider", cx).is_some(),
+            !matches!(failure, RejectedProvider)
+        );
+        if matches!(failure, AmbiguousProviders) {
+            assert_eq!(
+                installed_version(&store, "other-provider", cx).as_deref(),
+                Some("2.0.0")
+            );
+        }
+        assert!(store.read_with(cx, |store, _| store.outstanding_operations().is_empty()));
     }
 }
 
