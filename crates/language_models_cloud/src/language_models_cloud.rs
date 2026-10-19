@@ -2501,6 +2501,7 @@ mod tests {
                 name: Arc::from(*value),
                 value: Arc::from(*value),
                 is_default: None,
+                supports_disabling_thinking: None,
             })
             .collect()
     }

@@ -3658,7 +3658,7 @@ mod tests {
             panic!("session-info list update");
         };
         assert_eq!(updated_id, session_id);
-        assert_eq!(update, expected_update);
+        assert_eq!(update, expected_update.into());
     }
 
     #[gpui::test]
