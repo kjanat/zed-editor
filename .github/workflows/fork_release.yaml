@@ -280,7 +280,6 @@ jobs:
     if: github.repository == 'kjanat/zed-editor' && (github.event_name == 'push' || inputs.freebsd)
     needs: create_draft_release
     runs-on: ubuntu-26.04
-    continue-on-error: true
     timeout-minutes: 180
     cancel-timeout-minutes: 1
     permissions: { contents: write, id-token: write, attestations: write, packages: read }
