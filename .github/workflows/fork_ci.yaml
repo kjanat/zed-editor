@@ -14,9 +14,27 @@ name: CI
 on:
   push: { branches: [master] }
   pull_request: { branches: [master] }
-  workflow_dispatch: null
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Commit or ref to validate
+        required: false
+        type: string
+      packages:
+        description: Space-separated util, extension, extension_host packages
+        required: false
+        type: string
+        default: util
+      test_filter:
+        description: Optional nextest filter expression
+        required: false
+        type: string
+        default: ""
 permissions: { contents: read }
-concurrency: { group: "${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}", cancel-in-progress: true }
+concurrency: {
+  group: "${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ inputs.source_ref || github.sha }}",
+  cancel-in-progress: true,
+}
 
 jobs:
   plan:
@@ -32,7 +50,7 @@ jobs:
       sync: ${{ steps.plan.outputs.sync }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false, fetch-depth: 2 }
+        with: { persist-credentials: false, fetch-depth: 2, ref: "${{ inputs.source_ref || github.sha }}" }
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with: { cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - name: Test the planner
@@ -43,7 +61,22 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
+          REQUESTED_PACKAGES: ${{ inputs.packages || 'util' }}
         run: |
+          # Keep this temporary validation harness limited to the requested crates.
+          if [[ "${EVENT}" == workflow_dispatch ]]; then
+            if [[ ! "${REQUESTED_PACKAGES}" =~ ^(util|extension|extension_host)([[:blank:]]+(util|extension|extension_host))*$ ]]; then
+              echo '::error::Packages must be util, extension, or extension_host separated by spaces'
+              exit 1
+            fi
+            read -ra packages <<< "${REQUESTED_PACKAGES}"
+            package_args=()
+            for package in "${packages[@]}"; do
+              package_args+=(-p "${package}")
+            done
+            printf '%s\n' 'scope=packages' "packages=${packages[*]}" "package_args=${package_args[*]}" 'sync=false' | tee -a "${GITHUB_OUTPUT}"
+            exit 0
+          fi
           case "${EVENT}" in
             pull_request) base="$(git rev-parse HEAD^1)" ;;
             push)
@@ -74,7 +107,7 @@ jobs:
     cancel-timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
+        with: { persist-credentials: false, ref: "${{ inputs.source_ref || github.sha }}" }
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with: { cache_save: "${{ github.ref == 'refs/heads/master' }}" }
       - name: Test the upstream sync
@@ -89,7 +122,7 @@ jobs:
     cancel-timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
+        with: { persist-credentials: false, ref: "${{ inputs.source_ref || github.sha }}" }
       - run: docker run --rm -qv "${PWD}:/w" ghcr.io/kjanat/actionlint:nightly
 
   style:
@@ -100,7 +133,7 @@ jobs:
     cancel-timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
+        with: { persist-credentials: false, ref: "${{ inputs.source_ref || github.sha }}" }
       - uses: kjanat/setup-tombi@fa7a237e9661f88c78309b5214f4eb7cf0c7c5f6 # master
       - run: rustup toolchain install
       - uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # v3.1.0
@@ -121,7 +154,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: &NoScope env.SCOPE != 'none'
-        with: { persist-credentials: false }
+        with: { persist-credentials: false, ref: "${{ inputs.source_ref || github.sha }}" }
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         if: *NoScope
         with: { bootstrap: true, bootstrap_skip: compose, cache_save: "${{ github.ref == 'refs/heads/master' }}" }
@@ -170,7 +203,7 @@ jobs:
           echo "run=${run}" | tee -a "${GITHUB_OUTPUT}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.suite.outputs.run == 'true'
-        with: { persist-credentials: false }
+        with: { persist-credentials: false, ref: "${{ inputs.source_ref || github.sha }}" }
       # Concurrent action startup can lock the runner's event.json on Windows.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         if: steps.suite.outputs.run == 'true'
@@ -195,9 +228,16 @@ jobs:
       - name: Test the affected packages
         if: steps.suite.outputs.run == 'true' && matrix.suite == 'affected'
         shell: bash
-        env: { PACKAGE_ARGS: "${{ needs.plan.outputs.package_args }}" }
-        run: read -ra package_args <<< "${PACKAGE_ARGS:---workspace}";
-          cargo nextest run --no-fail-fast --no-tests=warn "${package_args[@]}" 2>&1 | tee tests.log
+        env:
+          PACKAGE_ARGS: ${{ needs.plan.outputs.package_args }}
+          TEST_FILTER: ${{ inputs.test_filter }}
+        run: |
+          read -ra package_args <<< "${PACKAGE_ARGS:---workspace}"
+          filter_args=()
+          if [[ -n "${TEST_FILTER}" ]]; then
+            filter_args=(-E "${TEST_FILTER}")
+          fi
+          cargo nextest run --no-fail-fast --no-tests=warn "${package_args[@]}" "${filter_args[@]}" 2>&1 | tee tests.log
       - name: Test editor save-backup and rendering regressions
         if: steps.suite.outputs.run == 'true' && matrix.suite == 'editor-backup'
         shell: bash

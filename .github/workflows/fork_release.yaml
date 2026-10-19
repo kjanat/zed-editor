@@ -283,7 +283,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 180
     cancel-timeout-minutes: 1
-    permissions: { contents: write, id-token: write, attestations: write }
+    permissions: { contents: write, id-token: write, attestations: write, packages: read }
     env: { GH_REPO: *REPO }
     steps:
       - *checkout
@@ -291,6 +291,9 @@ jobs:
         with: { shared-key: remote-server-freebsd, cache-on-failure: true }
       - uses: *mise
         with: { cache: false }
+      - name: Prepare the FreeBSD sysroot
+        env: { GITHUB_TOKEN: *TOKEN }
+        run: mise run freebsd-sysroot
       - *icu70
       - *prepare
       - name: Cross-compile against the FreeBSD 13.2 sysroot

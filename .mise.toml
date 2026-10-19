@@ -58,9 +58,14 @@ tools.cargo-bundle = "rev:2be2669972dff3ddd4daf89a2cb29d2d06cad7c7"
 [tasks.bundle-windows]
 run = "pwsh -NoProfile -File script/bundle-windows.ps1"
 
+[tasks.freebsd-sysroot]
+file       = "script/freebsd-sysroot"
+tools.oras = "1.3.4"
+
 [tasks.remote-server-freebsd]
 file       = "script/remote-server-freebsd"
 tools.llvm = "23.1.2"
+tools.oras = "1.3.4"
 
 [tasks.clippy]
 run         = "./script/clippy"

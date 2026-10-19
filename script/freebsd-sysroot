@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+freebsd_release=13.2
+# FreeBSD ports pins this digest in devel/freebsd-sysroot/distinfo.
+base_archive_sha256=3a9250f7afd730bbe274691859756948b3c57a99bcda30d65d46ae30025906f0
+layout=1
+registry_blob="ghcr.io/kjanat/freebsd-dist@sha256:${base_archive_sha256}"
+archive_url="https://archive.freebsd.org/ftp/old-releases/amd64/${freebsd_release}-RELEASE/base.txz"
+cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}/zed-freebsd-sysroot"
+sysroot="${cache_root}/${freebsd_release}-amd64-v${layout}"
+
+is_prepared() {
+    [[ -f "${sysroot}/.prepared" && "$(<"${sysroot}/.prepared")" == "${base_archive_sha256}" ]]
+}
+
+if is_prepared; then
+    echo "${sysroot}"
+    exit 0
+fi
+
+mkdir -p "${cache_root}"
+exec {lock}>"${cache_root}/.lock"
+flock "${lock}"
+
+if is_prepared; then
+    echo "${sysroot}"
+    exit 0
+fi
+
+rm -rf "${cache_root}"/.prepare.*
+work="$(mktemp -d "${cache_root}/.prepare.XXXXXX")"
+trap 'rm -rf "${work}"' EXIT
+archive="${work}/base.txz"
+
+fetch_from_registry() {
+    local token="${GITHUB_TOKEN:-}"
+    if [[ -z "${token}" ]] && command -v gh > /dev/null; then
+        token="$(gh auth token)" || token=""
+    fi
+    if [[ -n "${token}" ]]; then
+        printf '%s' "${token}" |
+            timeout 300 oras blob fetch --username "${GITHUB_ACTOR:-${USER}}" --password-stdin \
+                --output "${archive}" "${registry_blob}"
+    else
+        timeout 300 oras blob fetch --output "${archive}" "${registry_blob}"
+    fi
+}
+
+fetch_from_archive() {
+    curl --proto '=https' --tlsv1.2 --fail --location --connect-timeout 10 --max-time 300 \
+        --retry 2 --retry-all-errors --output "${archive}" "${archive_url}"
+}
+
+fetched=false
+for source in fetch_from_registry fetch_from_archive; do
+    rm -f "${archive}"
+    if "${source}" >&2 && sha256sum --check --status <<< "${base_archive_sha256}  ${archive}"; then
+        fetched=true
+        break
+    fi
+    echo "${source} did not produce base.txz with SHA-256 ${base_archive_sha256}" >&2
+done
+if [[ "${fetched}" != true ]]; then
+    echo "no source produced FreeBSD ${freebsd_release} base.txz" >&2
+    exit 1
+fi
+
+mkdir "${work}/sysroot"
+tar -xJf "${archive}" -C "${work}/sysroot" ./lib ./usr/lib ./usr/include
+echo "${base_archive_sha256}" > "${work}/sysroot/.prepared"
+rm -rf "${sysroot}"
+mv "${work}/sysroot" "${sysroot}"
+echo "${sysroot}"
