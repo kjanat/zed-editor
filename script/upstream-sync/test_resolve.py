@@ -9,6 +9,7 @@ import unittest
 from collections.abc import Callable
 from itertools import takewhile
 from pathlib import Path
+from unittest.mock import patch
 
 from test_container import (
     EXTENSION_SCHEMA,
@@ -732,6 +733,268 @@ class ResolverTests(unittest.TestCase):
         self.assertFalse((fixture.resolution / "resolution.bundle").exists())
 
 
+@require_toolchain
+class SyncPrUpdateTests(unittest.TestCase):
+    def fixture(
+        self, factory: Callable[[Path], Fixture] = conflict_fixture
+    ) -> tuple[Fixture, str]:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        fixture = factory(root)
+        repository = fixture.repository
+        _ = git(repository, "switch", "-q", "--detach", fixture.fork)
+        _ = git(repository, "merge", "--no-ff", "--no-commit", "upstream", check=False)
+        fixture.write({"alpha/src/lib.rs": RESOLVED_ALPHA})
+        _ = git(repository, "add", "-A")
+        _ = git(repository, "commit", "-q", "-m", "Merge upstream")
+        return fixture, git(repository, "rev-parse", "HEAD")
+
+    def advance_upstream(self, fixture: Fixture, head: str) -> str:
+        repository = fixture.repository
+        _ = git(repository, "switch", "-q", "upstream")
+        fixture.write({
+            "beta/src/lib.rs": "pub fn doubled() -> u32 {\n    alpha::value() + alpha::value()\n}\n",
+            ".github/workflows/ci.yml": "upstream workflow\n",
+        })
+        fixture.commit("upstream moves")
+        moved = git(repository, "rev-parse", "HEAD")
+        _ = git(repository, "switch", "-q", "--detach", head)
+        return moved
+
+    def setup_update(self, fixture: Fixture, upstream: str = "") -> None:
+        environment = patch.dict(os.environ, {"UPSTREAM_URL": str(fixture.repository)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        started = fixture.run(
+            fixture.sync_scripts(fixture.repository),
+            fixture.repository,
+            "repair-setup",
+            upstream,
+        )
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+
+    def finish(self, fixture: Fixture, head: str, upstream: str = "") -> str:
+        update = fixture.root / "update"
+        exported = fixture.run(
+            fixture.sync_scripts(fixture.repository),
+            fixture.repository,
+            "repair-export",
+            str(update),
+        )
+        self.assertEqual(exported.returncode, 0, exported.stdout + exported.stderr)
+        _ = git(
+            fixture.root,
+            "clone",
+            "-q",
+            "--no-local",
+            str(fixture.repository),
+            str(fixture.verifier),
+        )
+        _ = git(fixture.verifier, "switch", "-q", "--detach", head)
+        update.mkdir(exist_ok=True)
+        verified = fixture.run(
+            fixture.sync_scripts(fixture.verifier),
+            fixture.verifier,
+            "repair-verify",
+            head,
+            upstream,
+            str(update),
+            str(fixture.output),
+        )
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        return (fixture.output / "result").read_text().strip()
+
+    def report(self, fixture: Fixture) -> str:
+        report = fixture.output / "report.md"
+        return report.read_text() if report.exists() else ""
+
+    def verified_commit(self, fixture: Fixture) -> str:
+        _ = git(
+            fixture.verifier,
+            "fetch",
+            "-q",
+            str(fixture.output / "repair.bundle"),
+            "+refs/sync/repaired:refs/check/update",
+        )
+        return git(fixture.verifier, "rev-parse", "refs/check/update")
+
+    def test_a_fix_on_the_pr_head_is_committed_on_top_of_it(self):
+        fixture, head = self.fixture()
+        self.setup_update(fixture)
+        fixed = "pub fn doubled() -> u32 {\n    alpha::value() * 3\n}\n"
+        fixture.agent({"beta/src/lib.rs": fixed})
+        self.assertEqual(self.finish(fixture, head), "repaired", self.report(fixture))
+        commit = self.verified_commit(fixture)
+        self.assertEqual(
+            git(fixture.verifier, "rev-list", "--parents", "-n", "1", commit),
+            f"{commit} {head}",
+        )
+        self.assertIn(
+            f"Sync-Update: {head}",
+            git(fixture.verifier, "log", "-1", "--format=%B", commit),
+        )
+        self.assertEqual(
+            git(fixture.verifier, "show", f"{commit}:beta/src/lib.rs"), fixed.strip()
+        )
+
+    def test_a_deleted_fork_file_still_selects_its_crate(self):
+        def with_fork_only_file(root: Path) -> Fixture:
+            return Fixture(
+                root,
+                {"alpha/src/lib.rs": UPSTREAM_ALPHA},
+                {
+                    "alpha/src/lib.rs": FORK_ALPHA,
+                    "fork_tool/src/notes.rs": "pub fn notes() {}\n",
+                },
+            )
+
+        fixture, head = self.fixture(with_fork_only_file)
+        moved = self.advance_upstream(fixture, head)
+        self.setup_update(fixture, moved)
+        _ = git(fixture.repository, "rm", "-q", "--", "fork_tool/src/notes.rs")
+        checked = fixture.run(
+            fixture.sync_scripts(fixture.repository), fixture.repository, "check"
+        )
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual(
+            (fixture.state / "human.txt").read_text().splitlines(),
+            ["fork_tool/src/notes.rs"],
+        )
+        self.assertIn("-p fork_tool", (fixture.state / "validation.log").read_text())
+
+    def test_new_upstream_commits_are_merged_into_the_pr_head(self):
+        fixture, head = self.fixture()
+        moved = self.advance_upstream(fixture, head)
+        self.setup_update(fixture, moved)
+        self.assertEqual(
+            (fixture.repository / ".github/workflows/ci.yml").read_text(),
+            "trusted workflow\n",
+        )
+        self.assertEqual(self.finish(fixture, head, moved), "repaired")
+        commit = self.verified_commit(fixture)
+        self.assertEqual(
+            git(fixture.verifier, "rev-list", "--parents", "-n", "1", commit),
+            f"{commit} {head} {moved}",
+        )
+        self.assertIn(
+            "alpha::value() + alpha::value()",
+            git(fixture.verifier, "show", f"{commit}:beta/src/lib.rs"),
+        )
+        self.assertEqual(
+            git(fixture.verifier, "show", f"{commit}:alpha/src/lib.rs"),
+            RESOLVED_ALPHA.strip(),
+        )
+
+    def test_an_untouched_head_produces_no_update(self):
+        fixture, head = self.fixture()
+        self.setup_update(fixture)
+        self.assertEqual(self.finish(fixture, head), "failed")
+        self.assertFalse((fixture.output / "repair.bundle").exists())
+        self.assertIn(
+            "Claude produced no update", (fixture.output / "report.md").read_text()
+        )
+
+    def test_an_update_may_change_automation(self):
+        fixture, head = self.fixture()
+        self.setup_update(fixture)
+        fixture.agent({
+            "beta/src/lib.rs": "pub fn doubled() -> u32 {\n    4\n}\n",
+            ".github/workflows/ci.yml": "fixed workflow\n",
+        })
+        self.assertEqual(self.finish(fixture, head), "repaired", self.report(fixture))
+        commit = self.verified_commit(fixture)
+        self.assertEqual(
+            git(fixture.verifier, "show", f"{commit}:.github/workflows/ci.yml"),
+            "fixed workflow",
+        )
+
+    def test_a_merge_claude_committed_still_exports(self):
+        fixture, head = self.fixture()
+        moved = self.advance_upstream(fixture, head)
+        self.setup_update(fixture, moved)
+        _ = git(fixture.repository, "commit", "-q", "--no-edit")
+        self.assertFalse((fixture.repository / ".git/MERGE_HEAD").exists())
+        self.assertEqual(
+            self.finish(fixture, head, moved), "repaired", self.report(fixture)
+        )
+        commit = self.verified_commit(fixture)
+        self.assertEqual(
+            git(fixture.verifier, "rev-list", "--parents", "-n", "1", commit),
+            f"{commit} {head} {moved}",
+        )
+
+    def test_a_failed_setup_reaches_the_report(self):
+        fixture, head = self.fixture()
+        environment = patch.dict(os.environ, {"UPSTREAM_URL": str(fixture.repository)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        missing = "1" * 40
+        started = fixture.run(
+            fixture.sync_scripts(fixture.repository),
+            fixture.repository,
+            "repair-setup",
+            missing,
+        )
+        self.assertNotEqual(started.returncode, 0)
+        self.assertEqual(self.finish(fixture, head, missing), "failed")
+        report = self.report(fixture)
+        self.assertIn("The update stopped before Claude started.", report)
+        self.assertIn(f"fetching upstream {missing} failed", report)
+
+    def test_an_update_that_breaks_the_build_fails(self):
+        fixture, head = self.fixture()
+        self.setup_update(fixture)
+        fixture.agent({"beta/src/lib.rs": 'pub fn doubled() -> u32 {\n    "four"\n}\n'})
+        self.assertEqual(self.finish(fixture, head), "failed")
+        self.assertIn(
+            "Validation failed at **workspace compile**",
+            (fixture.output / "report.md").read_text(),
+        )
+
+    def test_an_update_with_other_parents_fails(self):
+        fixture, head = self.fixture()
+        self.setup_update(fixture)
+        fixture.agent({"beta/src/lib.rs": "pub fn doubled() -> u32 {\n    4\n}\n"})
+        tree = git(fixture.repository, "write-tree")
+        forged = git(
+            fixture.repository, "commit-tree", tree, "-p", fixture.fork, "-m", "forged"
+        )
+        _ = git(fixture.repository, "update-ref", "refs/sync/repaired", forged)
+        update = fixture.root / "update"
+        update.mkdir()
+        _ = git(
+            fixture.repository,
+            "bundle",
+            "create",
+            str(update / "repair.bundle"),
+            "refs/sync/repaired",
+            f"^{fixture.fork}",
+        )
+        _ = git(
+            fixture.root,
+            "clone",
+            "-q",
+            "--no-local",
+            str(fixture.repository),
+            str(fixture.verifier),
+        )
+        _ = git(fixture.verifier, "switch", "-q", "--detach", head)
+        verified = fixture.run(
+            fixture.sync_scripts(fixture.verifier),
+            fixture.verifier,
+            "repair-verify",
+            head,
+            "",
+            str(update),
+            str(fixture.output),
+        )
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.assertEqual((fixture.output / "result").read_text().strip(), "failed")
+        self.assertIn(
+            f"does not have exactly {head} as its parents",
+            (fixture.output / "report.md").read_text(),
+        )
+
+
 class TrustedConfigurationTests(unittest.TestCase):
     workflow: str = WORKFLOW.read_text()
 
@@ -763,6 +1026,36 @@ class TrustedConfigurationTests(unittest.TestCase):
         self.assertIn(
             "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", resolve
         )
+
+    def test_sync_pr_updater_has_no_github_write_credential(self):
+        for name in ("repair", "repair-verify"):
+            with self.subTest(job=name):
+                job = self.job(name)
+                self.assertIn("permissions: { contents: read }", job)
+                self.assertNotIn("SYNC_TOKEN", job)
+                self.assertNotIn("github.token", job)
+                self.assertEqual(
+                    job.count("secrets."),
+                    job.count("secrets.CLAUDE_CODE_OAUTH_TOKEN }}"),
+                )
+
+    def test_only_the_push_job_writes_to_the_repository(self):
+        self.assertIn(
+            "permissions: { contents: write, issues: write, pull-requests: write }",
+            self.job("repair-push"),
+        )
+        self.assertIn("contents: read", self.job("pull-request"))
+
+    def test_claude_updates_a_pr_only_after_check_fails(self):
+        repair = self.job("repair")
+        check = repair.index("resolve.sh check")
+        claude = repair.index("repair-prompt.md")
+        self.assertLess(check, claude)
+        self.assertIn(
+            "if: hashFiles('.sync/validated-tree') == ''",
+            repair[check:claude],
+        )
+        self.assertIn("timeout-minutes: 300", repair)
 
     def run_line(self, subcommand: str) -> str:
         lines = self.workflow.splitlines()

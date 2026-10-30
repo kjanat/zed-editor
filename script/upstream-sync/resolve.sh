@@ -22,6 +22,9 @@ usage: resolve.sh setup <prepare-output>
        resolve.sh check
        resolve.sh export <prepare-output> <output>
        resolve.sh verify <prepare-output> <resolver-output> <output>
+       resolve.sh repair-setup <upstream>
+       resolve.sh repair-export <output>
+       resolve.sh repair-verify <head> <upstream> <resolver-output> <output>
 EOF
 	exit 2
 }
@@ -134,8 +137,13 @@ check() {
 
 	run_check "unmerged paths" "[[ -z \"\$(git diff --name-only --diff-filter=U)\" ]] || { git diff --name-only --diff-filter=U; exit 1; }" || return 1
 	run_check "staging" 'git add -u' || return 1
+	if [[ -f "${state}/repair-head" ]]; then
+		changed_by_repair >"${state}/human.txt"
+	fi
 	run_check "conflict markers" "! git grep -n -E '${marker_pattern}'" || return 1
-	run_check "automation unchanged" "git diff --cached --quiet ${fork} -- .github script/upstream-sync script/clippy || { git diff --cached --stat ${fork} -- .github script/upstream-sync script/clippy; exit 1; }" || return 1
+	if [[ ! -f "${state}/repair-head" ]]; then
+		run_check "automation unchanged" "git diff --cached --quiet ${fork} -- .github script/upstream-sync script/clippy || { git diff --cached --stat ${fork} -- .github script/upstream-sync script/clippy; exit 1; }" || return 1
+	fi
 	run_check "whitespace" 'git diff --cached --check' || return 1
 	run_check "formatting" 'dprint check' || return 1
 	run_check "workspace compile" 'cargo check --locked --workspace --all-targets --keep-going' || return 1
@@ -148,7 +156,7 @@ check() {
 			package_args+=" -p ${package}"
 		done
 		run_check "lint" "bash $(printf '%q' "${here}/../clippy") --no-deps${package_args}" || return 1
-		run_check "tests" "cargo nextest run --locked --no-fail-fast${package_args}" || return 1
+		run_check "tests" "cargo nextest run --locked --no-fail-fast --no-tests=warn${package_args}" || return 1
 	fi
 	if [[ -s "${state}/tests.txt" ]]; then
 		while IFS=$'\t' read -r test_package expression; do
@@ -329,6 +337,175 @@ verify() {
 	announce "${state}/failure.md"
 }
 
+changed_by_repair() {
+	local head upstream file theirs
+	head="$(<"${state}/repair-head")"
+	upstream="$(<"${state}/repair-upstream")"
+	repository diff --cached --name-only "${head}" | while IFS= read -r file; do
+		if [[ -n "${upstream}" ]]; then
+			theirs="$(repository rev-parse -q --verify "${upstream}:${file}" || true)"
+			if [[ -n "${theirs}" && "$(repository rev-parse -q --verify ":${file}" || true)" == "${theirs}" ]]; then
+				continue
+			fi
+		fi
+		printf '%s\n' "${file}"
+	done
+}
+
+setup_failed() {
+	printf '%s\n' "$*" >"${state}/setup-failure"
+	die "$*"
+}
+
+repair_setup() {
+	local upstream="$1"
+	[[ -z "${upstream}" || "${upstream}" =~ ^[0-9a-f]{40}$ ]] || die "invalid upstream commit ${upstream}"
+	[[ ! -e "${git_dir}/MERGE_HEAD" ]] || die "a merge is already in progress"
+	mkdir -p "${state}"
+	repository rev-parse HEAD >"${state}/repair-head"
+	printf '%s\n' "${upstream}" >"${state}/repair-upstream"
+	: >"${state}/human.txt"
+	if [[ -n "${upstream}" ]]; then
+		repository fetch -q --no-tags "${UPSTREAM_URL:-https://github.com/zed-industries/zed.git}" "${upstream}" >"${state}/merge.log" 2>&1 \
+			|| setup_failed "fetching upstream ${upstream} failed: $(<"${state}/merge.log")"
+		if ! repository merge --no-ff --no-commit "${upstream}" >"${state}/merge.log" 2>&1; then
+			[[ -e "${git_dir}/MERGE_HEAD" ]] || setup_failed "merging upstream ${upstream} failed: $(<"${state}/merge.log")"
+		fi
+		repository rm -r -q -f --ignore-unmatch -- .github
+		if repository cat-file -e HEAD:.github 2>/dev/null; then
+			repository checkout HEAD -- .github
+		fi
+		repository diff --name-only --diff-filter=U >"${state}/merge-conflicts.txt"
+		cat "${state}/merge-conflicts.txt"
+	fi
+	mise install -C "${root}" --include-lazy >"${state}/mise.log" 2>&1 \
+		|| setup_failed "mise install failed: $(tail -n 40 "${state}/mise.log")"
+}
+
+repair_parents() {
+	local head="$1" upstream="$2"
+	printf '%s%s' "${head}" "${upstream:+ ${upstream}}"
+}
+
+repair_message() {
+	local head="$1" upstream="$2"
+	printf 'Update the sync PR\n\n'
+	if [[ -n "${upstream}" ]]; then
+		printf 'Claude merged upstream %s and fixed the checks.\n\n' "${upstream}"
+	else
+		printf 'Claude fixed the checks that failed on the sync PR.\n\n'
+	fi
+	printf 'Sync-Update: %s\n' "${head}"
+}
+
+repair_export() {
+	local output="$1" head upstream index="${state}/repair.index" tree
+	head="$(<"${state}/repair-head")"
+	upstream="$(<"${state}/repair-upstream")"
+	mkdir -p "${output}"
+	if [[ -f "${state}/setup-failure" ]]; then
+		cp "${state}/setup-failure" "${output}/setup-failure"
+		return 0
+	fi
+	if [[ -n "${upstream}" && "$(cat "${git_dir}/MERGE_HEAD" 2>/dev/null)" != "${upstream}" ]] \
+		&& ! { repository merge-base --is-ancestor "${head}" HEAD && repository merge-base --is-ancestor "${upstream}" HEAD; }; then
+		echo "resolve.sh: HEAD neither merges nor contains ${upstream}, so there is no update to export" >&2
+		return 0
+	fi
+	for name in resolution.md tests.txt; do
+		if [[ -f "${state}/${name}" ]]; then
+			cp "${state}/${name}" "${output}/${name}"
+		fi
+	done
+	rm -f "${index}"
+	GIT_INDEX_FILE="${index}" repository read-tree "${head}"
+	GIT_INDEX_FILE="${index}" repository add -A
+	tree="$(GIT_INDEX_FILE="${index}" repository write-tree)"
+	if [[ -z "${upstream}" && "${tree}" == "$(repository rev-parse "${head}^{tree}")" ]]; then
+		echo "resolve.sh: the checkout has no changes, so there is no update to export" >&2
+		return 0
+	fi
+	repair_commit "${tree}" "${head}" "${upstream}" "${output}"
+}
+
+repair_commit() {
+	local tree="$1" head="$2" upstream="$3" output="$4" parent commit arguments=()
+	for parent in $(repair_parents "${head}" "${upstream}"); do
+		arguments+=(-p "${parent}")
+	done
+	commit="$(repair_message "${head}" "${upstream}" | repository commit-tree "${tree}" "${arguments[@]}")"
+	repository update-ref refs/sync/repaired "${commit}"
+	repository bundle create "${output}/repair.bundle" refs/sync/repaired "^${head}"
+	printf '%s\n' "${commit}"
+}
+
+repair_verify() {
+	local head="$1" upstream="$2" resolver="$3" output="$4" repaired="" tree="" commit
+	mkdir -p "${output}" "${state}"
+	rm -f "${state}/failed-check" "${state}/failure-reason" "${state}/check.log" "${state}/tests.txt" "${state}/validated-tree"
+	[[ "$(repository rev-parse HEAD)" == "${head}" ]] || die "the checkout is not the sync head ${head}"
+	[[ -z "${upstream}" || "${upstream}" =~ ^[0-9a-f]{40}$ ]] || die "invalid upstream commit ${upstream}"
+	printf '%s\n' "${head}" >"${state}/repair-head"
+	printf '%s\n' "${upstream}" >"${state}/repair-upstream"
+	if [[ -f "${resolver}/tests.txt" ]]; then
+		bounded 8000 <"${resolver}/tests.txt" >"${state}/tests.txt"
+	fi
+
+	if [[ -s "${resolver}/repair.bundle" ]] \
+		&& repository fetch -q "${resolver}/repair.bundle" "+refs/sync/repaired:refs/sync/repaired"; then
+		repaired="$(repository rev-parse refs/sync/repaired)"
+		if [[ "$(repository rev-list --parents -n 1 "${repaired}")" != "${repaired} $(repair_parents "${head}" "${upstream}")" ]]; then
+			printf "Claude's update does not have exactly %s as its parents.\n" "$(repair_parents "${head}" "${upstream}")" >"${state}/failure-reason"
+		else
+			repository read-tree -u --reset "${repaired}"
+			if (cd "${root}" && bash "${here}/resolve.sh" check); then
+				tree="$(<"${state}/validated-tree")"
+			fi
+		fi
+	fi
+
+	if [[ -n "${tree}" ]]; then
+		commit="$(repair_commit "${tree}" "${head}" "${upstream}" "${output}")"
+		if [[ -s "${resolver}/resolution.md" ]]; then
+			bounded 13000 <"${resolver}/resolution.md" >"${output}/resolution.md"
+		fi
+		printf 'repaired\n' >"${output}/result"
+		printf "## Update passed\n\nClaude's update passed every check. The update is %s.\n\n" "${commit}" >"${state}/verdict.md"
+		announce "${state}/verdict.md"
+		return 0
+	fi
+
+	{
+		printf '## Automatic update failed\n\n'
+		if [[ -s "${state}/failed-check" ]]; then
+			printf 'Validation failed at **%s**.\n\n' "$(<"${state}/failed-check")"
+			tail -n 80 "${state}/check.log" | cut -c1-400 >"${state}/failed-tail.log"
+			printf '<details><summary>Last 80 lines</summary>\n\n'
+			fenced "${state}/failed-tail.log"
+			printf '</details>\n\n'
+		elif [[ -s "${state}/failure-reason" ]]; then
+			cat "${state}/failure-reason"
+			printf '\n'
+		elif [[ -s "${resolver}/setup-failure" ]]; then
+			bounded 8000 <"${resolver}/setup-failure" >"${state}/setup-failure.log"
+			printf 'The update stopped before Claude started.\n\n'
+			fenced "${state}/setup-failure.log"
+			printf '\n'
+		else
+			printf 'Claude produced no update.\n\n'
+		fi
+		if [[ -s "${resolver}/resolution.md" ]]; then
+			bounded 15000 <"${resolver}/resolution.md" >"${state}/notes.md"
+			printf "<details><summary>Claude's notes</summary>\n\n"
+			fenced "${state}/notes.md"
+			printf '</details>\n\n'
+		fi
+	} >"${state}/repair-report.md"
+	bounded 40000 <"${state}/repair-report.md" >"${output}/report.md"
+	printf 'failed\n' >"${output}/result"
+	announce "${output}/report.md"
+}
+
 [[ $# -ge 1 ]] || usage
 command="$1"
 shift
@@ -348,6 +525,18 @@ case "${command}" in
 	verify)
 		[[ $# -eq 3 ]] || usage
 		verify "$@"
+		;;
+	repair-setup)
+		[[ $# -eq 1 ]] || usage
+		repair_setup "$@"
+		;;
+	repair-export)
+		[[ $# -eq 1 ]] || usage
+		repair_export "$@"
+		;;
+	repair-verify)
+		[[ $# -eq 4 ]] || usage
+		repair_verify "$@"
 		;;
 	*) usage ;;
 esac

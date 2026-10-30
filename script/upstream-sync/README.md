@@ -168,6 +168,35 @@ runtime writes disappear with the container and are never exported to a host
 cache. Formatting uses the candidate checkout's root configuration, so changed
 plugins or setup keys can still trigger downloads in the isolated container.
 
+## Open sync PR
+
+When a sync PR is open, the `pull-request` job skips `prepare` and hands that
+PR to Claude instead. `repair-sync-pr.py gate` checks the PR head's latest CI
+run and fetches zed-industries/zed `main`. When CI is still running, or the head
+passes CI and already contains `main`, nothing happens. Otherwise Claude gets the
+PR head with the failed job logs and, when `main` has new commits,
+`resolve.sh repair-setup` starts their merge with the head's `.github` kept.
+
+When CI passed on the head and the upstream merge has no conflicts, `check` runs
+first and a passing merge goes to verification without Claude. Otherwise Claude
+updates the PR, with one follow-up session when the first ends before `check`
+passes. Claude updates each head once. The gate records
+`<!-- claude-update head=<sha> upstream=<sha> -->` in the open "Upstream sync
+needs attention" issue and skips a PR head and zed-industries/zed `main` pair it
+already tried. New upstream commits, a push to the PR or closing that issue
+allow another attempt. A setup failure, such as an
+upstream fetch that fails, reaches that issue instead of Claude.
+
+Claude may change any file. `resolve.sh repair-verify` runs the full `check`
+with the trusted scripts on a clean runner and commits the result with the
+head, and the merged upstream commit when there is one, as parents.
+`repair-sync-pr.py push` refuses an update with other parents or for another
+head. An update that changes `.github` turns off the PR's auto-merge and lists
+those files in the issue for review; any other update turns auto-merge on once
+the PR shows it, when `SYNC_TOKEN` is set. The push uses a lease on the old
+head; a rejected push, for example by a token without workflow permission, is
+reported in the issue.
+
 ## Tests
 
 ```sh
@@ -192,7 +221,16 @@ stub agent, and checks:
 - that a verified resolution has the fork and upstream as parents and lists the
   files it changed outside the conflicts;
 - that a verified resolution carries the regenerated extension schemas, and a
-  failing generator ends as `conflict`.
+  failing generator ends as `conflict`;
+- that an open PR's update keeps its head as the first parent, merges new
+  upstream commits as the second, exports a merge Claude committed, may change
+  automation, and fails without changes, with a broken build, with other
+  parents or after a failed setup.
+
+`test_repair.py` runs the gate and the push against local remotes: no open PR,
+running CI, a green current head, a failed run, new upstream commits, a head
+already tried, `.github` changes that turn auto-merge off, other changes that
+turn it on, a rejected push, and each refused update.
 
 Other tests exercise bundle validation, `open-sync-pr.py` and hostile artifact
 file types without contacting GitHub or pushing anything.
