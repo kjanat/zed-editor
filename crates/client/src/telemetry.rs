@@ -2,8 +2,8 @@ mod event_coalescer;
 
 use crate::TelemetrySettings;
 use crate::sentry::{
-    self, Attachment, Attribute, Envelope, LogLevel, LogRecord, SENTRY_DSN, SentryDsn, SentryEvent,
-    User,
+    self, Attachment, Attribute, Envelope, LogLevel, LogRecord, SENTRY_DSN, Sent, SentryDsn,
+    SentryEvent, User,
 };
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
@@ -42,7 +42,7 @@ use self::event_coalescer::EventCoalescer;
 
 pub struct Telemetry {
     clock: Arc<dyn SystemClock>,
-    http_client: Arc<HttpClientWithUrl>,
+    transport: Arc<sentry::Transport>,
     trace_id: String,
     executor: BackgroundExecutor,
     state: Arc<Mutex<TelemetryState>>,
@@ -236,7 +236,7 @@ impl Telemetry {
 
         let this = Arc::new(Self {
             clock,
-            http_client: client,
+            transport: Arc::new(sentry::Transport::new(client)),
             trace_id: sentry::new_id(),
             executor: cx.background_executor().clone(),
             state,
@@ -671,7 +671,7 @@ impl Telemetry {
             (dsn, records)
         };
 
-        send_log_records(&*self.http_client, &dsn, records).await
+        send_log_records(&self.transport, &dsn, records).await
     }
 
     pub fn send_sentry_logs(
@@ -707,9 +707,9 @@ impl Telemetry {
                 .collect();
             (dsn, records)
         };
-        let http_client = self.http_client.clone();
+        let transport = self.transport.clone();
         self.executor
-            .spawn(async move { send_log_records(&*http_client, &dsn, records).await })
+            .spawn(async move { send_log_records(&transport, &dsn, records).await })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -728,7 +728,7 @@ impl Telemetry {
         self.state.lock().sentry_dsn.is_some()
     }
 
-    pub fn send_sentry_event(self: &Arc<Self>, event: SentryEvent) -> Task<Result<()>> {
+    pub fn send_sentry_event(self: &Arc<Self>, event: SentryEvent) -> Task<Result<Sent>> {
         let envelope = Envelope::event(self.with_sentry_metadata(event));
         self.send_envelope(envelope)
     }
@@ -751,7 +751,16 @@ impl Telemetry {
         attachment: Option<Attachment>,
     ) -> Task<Result<()>> {
         let envelope = Envelope::feedback(self.with_sentry_metadata(event), attachment);
-        self.send_envelope(envelope)
+        let send = self.send_envelope(envelope);
+        self.executor.spawn(async move {
+            match send.await? {
+                Sent::Delivered => Ok(()),
+                Sent::RateLimited(until) => anyhow::bail!(
+                    "Sentry is rate limiting feedback for another {:?}",
+                    until.saturating_duration_since(Instant::now())
+                ),
+            }
+        })
     }
 
     fn with_sentry_metadata(&self, mut event: SentryEvent) -> SentryEvent {
@@ -784,13 +793,13 @@ impl Telemetry {
         event
     }
 
-    fn send_envelope(self: &Arc<Self>, envelope: Envelope) -> Task<Result<()>> {
+    fn send_envelope(self: &Arc<Self>, envelope: Envelope) -> Task<Result<Sent>> {
         let Some(dsn) = self.state.lock().sentry_dsn.clone() else {
             return Task::ready(Err(anyhow::anyhow!("Sentry DSN not compiled in")));
         };
-        let http_client = self.http_client.clone();
+        let transport = self.transport.clone();
         self.executor
-            .spawn(async move { sentry::send_envelope(&*http_client, &dsn, &envelope).await })
+            .spawn(async move { transport.send(&dsn, &envelope).await })
     }
 }
 
@@ -834,12 +843,14 @@ fn log_record(
 }
 
 async fn send_log_records(
-    http_client: &dyn http_client::HttpClient,
+    transport: &sentry::Transport,
     dsn: &SentryDsn,
     records: Vec<LogRecord>,
 ) -> Result<()> {
     for envelope in sentry::log_envelopes(records)? {
-        sentry::send_envelope(http_client, dsn, &envelope).await?;
+        if let Sent::RateLimited(_) = transport.send(dsn, &envelope).await? {
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -1593,6 +1604,77 @@ mod tests {
                 .is_err()
         );
         assert!(requests.lock().is_empty());
+    }
+
+    fn rate_limiting_http_client(
+        limits: &'static str,
+    ) -> (Arc<HttpClientWithUrl>, Arc<Mutex<usize>>) {
+        let requests = Arc::new(Mutex::new(0usize));
+        let http = FakeHttpClient::create({
+            let requests = requests.clone();
+            move |_| {
+                let requests = requests.clone();
+                async move {
+                    *requests.lock() += 1;
+                    Ok(http_client::Response::builder()
+                        .status(429)
+                        .header("X-Sentry-Rate-Limits", limits)
+                        .body(http_client::AsyncBody::default())?)
+                }
+            }
+        });
+        (http, requests)
+    }
+
+    #[gpui::test]
+    async fn test_rate_limited_diagnostic_events_stop_sending(cx: &mut TestAppContext) {
+        let (http, requests) = rate_limiting_http_client("60:error:organization");
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+
+        telemetry.report_diagnostic_event(SentryEvent::new(sentry::EventLevel::Warning, "hang"));
+        cx.run_until_parked();
+        telemetry.report_diagnostic_event(SentryEvent::new(sentry::EventLevel::Warning, "hang"));
+        cx.run_until_parked();
+        assert_eq!(*requests.lock(), 1);
+
+        telemetry
+            .send_sentry_logs("Edit Prediction Accepted", vec![serde_json::json!({})])
+            .await
+            .unwrap();
+        assert_eq!(*requests.lock(), 2);
+    }
+
+    #[gpui::test]
+    async fn test_rate_limited_feedback_reports_an_error(cx: &mut TestAppContext) {
+        let (http, requests) = rate_limiting_http_client("60::organization");
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+
+        for _ in 0..2 {
+            let error = telemetry
+                .submit_feedback(SentryEvent::feedback("rating: negative"), None)
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("rate limiting feedback"),
+                "{error}"
+            );
+        }
+        assert_eq!(*requests.lock(), 1);
+    }
+
+    #[gpui::test]
+    async fn test_rate_limited_log_batches_stop_after_the_first_envelope(cx: &mut TestAppContext) {
+        let (http, requests) = rate_limiting_http_client("60:log_item:organization");
+        let telemetry = started_telemetry(cx, http, Some(test_dsn()));
+
+        let items = (0..101)
+            .map(|index| serde_json::json!({ "index": index }))
+            .collect();
+        telemetry
+            .send_sentry_logs("Edit Prediction Rejected", items)
+            .await
+            .unwrap();
+        assert_eq!(*requests.lock(), 1);
     }
 
     fn init_test(cx: &mut TestAppContext) {

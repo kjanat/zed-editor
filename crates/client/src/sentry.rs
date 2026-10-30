@@ -1,9 +1,17 @@
-use std::{collections::BTreeMap, mem, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt, mem,
+    sync::{Arc, LazyLock},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures::AsyncReadExt as _;
-use http_client::{AsyncBody, HttpClient, Method, Request};
+use http_client::{
+    AsyncBody, HttpClient, HttpClientWithUrl, Method, Request, StatusCode, http::HeaderMap,
+};
+use parking_lot::Mutex;
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use regex::Regex;
 use serde::Serialize;
@@ -26,6 +34,8 @@ const LOG_ITEM_OVERHEAD_BYTES: usize = 64;
 const MAX_LOGS_PER_ITEM: usize = 100;
 /// Sentry truncates feedback messages above 4096 characters.
 pub const MAX_FEEDBACK_MESSAGE_CHARS: usize = 4096;
+/// Sentry's documented wait for a 429 that names no `Retry-After`.
+const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentryDsn {
@@ -265,7 +275,48 @@ enum Item {
     Attachment(Attachment),
 }
 
+/// Sentry's data categories for the items Zed sends; rate limits name them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Category {
+    Error,
+    Feedback,
+    LogItem,
+    Attachment,
+}
+
+impl Category {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "error" | "default" => Some(Self::Error),
+            "feedback" => Some(Self::Feedback),
+            "log_item" => Some(Self::LogItem),
+            "attachment" => Some(Self::Attachment),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Category {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Error => "error",
+            Self::Feedback => "feedback",
+            Self::LogItem => "log_item",
+            Self::Attachment => "attachment",
+        })
+    }
+}
+
 impl Item {
+    fn category(&self) -> Category {
+        match self {
+            Self::Event(_) => Category::Error,
+            Self::Feedback(_) => Category::Feedback,
+            Self::Logs(_) => Category::LogItem,
+            Self::Attachment(_) => Category::Attachment,
+        }
+    }
+
     fn encode(&self) -> Result<(Value, Vec<u8>)> {
         Ok(match self {
             Self::Event(event) => {
@@ -341,6 +392,10 @@ impl Envelope {
         &self.event_id
     }
 
+    pub fn categories(&self) -> impl Iterator<Item = Category> + '_ {
+        self.items.iter().map(Item::category)
+    }
+
     pub fn to_bytes(&self, sent_at: DateTime<Utc>) -> Result<Vec<u8>> {
         let mut bytes = serde_json::to_vec(&json!({
             "event_id": self.event_id,
@@ -383,27 +438,193 @@ pub fn log_envelopes(records: Vec<LogRecord>) -> Result<Vec<Envelope>> {
     Ok(envelopes)
 }
 
-pub async fn send_envelope(
-    http: &dyn HttpClient,
-    dsn: &SentryDsn,
-    envelope: &Envelope,
-) -> Result<()> {
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(dsn.envelope_url())
-        .header("Content-Type", "application/x-sentry-envelope")
-        .body(AsyncBody::from(envelope.to_bytes(Utc::now())?))?;
-    let mut response = http.send(request).await?;
-    if !response.status().is_success() {
-        let mut body = String::new();
-        response.body_mut().read_to_string(&mut body).await?;
-        anyhow::bail!(
-            "Sentry rejected envelope {}: {} {body}",
-            envelope.event_id(),
-            response.status()
-        );
+/// One limit from `X-Sentry-Rate-Limits`, or the whole `Retry-After` of a 429.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RateLimit {
+    pub retry_after: Duration,
+    /// Empty means every category.
+    pub categories: Vec<Category>,
+}
+
+impl fmt::Display for RateLimit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.categories.is_empty() {
+            formatter.write_str("all categories")?;
+        } else {
+            for (index, category) in self.categories.iter().enumerate() {
+                if index > 0 {
+                    formatter.write_str(", ")?;
+                }
+                write!(formatter, "{category}")?;
+            }
+        }
+        write!(formatter, " for {}s", self.retry_after.as_secs())
     }
-    Ok(())
+}
+
+/// `X-Sentry-Rate-Limits` is `retry_after:categories:scope:reason:namespaces`
+/// entries separated by commas, with categories separated by semicolons.
+pub fn rate_limits(status: StatusCode, headers: &HeaderMap) -> Vec<RateLimit> {
+    let header = headers
+        .get("X-Sentry-Rate-Limits")
+        .and_then(|value| value.to_str().ok());
+    if let Some(header) = header {
+        let limits: Vec<RateLimit> = header.split(',').filter_map(parse_rate_limit).collect();
+        if !limits.is_empty() {
+            return limits;
+        }
+    }
+    if status != StatusCode::TOO_MANY_REQUESTS {
+        return Vec::new();
+    }
+    let retry_after = headers
+        .get("Retry-After")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_RETRY_AFTER);
+    vec![RateLimit {
+        retry_after,
+        categories: Vec::new(),
+    }]
+}
+
+fn parse_rate_limit(limit: &str) -> Option<RateLimit> {
+    let mut fields = limit.trim().split(':');
+    let retry_after = fields.next()?.trim().parse::<u64>().ok()?;
+    let names = fields.next().unwrap_or("").trim();
+    let mut categories: Vec<Category> = names
+        .split(';')
+        .filter(|name| !name.is_empty())
+        .filter_map(Category::parse)
+        .collect();
+    if !names.is_empty() && categories.is_empty() {
+        return None;
+    }
+    categories.sort();
+    categories.dedup();
+    Some(RateLimit {
+        retry_after: Duration::from_secs(retry_after),
+        categories,
+    })
+}
+
+/// When Sentry accepts each category again.
+#[derive(Debug, Default)]
+pub struct RateLimits {
+    all: Option<Instant>,
+    categories: HashMap<Category, Instant>,
+}
+
+impl RateLimits {
+    /// Records `limits` starting at `now`. Returns whether any of them blocks
+    /// longer than the limits already recorded.
+    pub fn record(&mut self, limits: &[RateLimit], now: Instant) -> bool {
+        let mut extended = false;
+        for limit in limits {
+            let until = now + limit.retry_after;
+            if limit.categories.is_empty() {
+                if self.all.is_none_or(|current| current < until) {
+                    self.all = Some(until);
+                    extended = true;
+                }
+                continue;
+            }
+            for category in &limit.categories {
+                if self
+                    .categories
+                    .get(category)
+                    .is_none_or(|current| *current < until)
+                {
+                    self.categories.insert(*category, until);
+                    extended = true;
+                }
+            }
+        }
+        extended
+    }
+
+    /// Returns when Sentry accepts every item of `envelope` again, if one of
+    /// them is limited at `now`.
+    pub fn blocks(&self, envelope: &Envelope, now: Instant) -> Option<Instant> {
+        envelope
+            .categories()
+            .filter_map(|category| {
+                self.all
+                    .into_iter()
+                    .chain(self.categories.get(&category).copied())
+                    .max()
+            })
+            .filter(|until| *until > now)
+            .max()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sent {
+    Delivered,
+    /// Sentry is rate limiting an item of the envelope until then, so nothing
+    /// was sent.
+    RateLimited(Instant),
+}
+
+/// Posts envelopes and honours the rate limits Sentry answers with.
+pub struct Transport {
+    http: Arc<HttpClientWithUrl>,
+    limits: Mutex<RateLimits>,
+}
+
+impl Transport {
+    pub fn new(http: Arc<HttpClientWithUrl>) -> Self {
+        Self {
+            http,
+            limits: Mutex::new(RateLimits::default()),
+        }
+    }
+
+    pub async fn send(&self, dsn: &SentryDsn, envelope: &Envelope) -> Result<Sent> {
+        let now = Instant::now();
+        if let Some(until) = self.limits.lock().blocks(envelope, now) {
+            log::debug!(
+                "Sentry rate limit drops envelope {}; lifts in {:?}",
+                envelope.event_id(),
+                until.saturating_duration_since(now)
+            );
+            return Ok(Sent::RateLimited(until));
+        }
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(dsn.envelope_url())
+            .header("Content-Type", "application/x-sentry-envelope")
+            .body(AsyncBody::from(envelope.to_bytes(Utc::now())?))?;
+        let mut response = self.http.send(request).await?;
+        let limits = rate_limits(response.status(), response.headers());
+        let now = Instant::now();
+        if !limits.is_empty() {
+            let mut recorded = self.limits.lock();
+            if recorded.record(&limits, now) {
+                for limit in &limits {
+                    log::warn!("Sentry rate limits {limit}; dropping it until the limit lifts");
+                }
+            }
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                let until = recorded
+                    .blocks(envelope, now)
+                    .unwrap_or(now + DEFAULT_RETRY_AFTER);
+                return Ok(Sent::RateLimited(until));
+            }
+        }
+        if !response.status().is_success() {
+            let mut body = String::new();
+            response.body_mut().read_to_string(&mut body).await?;
+            anyhow::bail!(
+                "Sentry rejected envelope {}: {} {body}",
+                envelope.event_id(),
+                response.status()
+            );
+        }
+        Ok(Sent::Delivered)
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -784,7 +1005,10 @@ mod tests {
     fn sends_envelopes_to_the_envelope_endpoint() {
         let (http, requests) = recording_http_client();
         let envelope = Envelope::logs(vec![record("App Opened", [])]);
-        smol::block_on(send_envelope(&*http, &dsn(), &envelope)).unwrap();
+        assert_eq!(
+            smol::block_on(Transport::new(http).send(&dsn(), &envelope)).unwrap(),
+            Sent::Delivered
+        );
 
         let requests = requests.lock();
         let [request] = &requests[..] else {
@@ -805,14 +1029,188 @@ mod tests {
     fn reports_rejected_envelopes() {
         let http = FakeHttpClient::create(|_| async move {
             Ok(Response::builder()
-                .status(429)
-                .body(AsyncBody::from("rate limited".to_string()))?)
+                .status(400)
+                .body(AsyncBody::from("bad envelope".to_string()))?)
         });
+        let transport = Transport::new(http);
         let envelope = Envelope::logs(vec![record("App Opened", [])]);
-        let error = smol::block_on(send_envelope(&*http, &dsn(), &envelope))
+        let error = smol::block_on(transport.send(&dsn(), &envelope))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("429"), "{error}");
-        assert!(error.contains("rate limited"), "{error}");
+        assert!(error.contains("400"), "{error}");
+        assert!(error.contains("bad envelope"), "{error}");
+    }
+
+    fn headers(entries: &[(&str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in entries {
+            headers.append(
+                http_client::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        headers
+    }
+
+    fn limit(seconds: u64, categories: &[Category]) -> RateLimit {
+        RateLimit {
+            retry_after: Duration::from_secs(seconds),
+            categories: categories.to_vec(),
+        }
+    }
+
+    #[test]
+    fn parses_sentry_rate_limit_headers() {
+        assert_eq!(
+            rate_limits(
+                StatusCode::OK,
+                &headers(&[(
+                    "X-Sentry-Rate-Limits",
+                    "60:error;log_item:organization:quota_exceeded, 2700::organization, 10:transaction:project, bogus"
+                )])
+            ),
+            vec![
+                limit(60, &[Category::Error, Category::LogItem]),
+                limit(2700, &[]),
+            ]
+        );
+        assert_eq!(
+            rate_limits(
+                StatusCode::TOO_MANY_REQUESTS,
+                &headers(&[("X-Sentry-Rate-Limits", "120:default;error")])
+            ),
+            vec![limit(120, &[Category::Error])]
+        );
+    }
+
+    #[test]
+    fn a_429_without_limits_blocks_everything_for_retry_after() {
+        assert_eq!(
+            rate_limits(
+                StatusCode::TOO_MANY_REQUESTS,
+                &headers(&[("Retry-After", "30")])
+            ),
+            vec![limit(30, &[])]
+        );
+        assert_eq!(
+            rate_limits(StatusCode::TOO_MANY_REQUESTS, &headers(&[])),
+            vec![limit(60, &[])]
+        );
+        assert_eq!(rate_limits(StatusCode::OK, &headers(&[])), Vec::new());
+        assert_eq!(
+            rate_limits(StatusCode::BAD_REQUEST, &headers(&[("Retry-After", "30")])),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn recorded_limits_block_their_categories_until_they_lift() {
+        let now = Instant::now();
+        let mut limits = RateLimits::default();
+        assert!(limits.record(&[limit(60, &[Category::Error])], now));
+        assert!(!limits.record(&[limit(30, &[Category::Error])], now));
+        assert!(limits.record(&[limit(90, &[Category::Error])], now));
+
+        let event = Envelope::event(SentryEvent::new(EventLevel::Warning, "hang"));
+        let logs = Envelope::logs(vec![record("App Opened", [])]);
+        let feedback = Envelope::feedback(
+            SentryEvent::feedback("rating"),
+            Some(Attachment {
+                filename: "feedback.json".to_string(),
+                content_type: "application/json",
+                data: b"{}".to_vec(),
+            }),
+        );
+        assert_eq!(
+            limits.blocks(&event, now),
+            Some(now + Duration::from_secs(90))
+        );
+        assert_eq!(limits.blocks(&logs, now), None);
+        assert_eq!(limits.blocks(&feedback, now), None);
+        assert_eq!(limits.blocks(&event, now + Duration::from_secs(90)), None);
+
+        assert!(limits.record(&[limit(10, &[])], now));
+        assert_eq!(
+            limits.blocks(&logs, now),
+            Some(now + Duration::from_secs(10))
+        );
+        assert_eq!(
+            limits.blocks(&feedback, now + Duration::from_secs(5)),
+            Some(now + Duration::from_secs(10))
+        );
+        assert_eq!(limits.blocks(&logs, now + Duration::from_secs(10)), None);
+
+        assert!(limits.record(&[limit(20, &[Category::Attachment])], now));
+        assert_eq!(
+            limits.blocks(&feedback, now + Duration::from_secs(15)),
+            Some(now + Duration::from_secs(20))
+        );
+    }
+
+    #[test]
+    fn a_rate_limited_category_is_dropped_without_a_request() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let http = FakeHttpClient::create({
+            let requests = requests.clone();
+            move |request| {
+                let requests = requests.clone();
+                async move {
+                    requests.lock().push(request.uri().to_string());
+                    Ok(Response::builder()
+                        .status(429)
+                        .header(
+                            "X-Sentry-Rate-Limits",
+                            "60:error:organization:quota_exceeded",
+                        )
+                        .body(AsyncBody::default())?)
+                }
+            }
+        });
+        let transport = Transport::new(http);
+        let event = Envelope::event(SentryEvent::new(EventLevel::Warning, "hang"));
+        let logs = Envelope::logs(vec![record("App Opened", [])]);
+
+        let first = smol::block_on(transport.send(&dsn(), &event)).unwrap();
+        let second = smol::block_on(transport.send(&dsn(), &event)).unwrap();
+        assert!(matches!(first, Sent::RateLimited(_)), "{first:?}");
+        assert_eq!(first, second);
+        assert_eq!(requests.lock().len(), 1);
+
+        let third = smol::block_on(transport.send(&dsn(), &logs)).unwrap();
+        assert!(matches!(third, Sent::RateLimited(_)), "{third:?}");
+        assert_eq!(requests.lock().len(), 2);
+    }
+
+    #[test]
+    fn a_successful_response_can_still_carry_rate_limits() {
+        let requests = Arc::new(Mutex::new(0usize));
+        let http = FakeHttpClient::create({
+            let requests = requests.clone();
+            move |_| {
+                let requests = requests.clone();
+                async move {
+                    *requests.lock() += 1;
+                    Ok(Response::builder()
+                        .status(200)
+                        .header("X-Sentry-Rate-Limits", "60:log_item:organization")
+                        .body(AsyncBody::default())?)
+                }
+            }
+        });
+        let transport = Transport::new(http);
+        let logs = Envelope::logs(vec![record("App Opened", [])]);
+        let event = Envelope::event(SentryEvent::new(EventLevel::Warning, "hang"));
+
+        assert_eq!(
+            smol::block_on(transport.send(&dsn(), &logs)).unwrap(),
+            Sent::Delivered
+        );
+        let dropped = smol::block_on(transport.send(&dsn(), &logs)).unwrap();
+        assert!(matches!(dropped, Sent::RateLimited(_)), "{dropped:?}");
+        assert_eq!(
+            smol::block_on(transport.send(&dsn(), &event)).unwrap(),
+            Sent::Delivered
+        );
+        assert_eq!(*requests.lock(), 2);
     }
 }
