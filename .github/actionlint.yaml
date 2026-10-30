@@ -18,7 +18,7 @@ lint:
     # and the description starts like this...: Diagnostic level: default, off, on, info, warn, or error. ||
     security: "on"
     suspicious: "on" # WHY NOT allow: true|"all" for all as well?
-    nursery: # does this overrride the preset? NO NOT RIGHT NOW, I KNOW THEY ARE IN AGREEMENT CURRENTLY.
+    nursery: # does this override the preset? NO NOT RIGHT NOW, I KNOW THEY ARE IN AGREEMENT CURRENTLY.
       preset: all # does nursery even have any rules?
 tools:
   shellcheck:

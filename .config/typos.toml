@@ -22,6 +22,7 @@ extend-exclude = [
 
   # Vendored JSON schemas from SchemaStore.
   "crates/json_schema_store/src/schemas/",
+  ".github/workflows/github-workflow.json",
 
   # Not our typos.
   "crates/livekit_api/",
