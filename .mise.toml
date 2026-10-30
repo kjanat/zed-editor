@@ -10,6 +10,7 @@ actionlint     = { version = "master", lazy = true, depends = ["rshellcheck", "r
 node           = { version = "latest" }
 go             = { prefix = "1.27", lazy = true }
 cargo-binstall = { version = "latest" }
+cargo-bundle   = { version = "rev:2be2669972dff3ddd4daf89a2cb29d2d06cad7c7" }
 cargo-about    = { prefix = "0.9" }
 uv             = { version = "latest", lazy = true }
 python         = { version = "latest", lazy = true }
