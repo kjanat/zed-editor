@@ -707,7 +707,7 @@ wasm_thread                   = { git = "https://github.com/zed-industries/wasm_
   "es_modules"
 ] }
 wasmparser                    = "0.254"
-wasmtime                      = { version = "48", default-features = false, features = [
+wasmtime                      = { version = "49", default-features = false, features = [
   "anyhow",
   "async",
   "component-model",
